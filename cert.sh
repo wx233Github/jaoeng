@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🚀 通用交互式 SSL 证书申请脚本（改进版）
+# 🚀 通用交互式 SSL 证书申请脚本（绝对路径调用 acme.sh）
 # 基于 acme.sh，带域名解析检测
 
 set -e
@@ -69,7 +69,10 @@ echo "=============================="
 echo "⚙️ 安装 acme.sh ..."
 echo "=============================="
 curl https://get.acme.sh | sh
-source ~/.bashrc
+
+# 设置 acme.sh 绝对路径
+ACME_BIN="$HOME/.acme.sh/acme.sh"
+export PATH="$HOME/.acme.sh:$PATH"
 
 echo "📂 创建证书存放目录: $INSTALL_PATH"
 mkdir -p "$INSTALL_PATH"
@@ -92,16 +95,16 @@ echo "=============================="
 echo "🚀 正在申请证书 ..."
 echo "=============================="
 if [[ -n "$WILDCARD" ]]; then
-    acme.sh --issue -d "$DOMAIN" -d "$WILDCARD" --$METHOD
+    "$ACME_BIN" --issue -d "$DOMAIN" -d "$WILDCARD" --"$METHOD"
 else
-    acme.sh --issue -d "$DOMAIN" --$METHOD
+    "$ACME_BIN" --issue -d "$DOMAIN" --"$METHOD"
 fi
 
 # ----------- 安装证书 -----------
 echo "=============================="
 echo "📂 安装证书到: $INSTALL_PATH"
 echo "=============================="
-acme.sh --install-cert -d "$DOMAIN" \
+"$ACME_BIN" --install-cert -d "$DOMAIN" \
 --key-file "$INSTALL_PATH/$DOMAIN.key" \
 --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
 --reloadcmd "$RELOAD_CMD"
