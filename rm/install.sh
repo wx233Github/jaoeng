@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS GitHub 一键脚本拉取入口
+# 🚀 VPS GitHub 一键脚本拉取入口 (支持子目录)
 # =============================================
 
 set -e
@@ -14,26 +14,32 @@ fi
 # GitHub 仓库基础 URL
 BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
-# 格式: "显示名:真实文件名"
+# 格式: "显示名:真实路径"
 SCRIPTS=(
-    "安装脚本:install.sh"
-    "更新脚本:update.sh"
-    "清理脚本:clean.sh"
-    "卸载证书:rm/rm_cert.sh"
+    "安装脚本:scripts/install.sh"
+    "更新脚本:scripts/update.sh"
+    "清理脚本:scripts/clean.sh"
+    "删除证书:rm/rm_cert.sh"
 )
 
-# 下载函数（自动检测 wget 或 curl）
+# 下载并返回保存后的文件名
 download() {
-    local file=$1
-    local url="$BASE_URL/$file"
+    local file=$1                # 真实路径，例如 rm/rm_cert.sh
+    local url="$BASE_URL/$file"  # 完整下载链接
+    local save_name=$(basename "$file")  # 本地保存名 rm_cert.sh
+
     if command -v wget >/dev/null 2>&1; then
-        wget -qO "$file" "$url"
+        wget -qO "$save_name" "$url"
     elif command -v curl >/dev/null 2>&1; then
-        curl -sSL -o "$file" "$url"
+        curl -sSL -o "$save_name" "$url"
     else
         echo "❌ 系统缺少 wget 或 curl"
         exit 1
     fi
+
+    chmod +x "$save_name"
+    echo "📥 已保存为 $save_name"
+    echo "$save_name"  # 返回保存名
 }
 
 # 主菜单
@@ -45,7 +51,7 @@ main_menu() {
         echo "0. 退出"
         i=1
         for entry in "${SCRIPTS[@]}"; do
-            name="${entry%%:*}"   # 只显示新名字
+            name="${entry%%:*}"   # 显示名
             echo "$i. $name"
             ((i++))
         done
@@ -56,14 +62,13 @@ main_menu() {
             exit 0
         elif [ "$choice" -ge 1 ] && [ "$choice" -le "${#SCRIPTS[@]}" ]; then
             entry="${SCRIPTS[$((choice-1))]}"
-            name="${entry%%:*}"
-            file="${entry##*:}"
+            name="${entry%%:*}"   # 显示名
+            file="${entry##*:}"   # 真实路径
 
-            echo "🔽 下载 $file..."
-            download "$file"
-            chmod +x "$file"
+            echo "🔽 正在拉取 [$name] ..."
+            script_file=$(download "$file")
             echo "🚀 执行 [$name]"
-            ./"$file"
+            ./"$script_file"
         else
             echo "❌ 无效选项，请重新输入"
         fi
