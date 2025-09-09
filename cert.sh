@@ -1,6 +1,11 @@
 #!/bin/bash
 # 🚀 SSL 证书申请助手（acme.sh）
-# 功能：域名解析检测 + 80端口检查 + 自动安装 socat + ZeroSSL 自动注册邮箱
+# 功能：
+# - 域名解析检测
+# - 80端口检查
+# - 自动安装 socat
+# - ZeroSSL 自动注册邮箱
+# - 服务 reload 存在性检测
 
 set -e
 
@@ -8,7 +13,7 @@ echo "=============================="
 echo "   🌐 SSL 证书申请助手"
 echo "=============================="
 
-# ----------- 输入域名（必填） -----------
+# ----------- 输入域名 -----------
 while true; do
     read -rp "请输入你的主域名 (例如 example.com): " DOMAIN
     if [[ -z "$DOMAIN" ]]; then
@@ -30,7 +35,7 @@ while true; do
     fi
 done
 
-# 是否申请泛域名
+# ----------- 泛域名 -----------
 read -rp "是否申请泛域名证书 (*.$DOMAIN)？[y/N]: " USE_WILDCARD
 if [[ "$USE_WILDCARD" =~ ^[Yy]$ ]]; then
     WILDCARD="*.$DOMAIN"
@@ -38,15 +43,13 @@ else
     WILDCARD=""
 fi
 
-# 证书存放路径（回车使用默认）
+# ----------- 证书路径 & 服务 reload -----------
 read -rp "请输入证书存放路径 [默认: /etc/ssl/$DOMAIN]: " INSTALL_PATH
 INSTALL_PATH=${INSTALL_PATH:-/etc/ssl/$DOMAIN}
 
-# 服务 reload 命令（回车使用默认）
-read -rp "请输入证书更新后需要执行的服务重载命令 [默认: systemctl reload nginx]: " RELOAD_CMD
-RELOAD_CMD=${RELOAD_CMD:-"systemctl reload nginx"}
+read -rp "请输入证书更新后需要执行的服务重载命令 [默认: systemctl reload nginx，可留空不执行]: " RELOAD_CMD
 
-# 验证方式选择
+# ----------- 验证方式选择 -----------
 echo "请选择验证方式："
 echo "1) standalone (HTTP验证，需要80端口)"
 echo "2) dns_cf (Cloudflare DNS API)"
@@ -71,10 +74,9 @@ curl https://get.acme.sh | sh
 ACME_BIN="$HOME/.acme.sh/acme.sh"
 export PATH="$HOME/.acme.sh:$PATH"
 
-echo "📂 创建证书存放目录: $INSTALL_PATH"
 mkdir -p "$INSTALL_PATH"
 
-# ----------- standalone 80端口 & socat 检查 -----------
+# ----------- standalone 80端口 & socat & ZeroSSL 账号检查 -----------
 if [[ "$METHOD" == "standalone" ]]; then
     echo "=============================="
     echo "🔍 检查 80 端口 ..."
@@ -95,7 +97,7 @@ if [[ "$METHOD" == "standalone" ]]; then
         echo "✅ 80 端口空闲，可以继续。"
     fi
 
-    # 检查 socat
+    # 安装 socat
     if ! command -v socat &>/dev/null; then
         echo "⚠️ 未检测到 socat，正在安装..."
         if command -v apt &>/dev/null; then
@@ -110,10 +112,10 @@ if [[ "$METHOD" == "standalone" ]]; then
         fi
     fi
 
-    # 检查 ZeroSSL 账号是否注册
+    # ZeroSSL 账号检查
     ACCOUNT_STATUS=$("$ACME_BIN" --accountstatus 2>/dev/null || true)
     if ! echo "$ACCOUNT_STATUS" | grep -q "Valid"; then
-        read -rp "请输入用于注册 ZeroSSL 的邮箱: " ACCOUNT_EMAIL
+        read -rp "请输入用于注册 ZeroSSL 的邮箱（可用临时邮箱）: " ACCOUNT_EMAIL
         "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL"
     fi
 fi
@@ -147,8 +149,18 @@ echo "📂 安装证书到: $INSTALL_PATH"
 echo "=============================="
 "$ACME_BIN" --install-cert -d "$DOMAIN" \
 --key-file "$INSTALL_PATH/$DOMAIN.key" \
---fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
---reloadcmd "$RELOAD_CMD"
+--fullchain-file "$INSTALL_PATH/$DOMAIN.crt"
+
+# ----------- reload 服务检测执行 -----------
+if [[ -n "$RELOAD_CMD" ]]; then
+    SERVICE=$(echo "$RELOAD_CMD" | awk '{print $3}')
+    if systemctl list-units --full -all | grep -q "$SERVICE"; then
+        echo "🔄 执行服务 reload: $RELOAD_CMD"
+        eval "$RELOAD_CMD"
+    else
+        echo "⚠️ 服务 $SERVICE 未找到，跳过 reload。"
+    fi
+fi
 
 echo "=============================="
 echo "✅ 证书申请完成！"
