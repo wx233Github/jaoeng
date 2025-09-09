@@ -19,7 +19,7 @@ SCRIPTS=(
     "安装脚本:install.sh"
     "更新脚本:update.sh"
     "清理脚本:clean.sh"
-    "卸载证书:rm/rm_cert.sh"
+    "卸载证书:/rm/rm_cert.sh"
 )
 
 # 下载函数（自动检测 wget 或 curl）
