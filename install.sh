@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（无需 Last-Modified，智能 + 并行 + 后台更新）
+# 🚀 VPS 一键安装入口脚本（只缓存，执行需选择）
 # =============================================
 set -e
 
@@ -21,44 +21,56 @@ mkdir -p "$CACHE_DIR"
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
-# 下载并缓存模块（不依赖 Last-Modified）
-fetch_script() {
+# 下载并缓存模块（只下载，不执行）
+cache_script() {
     local script_name="$1"
     local local_file="$CACHE_DIR/$script_name"
     local url="$BASE_URL/$script_name"
 
-    echo -e "${GREEN}下载模块 $script_name${NC}"
+    echo -e "${GREEN}缓存模块 $script_name${NC}"
     curl -fsSL "$url" -o "$local_file" || {
         echo -e "${RED}❌ 下载失败: $script_name${NC}"
         return 1
     }
+}
 
+# 执行模块（如果不存在就先下载）
+run_script() {
+    local script_name="$1"
+    local local_file="$CACHE_DIR/$script_name"
+
+    if [ ! -f "$local_file" ]; then
+        echo -e "${RED}未找到缓存，正在下载 $script_name${NC}"
+        cache_script "$script_name"
+    fi
+
+    echo -e "${GREEN}执行模块 $script_name${NC}"
     bash "$local_file"
 }
 
-# 并行更新所有模块
+# 并行缓存所有模块
 update_all_modules_parallel() {
-    echo -e "${GREEN}🔄 并行更新所有模块缓存...${NC}"
+    echo -e "${GREEN}🔄 并行缓存所有模块...${NC}"
     for module in "${MODULES[@]}"; do
-        fetch_script "$module" &
+        cache_script "$module" &
     done
     wait
-    echo -e "${GREEN}✅ 所有模块更新完成${NC}"
+    echo -e "${GREEN}✅ 所有模块缓存完成${NC}"
 }
 
-# 后台自动更新模块
-background_update() {
+# 启动时后台缓存（不执行）
+background_cache_update() {
     (
         for module in "${MODULES[@]}"; do
-            fetch_script "$module" &
+            cache_script "$module" &
         done
         wait
-        echo -e "${GREEN}✅ 背景模块更新完成${NC}"
+        echo -e "${GREEN}✅ 背景缓存更新完成${NC}"
     ) &
 }
 
-# 启动时后台更新
-background_update
+# 启动时后台更新缓存
+background_cache_update
 
 # 菜单循环
 while true; do
@@ -77,10 +89,10 @@ while true; do
 
     case $choice in
     0) exit 0 ;;
-    1) fetch_script "docker.sh" ;;
-    2) fetch_script "nginx.sh" ;;
-    3) fetch_script "tools.sh" ;;
-    4) fetch_script "cert.sh" ;;
+    1) run_script "docker.sh" ;;
+    2) run_script "nginx.sh" ;;
+    3) run_script "tools.sh" ;;
+    4) run_script "cert.sh" ;;
     5) update_all_modules_parallel ;;
     *) echo -e "${RED}❌ 无效选项，请重新选择${NC}" ;;
     esac
