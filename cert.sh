@@ -1,6 +1,6 @@
 #!/bin/bash
-# 🚀 通用交互式 SSL 证书申请 + 自动续期脚本（改进版）
-# 基于 acme.sh
+# 🚀 通用交互式 SSL 证书申请脚本（改进版）
+# 基于 acme.sh，带域名解析检测
 
 set -e
 
@@ -13,7 +13,21 @@ while true; do
     read -rp "请输入你的主域名 (例如 example.com): " DOMAIN
     if [[ -z "$DOMAIN" ]]; then
         echo "❌ 域名不能为空，请重新输入。"
+        continue
+    fi
+
+    # 获取本机公网IP
+    SERVER_IP=$(curl -s https://api.ipify.org)
+    # 获取域名解析的IP（取第一个 A 记录）
+    DOMAIN_IP=$(dig +short "$DOMAIN" | head -n1)
+
+    if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
+        echo "❌ 域名解析错误！"
+        echo "   当前域名解析IP: $DOMAIN_IP"
+        echo "   本服务器IP: $SERVER_IP"
+        echo "请确保域名已解析到本服务器再继续。"
     else
+        echo "✅ 域名解析正确，解析到本服务器。"
         break
     fi
 done
@@ -87,61 +101,6 @@ fi
 echo "=============================="
 echo "📂 安装证书到: $INSTALL_PATH"
 echo "=============================="
-acme.sh --install-cert -d "$DOMAIN" \
---key-file "$INSTALL_PATH/$DOMAIN.key" \
---fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
---reloadcmd "$RELOAD_CMD"
-
-echo "=============================="
-echo "✅ 证书申请完成！"
-echo "   私钥: $INSTALL_PATH/$DOMAIN.key"
-echo "   证书: $INSTALL_PATH/$DOMAIN.crt"
-echo "🔄 自动续期已加入 crontab（每日检查一次）。"
-echo "=============================="read -rp "请输入序号 [1]: " VERIFY_METHOD
-case $VERIFY_METHOD in
-    2) METHOD="dns_cf" ;;
-    3) METHOD="dns_ali" ;;
-    *) METHOD="standalone" ;;
-esac
-
-echo "=============================="
-echo "   ⚙️ 开始安装 acme.sh ..."
-echo "=============================="
-
-# 安装 acme.sh
-curl https://get.acme.sh | sh
-source ~/.bashrc
-
-echo "📂 创建证书存放目录: $INSTALL_PATH"
-mkdir -p "$INSTALL_PATH"
-
-# 如果是 DNS 验证，提醒用户设置 API
-if [[ "$METHOD" == "dns_cf" ]]; then
-    echo "⚠️ 你选择了 Cloudflare DNS 验证，请先设置环境变量："
-    echo "   export CF_Token=\"你的API Token\""
-    echo "   export CF_Account_ID=\"你的Account ID\""
-    exit 1
-elif [[ "$METHOD" == "dns_ali" ]]; then
-    echo "⚠️ 你选择了 阿里云 DNS 验证，请先设置环境变量："
-    echo "   export Ali_Key=\"你的AliKey\""
-    echo "   export Ali_Secret=\"你的AliSecret\""
-    exit 1
-fi
-
-echo "=============================="
-echo "   🚀 正在申请证书 ..."
-echo "=============================="
-
-if [[ -n "$WILDCARD" ]]; then
-    acme.sh --issue -d "$DOMAIN" -d "$WILDCARD" --$METHOD
-else
-    acme.sh --issue -d "$DOMAIN" --$METHOD
-fi
-
-echo "=============================="
-echo "   📂 安装证书到: $INSTALL_PATH"
-echo "=============================="
-
 acme.sh --install-cert -d "$DOMAIN" \
 --key-file "$INSTALL_PATH/$DOMAIN.key" \
 --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
