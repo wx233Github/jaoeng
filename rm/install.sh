@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS GitHub 一键脚本拉取入口 (修正版)
+# 🚀 VPS GitHub 一键脚本拉取入口 (彻底修正版)
 # =============================================
 
 set -e
@@ -22,10 +22,10 @@ SCRIPTS=(
     "删除证书:rm/rm_cert.sh"
 )
 
-# 下载脚本（不把打印信息当作返回值）
+# 下载脚本（打印信息，不返回文件名）
 download() {
-    local file=$1                 # 真实路径，例如 rm/rm_cert.sh
-    local url="$BASE_URL/$file"   # 完整下载链接
+    local file=$1                 # GitHub路径，例如 rm/rm_cert.sh
+    local url="$BASE_URL/$file"   # 完整URL
     local save_name=$(basename "$file")  # 本地保存名 rm_cert.sh
 
     # 下载
@@ -40,9 +40,6 @@ download() {
 
     chmod +x "$save_name"
     echo "📥 已保存为 $save_name"
-
-    # 返回文件名给执行
-    echo "$save_name"
 }
 
 # 主菜单
@@ -66,10 +63,11 @@ main_menu() {
         elif [ "$choice" -ge 1 ] && [ "$choice" -le "${#SCRIPTS[@]}" ]; then
             entry="${SCRIPTS[$((choice-1))]}"
             name="${entry%%:*}"   # 显示名
-            file="${entry##*:}"   # 真实路径
+            file="${entry##*:}"   # GitHub路径
+            script_file=$(basename "$file")   # 本地文件名
 
             echo "🔽 正在拉取 [$name] ..."
-            script_file=$(download "$file")   # 只返回文件名，不带打印信息
+            download "$file"                   # 仅打印信息
             echo "🚀 执行 [$name]"
             ./"$script_file"
         else
