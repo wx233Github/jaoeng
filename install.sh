@@ -51,16 +51,4 @@ while true; do
 
     echo -e "${GREEN}==============================${NC}"
     echo ""  # 空行分隔下一次选择
-done2)
-    bash install_nginx.sh
-    ;;
-3)
-    bash install_tools.sh
-    ;;
-4)
-    bash install_cert.sh
-    ;;
-*)
-    echo -e "${RED}❌ 无效选项${NC}"
-    ;;
-esac
+done
