@@ -6,7 +6,32 @@
 - `install_docker.sh` ：安装 Docker
 - `install_nginx.sh` ：安装 Nginx
 - `install_tools.sh` ：安装常用工具
-- `install_cert.sh` ：申请证书
+  
+---
+
+## 4、cert.sh ：申请证书
+1. 域名输入与解析检查
+2. 泛域名支持
+ - 可选择申请泛域名证书 (*.example.com)
+3. 证书路径与服务 reload 自定义
+4. 验证方式选择
+ - standalone（HTTP 验证，需 80 端口）
+- Cloudflare DNS 验证
+- 阿里云 DNS 验证
+5. acme.sh 自动安装
+6. standalone 模式特有功能
+ - 检查 80 端口空闲
+ - 自动安装 socat
+ - ZeroSSL 账号自动注册（提示输入邮箱，可用临时邮箱）
+7. 证书申请与安装
+ - 支持标准域名和泛域名
+- 自动安装到指定路径
+8. 服务 reload 检测执行
+- 检测服务是否存在，存在则执行 reload，不存在则跳过
+9. 自动续期
+- acme.sh 默认每日检查证书续期
+
+---
 
 ## 使用方法
 
