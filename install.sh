@@ -41,7 +41,7 @@ case $choice in
     bash install_tools.sh
     ;;
 4)
-    bash cert.sh
+    bash install_cert.sh
     ;;
 *)
     echo -e "${RED}❌ 无效选项${NC}"
