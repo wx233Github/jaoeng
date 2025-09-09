@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（循环菜单版）
+# 🚀 VPS 一键安装入口脚本（在线模块缓存版）
 # =============================================
 set -e
 
@@ -10,9 +10,37 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# GitHub 仓库地址（替换成你自己的）
+BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+
 GREEN="\033[32m"
 RED="\033[31m"
 NC="\033[0m" # No Color
+
+# 模块缓存目录
+CACHE_DIR="/opt/vps_install_modules"
+mkdir -p "$CACHE_DIR"
+
+# 下载并缓存脚本函数
+fetch_script() {
+    local script_name="$1"
+    local script_url="$BASE_URL/$script_name"
+    local local_file="$CACHE_DIR/$script_name"
+
+    # 检查是否已缓存
+    if [ ! -f "$local_file" ]; then
+        echo -e "${GREEN}首次下载模块: $script_name${NC}"
+        curl -fsSL "$script_url" -o "$local_file" || {
+            echo -e "${RED}❌ 下载失败: $script_url${NC}"
+            return 1
+        }
+    else
+        echo -e "${GREEN}使用缓存模块: $script_name${NC}"
+    fi
+
+    # 执行模块脚本
+    bash "$local_file"
+}
 
 while true; do
     echo -e "${GREEN}==============================${NC}"
@@ -33,16 +61,16 @@ while true; do
         exit 0
         ;;
     1)
-        bash docker.sh
+        fetch_script "docker.sh"
         ;;
     2)
-        bash nginx.sh
+        fetch_script "nginx.sh"
         ;;
     3)
-        bash tools.sh
+        fetch_script "tools.sh"
         ;;
     4)
-        bash cert.sh
+        fetch_script "cert.sh"
         ;;
     *)
         echo -e "${RED}❌ 无效选项，请重新选择${NC}"
