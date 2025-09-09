@@ -41,7 +41,7 @@ while true; do
     3)
         bash install_tools.sh
         ;;
-    4）
+    4)
         bash install_cert.sh
         ;;
     *)
