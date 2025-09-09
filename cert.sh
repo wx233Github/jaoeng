@@ -1,7 +1,6 @@
 #!/bin/bash
-# 🚀 通用交互式 SSL 证书申请脚本
-# 基于 acme.sh，支持 standalone/dns_cf/dns_ali
-# 功能：域名解析检测 + 80端口检查 + 自动安装 socat
+# 🚀 SSL 证书申请助手（acme.sh）
+# 功能：域名解析检测 + 80端口检查 + 自动安装 socat + ZeroSSL 自动注册邮箱
 
 set -e
 
@@ -109,6 +108,13 @@ if [[ "$METHOD" == "standalone" ]]; then
             echo "❌ 无法自动安装 socat，请手动安装后重试。"
             exit 1
         fi
+    fi
+
+    # 检查 ZeroSSL 账号是否注册
+    ACCOUNT_STATUS=$("$ACME_BIN" --accountstatus 2>/dev/null || true)
+    if ! echo "$ACCOUNT_STATUS" | grep -q "Valid"; then
+        read -rp "请输入用于注册 ZeroSSL 的邮箱: " ACCOUNT_EMAIL
+        "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL"
     fi
 fi
 
