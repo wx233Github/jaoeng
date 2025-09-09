@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（缓存+智能版本检测）
+# 🚀 VPS 一键安装入口脚本（智能更新 + 并行 + 自动后台更新）
 # =============================================
 set -e
 
@@ -10,8 +10,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# GitHub 仓库地址（替换成你自己的）
-BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+# GitHub 仓库 raw 地址
+BASE_URL="https://raw.githubusercontent.com/wxGithub/eng/main"
 
 GREEN="\033[32m"
 RED="\033[31m"
@@ -24,53 +24,68 @@ mkdir -p "$CACHE_DIR"
 # 模块列表
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
-# 下载并缓存脚本函数，智能版本检测
+# 下载并缓存脚本函数，智能更新
 fetch_script() {
     local script_name="$1"
-    local script_base="${script_name%.sh}" # docker, nginx 等
     local local_file="$CACHE_DIR/$script_name"
-    local version_file="$CACHE_DIR/$script_base.version"
-    local remote_version_url="$BASE_URL/$script_base.version"
+    local meta_file="$CACHE_DIR/$script_name.meta"
+    local url="$BASE_URL/$script_name"
 
-    # 获取远程版本号
-    remote_version=$(curl -fsSL "$remote_version_url" || echo "")
-    if [ -z "$remote_version" ]; then
-        echo -e "${RED}❌ 无法获取远程版本: $remote_version_url${NC}"
+    # 获取远程 Last-Modified 时间
+    remote_time=$(curl -sI "$url" | grep -i '^Last-Modified:' | sed 's/Last-Modified: //I' | tr -d '\r')
+    if [ -z "$remote_time" ]; then
+        echo -e "${RED}❌ 无法获取远程更新时间: $url${NC}"
         return 1
     fi
 
-    # 获取本地版本号
-    if [ -f "$version_file" ]; then
-        local_version=$(cat "$version_file")
+    # 获取本地缓存的更新时间
+    if [ -f "$meta_file" ]; then
+        local_time=$(cat "$meta_file")
     else
-        local_version=""
+        local_time=""
     fi
 
     # 判断是否需要更新
-    if [ "$remote_version" != "$local_version" ]; then
-        echo -e "${GREEN}更新模块 $script_name (版本 $local_version → $remote_version)${NC}"
-        curl -fsSL "$BASE_URL/$script_name" -o "$local_file" || {
+    if [ "$remote_time" != "$local_time" ] || [ ! -f "$local_file" ]; then
+        echo -e "${GREEN}更新模块 $script_name${NC}"
+        curl -fsSL "$url" -o "$local_file" || {
             echo -e "${RED}❌ 下载失败: $script_name${NC}"
             return 1
         }
-        echo "$remote_version" > "$version_file"
+        echo "$remote_time" > "$meta_file"
     else
-        echo -e "${GREEN}使用缓存模块 $script_name (版本 $local_version)${NC}"
+        echo -e "${GREEN}使用缓存模块 $script_name${NC}"
     fi
 
     # 执行模块脚本
     bash "$local_file"
 }
 
-# 更新所有模块缓存
-update_all_modules() {
-    echo -e "${GREEN}🔄 正在更新所有模块缓存...${NC}"
+# 并行更新所有模块缓存
+update_all_modules_parallel() {
+    echo -e "${GREEN}🔄 并行更新所有模块缓存...${NC}"
     for module in "${MODULES[@]}"; do
-        fetch_script "$module"
+        fetch_script "$module" &
     done
-    echo -e "${GREEN}✅ 模块更新完成${NC}"
+    wait
+    echo -e "${GREEN}✅ 所有模块更新完成${NC}"
 }
 
+# 后台自动更新模块（启动时执行）
+background_update() {
+    (
+        for module in "${MODULES[@]}"; do
+            fetch_script "$module" &
+        done
+        wait
+        echo -e "${GREEN}✅ 背景模块更新完成${NC}"
+    ) &
+}
+
+# 启动时后台检查更新
+background_update
+
+# 菜单循环
 while true; do
     echo -e "${GREEN}==============================${NC}"
     echo -e "${GREEN}   VPS 一键安装入口脚本       ${NC}"
@@ -81,7 +96,7 @@ while true; do
     echo "2. Nginx"
     echo "3. 常用工具"
     echo "4. 证书申请"
-    echo "5. 更新所有模块缓存"
+    echo "5. 更新所有模块缓存（并行）"
 
     read -p "输入数字: " choice
 
@@ -103,7 +118,7 @@ while true; do
         fetch_script "cert.sh"
         ;;
     5)
-        update_all_modules
+        update_all_modules_parallel
         ;;
     *)
         echo -e "${RED}❌ 无效选项，请重新选择${NC}"
