@@ -39,3 +39,14 @@
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh)
+```
+
+---
+
+## 卸载
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/rm/install.sh)
+```
+
+---
