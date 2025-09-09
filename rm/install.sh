@@ -12,7 +12,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # GitHub 仓库基础 URL
-BASE_URL="https://raw.githubusercontent.com/你的用户名/你的仓库/main"
+BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
 # 格式: "显示名:真实文件名"
 SCRIPTS=(
