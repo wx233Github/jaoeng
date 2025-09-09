@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 通用交互式 SSL 证书申请脚本（绝对路径调用 acme.sh）
-# 基于 acme.sh，带域名解析检测
+# 基于 acme.sh，带域名解析检测 + 80端口检查
 
 set -e
 
@@ -16,9 +16,7 @@ while true; do
         continue
     fi
 
-    # 获取本机公网IP
     SERVER_IP=$(curl -s https://api.ipify.org)
-    # 获取域名解析的IP（取第一个 A 记录）
     DOMAIN_IP=$(dig +short "$DOMAIN" | head -n1)
 
     if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
@@ -70,14 +68,35 @@ echo "⚙️ 安装 acme.sh ..."
 echo "=============================="
 curl https://get.acme.sh | sh
 
-# 设置 acme.sh 绝对路径
 ACME_BIN="$HOME/.acme.sh/acme.sh"
 export PATH="$HOME/.acme.sh:$PATH"
 
 echo "📂 创建证书存放目录: $INSTALL_PATH"
 mkdir -p "$INSTALL_PATH"
 
-# DNS 验证提示
+# ----------- standalone 80端口检查 -----------
+if [[ "$METHOD" == "standalone" ]]; then
+    echo "=============================="
+    echo "🔍 检查 80 端口 ..."
+    echo "=============================="
+
+    if command -v ss &>/dev/null; then
+        PORT_CHECK=$(ss -tuln | grep -w ":80" || true)
+    else
+        PORT_CHECK=$(netstat -tuln 2>/dev/null | grep -w ":80" || true)
+    fi
+
+    if [[ -n "$PORT_CHECK" ]]; then
+        echo "❌ 检测到 80 端口已被占用："
+        echo "$PORT_CHECK"
+        echo "👉 standalone 模式需要占用 80 端口，请先关闭相关服务（如 nginx/apache），再重新运行脚本。"
+        exit 1
+    else
+        echo "✅ 80 端口空闲，可以继续。"
+    fi
+fi
+
+# ----------- DNS 验证提示 -----------
 if [[ "$METHOD" == "dns_cf" ]]; then
     echo "⚠️ 你选择了 Cloudflare DNS 验证，请先设置环境变量："
     echo "   export CF_Token=\"你的API Token\""
