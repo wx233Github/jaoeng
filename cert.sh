@@ -1,6 +1,7 @@
 #!/bin/bash
-# 🚀 通用交互式 SSL 证书申请脚本（绝对路径调用 acme.sh）
-# 基于 acme.sh，带域名解析检测 + 80端口检查
+# 🚀 通用交互式 SSL 证书申请脚本
+# 基于 acme.sh，支持 standalone/dns_cf/dns_ali
+# 功能：域名解析检测 + 80端口检查 + 自动安装 socat
 
 set -e
 
@@ -74,7 +75,7 @@ export PATH="$HOME/.acme.sh:$PATH"
 echo "📂 创建证书存放目录: $INSTALL_PATH"
 mkdir -p "$INSTALL_PATH"
 
-# ----------- standalone 80端口检查 -----------
+# ----------- standalone 80端口 & socat 检查 -----------
 if [[ "$METHOD" == "standalone" ]]; then
     echo "=============================="
     echo "🔍 检查 80 端口 ..."
@@ -93,6 +94,21 @@ if [[ "$METHOD" == "standalone" ]]; then
         exit 1
     else
         echo "✅ 80 端口空闲，可以继续。"
+    fi
+
+    # 检查 socat
+    if ! command -v socat &>/dev/null; then
+        echo "⚠️ 未检测到 socat，正在安装..."
+        if command -v apt &>/dev/null; then
+            apt update && apt install -y socat
+        elif command -v yum &>/dev/null; then
+            yum install -y socat
+        elif command -v dnf &>/dev/null; then
+            dnf install -y socat
+        else
+            echo "❌ 无法自动安装 socat，请手动安装后重试。"
+            exit 1
+        fi
     fi
 fi
 
