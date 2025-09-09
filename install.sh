@@ -11,7 +11,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # GitHub 仓库 raw 地址
-BASE_URL="https://raw.githubusercontent.com/wxGithub/eng/main"
+BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
 GREEN="\033[32m"
 RED="\033[31m"
