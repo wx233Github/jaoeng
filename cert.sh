@@ -1,170 +1,129 @@
 #!/bin/bash
-# 🚀 SSL 证书申请助手（acme.sh）
-# 功能：
-# - 域名解析检测
-# - 80端口检查
-# - 自动安装 socat
-# - ZeroSSL 自动注册邮箱
-# - 服务 reload 存在性检测
+# 🚀 SSL 证书申请与管理脚本
+# 功能：申请、查看（预警）、手动续期、删除
 
 set -e
 
-echo "=============================="
-echo "   🌐 SSL 证书申请助手"
-echo "=============================="
+ACME="$HOME/.acme.sh/acme.sh"
 
-# ----------- 输入域名 -----------
-while true; do
-    read -rp "请输入你的主域名 (例如 example.com): " DOMAIN
-    if [[ -z "$DOMAIN" ]]; then
-        echo "❌ 域名不能为空，请重新输入。"
-        continue
-    fi
-
-    SERVER_IP=$(curl -s https://api.ipify.org)
-    DOMAIN_IP=$(dig +short "$DOMAIN" | head -n1)
-
-    if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
-        echo "❌ 域名解析错误！"
-        echo "   当前域名解析IP: $DOMAIN_IP"
-        echo "   本服务器IP: $SERVER_IP"
-        echo "请确保域名已解析到本服务器再继续。"
-    else
-        echo "✅ 域名解析正确，解析到本服务器。"
-        break
-    fi
-done
-
-# ----------- 泛域名 -----------
-read -rp "是否申请泛域名证书 (*.$DOMAIN)？[y/N]: " USE_WILDCARD
-if [[ "$USE_WILDCARD" =~ ^[Yy]$ ]]; then
-    WILDCARD="*.$DOMAIN"
-else
-    WILDCARD=""
+if [ ! -f "$ACME" ]; then
+    echo "❌ 未找到 acme.sh，请先安装！"
+    exit 1
 fi
 
-# ----------- 证书路径 & 服务 reload -----------
-read -rp "请输入证书存放路径 [默认: /etc/ssl/$DOMAIN]: " INSTALL_PATH
-INSTALL_PATH=${INSTALL_PATH:-/etc/ssl/$DOMAIN}
+menu() {
+    echo "=============================="
+    echo "🔐 SSL 证书管理脚本"
+    echo "=============================="
+    echo "1. 申请新证书"
+    echo "2. 查看已申请证书"
+    echo "3. 手动续期证书"
+    echo "4. 删除证书"
+    echo "0. 退出"
+    echo "=============================="
+}
 
-read -rp "请输入证书更新后需要执行的服务重载命令 [默认: systemctl reload nginx，可留空不执行]: " RELOAD_CMD
-
-# ----------- 验证方式选择 -----------
-echo "请选择验证方式："
-echo "1) standalone (HTTP验证，需要80端口)"
-echo "2) dns_cf (Cloudflare DNS API)"
-echo "3) dns_ali (阿里云 DNS API)"
 while true; do
-    read -rp "请输入序号 [1]: " VERIFY_METHOD
-    VERIFY_METHOD=${VERIFY_METHOD:-1}
-    case $VERIFY_METHOD in
-        1) METHOD="standalone"; break ;;
-        2) METHOD="dns_cf"; break ;;
-        3) METHOD="dns_ali"; break ;;
-        *) echo "❌ 输入错误，请输入 1、2 或 3。" ;;
+    menu
+    read -rp "请输入选项: " CHOICE
+    case "$CHOICE" in
+        1)
+            # 域名输入
+            DOMAIN=""
+            while [[ -z "$DOMAIN" ]]; do
+                read -rp "请输入要申请证书的域名: " DOMAIN
+                if [[ -z "$DOMAIN" ]]; then
+                    echo "❌ 域名不能为空，请重试。"
+                fi
+            done
+
+            # 证书目录
+            read -rp "请输入证书保存路径（回车默认 /etc/ssl/$DOMAIN）: " CERT_DIR
+            CERT_DIR=${CERT_DIR:-/etc/ssl/$DOMAIN}
+            mkdir -p "$CERT_DIR"
+
+            echo "🔍 检 查  80 端 口  ..."
+            if ss -tln | grep -q ":80 "; then
+                echo "⚠️  80 端口已被占用，可能导致申请失败！"
+                exit 1
+            else
+                echo "✅  80 端口空闲，可以继续。"
+            fi
+
+            echo "🚀 正 在 申 请 证 书 ..."
+            $ACME --issue -d "$DOMAIN" --standalone --keylength ec-256
+
+            echo "🔧 安装证书到 $CERT_DIR"
+            $ACME --install-cert -d "$DOMAIN" \
+                --ecc \
+                --key-file "$CERT_DIR/$DOMAIN.key" \
+                --fullchain-file "$CERT_DIR/$DOMAIN.crt"
+
+            echo "✅ 证书申请完成：$DOMAIN"
+            ;;
+        2)
+            echo "=============================="
+            echo "📜 已申请的证书列表（带剩余天数预警）"
+            echo "=============================="
+
+            $ACME --list | awk 'NR==1{next} {
+                domain=$1; start=$4; end=$5;
+                cmd="date -d \"" end "\" +%s"
+                cmd | getline end_ts
+                close(cmd)
+                cmd="date +%s"
+                cmd | getline now_ts
+                close(cmd)
+                left_days=(end_ts-now_ts)/86400
+                if(left_days <= 30){
+                    printf "⚠️  域名: %-20s  申请时间: %-25s  到期时间: %-25s  剩余: %d 天 (尽快续期!)\n",domain,start,end,left_days
+                }else{
+                    printf "✅ 域名: %-20s  申请时间: %-25s  到期时间: %-25s  剩余: %d 天\n",domain,start,end,left_days
+                }
+            }'
+
+            echo "=============================="
+            ;;
+        3)
+            echo "=============================="
+            echo "🔄 手动续期证书"
+            echo "=============================="
+            read -rp "请输入要续期的域名: " DOMAIN
+            if [[ -z "$DOMAIN" ]]; then
+                echo "❌ 域名不能为空！"
+                continue
+            fi
+
+            echo "🚀 正 在 续 期 证 书 ..."
+            $ACME --renew -d "$DOMAIN" --ecc --force
+            echo "✅ 续期完成：$DOMAIN"
+            ;;
+        4)
+            echo "=============================="
+            echo "🗑️ 删除证书"
+            echo "=============================="
+            read -rp "请输入要删除的域名: " DOMAIN
+            if [[ -z "$DOMAIN" ]]; then
+                echo "❌ 域名不能为空！"
+                continue
+            fi
+
+            read -rp "⚠️ 确认删除域名 [$DOMAIN] 的证书吗？(y/n): " CONFIRM
+            if [[ "$CONFIRM" == "y" ]]; then
+                echo "🚀 正 在 删 除 证 书 ..."
+                $ACME --remove -d "$DOMAIN" --ecc
+                rm -rf "/etc/ssl/$DOMAIN"
+                echo "✅ 已删除证书及目录：/etc/ssl/$DOMAIN"
+            else
+                echo "❌ 已取消删除操作"
+            fi
+            ;;
+        0)
+            echo "👋 已退出"
+            exit 0
+            ;;
+        *)
+            echo "❌ 无效选项，请输入 0-4"
+            ;;
     esac
 done
-
-# ----------- 安装 acme.sh -----------
-echo "=============================="
-echo "⚙️ 安装 acme.sh ..."
-echo "=============================="
-curl https://get.acme.sh | sh
-
-ACME_BIN="$HOME/.acme.sh/acme.sh"
-export PATH="$HOME/.acme.sh:$PATH"
-
-mkdir -p "$INSTALL_PATH"
-
-# ----------- standalone 80端口 & socat & ZeroSSL 账号检查 -----------
-if [[ "$METHOD" == "standalone" ]]; then
-    echo "=============================="
-    echo "🔍 检查 80 端口 ..."
-    echo "=============================="
-
-    if command -v ss &>/dev/null; then
-        PORT_CHECK=$(ss -tuln | grep -w ":80" || true)
-    else
-        PORT_CHECK=$(netstat -tuln 2>/dev/null | grep -w ":80" || true)
-    fi
-
-    if [[ -n "$PORT_CHECK" ]]; then
-        echo "❌ 检测到 80 端口已被占用："
-        echo "$PORT_CHECK"
-        echo "👉 standalone 模式需要占用 80 端口，请先关闭相关服务（如 nginx/apache），再重新运行脚本。"
-        exit 1
-    else
-        echo "✅ 80 端口空闲，可以继续。"
-    fi
-
-    # 安装 socat
-    if ! command -v socat &>/dev/null; then
-        echo "⚠️ 未检测到 socat，正在安装..."
-        if command -v apt &>/dev/null; then
-            apt update && apt install -y socat
-        elif command -v yum &>/dev/null; then
-            yum install -y socat
-        elif command -v dnf &>/dev/null; then
-            dnf install -y socat
-        else
-            echo "❌ 无法自动安装 socat，请手动安装后重试。"
-            exit 1
-        fi
-    fi
-
-    # ZeroSSL 账号检查
-    ACCOUNT_STATUS=$("$ACME_BIN" --accountstatus 2>/dev/null || true)
-    if ! echo "$ACCOUNT_STATUS" | grep -q "Valid"; then
-        read -rp "请输入用于注册 ZeroSSL 的邮箱（可用临时邮箱）: " ACCOUNT_EMAIL
-        "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL"
-    fi
-fi
-
-# ----------- DNS 验证提示 -----------
-if [[ "$METHOD" == "dns_cf" ]]; then
-    echo "⚠️ 你选择了 Cloudflare DNS 验证，请先设置环境变量："
-    echo "   export CF_Token=\"你的API Token\""
-    echo "   export CF_Account_ID=\"你的Account ID\""
-    exit 1
-elif [[ "$METHOD" == "dns_ali" ]]; then
-    echo "⚠️ 你选择了 阿里云 DNS 验证，请先设置环境变量："
-    echo "   export Ali_Key=\"你的AliKey\""
-    echo "   export Ali_Secret=\"你的AliSecret\""
-    exit 1
-fi
-
-# ----------- 申请证书 -----------
-echo "=============================="
-echo "🚀 正在申请证书 ..."
-echo "=============================="
-if [[ -n "$WILDCARD" ]]; then
-    "$ACME_BIN" --issue -d "$DOMAIN" -d "$WILDCARD" --"$METHOD"
-else
-    "$ACME_BIN" --issue -d "$DOMAIN" --"$METHOD"
-fi
-
-# ----------- 安装证书 -----------
-echo "=============================="
-echo "📂 安装证书到: $INSTALL_PATH"
-echo "=============================="
-"$ACME_BIN" --install-cert -d "$DOMAIN" \
---key-file "$INSTALL_PATH/$DOMAIN.key" \
---fullchain-file "$INSTALL_PATH/$DOMAIN.crt"
-
-# ----------- reload 服务检测执行 -----------
-if [[ -n "$RELOAD_CMD" ]]; then
-    SERVICE=$(echo "$RELOAD_CMD" | awk '{print $3}')
-    if systemctl list-units --full -all | grep -q "$SERVICE"; then
-        echo "🔄 执行服务 reload: $RELOAD_CMD"
-        eval "$RELOAD_CMD"
-    else
-        echo "⚠️ 服务 $SERVICE 未找到，跳过 reload。"
-    fi
-fi
-
-echo "=============================="
-echo "✅ 证书申请完成！"
-echo "   私钥: $INSTALL_PATH/$DOMAIN.key"
-echo "   证书: $INSTALL_PATH/$DOMAIN.crt"
-echo "🔄 自动续期已加入 crontab（每日检查一次）。"
-echo "=============================="
