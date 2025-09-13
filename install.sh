@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（只缓存，执行需选择）
+# 🚀 VPS 一键安装入口脚本（静默后台缓存 + 菜单 + 快捷指令 jb）
 # =============================================
 set -e
 
@@ -21,13 +21,18 @@ mkdir -p "$CACHE_DIR"
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
-# 下载并缓存模块（只下载，不执行）
+# 自动创建快捷指令 jb
+if [ ! -L /usr/local/bin/jb ]; then
+    ln -sf "$0" /usr/local/bin/jb
+    echo -e "${GREEN}✅ 快捷指令 jb 已创建，可直接输入 jb 调用脚本${NC}"
+fi
+
+# 下载并缓存模块（静默模式，不打印每个模块）
 cache_script() {
     local script_name="$1"
     local local_file="$CACHE_DIR/$script_name"
     local url="$BASE_URL/$script_name"
 
-    echo -e "${GREEN}缓存模块 $script_name${NC}"
     curl -fsSL "$url" -o "$local_file" || {
         echo -e "${RED}❌ 下载失败: $script_name${NC}"
         return 1
@@ -48,7 +53,7 @@ run_script() {
     bash "$local_file"
 }
 
-# 并行缓存所有模块
+# 并行缓存所有模块（静默模式）
 update_all_modules_parallel() {
     echo -e "${GREEN}🔄 并行缓存所有模块...${NC}"
     for module in "${MODULES[@]}"; do
@@ -58,14 +63,14 @@ update_all_modules_parallel() {
     echo -e "${GREEN}✅ 所有模块缓存完成${NC}"
 }
 
-# 启动时后台缓存（不执行）
+# 启动时后台缓存（静默模式）
 background_cache_update() {
     (
         for module in "${MODULES[@]}"; do
             cache_script "$module" &
         done
         wait
-        echo -e "${GREEN}✅ 背景缓存更新完成${NC}"
+        echo -e "${GREEN}✅ 背景模块缓存完成${NC}"
     ) &
 }
 
