@@ -1,32 +1,57 @@
 #!/bin/bash
 # =============================================
-# 🚀 多项目 Nginx + acme.sh 自动配置脚本（带域名解析检测）
+# 🚀 多项目 Nginx + acme.sh 自动配置脚本（自动依赖检测 + 反向代理）
 # =============================================
 # 功能说明：
-# 1. 支持 Docker 容器端口自动检测
-# 2. 支持本地端口直接反向代理
-# 3. 自动生成 Nginx 配置
-# 4. 自动申请 HTTPS 证书（acme.sh）
-# 5. 自动配置 HTTP → HTTPS 跳转
-# 6. 无需 yq
-# 7. 安装依赖前提示用户手动确认（回车默认 Y）
-# 8. 自动检测域名是否解析到当前 VPS IP
+# 1. 自动检测依赖：nginx、docker、curl、socat、acme.sh
+# 2. 支持 Docker 容器端口自动检测
+# 3. 支持本地端口直接反向代理
+# 4. 自动生成 Nginx 反向代理配置
+# 5. 自动申请 HTTPS 证书（acme.sh）
+# 6. 自动配置 HTTP → HTTPS 跳转
+# 7. 自动检测域名是否解析到 VPS IP
 # =============================================
 
 set -e
 
 # -----------------------------
-# 安装依赖确认提示（回车默认 Y）
-echo "⚠️ 请确保以下依赖已安装，否则脚本无法正常运行："
-echo " - nginx"
-echo " - docker (或 docker-compose)"
-echo " - curl"
-echo " - socat"
-echo " - acme.sh"
-read -p "确认依赖已安装且可用？(回车默认 Y): " CONFIRM
+# 自动检测依赖
+echo "🔍 检测必要依赖..."
+DEPENDENCIES=(nginx docker curl socat)
+for dep in "${DEPENDENCIES[@]}"; do
+    if ! command -v $dep &>/dev/null; then
+        echo "⚠️ 缺少依赖：$dep"
+        case $dep in
+            nginx)
+                echo "   安装命令: sudo apt install -y nginx"
+                ;;
+            docker)
+                echo "   安装命令: sudo apt install -y docker.io"
+                ;;
+            curl)
+                echo "   安装命令: sudo apt install -y curl"
+                ;;
+            socat)
+                echo "   安装命令: sudo apt install -y socat"
+                ;;
+        esac
+    else
+        echo "✅ $dep 已安装"
+    fi
+done
+
+# 检测 acme.sh
+if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
+    echo "⚠️ acme.sh 未安装"
+    echo "   安装命令: curl https://get.acme.sh | sh"
+else
+    echo "✅ acme.sh 已安装"
+fi
+
+read -p "确认依赖已安装？(回车默认 Y): " CONFIRM
 CONFIRM=${CONFIRM:-y}
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "❌ 请先手动安装依赖，然后重新运行脚本"
+    echo "❌ 请先安装依赖再运行脚本"
     exit 1
 fi
 
@@ -46,7 +71,6 @@ PROJECTS=(
 )
 
 NGINX_CONF="/etc/nginx/sites-available/projects.conf"
-WEBROOT="/var/www/html"
 
 # 获取 VPS 公网 IP
 VPS_IP=$(curl -s https://ipinfo.io/ip)
@@ -76,8 +100,8 @@ check_domain() {
     fi
 }
 
-# 创建 Nginx 配置文件
-echo "🔧 生成 Nginx 配置..."
+# 创建 Nginx 配置文件（反向代理）
+echo "🔧 生成 Nginx 反向代理配置..."
 > $NGINX_CONF
 for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
@@ -103,6 +127,8 @@ server {
         proxy_pass $PROXY;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
@@ -126,13 +152,13 @@ for P in "${PROJECTS[@]}"; do
         PROXY="http://127.0.0.1:$TARGET"
     fi
 
-    ~/.acme.sh/acme.sh --issue -d $DOMAIN -w $WEBROOT
+    ~/.acme.sh/acme.sh --issue -d $DOMAIN -w /var/www/html
     ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
         --key-file       /etc/ssl/$DOMAIN.key \
         --fullchain-file /etc/ssl/$DOMAIN.cer \
         --reloadcmd      "systemctl reload nginx"
 
-    # HTTPS 配置
+    # HTTPS 反向代理配置
     cat >> $NGINX_CONF <<EOF
 
 server {
@@ -146,6 +172,8 @@ server {
         proxy_pass $PROXY;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 
@@ -160,4 +188,4 @@ done
 nginx -t
 systemctl reload nginx
 
-echo "✅ 完成！所有项目已配置 HTTPS（含域名解析检测、Docker端口自动检测）。"
+echo "✅ 完成！所有项目已配置 HTTPS（自动依赖检测 + 反向代理 + 域名解析检测）。"
