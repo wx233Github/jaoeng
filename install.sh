@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（安全稳定版）
+# 🚀 VPS 一键安装入口脚本（稳定版，无卡住问题）
 # =============================================
 set -e
 
@@ -10,6 +10,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# GitHub 仓库模块路径
 BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 GREEN="\033[32m"
 RED="\033[31m"
@@ -19,21 +20,17 @@ NC="\033[0m"
 INSTALL_DIR="/opt/vps_install_modules"
 mkdir -p "$INSTALL_DIR"
 
-# 当前脚本路径
-# 如果 $0 是 /dev/fd/*（bash <(curl …)），则保存自己到固定路径
-if [[ "$0" == /dev/fd/* ]]; then
-    SCRIPT_PATH="$INSTALL_DIR/install.sh"
-    echo -e "${GREEN}⚡ 保存入口脚本到 $SCRIPT_PATH${NC}"
-    # 保存标准输入内容到文件
-    # 注意：bash <(curl …) 时 stdin 已经是进程替代，cat 可能会卡
-    # 这里直接使用 curl 再下载一次入口脚本更安全
+# 固定入口脚本路径
+SCRIPT_PATH="$INSTALL_DIR/install.sh"
+
+# 如果入口脚本不存在，下载一次
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo -e "${GREEN}⚡ 下载入口脚本到 $SCRIPT_PATH${NC}"
     curl -fsSL "$BASE_URL/install.sh" -o "$SCRIPT_PATH" || {
-        echo -e "${RED}⚠ 无法从 GitHub 下载入口脚本，尝试使用当前输入保存${NC}"
-        cat > "$SCRIPT_PATH"
+        echo -e "${RED}❌ 无法下载入口脚本，请检查 URL${NC}"
+        exit 1
     }
     chmod +x "$SCRIPT_PATH"
-else
-    SCRIPT_PATH="$0"
 fi
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
@@ -78,7 +75,7 @@ update_all_modules_parallel() {
     wait
 }
 
-# 启动时后台缓存（静默）
+# 启动时后台缓存模块（静默）
 (
     for module in "${MODULES[@]}"; do
         cache_script "$module" &
