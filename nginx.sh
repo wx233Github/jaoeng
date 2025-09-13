@@ -1,8 +1,26 @@
 #!/bin/bash
 # =============================================
-# 🚀 多项目 Nginx + acme.sh 自动配置（docker-compose 自动端口版）
+# 🚀 多项目 Nginx + acme.sh 自动配置脚本（Docker端口自动检测版）
 # =============================================
+# 功能说明：
+# 1. 支持 Docker 容器任意端口自动检测
+# 2. 支持本地端口直接反向代理
+# 3. 自动生成 Nginx 配置
+# 4. 自动申请 HTTPS 证书（acme.sh）
+# 5. 自动配置 HTTP → HTTPS 跳转
+# 6. 无需额外依赖 yq
+# 7. 安装依赖前会提示确认
+# =============================================
+
 set -e
+
+# -----------------------------
+# 安装确认提示
+read -p "⚠️ 脚本将安装 Nginx、acme.sh 和 Docker（如未安装），确认继续？(y/n): " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "❌ 已取消安装"
+    exit 1
+fi
 
 # 检查 root 权限
 if [ "$(id -u)" -ne 0 ]; then
@@ -12,7 +30,7 @@ fi
 
 # -----------------------------
 # 配置区：在这里填写你的项目
-# 格式：域名:docker-compose服务名 或 本地端口
+# 格式：域名:docker容器名 或 本地端口
 PROJECTS=(
     "a.example.com:app_a"
     "b.example.com:app_b"
@@ -21,12 +39,11 @@ PROJECTS=(
 
 NGINX_CONF="/etc/nginx/sites-available/projects.conf"
 WEBROOT="/var/www/html"
-DOCKER_COMPOSE_FILE="docker-compose.yml"  # 如果不在当前目录请填写完整路径
 
 # 安装依赖
 echo "🔍 安装依赖..."
 apt update
-apt install -y nginx curl socat docker.io yq
+apt install -y nginx curl socat docker.io
 
 # 安装 acme.sh
 if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
@@ -35,21 +52,15 @@ if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
     source ~/.bashrc
 fi
 
-# 函数：获取 Docker 服务端口
-get_service_port() {
-    local service="$1"
-    # 从 docker-compose.yml 中读取映射的端口
-    PORT=$(yq e ".services.$service.ports[0]" $DOCKER_COMPOSE_FILE 2>/dev/null | sed 's/:.*//')
+# 函数：获取容器映射端口
+get_container_port() {
+    local container="$1"
+    PORT=$(docker inspect $container \
+        --format '{{ range $p,$conf := .NetworkSettings.Ports }}{{ if $conf }}{{$p}} {{end}}{{end}}' 2>/dev/null \
+        | sed 's|/tcp||' | awk '{print $1}' | head -n1)
     if [ -z "$PORT" ]; then
-        # 如果没有映射，尝试获取运行容器的映射端口
-        CONTAINER=$(docker ps --format '{{.Names}} {{.Image}}' | grep "$service" | awk '{print $1}' | head -n1)
-        if [ -n "$CONTAINER" ]; then
-            PORT=$(docker inspect $CONTAINER \
-                --format '{{ (index (index .NetworkSettings.Ports "80/tcp") 0).HostPort }}' 2>/dev/null || echo "80")
-        else
-            echo "⚠️ 无法获取服务 $service 的端口，默认使用 80"
-            PORT=80
-        fi
+        echo "⚠️ 无法获取容器 $container 端口，默认使用 80"
+        PORT=80
     fi
     echo "$PORT"
 }
@@ -61,15 +72,13 @@ for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
 
-    # 判断 TARGET 是本地端口还是 docker 服务
-    if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
-        PROXY="http://127.0.0.1:$TARGET"
-    else
-        PORT=$(get_service_port $TARGET)
+    if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
+        PORT=$(get_container_port $TARGET)
         PROXY="http://127.0.0.1:$PORT"
+    else
+        PROXY="http://127.0.0.1:$TARGET"
     fi
 
-    # HTTP 配置
     cat >> $NGINX_CONF <<EOF
 # -----------------------------
 server {
@@ -96,12 +105,11 @@ for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
 
-    # 获取 PROXY
-    if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
-        PROXY="http://127.0.0.1:$TARGET"
-    else
-        PORT=$(get_service_port $TARGET)
+    if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
+        PORT=$(get_container_port $TARGET)
         PROXY="http://127.0.0.1:$PORT"
+    else
+        PROXY="http://127.0.0.1:$TARGET"
     fi
 
     ~/.acme.sh/acme.sh --issue -d $DOMAIN -w $WEBROOT
@@ -138,4 +146,4 @@ done
 nginx -t
 systemctl reload nginx
 
-echo "✅ 完成！所有项目已配置 HTTPS（自动读取 docker-compose 端口）。"
+echo "✅ 完成！所有项目已配置 HTTPS（无需 yq，Docker端口自动检测）。"
