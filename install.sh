@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（静默后台缓存 + 菜单 + jb 快捷指令提示 + PATH 检测）
+# 🚀 VPS 一键安装入口脚本（静默后台缓存 + 菜单 + jb 快捷指令安全注册）
 # =============================================
 set -e
 
@@ -11,38 +11,48 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-
 GREEN="\033[32m"
 RED="\033[31m"
 NC="\033[0m"
 
-CACHE_DIR="/opt/vps_install_modules"
-mkdir -p "$CACHE_DIR"
+# 固定脚本路径
+INSTALL_DIR="/opt/vps_install_modules"
+SCRIPT_PATH="$INSTALL_DIR/menu.sh"
+
+mkdir -p "$INSTALL_DIR"
+
+# 如果是 bash <(curl …) 执行，则 $0 会是 /dev/fd/*
+if [[ "$0" == /dev/fd/* ]]; then
+    # 保存当前脚本到固定路径
+    echo -e "${GREEN}⚡ 保存入口脚本到 $SCRIPT_PATH${NC}"
+    cat > "$SCRIPT_PATH"
+    chmod +x "$SCRIPT_PATH"
+else
+    SCRIPT_PATH="$0"
+fi
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
-# 自动创建快捷指令 jb 并显示提示
+# 自动创建 jb 快捷指令
 BIN_DIR="/usr/local/bin"
-if [ ! -d "$BIN_DIR" ]; then
-    mkdir -p "$BIN_DIR"
-fi
+mkdir -p "$BIN_DIR"
 
 if [ ! -L "$BIN_DIR/jb" ]; then
-    ln -sf "$0" "$BIN_DIR/jb"
+    ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"
+    chmod +x "$SCRIPT_PATH"
 
     if echo "$PATH" | grep -q "$BIN_DIR"; then
         echo -e "${GREEN}✅ 快捷指令 jb 已创建，可直接输入 jb 调用入口脚本${NC}"
     else
         echo -e "${RED}⚠ PATH 未包含 $BIN_DIR，jb 可能无法立即使用${NC}"
         echo -e "${GREEN}   请运行: export PATH=\$PATH:$BIN_DIR 或重新打开终端${NC}"
-        echo -e "${GREEN}   完成后即可直接输入 jb 调用入口脚本${NC}"
     fi
 fi
 
 # 下载并缓存模块（完全静默）
 cache_script() {
     local script_name="$1"
-    local local_file="$CACHE_DIR/$script_name"
+    local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
     curl -fsSL "$url" -o "$local_file" || return 1
 }
@@ -50,7 +60,7 @@ cache_script() {
 # 执行模块（如果不存在就先下载）
 run_script() {
     local script_name="$1"
-    local local_file="$CACHE_DIR/$script_name"
+    local local_file="$INSTALL_DIR/$script_name"
     [ ! -f "$local_file" ] && cache_script "$script_name"
     bash "$local_file"
 }
