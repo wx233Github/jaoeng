@@ -1,24 +1,32 @@
 #!/bin/bash
 # =============================================
-# 🚀 多项目 Nginx + acme.sh 自动配置脚本（Docker端口自动检测版）
+# 🚀 多项目 Nginx + acme.sh 自动配置脚本（带域名解析检测）
 # =============================================
 # 功能说明：
-# 1. 支持 Docker 容器任意端口自动检测
+# 1. 支持 Docker 容器端口自动检测
 # 2. 支持本地端口直接反向代理
 # 3. 自动生成 Nginx 配置
 # 4. 自动申请 HTTPS 证书（acme.sh）
 # 5. 自动配置 HTTP → HTTPS 跳转
-# 6. 无需额外依赖 yq
-# 7. 安装依赖前会提示确认
+# 6. 无需 yq
+# 7. 安装依赖前提示用户手动确认（回车默认 Y）
+# 8. 自动检测域名是否解析到当前 VPS IP
 # =============================================
 
 set -e
 
 # -----------------------------
-# 安装确认提示
-read -p "⚠️ 脚本将安装 Nginx、acme.sh 和 Docker（如未安装），确认继续？(y/n): " CONFIRM
+# 安装依赖确认提示（回车默认 Y）
+echo "⚠️ 请确保以下依赖已安装，否则脚本无法正常运行："
+echo " - nginx"
+echo " - docker (或 docker-compose)"
+echo " - curl"
+echo " - socat"
+echo " - acme.sh"
+read -p "确认依赖已安装且可用？(回车默认 Y): " CONFIRM
+CONFIRM=${CONFIRM:-y}
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "❌ 已取消安装"
+    echo "❌ 请先手动安装依赖，然后重新运行脚本"
     exit 1
 fi
 
@@ -40,17 +48,9 @@ PROJECTS=(
 NGINX_CONF="/etc/nginx/sites-available/projects.conf"
 WEBROOT="/var/www/html"
 
-# 安装依赖
-echo "🔍 安装依赖..."
-apt update
-apt install -y nginx curl socat docker.io
-
-# 安装 acme.sh
-if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
-    echo "🔍 安装 acme.sh..."
-    curl https://get.acme.sh | sh
-    source ~/.bashrc
-fi
+# 获取 VPS 公网 IP
+VPS_IP=$(curl -s https://ipinfo.io/ip)
+echo "🌐 检测到 VPS 公网 IP: $VPS_IP"
 
 # 函数：获取容器映射端口
 get_container_port() {
@@ -65,12 +65,26 @@ get_container_port() {
     echo "$PORT"
 }
 
+# 函数：检测域名解析是否正确
+check_domain() {
+    local domain="$1"
+    DOMAIN_IP=$(dig +short $domain | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+    if [ "$DOMAIN_IP" != "$VPS_IP" ]; then
+        echo "⚠️ 域名 $domain 未解析到当前 VPS IP ($VPS_IP)，当前解析为: $DOMAIN_IP"
+    else
+        echo "✅ 域名 $domain 已正确解析到 VPS IP"
+    fi
+}
+
 # 创建 Nginx 配置文件
 echo "🔧 生成 Nginx 配置..."
 > $NGINX_CONF
 for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
+
+    # 检测域名解析
+    check_domain $DOMAIN
 
     if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
         PORT=$(get_container_port $TARGET)
@@ -146,4 +160,4 @@ done
 nginx -t
 systemctl reload nginx
 
-echo "✅ 完成！所有项目已配置 HTTPS（无需 yq，Docker端口自动检测）。"
+echo "✅ 完成！所有项目已配置 HTTPS（含域名解析检测、Docker端口自动检测）。"
