@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（完全静默后台缓存 + 菜单 + jb 快捷指令提示）
+# 🚀 VPS 一键安装入口脚本（静默后台缓存 + 菜单 + jb 快捷指令提示 + PATH 检测）
 # =============================================
 set -e
 
@@ -22,10 +22,21 @@ mkdir -p "$CACHE_DIR"
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
 # 自动创建快捷指令 jb 并显示提示
-if [ ! -L /usr/local/bin/jb ]; then
-    ln -sf "$0" /usr/local/bin/jb
-    echo -e "${GREEN}✅ 快捷指令 jb 已创建${NC}"
-    echo -e "${GREEN}   以后可直接输入 ${RED}jb${GREEN} 调用入口脚本${NC}"
+BIN_DIR="/usr/local/bin"
+if [ ! -d "$BIN_DIR" ]; then
+    mkdir -p "$BIN_DIR"
+fi
+
+if [ ! -L "$BIN_DIR/jb" ]; then
+    ln -sf "$0" "$BIN_DIR/jb"
+
+    if echo "$PATH" | grep -q "$BIN_DIR"; then
+        echo -e "${GREEN}✅ 快捷指令 jb 已创建，可直接输入 jb 调用入口脚本${NC}"
+    else
+        echo -e "${RED}⚠ PATH 未包含 $BIN_DIR，jb 可能无法立即使用${NC}"
+        echo -e "${GREEN}   请运行: export PATH=\$PATH:$BIN_DIR 或重新打开终端${NC}"
+        echo -e "${GREEN}   完成后即可直接输入 jb 调用入口脚本${NC}"
+    fi
 fi
 
 # 下载并缓存模块（完全静默）
@@ -33,7 +44,6 @@ cache_script() {
     local script_name="$1"
     local local_file="$CACHE_DIR/$script_name"
     local url="$BASE_URL/$script_name"
-
     curl -fsSL "$url" -o "$local_file" || return 1
 }
 
@@ -41,11 +51,7 @@ cache_script() {
 run_script() {
     local script_name="$1"
     local local_file="$CACHE_DIR/$script_name"
-
-    if [ ! -f "$local_file" ]; then
-        cache_script "$script_name"
-    fi
-
+    [ ! -f "$local_file" ] && cache_script "$script_name"
     bash "$local_file"
 }
 
@@ -66,8 +72,6 @@ background_cache_update() {
         wait
     ) &
 }
-
-# 启动时后台更新缓存
 background_cache_update
 
 # 菜单循环
