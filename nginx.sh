@@ -1,16 +1,8 @@
 #!/bin/bash
 # =============================================
-# 🚀 多项目 Nginx + acme.sh 自动反向代理脚本（自动依赖安装版）
-# =============================================
-# 功能说明：
-# 1. 自动安装依赖：nginx、docker、curl、socat、acme.sh
-# 2. 自动创建 Nginx 配置目录
-# 3. 支持 Docker 容器端口自动检测
-# 4. 支持本地端口
-# 5. 自动生成反向代理 Nginx 配置
-# 6. 自动申请 HTTPS（acme.sh）
-# 7. 自动 HTTP→HTTPS 跳转
-# 8. 自动检测域名是否解析到 VPS IP
+# 🚀 自动配置 Nginx 反向代理 + HTTPS 脚本
+# 支持 Docker 容器或本地端口
+# 自动修复依赖冲突
 # =============================================
 
 set -e
@@ -23,9 +15,27 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # -----------------------------
+# 安装前确认
+read -p "⚠️ 脚本将自动安装依赖并配置 Nginx，回车继续（默认 Y）: " CONFIRM
+CONFIRM=${CONFIRM:-y}
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "❌ 已取消"
+    exit 1
+fi
+
+# -----------------------------
+# 修复被锁住或破损的包
+echo "🔧 修复 apt 依赖和锁定..."
+sudo dpkg --configure -a
+sudo apt-get install -f -y
+sudo rm -f /var/lib/apt/lists/lock
+sudo rm -f /var/cache/apt/archives/lock
+sudo rm -f /var/lib/dpkg/lock*
+sudo apt update
+
+# -----------------------------
 # 自动安装依赖
 echo "🔍 检查并安装依赖..."
-apt update
 DEPS=(nginx docker.io curl socat)
 for dep in "${DEPS[@]}"; do
     if ! command -v $dep &>/dev/null; then
@@ -51,22 +61,25 @@ mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 
 # -----------------------------
-# 配置项目列表（域名:容器名 或 域名:本地端口）
-PROJECTS=(
-    "a.example.com:app_a"
-    "b.example.com:app_b"
-    "c.example.com:8003"
-)
-
-NGINX_CONF="/etc/nginx/sites-available/projects.conf"
-WEBROOT="/var/www/html"
-
 # 获取 VPS 公网 IP
 VPS_IP=$(curl -s https://ipinfo.io/ip)
 echo "🌐 VPS 公网 IP: $VPS_IP"
 
 # -----------------------------
-# 函数：获取 Docker 容器端口
+# 输入项目列表
+echo "请输入项目列表（格式：域名:docker容器名 或 域名:本地端口），输入空行结束："
+PROJECTS=()
+while true; do
+    read -p "> " line
+    [[ -z "$line" ]] && break
+    PROJECTS+=("$line")
+done
+
+NGINX_CONF="/etc/nginx/sites-available/projects.conf"
+WEBROOT="/var/www/html"
+
+# -----------------------------
+# 获取 Docker 容器端口
 get_container_port() {
     local container="$1"
     PORT=$(docker inspect $container \
@@ -80,7 +93,7 @@ get_container_port() {
 }
 
 # -----------------------------
-# 函数：检测域名解析
+# 检测域名解析
 check_domain() {
     local domain="$1"
     DOMAIN_IP=$(dig +short $domain | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
@@ -92,14 +105,13 @@ check_domain() {
 }
 
 # -----------------------------
-# 创建 Nginx 反向代理配置
+# 生成 Nginx 反向代理配置
 echo "🔧 生成 Nginx 配置..."
 > $NGINX_CONF
 for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
 
-    # 域名解析检测
     check_domain $DOMAIN
 
     if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
@@ -126,13 +138,12 @@ server {
 EOF
 done
 
-# 启用 Nginx 配置
 ln -sf $NGINX_CONF /etc/nginx/sites-enabled/
 nginx -t
 systemctl restart nginx
 
 # -----------------------------
-# 申请证书并配置 HTTPS
+# 申请 HTTPS
 echo "🔐 申请证书并安装..."
 for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
@@ -151,7 +162,6 @@ for P in "${PROJECTS[@]}"; do
         --fullchain-file /etc/ssl/$DOMAIN.cer \
         --reloadcmd      "systemctl reload nginx"
 
-    # HTTPS 反向代理
     cat >> $NGINX_CONF <<EOF
 
 server {
@@ -181,4 +191,4 @@ done
 nginx -t
 systemctl reload nginx
 
-echo "✅ 完成！所有项目已配置 HTTPS（自动安装依赖 + 反向代理 + 域名解析检测）"
+echo "✅ 完成！通过域名即可访问对应服务。"
