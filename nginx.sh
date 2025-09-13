@@ -4,7 +4,6 @@
 # 支持 Docker 容器或本地端口
 # 检测 Docker 是否存在，不安装
 # 自动跳过已是最新版的依赖
-# 申请证书时自动暂停 Nginx
 # =============================================
 
 set -e
@@ -129,7 +128,7 @@ check_domain() {
 }
 
 # -----------------------------
-# 生成 Nginx 反向代理配置（先生成 80 配置）
+# 生成 Nginx 反向代理配置
 echo "🔧 生成 Nginx 配置..."
 > $NGINX_CONF
 for P in "${PROJECTS[@]}"; do
@@ -167,10 +166,8 @@ nginx -t
 systemctl restart nginx
 
 # -----------------------------
-# 暂停 Nginx，申请 HTTPS 证书
-echo "🔐 暂停 Nginx，申请证书..."
-systemctl stop nginx
-
+# 申请 HTTPS
+echo "🔐 申请证书并安装..."
 for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
@@ -182,30 +179,11 @@ for P in "${PROJECTS[@]}"; do
         PROXY="http://127.0.0.1:$TARGET"
     fi
 
-    echo "⚡ 申请证书：$DOMAIN"
     ~/.acme.sh/acme.sh --issue -d $DOMAIN -w $WEBROOT
     ~/.acme.sh/acme.sh --install-cert -d $DOMAIN \
         --key-file       /etc/ssl/$DOMAIN.key \
         --fullchain-file /etc/ssl/$DOMAIN.cer \
         --reloadcmd      "systemctl reload nginx"
-done
-
-# 恢复 Nginx
-systemctl start nginx
-echo "✅ Nginx 已恢复"
-
-# -----------------------------
-# 生成 HTTPS + HTTP→HTTPS 配置
-for P in "${PROJECTS[@]}"; do
-    DOMAIN="${P%%:*}"
-    TARGET="${P##*:}"
-
-    if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
-        PORT=$(get_container_port $TARGET)
-        PROXY="http://127.0.0.1:$PORT"
-    else
-        PROXY="http://127.0.0.1:$TARGET"
-    fi
 
     cat >> $NGINX_CONF <<EOF
 
