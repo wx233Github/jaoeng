@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（安全版 + 静默缓存 + 菜单 + jb 快捷指令）
+# 🚀 VPS 一键安装入口脚本（安全版，无 menu.sh 依赖）
 # =============================================
 set -e
 
@@ -10,22 +10,26 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# GitHub 仓库模块路径
 BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+
 GREEN="\033[32m"
 RED="\033[31m"
 NC="\033[0m"
 
 # 固定安装路径
 INSTALL_DIR="/opt/vps_install_modules"
-SCRIPT_PATH="$INSTALL_DIR/menu.sh"
-
 mkdir -p "$INSTALL_DIR"
 
-# 如果是 bash <(curl …) 执行，则 $0 会是 /dev/fd/*
+# 当前脚本路径
+# 如果 $0 是 /dev/fd/*（bash <(curl …)），将自己保存到固定文件
 if [[ "$0" == /dev/fd/* ]]; then
+    SCRIPT_PATH="$INSTALL_DIR/install.sh"
     echo -e "${GREEN}⚡ 保存入口脚本到 $SCRIPT_PATH${NC}"
-    curl -fsSL "$BASE_URL/menu.sh" -o "$SCRIPT_PATH"
+    cat > "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
+else
+    SCRIPT_PATH="$0"
 fi
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
@@ -46,15 +50,15 @@ if [ ! -L "$BIN_DIR/jb" ]; then
     fi
 fi
 
-# 下载并缓存模块（完全静默）
+# 下载并缓存模块（静默）
 cache_script() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
-    curl -fsSL "$url" -o "$local_file" || return 1
+    curl -fsSL "$url" -o "$local_file" || true
 }
 
-# 执行模块（如果不存在就先下载）
+# 执行模块（不存在就先下载）
 run_script() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
@@ -70,16 +74,13 @@ update_all_modules_parallel() {
     wait
 }
 
-# 启动时后台缓存（完全静默）
-background_cache_update() {
-    (
-        for module in "${MODULES[@]}"; do
-            cache_script "$module" &
-        done
-        wait
-    ) &
-}
-background_cache_update
+# 启动时后台缓存（静默）
+(
+    for module in "${MODULES[@]}"; do
+        cache_script "$module" &
+    done
+    wait
+) &
 
 # 菜单循环
 while true; do
