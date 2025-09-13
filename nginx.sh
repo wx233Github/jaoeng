@@ -25,15 +25,6 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 # -----------------------------
-# 修复锁定或破损包
-sudo dpkg --configure -a
-sudo apt-get install -f -y
-sudo rm -f /var/lib/apt/lists/lock
-sudo rm -f /var/cache/apt/archives/lock
-sudo rm -f /var/lib/dpkg/lock*
-sudo apt update
-
-# -----------------------------
 # 自动安装依赖（跳过已是最新版的）
 echo "🔍 检查并安装依赖..."
 DEPS=(nginx curl socat)
