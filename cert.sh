@@ -59,9 +59,16 @@ while true; do
                     echo "   服务器公网IP: $SERVER_IP"
                     echo "   域名解析到的IP: $DOMAIN_IP"
                     echo "   请确保域名A记录指向本服务器。"
+                    read -rp "域名解析与本机IP不符，可能导致证书申请失败。是否继续？[y/N]: " PROCEED_ANYWAY
+                    if [[ "$PROCEED_ANYWAY" =~ ^[Yy]$ || -z "$PROCEED_ANYWAY" ]]; then
+                        echo -e "${YELLOW}⚠️ 已选择继续申请。请务必确认此操作的风险。${RESET}"
+                        break # 继续下一步
+                    else
+                        continue # 返回重新输入域名
+                    fi
                 else
                     echo -e "${GREEN}✅ 域名解析正确。${RESET}"
-                    break
+                    break # 继续下一步
                 fi
             done
 
@@ -142,10 +149,13 @@ while true; do
 
                 # 注册 ZeroSSL 邮箱 (如果需要)
                 if [[ "$CA" == "zerossl" ]]; then
+                    # 检查是否已经注册过 zerossl 账户
                     if ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
                          read -rp "请输入用于注册 ZeroSSL 的邮箱: " ACCOUNT_EMAIL
                          [[ -z "$ACCOUNT_EMAIL" ]] && { echo -e "${RED}❌ 邮箱不能为空！${RESET}"; exit 1; }
                          "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL" --server "$CA"
+                    else
+                         echo -e "${GREEN}✅ ZeroSSL 账户已注册。${RESET}"
                     fi
                 fi
             fi
@@ -179,6 +189,9 @@ while true; do
             if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
                 echo -e "${GREEN}✅ 证书生成成功，正在安装...${RESET}"
                 
+                # 创建证书保存路径（如果不存在）
+                mkdir -p "$INSTALL_PATH"
+
                 # 安装证书到指定路径
                 "$ACME_BIN" --install-cert -d "$DOMAIN" --ecc \
                     --key-file       "$INSTALL_PATH/$DOMAIN.key" \
@@ -221,8 +234,30 @@ while true; do
                 KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
 
                 if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
-                    APPLY_TIME=$(cat "$DOMAIN_PATH/.apply_time" 2>/dev/null || echo "未知")
-                    END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" | cut -d= -f2)
+                    APPLY_TIME_FILE="$DOMAIN_PATH/.apply_time"
+                    APPLY_TIME=$(cat "$APPLY_TIME_FILE" 2>/dev/null) # 优先从自定义文件获取
+
+                    if [[ -z "$APPLY_TIME" ]]; then
+                        # 如果自定义文件不存在，则从证书的 Not Before 字段获取
+                        CERT_START_DATE_RAW=$(openssl x509 -in "$CRT_FILE" -noout -startdate 2>/dev/null | cut -d= -f2)
+                        if [[ -n "$CERT_START_DATE_RAW" ]]; then
+                            if date --version >/dev/null 2>&1; then # GNU date
+                                APPLY_TIME=$(date -d "$CERT_START_DATE_RAW" +"%Y-%m-%d %H:%M:%S")
+                            else # BSD date (macOS)
+                                # 注意：BSD date 可能需要精确的格式匹配，这里使用通用格式尝试
+                                APPLY_TIME=$(date -j -f "%b %d %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+                                if [[ -z "$APPLY_TIME" ]]; then
+                                    # Fallback for other BSD date formats if needed
+                                    APPLY_TIME=$(date -j -f "%b %e %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+                                fi
+                            fi
+                            APPLY_TIME="${APPLY_TIME:-未知} (从证书)" # 增加标识，如果解析失败则显示“未知”
+                        else
+                            APPLY_TIME="未知"
+                        fi
+                    fi
+
+                    END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" 2>/dev/null | cut -d= -f2)
                     
                     # 兼容不同系统的date命令，并格式化到期时间为 YYYY年MM月DD日
                     if date --version >/dev/null 2>&1; then # GNU date
@@ -230,7 +265,11 @@ while true; do
                         FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y年%m月%d日")
                     else # BSD date (macOS)
                         END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s")
-                        FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日")
+                        FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
+                        if [[ -z "$FORMATTED_END_DATE" ]]; then
+                            FORMATTED_END_DATE=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
+                        fi
+                        FORMATTED_END_DATE="${FORMATTED_END_DATE:-未知日期}"
                     fi
                     
                     NOW_TS=$(date +%s)
@@ -258,7 +297,13 @@ while true; do
             read -rp "请输入要续期的域名: " DOMAIN
             [[ -z "$DOMAIN" ]] && { echo -e "${RED}❌ 域名不能为空！${RESET}"; continue; }
             echo "🚀 正在为 $DOMAIN 续期证书..."
+            # 强制续期时使用 --ecc 参数确保使用 ECC 证书（如果已申请）
             "$ACME_BIN" --renew -d "$DOMAIN" --force --ecc
+            # 续期成功后更新 .apply_time 为当前时间 (表示最新更新时间)
+            APPLY_TIME_FILE="/etc/ssl/$DOMAIN/.apply_time"
+            if [[ -d "/etc/ssl/$DOMAIN" ]]; then
+                date +"%Y-%m-%d %H:%M:%S" > "$APPLY_TIME_FILE"
+            fi
             echo -e "${GREEN}✅ 续期完成：$DOMAIN ${RESET}"
             ;;
         4)
