@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（静默后台缓存 + 菜单 + jb 快捷指令安全注册）
+# 🚀 VPS 一键安装入口脚本（安全版 + 静默缓存 + 菜单 + jb 快捷指令）
 # =============================================
 set -e
 
@@ -15,7 +15,7 @@ GREEN="\033[32m"
 RED="\033[31m"
 NC="\033[0m"
 
-# 固定脚本路径
+# 固定安装路径
 INSTALL_DIR="/opt/vps_install_modules"
 SCRIPT_PATH="$INSTALL_DIR/menu.sh"
 
@@ -23,12 +23,9 @@ mkdir -p "$INSTALL_DIR"
 
 # 如果是 bash <(curl …) 执行，则 $0 会是 /dev/fd/*
 if [[ "$0" == /dev/fd/* ]]; then
-    # 保存当前脚本到固定路径
     echo -e "${GREEN}⚡ 保存入口脚本到 $SCRIPT_PATH${NC}"
-    cat > "$SCRIPT_PATH"
+    curl -fsSL "$BASE_URL/menu.sh" -o "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
-else
-    SCRIPT_PATH="$0"
 fi
 
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
