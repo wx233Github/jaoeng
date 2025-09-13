@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================
-# 🚀 自动配置 Nginx 反向代理 + HTTPS 脚本
+# 🚀 自动配置 Nginx 反向代理 + HTTPS
 # 支持 Docker 容器或本地端口
-# 自动修复依赖冲突
+# 检测 Docker 是否存在，不安装
+# 自动跳过已是最新版的依赖
 # =============================================
 
 set -e
@@ -24,8 +25,7 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 # -----------------------------
-# 修复被锁住或破损的包
-echo "🔧 修复 apt 依赖和锁定..."
+# 修复锁定或破损包
 sudo dpkg --configure -a
 sudo apt-get install -f -y
 sudo rm -f /var/lib/apt/lists/lock
@@ -34,18 +34,36 @@ sudo rm -f /var/lib/dpkg/lock*
 sudo apt update
 
 # -----------------------------
-# 自动安装依赖
+# 自动安装依赖（跳过已是最新版的）
 echo "🔍 检查并安装依赖..."
-DEPS=(nginx docker.io curl socat)
+DEPS=(nginx curl socat)
 for dep in "${DEPS[@]}"; do
-    if ! command -v $dep &>/dev/null; then
-        echo "⚠️ 缺少 $dep，正在安装..."
-        apt install -y $dep
+    if command -v $dep &>/dev/null; then
+        INSTALLED_VER=$(dpkg-query -W -f='${Version}' $dep 2>/dev/null || echo "none")
+        AVAILABLE_VER=$(apt-cache policy $dep | grep Candidate | awk '{print $2}')
+        if [ "$INSTALLED_VER" = "$AVAILABLE_VER" ]; then
+            echo "✅ $dep 已安装且为最新版 ($INSTALLED_VER)，跳过"
+            continue
+        else
+            echo "⚠️ $dep 版本过旧或可升级 ($INSTALLED_VER → $AVAILABLE_VER)，更新中..."
+        fi
     else
-        echo "✅ $dep 已安装"
+        echo "⚠️ 缺少 $dep，正在安装..."
     fi
+    apt install -y $dep
 done
 
+# -----------------------------
+# 检测 Docker 是否存在
+DOCKER_INSTALLED=false
+if command -v docker &>/dev/null; then
+    DOCKER_INSTALLED=true
+    echo "✅ Docker 已安装，可检测容器端口"
+else
+    echo "⚠️ Docker 未安装，无法检测容器端口，只能配置本地端口"
+fi
+
+# -----------------------------
 # 安装 acme.sh
 if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
     echo "⚠️ acme.sh 未安装，正在安装..."
@@ -56,7 +74,7 @@ else
 fi
 
 # -----------------------------
-# 确保 Nginx 配置目录存在
+# 创建 Nginx 配置目录
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 
@@ -82,14 +100,19 @@ WEBROOT="/var/www/html"
 # 获取 Docker 容器端口
 get_container_port() {
     local container="$1"
-    PORT=$(docker inspect $container \
-        --format '{{ range $p,$conf := .NetworkSettings.Ports }}{{ if $conf }}{{$p}} {{end}}{{end}}' 2>/dev/null \
-        | sed 's|/tcp||' | awk '{print $1}' | head -n1)
-    if [ -z "$PORT" ]; then
-        echo "⚠️ 无法获取容器 $container 端口，默认使用 80"
-        PORT=80
+    if [ "$DOCKER_INSTALLED" = true ]; then
+        PORT=$(docker inspect $container \
+            --format '{{ range $p,$conf := .NetworkSettings.Ports }}{{ if $conf }}{{$p}} {{end}}{{end}}' 2>/dev/null \
+            | sed 's|/tcp||' | awk '{print $1}' | head -n1)
+        if [ -z "$PORT" ]; then
+            echo "⚠️ 无法获取容器 $container 端口，默认使用 80"
+            PORT=80
+        fi
+        echo "$PORT"
+    else
+        echo "⚠️ Docker 未安装，无法获取容器端口，使用默认 80"
+        echo "80"
     fi
-    echo "$PORT"
 }
 
 # -----------------------------
@@ -114,7 +137,7 @@ for P in "${PROJECTS[@]}"; do
 
     check_domain $DOMAIN
 
-    if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
+    if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
         PORT=$(get_container_port $TARGET)
         PROXY="http://127.0.0.1:$PORT"
     else
@@ -149,7 +172,7 @@ for P in "${PROJECTS[@]}"; do
     DOMAIN="${P%%:*}"
     TARGET="${P##*:}"
 
-    if docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
+    if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$TARGET"; then
         PORT=$(get_container_port $TARGET)
         PROXY="http://127.0.0.1:$PORT"
     else
@@ -191,4 +214,4 @@ done
 nginx -t
 systemctl reload nginx
 
-echo "✅ 完成！通过域名即可访问对应服务。"
+echo "✅ 完成！通过域名即可访问对应服务（本地端口或 Docker 容器端口）。"
