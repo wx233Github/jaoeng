@@ -224,11 +224,13 @@ while true; do
                     APPLY_TIME=$(cat "$DOMAIN_PATH/.apply_time" 2>/dev/null || echo "未知")
                     END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" | cut -d= -f2)
                     
-                    # 兼容不同系统的date命令
+                    # 兼容不同系统的date命令，并格式化到期时间为 YYYY年MM月DD日
                     if date --version >/dev/null 2>&1; then # GNU date
                         END_TS=$(date -d "$END_DATE" +%s)
+                        FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y年%m月%d日")
                     else # BSD date (macOS)
                         END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s")
+                        FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日")
                     fi
                     
                     NOW_TS=$(date +%s)
@@ -246,7 +248,7 @@ while true; do
                     fi
 
                     printf "${STATUS_COLOR}域名: %-25s | 状态: %-5s | 剩余: %3d天 | 到期时间: %s | 首次申请: %s${RESET}\n" \
-                        "$DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$END_DATE" "$APPLY_TIME"
+                        "$DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
                 fi
             done
             echo "=============================================="
