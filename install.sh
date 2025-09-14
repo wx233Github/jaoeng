@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（终极版 - 优化版）
+# 🚀 VPS 一键安装入口脚本（终极版 - 排版修正版）
 # =============================================
 set -e
 
@@ -67,12 +67,14 @@ fi
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
 # 新增函数：用于下载模块到缓存目录
-# 这个函数在下载失败时会继续，主要用于后台静默缓存
+# 这个函数在下载失败时会继续，主要用于后台静默缓存，
+# 它的输出可以通过重定向来控制，例如重定向到 /dev/null 实现静默。
 download_module_to_cache() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
-    echo -e "${YELLOW}  - 正在缓存 $script_name ...${NC}" # 给出下载提示
+    # 这里的echo语句在被重定向时将不会显示
+    echo -e "${YELLOW}  - 正在缓存 $script_name ...${NC}"
     curl -fsSL "$url" -o "$local_file" || {
         echo -e "${RED}  ❌ 缓存 $script_name 失败。${NC}"
         return 1 # 返回非零值表示失败
@@ -110,7 +112,8 @@ run_script() {
 update_all_modules_parallel() {
     echo -e "${GREEN}⚡ 正在并行更新所有模块缓存，请稍候...${NC}"
     for module in "${MODULES[@]}"; do
-        download_module_to_cache "$module" & # 使用新函数进行缓存
+        # 这里的调用会显示 download_module_to_cache 内部的进度信息
+        download_module_to_cache "$module" &
     done
     wait
     echo -e "${GREEN}✅ 所有模块缓存更新完成！${NC}"
@@ -121,9 +124,12 @@ update_all_modules_parallel() {
 echo -e "${YELLOW}💡 脚本正在后台静默缓存模块，不影响您的操作...${NC}"
 (
     for module in "${MODULES[@]}"; do
-        download_module_to_cache "$module" & # 使用新函数
+        # 【关键修正】将 download_module_to_cache 的输出重定向到 /dev/null
+        # 这样在后台运行时，其内部的进度消息就不会打印到终端，实现静默。
+        download_module_to_cache "$module" >/dev/null 2>&1 &
     done
     wait
+    # 后台缓存完成后，打印最终的完成消息
     echo -e "${GREEN}✅ 初始模块后台缓存完成。${NC}"
 ) &
 
