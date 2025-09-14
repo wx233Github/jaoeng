@@ -54,20 +54,21 @@ fi
 BIN_DIR="/usr/local/bin"
 mkdir -p "$BIN_DIR"
 
-# 检查软链接是否存在，如果不存在则创建
+JB_LINK_STATUS=""
 if command -v ln >/dev/null 2>&1 && [ ! -L "$BIN_DIR/jb" ]; then
     ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"
     chmod +x "$SCRIPT_PATH" # 确保源脚本可执行
-    echo -e "${GREEN}✅ 快捷指令 jb 已创建。您现在可以直接输入 'jb' 运行此脚本。${NC}"
+    JB_LINK_STATUS="${YELLOW}✅ 快捷指令：jb 已创建。您现在可以直接输入 'jb' 运行此脚本。${NC}"
 elif command -v jb >/dev/null 2>&1; then
-    # 如果 jb 命令已经存在（可能是软链接已存在），则不重复提示
-    echo -e "${GREEN}✅ 快捷指令 jb 已存在。${NC}"
+    # 如果 jb 命令已经存在（可能是软链接已存在），则不重复创建
+    JB_LINK_STATUS="${YELLOW}✅ 快捷指令：jb 已存在。${NC}"
 else
     # 如果软链接失败且 jb 命令不存在，使用 alias 临时模式
     alias jb="bash $SCRIPT_PATH"
-    echo -e "${YELLOW}⚠ 快捷指令 jb 设置为临时 alias，仅当前终端会话有效。建议手动创建软链接：${NC}"
-    echo -e "  ${YELLOW}sudo ln -sf $SCRIPT_PATH $BIN_DIR/jb${NC}"
+    JB_LINK_STATUS="${YELLOW}⚠ 快捷指令 jb 设置为临时 alias，仅当前终端会话有效。建议手动创建软链接：sudo ln -sf $SCRIPT_PATH $BIN_DIR/jb${NC}"
 fi
+# 在这里打印快捷指令状态，确保在菜单之前显示
+echo -e "$JB_LINK_STATUS"
 
 # ====================== 模块设置 ======================
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
@@ -79,7 +80,8 @@ download_module_to_cache() {
     local url="$BASE_URL/$script_name"
 
     # curl 失败则返回非零值
-    curl -fsSL "$url" -o "$local_file"
+    # 使用 &>/dev/null 确保所有输出都被重定向，完全静默
+    curl -fsSL "$url" -o "$local_file" &>/dev/null
 }
 
 # 优化函数：运行模块脚本 (移除了下载成功的提示，保留了下载失败的致命错误提示)
@@ -90,10 +92,11 @@ run_script() {
 
     if [ ! -f "$local_file" ]; then
         # 尝试静默下载模块
-        download_module_to_cache "$script_name" || {
+        # 注意：此处如果 download_module_to_cache 失败，会返回非零值，触发 || 后的错误处理
+        if ! download_module_to_cache "$script_name"; then
             echo -e "${RED}❌ 无法下载模块 $script_name。请检查网络连接或 GitHub 访问情况。${NC}"
             exit 1 # 如果下载失败，直接退出
-        }
+        fi
     fi
 
     chmod +x "$local_file"
@@ -115,13 +118,13 @@ update_all_modules_parallel() {
 
 # ====================== 后台静默缓存 ======================
 # 后台静默缓存。完全不产生任何输出。
+# 确保所有输出都被重定向到 /dev/null，防止干扰主程序。
 (
     for module in "${MODULES[@]}"; do
-        download_module_to_cache "$module" & # 完全静默下载
+        download_module_to_cache "$module" &
     done
     wait
-    # 移除了 '✅ 初始模块后台缓存完成。' 的提示
-) &
+) &>/dev/null & # 将整个后台缓存操作的输出重定向到 /dev/null，并再次放入后台
 
 # ====================== 菜单循环 ======================
 while true; do
@@ -135,7 +138,6 @@ while true; do
     echo "3. 常 用 工 具"
     echo "4. 证 书 申 请"
     echo "5. 更 新 所 有 模 块 缓 存 （ 并 行 ）"
-    # 移除了关于模块自动下载的提示
 
     read -p "输入数字: " choice
 
