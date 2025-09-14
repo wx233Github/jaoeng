@@ -139,7 +139,7 @@ install_acme_sh() {
             echo -e "${BLUE}➡️ 正在使用邮箱 $ACME_EMAIL 安装 acme.sh...${RESET}"
             curl https://get.acme.sh | sh -s email="$ACME_EMAIL"
         else
-            echo -e "${YELLOW}ℹ️ 未指定邮箱地址安装 acme.sh。某些证书颁发机构（如 ZeroSSL）可能需要注册邮箱。您可以在之后使用 'acme.sh --register-account -m your@example.2om' 手动注册。${RESET}"
+            echo -e "${YELLOW}ℹ️ 未指定邮箱地址安装 acme.sh。某些证书颁发机构（如 ZeroSSL）可能需要注册邮箱。您可以在之后使用 'acme.sh --register-account -m your@example.com' 手动注册。${RESET}"
             read -rp "是否确认不指定邮箱安装 acme.sh？[y/N]: " NO_EMAIL_CONFIRM
             NO_EMAIL_CONFIRM=${NO_EMAIL_CONFIRM:-y} # 默认确认
             if [[ "$NO_EMAIL_CONFIRM" =~ ^[Yy]$ ]]; then
@@ -450,7 +450,7 @@ configure_nginx_projects() {
         echo "1) http-01 (通过 80 端口，推荐用于单域名)"
         echo "2) dns-01 (通过 DNS API，推荐用于泛域名或 80 端口不可用时)"
         read -rp "请输入序号: " VALIDATION_CHOICE
-        VALIDATION_CHOICE=${VALIDATION_CHOICE:-1} # <-- 修正点：VALIDATION_CHOENCE 改为 VALIDATION_CHOICE
+        VALIDATION_CHOICE=${VALIDATION_CHOICE:-1} # <-- 确保这里变量名正确
         case $VALIDATION_CHOICE in
             1) ACME_VALIDATION_METHOD="http-01";;
             2) 
@@ -1434,7 +1434,7 @@ main_menu() {
 
 # --- 脚本入口 ---
 # 如果脚本作为cronjob直接运行，并且参数为续期选项，则直接执行续期功能
-if [[ "${1:-}" == "3" ]]; then # <-- 修正点：使用 ${1:-} 安全访问 $1
+if [[ "${1:-}" == "3" ]]; then # <-- 再次检查此行，确保使用了安全访问方式
     check_and_auto_renew_certs
     exit 0
 fi
