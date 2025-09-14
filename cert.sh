@@ -177,16 +177,20 @@ while true; do
             # 执行申请命令
             eval "$ISSUE_CMD"
 
-            # 判断证书文件是否成功生成
-            CRT_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-            KEY_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
-            if [[ ! -f "$CRT_FILE" || ! -f "$KEY_FILE" ]]; then
-                 # 如果 ecc 目录不存在，则检查非 ecc 目录
-                 CRT_FILE="$HOME/.acme.sh/$DOMAIN/fullchain.cer"
-                 KEY_FILE="$HOME/.acme.sh/$DOMAIN/$DOMAIN.key"
+            # 判断证书文件是否成功生成 (优先检查 ECC 目录，再检查普通目录)
+            CRT_FILE_ACME_ECC="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
+            KEY_FILE_ACME_ECC="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
+            CRT_FILE_ACME_NORMAL="$HOME/.acme.sh/$DOMAIN/fullchain.cer"
+            KEY_FILE_ACME_NORMAL="$HOME/.acme.sh/$DOMAIN/$DOMAIN.key"
+
+            CERT_GENERATED=false
+            if [[ -f "$CRT_FILE_ACME_ECC" && -f "$KEY_FILE_ACME_ECC" ]]; then
+                CERT_GENERATED=true
+            elif [[ -f "$CRT_FILE_ACME_NORMAL" && -f "$KEY_FILE_ACME_NORMAL" ]]; then
+                CERT_GENERATED=true
             fi
             
-            if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
+            if [[ "$CERT_GENERATED" == true ]]; then
                 echo -e "${GREEN}✅ 证书生成成功，正在安装...${RESET}"
                 
                 # 创建证书保存路径（如果不存在）
@@ -214,82 +218,128 @@ while true; do
         2)
             # ---------- 2. 查看已申请证书 ----------
             echo "=============================================="
-            echo "📜 已安装证书列表 (基于 /etc/ssl/ 目录)"
+            echo "📜 已安装证书列表 (支持 /etc/ssl/ + ~/.acme.sh/)"
             echo "=============================================="
 
-            # 检查 /etc/ssl/ 目录是否存在或为空
-            if [ ! -d "/etc/ssl" ] || [ -z "$(ls -A /etc/ssl)" ]; then
-                echo "目录 /etc/ssl 为空或不存在，没有找到已安装的证书。"
-                echo "=============================================="
-                continue
-            fi
-            
-            # --- 核心修改：遍历目录检查真实状态 ---
-            for DOMAIN_PATH in /etc/ssl/*; do
-                # 跳过非目录文件
-                [[ -d "$DOMAIN_PATH" ]] || continue
-                
-                DOMAIN=$(basename "$DOMAIN_PATH")
-                CRT_FILE="$DOMAIN_PATH/$DOMAIN.crt"
-                KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
+            SCAN_DIRS=("/etc/ssl" "$HOME/.acme.sh")
+            FOUND_CERT=false
 
-                if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
-                    APPLY_TIME_FILE="$DOMAIN_PATH/.apply_time"
-                    APPLY_TIME=$(cat "$APPLY_TIME_FILE" 2>/dev/null) # 优先从自定义文件获取
+            for BASE_DIR in "${SCAN_DIRS[@]}"; do
+                [[ -d "$BASE_DIR" ]] || continue
 
-                    if [[ -z "$APPLY_TIME" ]]; then
-                        # 如果自定义文件不存在，则从证书的 Not Before 字段获取
-                        CERT_START_DATE_RAW=$(openssl x509 -in "$CRT_FILE" -noout -startdate 2>/dev/null | cut -d= -f2)
-                        if [[ -n "$CERT_START_DATE_RAW" ]]; then
-                            if date --version >/dev/null 2>&1; then # GNU date
-                                APPLY_TIME=$(date -d "$CERT_START_DATE_RAW" +"%Y-%m-%d %H:%M:%S")
-                            else # BSD date (macOS)
-                                # 注意：BSD date 可能需要精确的格式匹配，这里使用通用格式尝试
-                                APPLY_TIME=$(date -j -f "%b %d %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
-                                if [[ -z "$APPLY_TIME" ]]; then
-                                    # Fallback for other BSD date formats if needed
-                                    APPLY_TIME=$(date -j -f "%b %e %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+                # 遍历 /etc/ssl/DOMAIN 或 ~/.acme.sh/DOMAIN_ecc / ~/.acme.sh/DOMAIN
+                for DOMAIN_PATH in "$BASE_DIR"/*; do
+                    [[ -d "$DOMAIN_PATH" ]] || continue
+                    
+                    # 尝试从目录名获取域名，并处理 acme.sh 的 _ecc 后缀
+                    DOMAIN=$(basename "$DOMAIN_PATH")
+                    if [[ "$DOMAIN" =~ ^(.*)_ecc$ ]]; then
+                        DOMAIN="${BASH_REMATCH[1]}"
+                    fi
+
+                    # 检查证书和密钥文件是否存在
+                    # 优先检查 /etc/ssl/$DOMAIN.crt / $DOMAIN.key
+                    # 其次检查 acme.sh 默认的 fullchain.cer / DOMAIN.key
+                    CRT_FILE=""
+                    KEY_FILE=""
+                    APPLY_TIME_FILE=""
+
+                    # --- 优先从 /etc/ssl/ 结构查找 ---
+                    if [[ "$BASE_DIR" == "/etc/ssl" ]]; then
+                        if [[ -f "$DOMAIN_PATH/$DOMAIN.crt" && -f "$DOMAIN_PATH/$DOMAIN.key" ]]; then
+                            CRT_FILE="$DOMAIN_PATH/$DOMAIN.crt"
+                            KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
+                            APPLY_TIME_FILE="$DOMAIN_PATH/.apply_time"
+                        fi
+                    # --- 从 ~/.acme.sh/ 结构查找 ---
+                    elif [[ "$BASE_DIR" == "$HOME/.acme.sh" ]]; then
+                        # 尝试 _ecc 目录
+                        if [[ -f "$DOMAIN_PATH/fullchain.cer" && -f "$DOMAIN_PATH/$DOMAIN.key" ]]; then
+                            CRT_FILE="$DOMAIN_PATH/fullchain.cer"
+                            KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
+                            # acme.sh 自己的证书没有 .apply_time 文件，可以尝试从 acme.sh list 中获取时间，或者直接从证书的Not Before
+                        elif [[ -f "$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer" && -f "$HOME/.acme.sh/${DOMAIN}_ecc/$DOMAIN.key" ]]; then
+                            # 如果当前循环的 DOMAIN_PATH 是非 _ecc 的，但实际证书在 _ecc 里
+                            CRT_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
+                            KEY_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/$DOMAIN.key"
+                        elif [[ -f "$HOME/.acme.sh/$DOMAIN/fullchain.cer" && -f "$HOME/.acme.sh/$DOMAIN/$DOMAIN.key" ]]; then
+                             # 如果当前循环的 DOMAIN_PATH 是 _ecc 的，但实际证书在非 _ecc 里
+                            CRT_FILE="$HOME/.acme.sh/$DOMAIN/fullchain.cer"
+                            KEY_FILE="$HOME/.acme.sh/$DOMAIN/$DOMAIN.key"
+                        fi
+                    fi
+
+
+                    if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
+                        FOUND_CERT=true
+
+                        APPLY_TIME=""
+                        if [[ -f "$APPLY_TIME_FILE" ]]; then # 优先从自定义文件获取
+                            APPLY_TIME=$(cat "$APPLY_TIME_FILE" 2>/dev/null)
+                        fi
+
+                        if [[ -z "$APPLY_TIME" ]]; then
+                            # 如果自定义文件不存在，则从证书的 Not Before 字段获取
+                            CERT_START_DATE_RAW=$(openssl x509 -in "$CRT_FILE" -noout -startdate 2>/dev/null | cut -d= -f2)
+                            if [[ -n "$CERT_START_DATE_RAW" ]]; then
+                                if date --version >/dev/null 2>&1; then # GNU date
+                                    APPLY_TIME=$(date -d "$CERT_START_DATE_RAW" +"%Y-%m-%d %H:%M:%S")
+                                else # BSD date (macOS)
+                                    APPLY_TIME=$(date -j -f "%b %d %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+                                    if [[ -z "$APPLY_TIME" ]]; then
+                                        APPLY_TIME=$(date -j -f "%b %e %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+                                    fi
                                 fi
+                                APPLY_TIME="${APPLY_TIME:-未知} (从证书)"
+                            else
+                                APPLY_TIME="未知"
                             fi
-                            APPLY_TIME="${APPLY_TIME:-未知} (从证书)" # 增加标识，如果解析失败则显示“未知”
+                        fi
+
+                        END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" 2>/dev/null | cut -d= -f2)
+                        
+                        # 兼容不同系统的date命令，并格式化到期时间为 YYYY年MM月DD日
+                        if date --version >/dev/null 2>&1; then # GNU date
+                            END_TS=$(date -d "$END_DATE" +%s)
+                            FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y年%m月%d日")
+                        else # BSD date (macOS)
+                            END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s")
+                            FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
+                            if [[ -z "$FORMATTED_END_DATE" ]]; then
+                                FORMATTED_END_DATE=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
+                            fi
+                            FORMATTED_END_DATE="${FORMATTED_END_DATE:-未知日期}"
+                        fi
+                        
+                        NOW_TS=$(date +%s)
+                        LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))
+
+                        if (( LEFT_DAYS < 0 )); then
+                            STATUS_COLOR="$RED"
+                            STATUS_TEXT="已过期"
+                        elif (( LEFT_DAYS <= 30 )); then
+                            STATUS_COLOR="$YELLOW"
+                            STATUS_TEXT="即将到期"
                         else
-                            APPLY_TIME="未知"
+                            STATUS_COLOR="$GREEN"
+                            STATUS_TEXT="有效"
                         fi
-                    fi
 
-                    END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" 2>/dev/null | cut -d= -f2)
-                    
-                    # 兼容不同系统的date命令，并格式化到期时间为 YYYY年MM月DD日
-                    if date --version >/dev/null 2>&1; then # GNU date
-                        END_TS=$(date -d "$END_DATE" +%s)
-                        FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y年%m月%d日")
-                    else # BSD date (macOS)
-                        END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s")
-                        FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
-                        if [[ -z "$FORMATTED_END_DATE" ]]; then
-                            FORMATTED_END_DATE=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
+                        # 确保DOMAIN变量是正确的，不带_ecc后缀
+                        DISPLAY_DOMAIN=$(basename "$DOMAIN_PATH")
+                        if [[ "$DISPLAY_DOMAIN" =~ ^(.*)_ecc$ ]]; then
+                            DISPLAY_DOMAIN="${BASH_REMATCH[1]}"
                         fi
-                        FORMATTED_END_DATE="${FORMATTED_END_DATE:-未知日期}"
-                    fi
-                    
-                    NOW_TS=$(date +%s)
-                    LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))
 
-                    if (( LEFT_DAYS < 0 )); then
-                        STATUS_COLOR="$RED"
-                        STATUS_TEXT="已过期"
-                    elif (( LEFT_DAYS <= 30 )); then
-                        STATUS_COLOR="$YELLOW"
-                        STATUS_TEXT="即将到期"
-                    else
-                        STATUS_COLOR="$GREEN"
-                        STATUS_TEXT="有效"
+                        printf "${STATUS_COLOR}[来源:%-15s] 域名: %-25s | 状态: %-5s | 剩余: %3d天 | 到期时间: %s | 首次申请: %s${RESET}\n" \
+                            "$(basename "$BASE_DIR")" "$DISPLAY_DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
                     fi
-
-                    printf "${STATUS_COLOR}域名: %-25s | 状态: %-5s | 剩余: %3d天 | 到期时间: %s | 首次申请: %s${RESET}\n" \
-                        "$DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
-                fi
+                done
             done
+
+            if [[ "$FOUND_CERT" == false ]]; then
+                echo "❌ 没有找到任何证书。"
+            fi
             echo "=============================================="
             ;;
         3)
