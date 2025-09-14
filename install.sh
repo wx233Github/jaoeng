@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS 一键安装入口脚本（终极版 - 彻底排版修正版）
+# 🚀 VPS 一键安装入口脚本（终极版 - 最新修复版）
 # =============================================
 set -e
 
@@ -29,15 +29,21 @@ for arg in "$@"; do
 done
 
 # ====================== 保存入口脚本 ======================
+# 如果脚本文件不存在，或者指定了 --save-self 参数，则保存脚本
 if [ ! -f "$SCRIPT_PATH" ] || [ "$SAVE_SELF" = true ]; then
     echo -e "${GREEN}⚡ 保存入口脚本到 $SCRIPT_PATH${NC}"
     # 先尝试从 GitHub 下载
     curl -fsSL "$BASE_URL/install.sh" -o "$SCRIPT_PATH" || {
-        # 下载失败则尝试复制 stdin
+        # 下载失败则尝试复制当前运行的脚本内容
         if [[ "$0" == /dev/fd/* ]]; then
-            cp /proc/$$/fd/0 "$SCRIPT_PATH"
+            # 如果是进程替换方式运行 (e.g., bash <(curl ...))，直接复制 $0
+            cp "$0" "$SCRIPT_PATH"
+        elif [ -f "$0" ]; then
+            # 如果是本地文件方式运行 (e.g., bash ./install.sh)，复制 $0
+            cp "$0" "$SCRIPT_PATH"
         else
-            echo -e "${RED}❌ 无法保存入口脚本。请检查网络连接或 GitHub 访问情况。${NC}" # 更具体的错误提示
+            # 无法识别运行方式或获取脚本内容
+            echo -e "${RED}❌ 无法保存入口脚本。请检查网络连接或 GitHub 访问情况，或尝试直接下载。${NC}"
             exit 1
         fi
     }
@@ -66,47 +72,30 @@ fi
 # ====================== 模块设置 ======================
 MODULES=("docker.sh" "nginx.sh" "tools.sh" "cert.sh")
 
-# 优化函数：用于下载模块到缓存目录
-# 增加了 silent_mode 参数，控制是否打印进度信息
+# 优化函数：用于下载模块到缓存目录 (完全静默，不输出任何进度信息)
 download_module_to_cache() {
     local script_name="$1"
-    local silent_mode="${2:-false}" # 第二个参数，如果为 'true' 则静默，默认为 'false' (非静默)
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
 
-    if [ "$silent_mode" = "false" ]; then
-        echo -e "${YELLOW}  - 正在缓存 $script_name ...${NC}"
-    fi
-
-    curl -fsSL "$url" -o "$local_file" || {
-        if [ "$silent_mode" = "false" ]; then
-            echo -e "${RED}  ❌ 缓存 $script_name 失败。${NC}"
-        fi
-        return 1 # 返回非零值表示失败
-    }
-    if [ "$silent_mode" = "false" ]; then
-        echo -e "${GREEN}  ✅ $script_name 缓存成功。${NC}"
-    fi
-    return 0
+    # curl 失败则返回非零值
+    curl -fsSL "$url" -o "$local_file"
 }
 
-# 优化函数：运行模块脚本，增加了下载失败的错误检查
+# 优化函数：运行模块脚本 (移除了下载成功的提示，保留了下载失败的致命错误提示)
 run_script() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     echo -e "${GREEN}🚀 正在准备运行模块: ${script_name}${NC}"
 
-    # 在运行前，确保模块文件存在并尝试下载 (这里是非静默下载，会显示进度)
     if [ ! -f "$local_file" ]; then
-        echo -e "${YELLOW}模块 $script_name 未找到，尝试下载...${NC}"
-        # 直接调用 download_module_to_cache，并确保其显示输出 (silent_mode='false')
-        download_module_to_cache "$script_name" "false" || {
+        # 尝试静默下载模块
+        download_module_to_cache "$script_name" || {
             echo -e "${RED}❌ 无法下载模块 $script_name。请检查网络连接或 GitHub 访问情况。${NC}"
             exit 1 # 如果下载失败，直接退出
         }
     fi
 
-    # 确保下载的脚本可执行（尽管 bash 运行不需要，但这是一个好习惯）
     chmod +x "$local_file"
 
     echo -e "${GREEN}==== 运行 ${script_name} ====${NC}"
@@ -114,28 +103,23 @@ run_script() {
     echo -e "${GREEN}==== ${script_name} 运行完毕 ====${NC}"
 }
 
-# 优化函数：并行更新所有模块缓存
+# 优化函数：并行更新所有模块缓存 (只保留整体的开始和结束提示)
 update_all_modules_parallel() {
     echo -e "${GREEN}⚡ 正在并行更新所有模块缓存，请稍候...${NC}"
     for module in "${MODULES[@]}"; do
-        # 这里的调用是非静默的，会显示 download_module_to_cache 内部的进度信息
-        download_module_to_cache "$module" "false" &
+        download_module_to_cache "$module" & # 完全静默下载
     done
     wait
     echo -e "${GREEN}✅ 所有模块缓存更新完成！${NC}"
 }
 
 # ====================== 后台静默缓存 ======================
-# 增加用户反馈，告知后台正在进行缓存
-echo -e "${YELLOW}💡 脚本正在后台静默缓存模块，不影响您的操作...${NC}"
+# 后台静默缓存 (只保留最终的完成提示)
 (
     for module in "${MODULES[@]}"; do
-        # 【关键修正】将 download_module_to_cache 以静默模式运行
-        # 这样在后台运行时，它内部的进度消息将不会被打印。
-        download_module_to_cache "$module" "true" & # 传入 'true' 启用静默模式
+        download_module_to_cache "$module" & # 完全静默下载
     done
     wait
-    # 后台缓存完成后，打印最终的完成消息
     echo -e "${GREEN}✅ 初始模块后台缓存完成。${NC}"
 ) &
 
@@ -148,10 +132,10 @@ while true; do
     echo "0. 退出"
     echo "1. Docker"
     echo "2. Nginx"
-    echo "3. 常用工具"
-    echo "4. 证书申请"
-    echo "5. 更新所有模块缓存（并行）"
-    echo -e "${YELLOW}（注意：初次运行或模块缺失时，相关模块会自动下载）${NC}" # 提示自动下载
+    echo "3. 常 用 工 具"
+    echo "4. 证 书 申 请"
+    echo "5. 更 新 所 有 模 块 缓 存 （ 并 行 ）"
+    # 移除了关于模块自动下载的提示
 
     read -p "输入数字: " choice
 
