@@ -19,7 +19,8 @@
 # - **项目管理**:
 #   - **核心改进**: 项目配置集中存储在 `/etc/nginx/ssl_manager_projects.json` 中。
 #   - 提供菜单，方便查看所有已配置项目的详情（域名、类型、目标、证书状态、到期时间等）。
-#   - **新增**: 提供“编辑项目”功能，可修改后端目标、自定义片段、验证方式等。
+#   - **新增**: 提供“编辑项目”功能，可修改后端目标、验证方式等。
+#   - **新增**: 提供“管理自定义 Nginx 配置片段”功能。
 # - **证书续期**:
 #   - 支持手动续期指定域名的 HTTPS 证书。
 #   - **新增**: 提供“检查并自动续期所有证书”功能，可作为 Cron 任务运行。
@@ -276,7 +277,7 @@ $(generate_nginx_listen_directives 443 "ssl http2")
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 EOF
     # 注入自定义 Nginx 配置片段
-    if [[ -n "$CUSTOM_SNIPPET_PATH" && -f "$CUSTOM_SNIPPET_PATH" ]]; then
+    if [[ -n "$CUSTOM_SNIPPET_PATH" && "$CUSTOM_SNIPPET_PATH" != "null" && -f "$CUSTOM_SNIPPET_PATH" ]]; then
         cat <<INNER_EOF
     # BEGIN Custom Nginx Snippet for $DOMAIN
     include $CUSTOM_SNIPPET_PATH;
@@ -487,7 +488,7 @@ configure_nginx_projects() {
                 esac
                 ;;
             *) echo -e "${YELLOW}⚠️ 无效选择，将使用默认 http-01 验证方式。${RESET}";;
-        esac
+        esmeac
         echo -e "${BLUE}➡️ 选定验证方式: $ACME_VALIDATION_METHOD${RESET}"
         if [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then
             echo -e "${BLUE}➡️ 选定 DNS API 服务商: $DNS_API_PROVIDER${RESET}"
@@ -824,7 +825,8 @@ manage_configs() {
         echo -e "\n${BLUE}请选择管理操作：${RESET}"
         echo "1. 手动续期指定域名证书"
         echo "2. 删除指定域名配置及证书"
-        echo "3. 编辑项目配置 (修改后端/片段/验证方式)"
+        echo "3. 编辑项目核心配置 (后端目标 / 验证方式等)" # <-- 菜单项修改
+        echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)" # <-- 新增选项
         echo "0. 返回主菜单"
         read -rp "请输入选项: " MANAGE_CHOICE
         case "$MANAGE_CHOICE" in
@@ -921,7 +923,7 @@ manage_configs() {
                     echo -e "${YELLOW}已取消删除操作。${RESET}"
                 fi
                 ;;
-            3) # 编辑项目
+            3) # 编辑项目核心配置 (不含片段)
                 read -rp "请输入要编辑的域名: " DOMAIN_TO_EDIT
                 if [[ -z "$DOMAIN_TO_EDIT" ]]; then
                     echo -e "${RED}❌ 域名不能为空！${RESET}"
@@ -936,18 +938,17 @@ manage_configs() {
                 local EDIT_TYPE=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.type')
                 local EDIT_NAME=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.name')
                 local EDIT_RESOLVED_PORT=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.resolved_port')
-                local EDIT_CUSTOM_SNIPPET=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.custom_snippet')
                 local EDIT_ACME_VALIDATION_METHOD=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.acme_validation_method')
                 local EDIT_DNS_API_PROVIDER=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.dns_api_provider')
                 local EDIT_USE_WILDCARD=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.use_wildcard')
                 local EDIT_CA_SERVER_URL=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.ca_server_url')
                 local EDIT_CA_SERVER_NAME=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.ca_server_name')
+                local EDIT_CUSTOM_SNIPPET_ORIGINAL=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.custom_snippet') # Keep original snippet for regeneration
 
                 echo -e "\n--- 编辑域名: ${BLUE}$DOMAIN_TO_EDIT${RESET} ---"
                 echo "当前配置:"
                 echo "  类型: $EDIT_TYPE"
                 echo "  目标: $EDIT_NAME (端口: $EDIT_RESOLVED_PORT)"
-                echo "  片段: $( [[ -n "$EDIT_CUSTOM_SNIPPET" && "$EDIT_CUSTOM_SNIPPET" != "null" ]] && echo "$EDIT_CUSTOM_SNIPPET" || echo "无" )"
                 echo "  验证方式: $EDIT_ACME_VALIDATION_METHOD $( [[ -n "$EDIT_DNS_API_PROVIDER" && "$EDIT_DNS_API_PROVIDER" != "null" ]] && echo "($EDIT_DNS_API_PROVIDER)" || echo "" )"
                 echo "  泛域名: $( [[ "$EDIT_USE_WILDCARD" = "y" ]] && echo "是" || echo "否" )"
                 echo "  CA: $EDIT_CA_SERVER_NAME"
@@ -955,7 +956,6 @@ manage_configs() {
                 local NEW_TYPE="$EDIT_TYPE"
                 local NEW_NAME="$EDIT_NAME"
                 local NEW_RESOLVED_PORT="$EDIT_RESOLVED_PORT"
-                local NEW_CUSTOM_SNIPPET="$EDIT_CUSTOM_SNIPPET"
                 local NEW_ACME_VALIDATION_METHOD="$EDIT_ACME_VALIDATION_METHOD"
                 local NEW_DNS_API_PROVIDER="$EDIT_DNS_API_PROVIDER"
                 local NEW_USE_WILDCARD="$EDIT_USE_WILDCARD"
@@ -1009,24 +1009,6 @@ manage_configs() {
                     fi
                 fi
 
-                # 编辑自定义片段
-                local CURRENT_SNIPPET_FOR_EDIT="$EDIT_CUSTOM_SNIPPET"
-                if [[ "$CURRENT_SNIPPET_FOR_EDIT" = "null" ]]; then CURRENT_SNIPPET_FOR_EDIT=""; fi # Handle "null" from jq
-                read -rp "修改自定义 Nginx 片段文件路径 [当前: $( [[ -n "$CURRENT_SNIPPET_FOR_EDIT" ]] && echo "$CURRENT_SNIPPET_FOR_EDIT" || echo "无" )，回车不修改，输入 'none' 清除]: " NEW_CUSTOM_SNIPPET_INPUT
-                if [[ "$NEW_CUSTOM_SNIPPET_INPUT" = "none" ]]; then
-                    if [[ -n "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
-                    NEW_CUSTOM_SNIPPET=""
-                    echo -e "${YELLOW}ℹ️ 自定义 Nginx 片段已清除。${RESET}"
-                elif [[ -n "$NEW_CUSTOM_SNIPPET_INPUT" ]]; then
-                    if ! mkdir -p "$(dirname "$NEW_CUSTOM_SNIPPET_INPUT")"; then
-                        echo -e "${RED}❌ 无法创建目录 $(dirname "$NEW_CUSTOM_SNIPPET_INPUT")。将保留原有路径。${RESET}"
-                    else
-                        if [[ "$NEW_CUSTOM_SNIPPET_INPUT" != "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
-                        NEW_CUSTOM_SNIPPET="$NEW_CUSTOM_SNIPPET_INPUT"
-                        echo -e "${GREEN}✅ 自定义 Nginx 片段文件路径已更新为: $NEW_CUSTOM_SNIPPET。${RESET}"
-                    fi
-                fi
-
                 # 编辑验证方式和泛域名
                 read -rp "修改证书验证方式 (http-01 / dns-01) [当前: $EDIT_ACME_VALIDATION_METHOD，回车不修改]: " NEW_VALIDATION_METHOD_INPUT
                 NEW_VALIDATION_METHOD_INPUT=${NEW_VALIDATION_METHOD_INPUT:-$EDIT_ACME_VALIDATION_METHOD}
@@ -1076,7 +1058,7 @@ manage_configs() {
                     --arg type "$NEW_TYPE" \
                     --arg name "$NEW_NAME" \
                     --arg resolved_port "$NEW_RESOLVED_PORT" \
-                    --arg custom_snippet "$NEW_CUSTOM_SNIPPET" \
+                    --arg custom_snippet "$EDIT_CUSTOM_SNIPPET_ORIGINAL" \
                     --arg acme_method "$NEW_ACME_VALIDATION_METHOD" \
                     --arg dns_provider "$NEW_DNS_API_PROVIDER" \
                     --arg wildcard "$NEW_USE_WILDCARD" \
@@ -1114,7 +1096,7 @@ manage_configs() {
                         # 申请证书
                         echo -e "${YELLOW}正在为 $DOMAIN_TO_EDIT 申请证书 (CA: $EDIT_CA_SERVER_NAME, 验证方式: $NEW_ACME_VALIDATION_METHOD)...${RESET}"
                         local ACME_REISSUE_CMD_LOG_OUTPUT=$(mktemp)
-                        ACME_REISSUE_COMMAND="$ACME_BIN --issue -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$EDIT_CA_SERVER_URL\" --debug 2"
+                        ACME_REISSUE_COMMAND="$ACME_BIN --issue -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$EDIT_CA_SERVER_URL\""
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
                             ACME_REISSUE_COMMAND+=" -d \"*.$DOMAIN_TO_EDIT\""
                         fi
@@ -1146,7 +1128,8 @@ manage_configs() {
                             --fullchain-file "$INSTALLED_CRT_FILE" \
                             --reloadcmd "systemctl reload nginx"
                         echo -e "${YELLOW}生成 $DOMAIN_TO_EDIT 的最终 Nginx 配置...${RESET}"
-                        _NGINX_FINAL_TEMPLATE "$DOMAIN_TO_EDIT" "http://127.0.0.1:$NEW_RESOLVED_PORT" "$INSTALLED_CRT_FILE" "$INSTALLED_KEY_FILE" "$NEW_CUSTOM_SNIPPET" > "$DOMAIN_CONF"
+                        # 使用原始的 custom_snippet_path 进行 Nginx 配置生成
+                        _NGINX_FINAL_TEMPLATE "$DOMAIN_TO_EDIT" "http://127.0.0.1:$NEW_RESOLVED_PORT" "$INSTALLED_CRT_FILE" "$INSTALLED_KEY_FILE" "$EDIT_CUSTOM_SNIPPET_ORIGINAL" > "$DOMAIN_CONF"
                         echo -e "${GREEN}✅ 域名 $DOMAIN_TO_EDIT 的 Nginx 配置已更新。${RESET}"
                         nginx -t || { echo -e "${RED}❌ 最终 Nginx 配置语法错误，请检查！${RESET}"; return 1; }
                         systemctl reload nginx || { echo -e "${RED}❌ 最终 Nginx 重载失败，请手动检查 Nginx 服务状态！${RESET}"; return 1; }
@@ -1158,13 +1141,98 @@ manage_configs() {
                     echo -e "${YELLOW}ℹ️ 项目配置已修改。请手动重新加载 Nginx (systemctl reload nginx) 以确保更改生效。${RESET}"
                 fi
                 ;;
+            4) # 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除) <-- 新增逻辑块
+                read -rp "请输入要管理片段的域名: " DOMAIN_FOR_SNIPPET
+                if [[ -z "$DOMAIN_FOR_SNIPPET" ]]; then
+                    echo -e "${RED}❌ 域名不能为空！${RESET}"
+                    continue
+                fi
+                local SNIPPET_PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_FOR_SNIPPET\")" "$PROJECTS_METADATA_FILE")
+                if [ -z "$SNIPPET_PROJECT_JSON" ]; then
+                    echo -e "${RED}❌ 域名 $DOMAIN_FOR_SNIPPET 未找到在已配置列表中。${RESET}"
+                    continue
+                fi
+
+                local CURRENT_SNIPPET_PATH=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.custom_snippet')
+                local PROJECT_TYPE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.type')
+                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.name')
+                local RESOLVED_PORT_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.resolved_port')
+
+                echo -e "\n--- 管理域名 ${BLUE}$DOMAIN_FOR_SNIPPET${RESET} 的 Nginx 配置片段 ---"
+                if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" ]]; then
+                    echo -e "当前自定义片段文件: ${YELLOW}$CURRENT_SNIPPET_PATH${RESET}"
+                else
+                    echo -e "当前未设置自定义片段文件。"
+                fi
+
+                local DEFAULT_SNIPPET_DIR="/etc/nginx/custom_snippets"
+                local DEFAULT_SNIPPET_FILENAME=""
+                if [ "$PROJECT_TYPE_SNIPPET" = "docker" ]; then
+                    DEFAULT_SNIPPET_FILENAME="$PROJECT_NAME_SNIPPET.conf"
+                else
+                    DEFAULT_SNIPPET_FILENAME="$DOMAIN_FOR_SNIPPET.conf"
+                fi
+                local DEFAULT_SNIPPET_PATH="$DEFAULT_SNIPPET_DIR/$DEFAULT_SNIPPET_FILENAME"
+
+                read -rp "请输入新的自定义 Nginx 片段文件路径 (回车使用默认: $DEFAULT_SNIPPET_PATH，输入 'none' 清除): " NEW_SNIPPET_INPUT
+                local CHOSEN_SNIPPET_PATH=""
+
+                if [[ -z "$NEW_SNIPPET_INPUT" ]]; then # 回车，使用默认路径
+                    CHOSEN_SNIPPET_PATH="$DEFAULT_SNIPPET_PATH"
+                    echo -e "${GREEN}✅ 将使用默认路径: $CHOSEN_SNIPPET_PATH${RESET}"
+                elif [[ "$NEW_SNIPPET_INPUT" = "none" ]]; then # 输入 'none'，清除片段
+                    CHOSEN_SNIPPET_PATH=""
+                    echo -e "${YELLOW}ℹ️ 已选择清除自定义 Nginx 片段。${RESET}"
+                else # 用户输入了新路径
+                    CHOSEN_SNIPPET_PATH="$NEW_SNIPPET_INPUT"
+                    if ! mkdir -p "$(dirname "$CHOSEN_SNIPPET_PATH")"; then
+                        echo -e "${RED}❌ 无法创建目录 $(dirname "$CHOSEN_SNIPPET_PATH")。操作取消。${RESET}"
+                        continue
+                    fi
+                    echo -e "${GREEN}✅ 将使用新路径: $CHOSEN_SNIPPET_PATH${RESET}"
+                fi
+
+                # 更新 JSON 元数据
+                local UPDATED_SNIPPET_JSON=$(jq "(.[] | select(.domain == \"$DOMAIN_FOR_SNIPPET\")).custom_snippet = \"$CHOSEN_SNIPPET_PATH\"" "$PROJECTS_METADATA_FILE")
+                if ! echo "$UPDATED_SNIPPET_JSON" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                    echo -e "${RED}❌ 更新项目元数据失败！${RESET}"
+                    continue
+                fi
+                mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                echo -e "${GREEN}✅ 项目元数据中的自定义片段路径已更新。${RESET}"
+
+                # 重新生成 Nginx 配置
+                local PROXY_TARGET_URL_SNIPPET="http://127.0.0.1:$RESOLVED_PORT_SNIPPET"
+                local INSTALLED_CRT_FILE_SNIPPET="/etc/ssl/$DOMAIN_FOR_SNIPPET.cer"
+                local INSTALLED_KEY_FILE_SNIPPET="/etc/ssl/$DOMAIN_FOR_SNIPPET.key"
+                local DOMAIN_CONF_SNIPPET="/etc/nginx/sites-available/$DOMAIN_FOR_SNIPPET.conf"
+
+                echo -e "${YELLOW}正在重新生成 $DOMAIN_FOR_SNIPPET 的 Nginx 配置...${RESET}"
+                _NGINX_FINAL_TEMPLATE "$DOMAIN_FOR_SNIPPET" "$PROXY_TARGET_URL_SNIPPET" "$INSTALLED_CRT_FILE_SNIPPET" "$INSTALLED_KEY_FILE_SNIPPET" "$CHOSEN_SNIPPET_PATH" > "$DOMAIN_CONF_SNIPPET"
+                
+                nginx -t || { echo -e "${RED}❌ Nginx 配置语法错误，请检查！${RESET}"; continue; }
+                systemctl reload nginx || { echo -e "${RED}❌ Nginx 重载失败，请手动检查 Nginx 服务状态！${RESET}"; continue; }
+                echo -e "${GREEN}🚀 域名 $DOMAIN_FOR_SNIPPET 的 Nginx 配置已更新并重载。${RESET}"
+
+                # 如果原片段文件存在且现在已清除，询问是否删除文件
+                if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" && -z "$CHOSEN_SNIPPET_PATH" && -f "$CURRENT_SNIPPET_PATH" ]]; then
+                    read -rp "检测到原有自定义片段文件 '$CURRENT_SNIPPET_PATH'。是否删除此文件？[y/N]: " DELETE_OLD_SNIPPET_CONFIRM
+                    DELETE_OLD_SNIPPET_CONFIRM=${DELETE_OLD_SNIPPET_CONFIRM:-y}
+                    if [[ "$DELETE_OLD_SNIPPET_CONFIRM" =~ ^[Yy]$ ]]; then
+                        rm -f "$CURRENT_SNIPPET_PATH"
+                        echo -e "${GREEN}✅ 已删除旧的自定义 Nginx 片段文件: $CURRENT_SNIPPET_PATH${RESET}"
+                    else
+                        echo -e "${YELLOW}ℹ️ 已保留旧的自定义 Nginx 片段文件: $CURRENT_SNIPPET_PATH${RESET}"
+                    fi
+                fi
+                ;;
             0)
                 break
                 ;;
             *)
-                echo -e "${RED}❌ 无效选项，请输入 0-3 ${RESET}"
+                echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
                 ;;
-        esac
+        esac # Corrected from </case>
     done
 }
 
@@ -1217,7 +1285,7 @@ check_and_auto_renew_certs() {
             echo -e "${YELLOW}⚠️ 域名 $DOMAIN 证书即将到期 (${LEFT_DAYS}天剩余)，尝试自动续期 (验证方式: $ACME_VALIDATION_METHOD)...${RESET}"
             local RENEW_CMD_LOG_OUTPUT=$(mktemp)
 
-            local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN\" --ecc --server \"$CA_SERVER_URL\" --debug 2"
+            local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN\" --ecc --server \"$CA_SERVER_URL\"" # 移除了 --force
             if [ "$USE_WILDCARD" = "y" ]; then
                 RENEW_COMMAND+=" -d \"*.$DOMAIN\""
             fi
@@ -1325,7 +1393,7 @@ manage_acme_accounts() {
             *)
                 echo -e "${RED}❌ 无效选项，请输入 0-3 ${RESET}"
                 ;;
-        esac # Corrected from </case>
+        esac 
     done
 }
 
