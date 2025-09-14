@@ -49,7 +49,7 @@ MAGENTA="\033[35m"
 RESET="\033[0m"
 
 LOG_FILE="/var/log/nginx_ssl_manager.log"
-PROJECTS_METADATA_FILE="/etc/nginx/projects.json" # <-- 修改点：元数据文件路径
+PROJECTS_METADATA_FILE="/etc/nginx/projects.json" # <-- 修改点：元数据文件路径已更改
 RENEW_THRESHOLD_DAYS=30 # 证书在多少天内到期时触发自动续期
 
 # --- 日志重定向 ---
@@ -595,6 +595,33 @@ configure_nginx_projects() {
             done
         fi
 
+        # --- 新增证书存在性检测逻辑 ---
+        local INSTALLED_CRT_FILE="/etc/ssl/$MAIN_DOMAIN.cer"
+        local INSTALLED_KEY_FILE="/etc/ssl/$MAIN_DOMAIN.key"
+        local SHOULD_ISSUE_CERT="y" # 默认申请证书
+
+        if [[ -f "$INSTALLED_CRT_FILE" && -f "$INSTALLED_KEY_FILE" ]]; then
+            local EXISTING_END_DATE=$(openssl x509 -enddate -noout -in "$INSTALLED_CRT_FILE" 2>/dev/null | cut -d= -f2 || echo "未知日期")
+            local EXISTING_END_TS=$(date -d "$EXISTING_END_DATE" +%s 2>/dev/null || echo 0)
+            local NOW_TS=$(date +%s)
+            local EXISTING_LEFT_DAYS=$(( (EXISTING_END_TS - NOW_TS) / 86400 ))
+
+            echo -e "${YELLOW}⚠️ 域名 $MAIN_DOMAIN 已存在有效期至 ${EXISTING_END_DATE} 的证书 ($EXISTING_LEFT_DAYS 天剩余)。${RESET}"
+            echo -e "您想："
+            echo "1) 重新申请/续期证书 (推荐更新过期或即将过期的证书) [默认]"
+            echo "2) 使用现有证书 (跳过证书申请步骤)"
+            read -rp "请输入选项 [1]: " CERT_ACTION_CHOICE
+            CERT_ACTION_CHOICE=${CERT_ACTION_CHOICE:-1}
+
+            if [ "$CERT_ACTION_CHOICE" == "2" ]; then
+                SHOULD_ISSUE_CERT="n"
+                echo -e "${GREEN}✅ 已选择使用现有证书。${RESET}"
+            else
+                echo -e "${YELLOW}ℹ️ 将重新申请/续期证书。${RESET}"
+            fi
+        fi
+        # --- 证书存在性检测逻辑结束 ---
+
         # 5. 构建新的项目 JSON 对象并添加到元数据文件
         local NEW_PROJECT_JSON=$(jq -n \
             --arg domain "$MAIN_DOMAIN" \
@@ -607,8 +634,8 @@ configure_nginx_projects() {
             --arg wildcard "$USE_WILDCARD" \
             --arg ca_url "$ACME_CA_SERVER_URL" \
             --arg ca_name "$ACME_CA_SERVER_NAME" \
-            --arg cert_file "/etc/ssl/$MAIN_DOMAIN.cer" \
-            --arg key_file "/etc/ssl/$MAIN_DOMAIN.key" \
+            --arg cert_file "$INSTALLED_CRT_FILE" \
+            --arg key_file "$INSTALLED_KEY_FILE" \
             '{domain: $domain, type: $type, name: $name, resolved_port: $resolved_port, custom_snippet: $custom_snippet, acme_validation_method: $acme_method, dns_api_provider: $dns_provider, use_wildcard: $wildcard, ca_server_url: $ca_url, ca_server_name: $ca_name, cert_file: $cert_file, key_file: $key_file}')
         
         # 将新项目添加到 JSON 文件
@@ -620,8 +647,8 @@ configure_nginx_projects() {
         echo -e "${GREEN}✅ 项目元数据已保存到 $PROJECTS_METADATA_FILE。${RESET}"
 
 
-        # 6. 生成 Nginx 临时配置（仅当使用 http-01 验证时才需要）
-        if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then
+        # 6. 生成 Nginx 临时配置（仅当使用 http-01 验证且需要申请证书时才需要）
+        if [ "$SHOULD_ISSUE_CERT" = "y" ] && [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then
             echo -e "${YELLOW}生成 Nginx 临时 HTTP 配置以进行证书验证...${RESET}"
             _NGINX_HTTP_CHALLENGE_TEMPLATE "$MAIN_DOMAIN" > "$DOMAIN_CONF"
             
@@ -637,66 +664,68 @@ configure_nginx_projects() {
             echo -e "${GREEN}✅ Nginx 已重启，准备申请证书。${RESET}"
         fi
 
-        # 7. 申请证书
-        echo -e "${YELLOW}正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)...${RESET}"
-        local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp) # Capture acme.sh output for error analysis
+        # 7. 申请证书 (如果用户选择重新申请)
+        if [ "$SHOULD_ISSUE_CERT" = "y" ]; then
+            echo -e "${YELLOW}正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)...${RESET}"
+            local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp) # Capture acme.sh output for error analysis
 
-        ACME_ISSUE_COMMAND="$ACME_BIN --issue -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
-        if [ "$USE_WILDCARD" = "y" ]; then
-            ACME_ISSUE_COMMAND+=" -d \"*.$MAIN_DOMAIN\"" # 如果是泛域名，添加泛域名到 issue 命令
-        fi
+            ACME_ISSUE_COMMAND="$ACME_BIN --issue -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
+            if [ "$USE_WILDCARD" = "y" ]; then
+                ACME_ISSUE_COMMAND+=" -d \"*.$MAIN_DOMAIN\"" # 如果是泛域名，添加泛域名到 issue 命令
+            fi
 
-        if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then
-            ACME_ISSUE_COMMAND+=" -w /var/www/html"
-        elif [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then
-            ACME_ISSUE_COMMAND+=" --dns $DNS_API_PROVIDER"
-        fi
+            if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then
+                ACME_ISSUE_COMMAND+=" -w /var/www/html"
+            elif [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then
+                ACME_ISSUE_COMMAND+=" --dns $DNS_API_PROVIDER"
+            fi
 
-        # Execute acme.sh command and capture output
-        if ! eval "$ACME_ISSUE_COMMAND" > "$ACME_ISSUE_CMD_LOG_OUTPUT" 2>&1; then
-            echo -e "${RED}❌ 域名 $MAIN_DOMAIN 的证书申请失败！${RESET}"
-            cat "$ACME_ISSUE_CMD_LOG_OUTPUT"
-            analyze_acme_error "$(cat "$ACME_ISSUE_CMD_LOG_OUTPUT")" # Analyze error
+            # Execute acme.sh command and capture output
+            if ! eval "$ACME_ISSUE_COMMAND" > "$ACME_ISSUE_CMD_LOG_OUTPUT" 2>&1; then
+                echo -e "${RED}❌ 域名 $MAIN_DOMAIN 的证书申请失败！${RESET}"
+                cat "$ACME_ISSUE_CMD_LOG_OUTPUT"
+                analyze_acme_error "$(cat "$ACME_ISSUE_CMD_LOG_OUTPUT")" # Analyze error
+                rm -f "$ACME_ISSUE_CMD_LOG_OUTPUT"
+
+                # 清理可能残留的临时配置和元数据
+                rm -f "$DOMAIN_CONF"
+                rm -f "/etc/nginx/sites-enabled/$MAIN_DOMAIN.conf"
+                rm -rf "/etc/ssl/$MAIN_DOMAIN" # 删除证书目录和元数据 (注意：现在cert_file和key_file在json里，这里可能要更精确删除)
+                # 如果指定了自定义片段文件，也尝试删除
+                if [[ -n "$CUSTOM_NGINX_SNIPPET_FILE" ]]; then
+                    echo -e "${YELLOW}⚠️ 证书申请失败，删除自定义 Nginx 片段文件: $CUSTOM_NGINX_SNIPPET_FILE${RESET}"
+                    rm -f "$CUSTOM_NGINX_SNIPPET_FILE"
+                fi
+                # 从 JSON 元数据中移除此项目
+                if jq -e ".[] | select(.domain == \"$MAIN_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
+                    echo -e "${YELLOW}⚠️ 从元数据中移除失败的项目 $MAIN_DOMAIN。${RESET}"
+                    jq "del(.[] | select(.domain == \"$MAIN_DOMAIN\"))" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && \
+                    mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                fi
+                continue # 尝试处理下一个域名
+            fi
             rm -f "$ACME_ISSUE_CMD_LOG_OUTPUT"
+            
+            # 证书安装目标文件 (从 JSON 读取，确保与创建时一致)
+            # acme.sh --install-cert 应该知道如何找到正确的 ECC 证书
+            # 这里 INSTALLED_CRT_FILE 和 INSTALLED_KEY_FILE 已经预设为 /etc/ssl/$MAIN_DOMAIN.cer 和 .key
+            # acme.sh 会将生成的证书复制到这些位置
+            echo -e "${GREEN}✅ 证书已成功签发，正在安装并更新 Nginx 配置...${RESET}"
 
-            # 清理可能残留的临时配置和元数据
-            rm -f "$DOMAIN_CONF"
-            rm -f "/etc/nginx/sites-enabled/$MAIN_DOMAIN.conf"
-            rm -rf "/etc/ssl/$MAIN_DOMAIN" # 删除证书目录和元数据
-            # 如果指定了自定义片段文件，也尝试删除
-            if [[ -n "$CUSTOM_NGINX_SNIPPET_FILE" ]]; then
-                echo -e "${YELLOW}⚠️ 证书申请失败，删除自定义 Nginx 片段文件: $CUSTOM_NGINX_SNIPPET_FILE${RESET}"
-                rm -f "$CUSTOM_NGINX_SNIPPET_FILE"
+            # 8. 安装证书并生成最终的 Nginx 配置
+            # acme.sh --install-cert 命令在安装泛域名时也需要 -d "wildcard.domain"
+            INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
+            if [ "$USE_WILDCARD" = "y" ]; then
+                INSTALL_CERT_DOMAINS+=" -d \"*.$MAIN_DOMAIN\""
             fi
-            # 从 JSON 元数据中移除此项目
-            if jq -e ".[] | select(.domain == \"$MAIN_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
-                echo -e "${YELLOW}⚠️ 从元数据中移除失败的项目 $MAIN_DOMAIN。${RESET}"
-                jq "del(.[] | select(.domain == \"$MAIN_DOMAIN\"))" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && \
-                mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
-            fi
-            continue # 尝试处理下一个域名
+
+            "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
+                --key-file       "$INSTALLED_KEY_FILE" \
+                --fullchain-file "$INSTALLED_CRT_FILE" \
+                --reloadcmd      "systemctl reload nginx" # acme.sh 会在证书安装后自动执行 reload
+        else
+            echo -e "${YELLOW}ℹ️ 未进行证书申请或续期，将使用现有证书。${RESET}"
         fi
-        rm -f "$ACME_ISSUE_CMD_LOG_OUTPUT"
-        
-        # 证书安装目标文件 (从 JSON 读取，确保与创建时一致)
-        # 这里实际上是 acme.sh 实际安装的路径，而不是我们元数据中存的路径
-        # acme.sh --install-cert 应该知道如何找到正确的 ECC 证书
-        INSTALLED_CRT_FILE="/etc/ssl/$MAIN_DOMAIN.cer" # 保持与元数据中cert_file一致
-        INSTALLED_KEY_FILE="/etc/ssl/$MAIN_DOMAIN.key" # 保持与元数据中key_file一致
-
-        echo -e "${GREEN}✅ 证书已成功签发，正在安装并更新 Nginx 配置...${RESET}"
-
-        # 8. 安装证书并生成最终的 Nginx 配置
-        # acme.sh --install-cert 命令在安装泛域名时也需要 -d "wildcard.domain"
-        INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
-        if [ "$USE_WILDCARD" = "y" ]; then
-            INSTALL_CERT_DOMAINS+=" -d \"*.$MAIN_DOMAIN\""
-        fi
-
-        "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
-            --key-file       "$INSTALLED_KEY_FILE" \
-            --fullchain-file "$INSTALLED_CRT_FILE" \
-            --reloadcmd      "systemctl reload nginx" # acme.sh 会在证书安装后自动执行 reload
 
         # 生成最终的 Nginx 配置 (HTTP redirect + HTTPS proxy)
         echo -e "${YELLOW}生成 $MAIN_DOMAIN 的最终 Nginx 配置...${RESET}"
@@ -1026,7 +1055,7 @@ manage_configs() {
             fi
         fi
 
-        printf "${MAGENTA}%-4s${RESET} | %-25s | %-8s | %-20s | %-10s | %-15s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \
+        printf "${MAGENTA}%-4s | %-25s | %-8s | %-20s | %-10s | %-15s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \
             "$INDEX" "$DOMAIN" "$PROJECT_TYPE_DISPLAY" "$PROJECT_DETAIL_DISPLAY" "$CUSTOM_SNIPPET_FILE_DISPLAY" "$ACME_METHOD_DISPLAY" "$WILDCARD_DISPLAY" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE"
     done
 
@@ -1119,20 +1148,18 @@ manage_configs() {
                     rm -f "/etc/nginx/sites-available/$DOMAIN_TO_DELETE.conf"
                     rm -f "/etc/nginx/sites-enabled/$DOMAIN_TO_DELETE.conf"
                     
-                    # 删除证书文件，只有在证书文件路径在 /etc/ssl/$DOMAIN_TO_DELETE/ 且是脚本默认创建时才删除整个目录
-                    # 否则只删除 cert_file 和 key_file
-                    # 注意：如果 cert_file 和 key_file 是自定义路径，这里只会删除文件，不会删除父目录
+                    # 删除证书文件，只有在证书文件路径是脚本默认创建时才尝试删除
                     if [[ "$CERT_FILE_TO_DELETE" == "/etc/ssl/$DOMAIN_TO_DELETE.cer" && "$KEY_FILE_TO_DELETE" == "/etc/ssl/$DOMAIN_TO_DELETE.key" ]]; then
-                        rm -f "$CERT_FILE_TO_DELETE"
-                        rm -f "$KEY_FILE_TO_DELETE"
+                        if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; fi
+                        if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; fi
                         # 如果 /etc/ssl/$DOMAIN_TO_DELETE 目录存在且为空，则删除
                         if [ -d "/etc/ssl/$DOMAIN_TO_DELETE" ] && [ -z "$(ls -A "/etc/ssl/$DOMAIN_TO_DELETE")" ]; then
                              rmdir "/etc/ssl/$DOMAIN_TO_DELETE"
                              echo -e "${GREEN}✅ 已删除默认证书目录 /etc/ssl/$DOMAIN_TO_DELETE${RESET}"
                         fi
-                    else
-                        rm -f "$CERT_FILE_TO_DELETE"
-                        rm -f "$KEY_FILE_TO_DELETE"
+                    else # 如果是自定义路径的证书文件
+                        if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; fi
+                        if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; fi
                         echo -e "${GREEN}✅ 已删除证书文件: $CERT_FILE_TO_DELETE 和 $KEY_FILE_TO_DELETE${RESET}"
                     fi
 
@@ -1530,9 +1557,9 @@ manage_configs() {
             5) # 导入现有 Nginx 配置到本脚本管理
                 import_existing_project
                 # 导入后，返回 manage_configs 顶层，重新显示列表
-                # 为了确保列表更新，这里应该重新调用 manage_configs，或者直接 break 两次回到主菜单让用户重新进入
-                # 直接 break 退出当前 while 循环
-                break 
+                # 这里使用 'continue' 重新进入 manage_configs 的 while 循环，而不是 break
+                # 这样可以再次显示更新后的列表，并允许用户继续其他管理操作
+                continue 
                 ;;
             0)
                 break
@@ -1566,20 +1593,20 @@ check_and_auto_renew_certs() {
         local DNS_API_PROVIDER=$(echo "$project_json" | jq -r '.dns_api_provider')
         local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')
         local CA_SERVER_URL=$(echo "$project_json" | jq -r '.ca_server_url')
-        local CERT_FILE=$(echo "$project_json" | jq -r '.cert_file // "/etc/ssl/'"$DOMAIN"'.cer"') # NEW
-        local KEY_FILE=$(echo "$project_json" | jq -r '.key_file // "/etc/ssl/'"$DOMAIN"'.key"')   # NEW
+        local CERT_FILE=$(echo "$project_json" | jq -r '.cert_file // "/etc/ssl/'"$DOMAIN"'.cer"') 
+        local KEY_FILE=$(echo "$project_json" | jq -r '.key_file // "/etc/ssl/'"$DOMAIN"'.key"')   
 
-        if [[ ! -f "$CERT_FILE" ]]; then # Use $CERT_FILE
+        if [[ ! -f "$CERT_FILE" ]]; then
             echo -e "${YELLOW}⚠️ 域名 $DOMAIN 证书文件 $CERT_FILE 不存在，跳过续期。${RESET}"
             continue
         fi
 
-        if [ "$ACME_VALIDATION_METHOD" = "imported" ]; then # NEW: Handle imported certs
+        if [ "$ACME_VALIDATION_METHOD" = "imported" ]; then 
             echo -e "${YELLOW}ℹ️ 域名 $DOMAIN 证书是导入的，本脚本无法自动续期。请手动或通过 '编辑项目核心配置' 转换为 acme.sh 管理。${RESET}"
             continue
         fi
 
-        local END_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2) # Use $CERT_FILE
+        local END_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2) 
         local END_TS=0
         if date --version >/dev/null 2>&1; then # GNU date
             END_TS=$(date -d "$END_DATE" +%s 2>/dev/null)
