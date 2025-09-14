@@ -61,7 +61,7 @@ if command -v ln >/dev/null 2>&1 && [ ! -L "$BIN_DIR/jb" ]; then
     JB_LINK_STATUS="${YELLOW}✅ 快捷指令：jb 已创建。您现在可以直接输入 'jb' 运行此脚本。${NC}"
 elif command -v jb >/dev/null 2>&1; then
     # 如果 jb 命令已经存在（可能是软链接已存在），则不重复创建
-    JB_LINK_STATUS="${YELLOW}✅ 快捷指令：jb 已存在。${NC}"
+    JB_LINK_STATUS="${YELLOW}✅ 快捷指令：jb${NC}" # <-- 修改点 1
 else
     # 如果软链接失败且 jb 命令不存在，使用 alias 临时模式
     alias jb="bash $SCRIPT_PATH"
@@ -75,7 +75,7 @@ echo -e "$JB_LINK_STATUS"
 if [ "$SAVE_SELF" = true ]; then
     echo -e "${GREEN}跳过自动更新检查 (已手动更新脚本)。${NC}"
 else
-    echo -e "${YELLOW}🔍 检查脚本更新...${NC}"
+    # echo -e "${YELLOW}🔍 检查脚本更新...${NC}" # <-- 修改点 2 (已注释或移除)
     TEMP_REMOTE_SCRIPT="/tmp/$(basename "$SCRIPT_PATH").tmp" # 使用 SCRIPT_PATH 的文件名作为临时文件
 
     # 尝试静默下载远程脚本
@@ -95,7 +95,7 @@ else
                 echo -e "${RED}❌ 自动更新脚本失败！请检查权限或网络连接。${NC}"
             fi
         else
-            echo -e "${GREEN}✅ 脚本已经是最新版本。${NC}"
+            echo -e "${GREEN}✅ 脚本已经是最新版本${NC}" # <-- 修改点 3
         fi
         rm -f "$TEMP_REMOTE_SCRIPT" # 清理临时文件
     else
