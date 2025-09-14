@@ -57,7 +57,7 @@ while true; do
                 if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
                     echo -e "${RED}❌ 域名解析错误！${RESET}"
                     echo "   服务器公网IP: $SERVER_IP"
-                    echo "   域名解析到的IP: $DOMAIN_IP"
+                    echo "   域名解析到的IP: $SERVER_IP"
                     echo "   请确保域名A记录指向本服务器。"
                     read -rp "域名解析与本机IP不符，可能导致证书申请失败。是否继续？[y/N]: " PROCEED_ANYWAY
                     if [[ "$PROCEED_ANYWAY" =~ ^[Yy]$ || -z "$PROCEED_ANYWAY" ]]; then
@@ -256,16 +256,14 @@ while true; do
                             APPLY_TIME_FILE="$CERT_DIR/.apply_time"
                         fi
                     elif [[ "$BASE_DIR" == "$HOME/.acme.sh" ]]; then
-                        # 尝试 _ecc 目录
+                        # acme.sh 存储证书在如 ~/.acme.sh/domain_ecc/ 或 ~/.acme.sh/domain/ 的目录中。
+                        # CERT_DIR 已经是这些目录之一。
+                        # 我们需要在当前 CERT_DIR 中查找 fullchain.cer 和 key 文件 (通常以基础域名命名)。
                         if [[ -f "$CERT_DIR/fullchain.cer" && -f "$CERT_DIR/$CURRENT_DOMAIN.key" ]]; then
                             CRT_FILE="$CERT_DIR/fullchain.cer"
                             KEY_FILE="$CERT_DIR/$CURRENT_DOMAIN.key"
-                        # 尝试非 _ecc 目录
-                        elif [[ -f "$HOME/.acme.sh/$CURRENT_DOMAIN/fullchain.cer" && -f "$HOME/.acme.sh/$CURRENT_DOMAIN/$CURRENT_DOMAIN.key" ]]; then
-                            # 如果当前的 CERT_DIR 是 _ecc 后缀，但实际证书在非 _ecc 目录中
-                            CRT_FILE="$HOME/.acme.sh/$CURRENT_DOMAIN/fullchain.cer"
-                            KEY_FILE="$HOME/.acme.sh/$CURRENT_DOMAIN/$CURRENT_DOMAIN.key"
                         fi
+                        # 不需要再尝试跳转到其他 _ecc 或非 _ecc 目录，外层循环会处理所有目录。
                     fi
 
 
