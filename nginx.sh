@@ -485,10 +485,10 @@ configure_nginx_projects() {
                         echo -e "${RED}❌ 无效的 DNS 服务商选择，将尝试使用 dns_cf。请确保环境变量已设置。${RESET}"
                         DNS_API_PROVIDER="dns_cf"
                         ;;
-                esac
+                esac # <-- 这里是内部 case 的 esac
                 ;;
             *) echo -e "${YELLOW}⚠️ 无效选择，将使用默认 http-01 验证方式。${RESET}";;
-        esmeac
+        esac # <-- 修正点：将 esmeac 改为 esac
         echo -e "${BLUE}➡️ 选定验证方式: $ACME_VALIDATION_METHOD${RESET}"
         if [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then
             echo -e "${BLUE}➡️ 选定 DNS API 服务商: $DNS_API_PROVIDER${RESET}"
@@ -825,8 +825,8 @@ manage_configs() {
         echo -e "\n${BLUE}请选择管理操作：${RESET}"
         echo "1. 手动续期指定域名证书"
         echo "2. 删除指定域名配置及证书"
-        echo "3. 编辑项目核心配置 (后端目标 / 验证方式等)" # <-- 菜单项修改
-        echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)" # <-- 新增选项
+        echo "3. 编辑项目核心配置 (后端目标 / 验证方式等)"
+        echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)"
         echo "0. 返回主菜单"
         read -rp "请输入选项: " MANAGE_CHOICE
         case "$MANAGE_CHOICE" in
@@ -862,7 +862,7 @@ manage_configs() {
                     echo -e "${YELLOW}⚠️ 续期 DNS 验证证书需要设置相应的 DNS API 环境变量。${RESET}"
                 fi
 
-                if ! eval "$RENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then
+                if ! eval "$REENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then
                     echo -e "${RED}❌ 续期失败：$DOMAIN_TO_RENEW。${RESET}"
                     cat "$RENEW_CMD_LOG_OUTPUT"
                     analyze_acme_error "$(cat "$RENEW_CMD_LOG_OUTPUT")"
@@ -1141,7 +1141,7 @@ manage_configs() {
                     echo -e "${YELLOW}ℹ️ 项目配置已修改。请手动重新加载 Nginx (systemctl reload nginx) 以确保更改生效。${RESET}"
                 fi
                 ;;
-            4) # 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除) <-- 新增逻辑块
+            4) # 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)
                 read -rp "请输入要管理片段的域名: " DOMAIN_FOR_SNIPPET
                 if [[ -z "$DOMAIN_FOR_SNIPPET" ]]; then
                     echo -e "${RED}❌ 域名不能为空！${RESET}"
@@ -1197,9 +1197,10 @@ manage_configs() {
                 if ! echo "$UPDATED_SNIPPET_JSON" > "${PROJECTS_METADATA_FILE}.tmp"; then
                     echo -e "${RED}❌ 更新项目元数据失败！${RESET}"
                     continue
+                else
+                    mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                    echo -e "${GREEN}✅ 项目元数据中的自定义片段路径已更新。${RESET}"
                 fi
-                mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
-                echo -e "${GREEN}✅ 项目元数据中的自定义片段路径已更新。${RESET}"
 
                 # 重新生成 Nginx 配置
                 local PROXY_TARGET_URL_SNIPPET="http://127.0.0.1:$RESOLVED_PORT_SNIPPET"
@@ -1232,7 +1233,7 @@ manage_configs() {
             *)
                 echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
                 ;;
-        esac # Corrected from </case>
+        esac
     done
 }
 
@@ -1419,28 +1420,4 @@ main_menu() {
                 manage_configs
                 ;;
             3)
-                check_and_auto_renew_certs
-                ;;
-            4)
-                manage_acme_accounts
-                ;;
-            0)
-                echo -e "${BLUE}👋 感谢使用，已退出。${RESET}"
-                echo -e "${BLUE}--- 脚本执行结束: $(date +"%Y-%m-%d %H:%M:%S") ---${RESET}"
-                exit 0
-                ;;
-            *)
-                echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
-                ;;
-        esac
-    done
-}
-
-# --- 脚本入口 ---
-# 如果脚本作为cronjob直接运行，并且参数为续期选项，则直接执行续期功能
-if [[ "$1" == "3" ]]; then
-    check_and_auto_renew_certs
-    exit 0
-fi
-
-main_menu
+                chec
