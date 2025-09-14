@@ -16,7 +16,8 @@ BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
 # 格式: "显示名:真实路径"
 SCRIPTS=(
-    "nginx_cf:scripts/tools/nginx_ch.sh"
+    "nginx_cf:/tools/nginx_ch.sh"
+    "安装脚本:scripts/install.sh"
     
 )
 
