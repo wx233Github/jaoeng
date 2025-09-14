@@ -223,55 +223,55 @@ while true; do
 
             SCAN_DIRS=("/etc/ssl" "$HOME/.acme.sh")
             FOUND_CERT=false
+            declare -A listed_domains # 用于记录已经显示过的域名
 
             for BASE_DIR in "${SCAN_DIRS[@]}"; do
                 [[ -d "$BASE_DIR" ]] || continue
 
-                # 遍历 /etc/ssl/DOMAIN 或 ~/.acme.sh/DOMAIN_ecc / ~/.acme.sh/DOMAIN
-                for DOMAIN_PATH in "$BASE_DIR"/*; do
-                    [[ -d "$DOMAIN_PATH" ]] || continue
+                # 遍历目录，寻找可能的证书路径
+                # 注意：acme.sh 的目录结构可能是 ~/.acme.sh/your.domain_ecc/ 或 ~/.acme.sh/your.domain/
+                for CERT_DIR in "$BASE_DIR"/*; do
+                    [[ -d "$CERT_DIR" ]] || continue # 跳过非目录文件
                     
-                    # 尝试从目录名获取域名，并处理 acme.sh 的 _ecc 后缀
-                    DOMAIN=$(basename "$DOMAIN_PATH")
-                    if [[ "$DOMAIN" =~ ^(.*)_ecc$ ]]; then
-                        DOMAIN="${BASH_REMATCH[1]}"
+                    # 尝试从目录名获取域名，并处理 _ecc 后缀
+                    CURRENT_DOMAIN=$(basename "$CERT_DIR")
+                    if [[ "$CURRENT_DOMAIN" =~ ^(.*)_ecc$ ]]; then
+                        CURRENT_DOMAIN="${BASH_REMATCH[1]}"
                     fi
 
-                    # 检查证书和密钥文件是否存在
-                    # 优先检查 /etc/ssl/$DOMAIN.crt / $DOMAIN.key
-                    # 其次检查 acme.sh 默认的 fullchain.cer / DOMAIN.key
+                    # 如果域名已经处理过（来自 /etc/ssl），则跳过本次 acme.sh 目录的检查
+                    if [[ "$BASE_DIR" == "$HOME/.acme.sh" && -n "${listed_domains[$CURRENT_DOMAIN]}" ]]; then
+                        continue
+                    fi
+
                     CRT_FILE=""
                     KEY_FILE=""
                     APPLY_TIME_FILE=""
 
-                    # --- 优先从 /etc/ssl/ 结构查找 ---
+                    # --- 根据目录类型确定证书和密钥文件路径 ---
                     if [[ "$BASE_DIR" == "/etc/ssl" ]]; then
-                        if [[ -f "$DOMAIN_PATH/$DOMAIN.crt" && -f "$DOMAIN_PATH/$DOMAIN.key" ]]; then
-                            CRT_FILE="$DOMAIN_PATH/$DOMAIN.crt"
-                            KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
-                            APPLY_TIME_FILE="$DOMAIN_PATH/.apply_time"
+                        if [[ -f "$CERT_DIR/$CURRENT_DOMAIN.crt" && -f "$CERT_DIR/$CURRENT_DOMAIN.key" ]]; then
+                            CRT_FILE="$CERT_DIR/$CURRENT_DOMAIN.crt"
+                            KEY_FILE="$CERT_DIR/$CURRENT_DOMAIN.key"
+                            APPLY_TIME_FILE="$CERT_DIR/.apply_time"
                         fi
-                    # --- 从 ~/.acme.sh/ 结构查找 ---
                     elif [[ "$BASE_DIR" == "$HOME/.acme.sh" ]]; then
                         # 尝试 _ecc 目录
-                        if [[ -f "$DOMAIN_PATH/fullchain.cer" && -f "$DOMAIN_PATH/$DOMAIN.key" ]]; then
-                            CRT_FILE="$DOMAIN_PATH/fullchain.cer"
-                            KEY_FILE="$DOMAIN_PATH/$DOMAIN.key"
-                            # acme.sh 自己的证书没有 .apply_time 文件，可以尝试从 acme.sh list 中获取时间，或者直接从证书的Not Before
-                        elif [[ -f "$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer" && -f "$HOME/.acme.sh/${DOMAIN}_ecc/$DOMAIN.key" ]]; then
-                            # 如果当前循环的 DOMAIN_PATH 是非 _ecc 的，但实际证书在 _ecc 里
-                            CRT_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-                            KEY_FILE="$HOME/.acme.sh/${DOMAIN}_ecc/$DOMAIN.key"
-                        elif [[ -f "$HOME/.acme.sh/$DOMAIN/fullchain.cer" && -f "$HOME/.acme.sh/$DOMAIN/$DOMAIN.key" ]]; then
-                             # 如果当前循环的 DOMAIN_PATH 是 _ecc 的，但实际证书在非 _ecc 里
-                            CRT_FILE="$HOME/.acme.sh/$DOMAIN/fullchain.cer"
-                            KEY_FILE="$HOME/.acme.sh/$DOMAIN/$DOMAIN.key"
+                        if [[ -f "$CERT_DIR/fullchain.cer" && -f "$CERT_DIR/$CURRENT_DOMAIN.key" ]]; then
+                            CRT_FILE="$CERT_DIR/fullchain.cer"
+                            KEY_FILE="$CERT_DIR/$CURRENT_DOMAIN.key"
+                        # 尝试非 _ecc 目录
+                        elif [[ -f "$HOME/.acme.sh/$CURRENT_DOMAIN/fullchain.cer" && -f "$HOME/.acme.sh/$CURRENT_DOMAIN/$CURRENT_DOMAIN.key" ]]; then
+                            # 如果当前的 CERT_DIR 是 _ecc 后缀，但实际证书在非 _ecc 目录中
+                            CRT_FILE="$HOME/.acme.sh/$CURRENT_DOMAIN/fullchain.cer"
+                            KEY_FILE="$HOME/.acme.sh/$CURRENT_DOMAIN/$CURRENT_DOMAIN.key"
                         fi
                     fi
 
 
                     if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
                         FOUND_CERT=true
+                        listed_domains["$CURRENT_DOMAIN"]=1 # 标记此域名已处理
 
                         APPLY_TIME=""
                         if [[ -f "$APPLY_TIME_FILE" ]]; then # 优先从自定义文件获取
@@ -325,14 +325,9 @@ while true; do
                             STATUS_TEXT="有效"
                         fi
 
-                        # 确保DOMAIN变量是正确的，不带_ecc后缀
-                        DISPLAY_DOMAIN=$(basename "$DOMAIN_PATH")
-                        if [[ "$DISPLAY_DOMAIN" =~ ^(.*)_ecc$ ]]; then
-                            DISPLAY_DOMAIN="${BASH_REMATCH[1]}"
-                        fi
-
+                        # 确保显示正确的域名（不带 _ecc 后缀）
                         printf "${STATUS_COLOR}[来源:%-15s] 域名: %-25s | 状态: %-5s | 剩余: %3d天 | 到期时间: %s | 首次申请: %s${RESET}\n" \
-                            "$(basename "$BASE_DIR")" "$DISPLAY_DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
+                            "$(basename "$BASE_DIR")" "$CURRENT_DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
                     fi
                 done
             done
