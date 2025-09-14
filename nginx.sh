@@ -159,7 +159,6 @@ check_domain_ip() {
     local domain="$1"
     local vps_ip_v4="$2" # VPS_IP
     local vps_ip_v6="$3" # VPS_IPV6 (global variable)
-    local can_proceed=true
 
     # 1. IPv4 解析检查
     local domain_ip_v4=$(dig +short "$domain" A | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 2>/dev/null || echo "")
@@ -497,7 +496,7 @@ configure_nginx_projects() {
             fi
         fi
 
-        # 5. 确定后端代理目标 (优化 Docker 端口选择逻辑)
+        # 3. 确定后端代理目标 (优化 Docker 端口选择逻辑)
         PROXY_TARGET_URL=""
         PROJECT_TYPE=""
         PROJECT_DETAIL="" # 存储容器名称或本地端口号
@@ -512,7 +511,7 @@ configure_nginx_projects() {
                 sed 's|/tcp||g' | awk '{print $1}' | head -n1)
 
             if [[ -n "$HOST_MAPPED_PORT" ]]; then
-                # 自动使用宿主机映射端口 (A 方案)
+                # 自动使用宿主机映射端口
                 echo -e "${GREEN}✅ 检测到容器 $TARGET_INPUT 已映射到宿主机端口: $HOST_MAPPED_PORT。将自动使用此端口。${RESET}"
                 PORT_TO_USE="$HOST_MAPPED_PORT"
                 PROXY_TARGET_URL="http://127.0.0.1:$PORT_TO_USE"
@@ -532,7 +531,7 @@ configure_nginx_projects() {
                     echo -e "${YELLOW}   未检测到容器 $TARGET_INPUT 内部暴露的端口。${RESET}"
                 fi
 
-                # 提示用户手动输入内部端口 (B 方案)
+                # 提示用户手动输入内部端口
                 while true; do
                     read -rp "请输入要代理到的容器内部端口 (例如 8080): " USER_INTERNAL_PORT
                     if [[ "$USER_INTERNAL_PORT" =~ ^[0-9]+$ ]] && (( USER_INTERNAL_PORT > 0 && USER_INTERNAL_PORT < 65536 )); then
@@ -561,7 +560,7 @@ configure_nginx_projects() {
         # 确保证书存储目录存在
         mkdir -p "/etc/ssl/$MAIN_DOMAIN"
 
-        # 6. 自定义 Nginx 配置片段 (带默认路径)
+        # 4. 自定义 Nginx 配置片段 (带默认路径)
         local CUSTOM_NGINX_SNIPPET_FILE=""
         local DEFAULT_SNIPPET_DIR="/etc/nginx/custom_snippets"
         local DEFAULT_SNIPPET_FILENAME=""
@@ -593,7 +592,7 @@ configure_nginx_projects() {
             done
         fi
 
-        # 7. 构建新的项目 JSON 对象并添加到元数据文件
+        # 5. 构建新的项目 JSON 对象并添加到元数据文件
         local NEW_PROJECT_JSON=$(jq -n \
             --arg domain "$MAIN_DOMAIN" \
             --arg type "$PROJECT_TYPE" \
@@ -616,7 +615,7 @@ configure_nginx_projects() {
         echo -e "${GREEN}✅ 项目元数据已保存到 $PROJECTS_METADATA_FILE。${RESET}"
 
 
-        # 8. 生成 Nginx 临时配置（仅当使用 http-01 验证时才需要）
+        # 6. 生成 Nginx 临时配置（仅当使用 http-01 验证时才需要）
         if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then
             echo -e "${YELLOW}生成 Nginx 临时 HTTP 配置以进行证书验证...${RESET}"
             _NGINX_HTTP_CHALLENGE_TEMPLATE "$MAIN_DOMAIN" > "$DOMAIN_CONF"
@@ -633,7 +632,7 @@ configure_nginx_projects() {
             echo -e "${GREEN}✅ Nginx 已重启，准备申请证书。${RESET}"
         fi
 
-        # 9. 申请证书
+        # 7. 申请证书
         echo -e "${YELLOW}正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)...${RESET}"
         local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp) # Capture acme.sh output for error analysis
 
@@ -680,7 +679,7 @@ configure_nginx_projects() {
 
         echo -e "${GREEN}✅ 证书已成功签发，正在安装并更新 Nginx 配置...${RESET}"
 
-        # 10. 安装证书并生成最终的 Nginx 配置
+        # 8. 安装证书并生成最终的 Nginx 配置
         # acme.sh --install-cert 命令在安装泛域名时也需要 -d "wildcard.domain"
         INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
         if [ "$USE_WILDCARD" = "y" ]; then
@@ -724,9 +723,15 @@ manage_configs() {
         return 0
     fi
 
+    CONFIGURED_DOMAINS=() # Initialize in main shell context
+    # Populate CONFIGURED_DOMAINS in the main shell context
+    while IFS= read -r domain_name; do
+        CONFIGURED_DOMAINS+=("$domain_name")
+    done < <(jq -r '.[] | .domain' "$PROJECTS_METADATA_FILE")
+
+
     local PROJECTS_ARRAY_RAW=$(jq -c . "$PROJECTS_METADATA_FILE")
     local INDEX=0
-    CONFIGURED_DOMAINS=() # 用于存储域名，方便管理操作
     
     # Header for the table
     printf "${BLUE}%-4s | %-25s | %-8s | %-20s | %-10s | %-15s | %-4s | %-5s | %3s天 | %s${RESET}\n" \
@@ -744,8 +749,6 @@ manage_configs() {
         local ACME_VALIDATION_METHOD=$(echo "$project_json" | jq -r '.acme_validation_method')
         local DNS_API_PROVIDER=$(echo "$project_json" | jq -r '.dns_api_provider')
         local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')
-
-        CONFIGURED_DOMAINS+=("$DOMAIN") # Add to the list for management
 
         # Format display strings
         local PROJECT_TYPE_DISPLAY="$PROJECT_TYPE"
@@ -956,14 +959,16 @@ manage_configs() {
                 local NEW_ACME_VALIDATION_METHOD="$EDIT_ACME_VALIDATION_METHOD"
                 local NEW_DNS_API_PROVIDER="$EDIT_DNS_API_PROVIDER"
                 local NEW_USE_WILDCARD="$EDIT_USE_WILDCARD"
-                local NEED_REISSUE="n" # 标记是否需要重新申请证书或更新Nginx配置
+                local NEW_CA_SERVER_URL="$EDIT_CA_SERVER_URL"
+                local NEW_CA_SERVER_NAME="$EDIT_CA_SERVER_NAME"
+
+                local NEED_REISSUE_OR_RELOAD_NGINX="n" # 标记是否需要重新申请证书或更新Nginx配置
 
                 # 编辑后端目标
-                read -rp "修改后端目标 (格式：docker容器名 或 本地端口) [当前: $EDIT_NAME]: " NEW_TARGET_INPUT
+                read -rp "修改后端目标 (格式：docker容器名 或 本地端口) [当前: $EDIT_NAME，回车不修改]: " NEW_TARGET_INPUT
                 if [[ -n "$NEW_TARGET_INPUT" ]]; then
-                    # 检测是否修改了类型或名称
                     if [[ "$NEW_TARGET_INPUT" != "$EDIT_NAME" ]]; then
-                        NEED_REISSUE="y" # 后端目标改变，可能需要重新生成Nginx配置
+                        NEED_REISSUE_OR_RELOAD_NGINX="y" # 后端目标改变，可能需要重新生成Nginx配置
                     fi
 
                     if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$NEW_TARGET_INPUT"; then
@@ -997,7 +1002,10 @@ manage_configs() {
                         echo -e "${GREEN}✅ 新目标是本地端口: $NEW_RESOLVED_PORT。${RESET}"
                     else
                         echo -e "${RED}❌ 无效的后端目标输入。将保留原有目标。${RESET}"
-                        NEED_REISSUE="n" # 如果输入无效，则不视为修改
+                        NEW_TYPE="$EDIT_TYPE" # Reset to old values if invalid input
+                        NEW_NAME="$EDIT_NAME"
+                        NEW_RESOLVED_PORT="$EDIT_RESOLVED_PORT"
+                        NEED_REISSUE_OR_RELOAD_NGINX="n"
                     fi
                 fi
 
@@ -1006,57 +1014,57 @@ manage_configs() {
                 if [[ "$CURRENT_SNIPPET_FOR_EDIT" = "null" ]]; then CURRENT_SNIPPET_FOR_EDIT=""; fi # Handle "null" from jq
                 read -rp "修改自定义 Nginx 片段文件路径 [当前: $( [[ -n "$CURRENT_SNIPPET_FOR_EDIT" ]] && echo "$CURRENT_SNIPPET_FOR_EDIT" || echo "无" )，回车不修改，输入 'none' 清除]: " NEW_CUSTOM_SNIPPET_INPUT
                 if [[ "$NEW_CUSTOM_SNIPPET_INPUT" = "none" ]]; then
-                    if [[ -n "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE="y"; fi
+                    if [[ -n "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
                     NEW_CUSTOM_SNIPPET=""
                     echo -e "${YELLOW}ℹ️ 自定义 Nginx 片段已清除。${RESET}"
                 elif [[ -n "$NEW_CUSTOM_SNIPPET_INPUT" ]]; then
                     if ! mkdir -p "$(dirname "$NEW_CUSTOM_SNIPPET_INPUT")"; then
                         echo -e "${RED}❌ 无法创建目录 $(dirname "$NEW_CUSTOM_SNIPPET_INPUT")。将保留原有路径。${RESET}"
                     else
-                        if [[ "$NEW_CUSTOM_SNIPPET_INPUT" != "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE="y"; fi
+                        if [[ "$NEW_CUSTOM_SNIPPET_INPUT" != "$CURRENT_SNIPPET_FOR_EDIT" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
                         NEW_CUSTOM_SNIPPET="$NEW_CUSTOM_SNIPPET_INPUT"
                         echo -e "${GREEN}✅ 自定义 Nginx 片段文件路径已更新为: $NEW_CUSTOM_SNIPPET。${RESET}"
                     fi
                 fi
 
                 # 编辑验证方式和泛域名
-                read -rp "修改证书验证方式 (http-01 / dns-01) [当前: $EDIT_ACME_VALIDATION_METHOD]: " NEW_VALIDATION_METHOD_INPUT
+                read -rp "修改证书验证方式 (http-01 / dns-01) [当前: $EDIT_ACME_VALIDATION_METHOD，回车不修改]: " NEW_VALIDATION_METHOD_INPUT
                 NEW_VALIDATION_METHOD_INPUT=${NEW_VALIDATION_METHOD_INPUT:-$EDIT_ACME_VALIDATION_METHOD}
                 if [[ "$NEW_VALIDATION_METHOD_INPUT" != "$EDIT_ACME_VALIDATION_METHOD" ]]; then
                     if [[ "$NEW_VALIDATION_METHOD_INPUT" = "http-01" || "$NEW_VALIDATION_METHOD_INPUT" = "dns-01" ]]; then
                         NEW_ACME_VALIDATION_METHOD="$NEW_VALIDATION_METHOD_INPUT"
                         echo -e "${GREEN}✅ 验证方式已更新为: $NEW_ACME_VALIDATION_METHOD。${RESET}"
-                        NEED_REISSUE="y"
+                        NEED_REISSUE_OR_RELOAD_NGINX="y" # 验证方式改变，需要重新申请证书
                     else
                         echo -e "${RED}❌ 无效的验证方式。将保留原有设置。${RESET}"
                     fi
                 fi
 
                 if [ "$NEW_ACME_VALIDATION_METHOD" = "dns-01" ]; then
-                    read -rp "修改泛域名设置 (y/n) [当前: $( [[ "$EDIT_USE_WILDCARD" = "y" ]] && echo "y" || echo "n" )]: " NEW_WILDCARD_INPUT
+                    read -rp "修改泛域名设置 (y/n) [当前: $( [[ "$EDIT_USE_WILDCARD" = "y" ]] && echo "y" || echo "n" )，回车不修改]: " NEW_WILDCARD_INPUT
                     NEW_WILDCARD_INPUT=${NEW_WILDCARD_INPUT:-$EDIT_USE_WILDCARD}
                     if [[ "$NEW_WILDCARD_INPUT" =~ ^[Yy]$ ]]; then
-                        if [[ "$EDIT_USE_WILDCARD" != "y" ]]; then NEED_REISSUE="y"; fi
+                        if [[ "$EDIT_USE_WILDCARD" != "y" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
                         NEW_USE_WILDCARD="y"
                     else
-                        if [[ "$EDIT_USE_WILDCARD" = "y" ]]; then NEED_REISSUE="y"; fi
+                        if [[ "$EDIT_USE_WILDCARD" = "y" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
                         NEW_USE_WILDCARD="n"
                     fi
                     echo -e "${GREEN}✅ 泛域名设置已更新为: $NEW_USE_WILDCARD。${RESET}"
 
-                    read -rp "修改 DNS API 服务商 (dns_cf / dns_ali) [当前: $EDIT_DNS_API_PROVIDER]: " NEW_DNS_PROVIDER_INPUT
+                    read -rp "修改 DNS API 服务商 (dns_cf / dns_ali) [当前: $EDIT_DNS_API_PROVIDER，回车不修改]: " NEW_DNS_PROVIDER_INPUT
                     NEW_DNS_PROVIDER_INPUT=${NEW_DNS_PROVIDER_INPUT:-$EDIT_DNS_API_PROVIDER}
                     if [[ "$NEW_DNS_PROVIDER_INPUT" != "$EDIT_DNS_API_PROVIDER" ]]; then
                         if [[ "$NEW_DNS_PROVIDER_INPUT" = "dns_cf" || "$NEW_DNS_PROVIDER_INPUT" = "dns_ali" ]]; then
                             NEW_DNS_API_PROVIDER="$NEW_DNS_PROVIDER_INPUT"
                             echo -e "${GREEN}✅ DNS API 服务商已更新为: $NEW_DNS_API_PROVIDER。${RESET}"
-                            NEED_REISSUE="y"
+                            NEED_REISSUE_OR_RELOAD_NGINX="y"
                         else
                             echo -e "${RED}❌ 无效的 DNS 服务商。将保留原有设置。${RESET}"
                         fi
                     fi
                 else # 如果是非 dns-01 验证，泛域名和 DNS API 设为空
-                    if [[ "$EDIT_USE_WILDCARD" = "y" || -n "$EDIT_DNS_API_PROVIDER" && "$EDIT_DNS_API_PROVIDER" != "null" ]]; then NEED_REISSUE="y"; fi
+                    if [[ "$EDIT_USE_WILDCARD" = "y" || -n "$EDIT_DNS_API_PROVIDER" && "$EDIT_DNS_API_PROVIDER" != "null" ]]; then NEED_REISSUE_OR_RELOAD_NGINX="y"; fi
                     NEW_USE_WILDCARD="n"
                     NEW_DNS_API_PROVIDER=""
                 fi
@@ -1084,7 +1092,7 @@ manage_configs() {
                 fi
 
                 # 如果有关键修改，提示重新申请证书和更新Nginx配置
-                if [ "$NEED_REISSUE" = "y" ]; then
+                if [ "$NEED_REISSUE_OR_RELOAD_NGINX" = "y" ]; then
                     echo -e "${YELLOW}ℹ️ 检测到与证书或 Nginx 配置相关的关键修改。${RESET}"
                     read -rp "是否立即更新 Nginx 配置并尝试重新申请证书？(强烈建议) [y/N]: " UPDATE_NOW
                     UPDATE_NOW=${UPDATE_NOW:-y}
@@ -1317,7 +1325,7 @@ manage_acme_accounts() {
             *)
                 echo -e "${RED}❌ 无效选项，请输入 0-3 ${RESET}"
                 ;;
-        esac
+        esac # Corrected from </case>
     done
 }
 
@@ -1367,4 +1375,4 @@ if [[ "$1" == "3" ]]; then
     exit 0
 fi
 
-main_menu
+main_menu```
