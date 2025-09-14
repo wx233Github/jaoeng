@@ -1374,3 +1374,5 @@ if [[ "$1" == "3" ]]; then
     check_and_auto_renew_certs
     exit 0
 fi
+
+main_menu
