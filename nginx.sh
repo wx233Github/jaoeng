@@ -856,7 +856,7 @@ manage_configs() {
                     echo -e "${YELLOW}⚠️ 续期 DNS 验证证书需要设置相应的 DNS API 环境变量。${RESET}"
                 fi
 
-                if ! eval "$RENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then # 变量名已修正
+                if ! eval "$RENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then
                     echo -e "${RED}❌ 续期失败：$DOMAIN_TO_RENEW。${RESET}"
                     cat "$RENEW_CMD_LOG_OUTPUT"
                     analyze_acme_error "$(cat "$RENEW_CMD_LOG_OUTPUT")"
@@ -1434,7 +1434,7 @@ main_menu() {
 
 # --- 脚本入口 ---
 # 如果脚本作为cronjob直接运行，并且参数为续期选项，则直接执行续期功能
-if [[ "$1" == "3" ]]; then
+if [[ "${1:-}" == "3" ]]; then # <-- 修正点：使用 ${1:-} 安全访问 $1
     check_and_auto_renew_certs
     exit 0
 fi
