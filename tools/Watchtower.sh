@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.5.0 增加了手动更新 Docker Compose 项目和手动更新单个 Docker 容器的选项。
+# v2.9.0 移除了手动更新 Docker 项目 (单个容器/Compose) 的选项，简化菜单。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -10,10 +10,9 @@
 # - 任务管理 (停止Watchtower, 移除Cron任务)
 # - 全面状态报告 (脚本启动时直接显示)
 # - 脚本配置查看与编辑
-# - 手动更新 Docker 项目 (单个容器/Compose)
-# - 重新加载脚本
+# - 运行一次 Watchtower (立即检查并更新)
 
-VERSION="2.5.0"
+VERSION="2.9.0"
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -590,118 +589,47 @@ view_and_edit_config() {
     esac
 }
 
-# 🔹 手动更新 Docker Compose 项目
-manual_update_compose_project() {
-    echo -e "${COLOR_YELLOW}📱 手动更新 Docker Compose 项目${COLOR_RESET}"
-    local project_dir_to_update=""
+# 🔹 运行一次 Watchtower (立即检查并更新)
+run_watchtower_once() {
+    echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
 
-    while true; do
-        read -p "请输入 Docker Compose 项目的完整目录路径 (例如 /opt/my_docker_project, 默认使用 Cron 配置的目录 ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}): " input_dir
-        input_dir=${input_dir:-$DOCKER_COMPOSE_PROJECT_DIR_CRON} # 允许空输入使用默认值
-
-        if [ -z "$input_dir" ]; then
-            echo -e "${COLOR_RED}❌ Docker Compose 目录路径不能为空。${COLOR_RESET}"
-        elif [ ! -d "$input_dir" ]; then
-            echo -e "${COLOR_RED}❌ 指定的目录 '$input_dir' 不存在。请检查路径是否正确。${COLOR_RESET}"
-        elif [ ! -f "$input_dir/docker-compose.yml" ] && [ ! -f "$input_dir/compose.yml" ]; then
-            echo -e "${COLOR_RED}❌ 在目录 '$input_dir' 中未找到 docker-compose.yml 或 compose.yml 文件。${COLOR_RESET}"
-        else
-            project_dir_to_update="$input_dir"
-            break
+    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+        echo -e "${COLOR_YELLOW}⚠️ 注意：Watchtower 容器已在后台运行。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}      本次一次性更新将独立执行，不会影响后台运行的 Watchtower 进程。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}      如果希望停止后台 Watchtower，请使用主菜单选项 4 -> 1。${COLOR_RESET}"
+        if ! confirm_action "是否继续运行一次性 Watchtower 更新？"; then
+            echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
+            return 0
         fi
-    done
+    fi
 
-    echo -e "${COLOR_BLUE}--- 正在更新项目: $project_dir_to_update ---${COLOR_RESET}"
-    local DOCKER_COMPOSE_CMD=$(get_docker_compose_command_main)
-    if [ -z "$DOCKER_COMPOSE_CMD" ]; then
-        echo -e "${COLOR_RED}❌ 错误：未找到 'docker compose' 或 'docker-compose' 命令。${COLOR_RESET}"
-        send_notify "❌ Docker 手动更新失败：未找到 Docker Compose 命令。"
+    echo "⬇️ 正在拉取 Watchtower 镜像..."
+    docker pull containrrr/watchtower || {
+        echo -e "${COLOR_RED}❌ 无法拉取 containrrr/watchtower 镜像。请检查网络连接或 Docker Hub 状态。${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：一次性 Watchtower 运行失败，无法拉取镜像。"
         return 1
+    }
+
+    local WT_ARGS="--run-once --cleanup --debug $WATCHTOWER_EXTRA_ARGS"
+    if [ -n "$WATCHTOWER_LABELS" ]; then
+        WT_ARGS="$WT_ARGS --label-enable $WATCHTOWER_LABELS"
+        echo -e "${COLOR_YELLOW}ℹ️ 一次性 Watchtower 将只更新带有标签 '$WATCHTOWER_LABELS' 的容器。${COLOR_RESET}"
     fi
 
-    if cd "$project_dir_to_update"; then
-        echo "⬇️ 正在拉取最新镜像..."
-        if "$DOCKER_COMPOSE_CMD" pull; then
-            echo "🔄 正在重启容器..."
-            if "$DOCKER_COMPOSE_CMD" up -d --remove-orphans; then
-                echo -e "${COLOR_GREEN}✅ 项目 '$project_dir_to_update' 更新成功！${COLOR_RESET}"
-                send_notify "✅ Docker 手动更新成功：项目 '$project_dir_to_update' 已更新。"
-            else
-                echo -e "${COLOR_RED}❌ 错误：启动容器失败。${COLOR_RESET}"
-                send_notify "❌ Docker 手动更新失败：项目 '$project_dir_to_update' 启动容器失败。"
-            fi
-        else
-            echo -e "${COLOR_RED}❌ 错误：拉取镜像失败。${COLOR_RESET}"
-            send_notify "❌ Docker 手动更新失败：项目 '$project_dir_to_update' 拉取镜像失败。"
-        fi
-        cd - &>/dev/null # 返回到之前的目录
+    echo -e "${COLOR_BLUE}--- 正在运行一次性 Watchtower 更新 ---${COLOR_RESET}"
+    # 使用 --rm 确保容器运行完毕后自动删除
+    local watchtower_output=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower $WT_ARGS 2>&1)
+    local watchtower_status=$?
+
+    echo "$watchtower_output" # 输出 Watchtower 的日志
+
+    if [ $watchtower_status -eq 0 ]; then
+        echo -e "${COLOR_GREEN}✅ Watchtower 一次性更新成功完成！${COLOR_RESET}"
+        send_notify "✅ Docker 自动更新助手：Watchtower 一次性更新成功完成。"
     else
-        echo -e "${COLOR_RED}❌ 错误：无法切换到目录 '$project_dir_to_update'。${COLOR_RESET}"
-        send_notify "❌ Docker 手动更新失败：无法访问目录 '$project_dir_to_update'。"
+        echo -e "${COLOR_RED}❌ Watchtower 一次性更新失败！${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：Watchtower 一次性更新失败。"
     fi
-}
-
-# 🔹 手动更新单个 Docker 容器
-manual_update_single_container() {
-    echo -e "${COLOR_YELLOW}📱 手动更新单个 Docker 容器${COLOR_RESET}"
-    local container_name=""
-    local image_name=""
-
-    while true; do
-        read -p "请输入要更新的容器名称: " container_name_input
-        if [ -z "$container_name_input" ]; then
-            echo -e "${COLOR_RED}❌ 容器名称不能为空。${COLOR_RESET}"
-            return 1 # 返回上一级菜单
-        fi
-        if ! docker ps -a --format '{{.Names}}' | grep -q "^${container_name_input}$"; then
-            echo -e "${COLOR_RED}❌ 容器 '$container_name_input' 不存在。请检查名称是否正确。${COLOR_RESET}"
-        else
-            container_name="$container_name_input"
-            break
-        fi
-    done
-
-    image_name=$(docker inspect "$container_name" --format '{{.Config.Image}}' 2>/dev/null)
-    if [ -z "$image_name" ]; then
-        echo -e "${COLOR_RED}❌ 无法获取容器 '$container_name' 的镜像名称。${COLOR_RESET}"
-        send_notify "❌ Docker 单个容器更新失败：无法获取镜像名称。"
-        return 1
-    fi
-
-    echo -e "${COLOR_BLUE}--- 正在更新容器 '$container_name' 使用的镜像 '$image_name' ---${COLOR_RESET}"
-    echo "⬇️ 正在拉取最新镜像 '$image_name'..."
-    if docker pull "$image_name"; then
-        echo -e "${COLOR_GREEN}✅ 镜像 '$image_name' 已成功拉取最新版本。${COLOR_RESET}"
-        echo -e "${COLOR_YELLOW}⚠️ 注意：为使容器生效，您需要手动停止旧容器，删除，然后使用其原始的 'docker run' 命令重新启动新容器。${COLOR_RESET}"
-        echo "   停止旧容器: docker stop $container_name"
-        echo "   删除旧容器: docker rm $container_name"
-        echo "   (然后使用您创建容器时的 'docker run ...' 命令重新启动)"
-        send_notify "✅ Docker 单个容器镜像更新成功：镜像 '$image_name' 已更新。请手动重启容器 '$container_name'。"
-    else
-        echo -e "${COLOR_RED}❌ 错误：拉取镜像 '$image_name' 失败。${COLOR_RESET}"
-        send_notify "❌ Docker 单个容器镜像更新失败：拉取镜像 '$image_name' 失败。"
-    fi
-}
-
-
-# 🔹 手动更新主菜单
-manual_update_menu() {
-    echo -e "${COLOR_YELLOW}📱 请选择手动更新类型：${COLOR_RESET}"
-    echo "1) 更新 Docker Compose 项目"
-    echo "2) 更新单个 Docker 容器"
-    read -p "请输入选择 [1-2]: " MANUAL_CHOICE
-
-    case "$MANUAL_CHOICE" in
-        1)
-            manual_update_compose_project
-            ;;
-        2)
-            manual_update_single_container
-            ;;
-        *)
-            echo -e "${COLOR_RED}❌ 输入无效，请选择 1-2 之间的数字。${COLOR_RESET}"
-            ;;
-    esac
 }
 
 
@@ -721,12 +649,10 @@ echo "1) 🚀 设置/管理 Docker 更新模式"
 echo "2) 📋 查看 Docker 容器信息"
 echo "3) ⚙️ 配置通知方式 (Telegram/Email)"
 echo "4) 🧹 管理更新任务 (停止Watchtower/移除Cron)"
-echo "5) 📊 刷新并查看当前自动化更新状态"
-echo "6) 📝 查看/编辑脚本配置"
-echo "7) 📱 手动更新 Docker 项目 (单个容器/Compose)"
-echo "8) 🔄 重新加载脚本 (当脚本自身更新时使用)"
+echo "5) 📝 查看/编辑脚本配置"
+echo "6) 🆕 运行一次 Watchtower (立即检查并更新)" # 新的选项 6
 echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-read -p "请输入选择 [1-8]: " MODE
+read -p "请输入选择 [1-6]: " MODE # 注意这里选项编号的变化
 
 case "$MODE" in
 1)
@@ -741,22 +667,14 @@ case "$MODE" in
 4)
     manage_tasks
     ;;
-5)
-    # 选项5现在只是再次调用show_status，因为它已在启动时显示
-    show_status
-    ;;
-6)
+5) # 原来的选项 6
     view_and_edit_config
     ;;
-7)
-    manual_update_menu # 调用新的手动更新子菜单
-    ;;
-8)
-    echo -e "${COLOR_YELLOW}🔄 正在重新加载脚本...${COLOR_RESET}"
-    exec "$0" # 重新执行当前脚本，用于脚本自身更新后
+6) # 原来的选项 7 (现在是新的 6)
+    run_watchtower_once
     ;;
 *)
-    echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
+    echo -e "${COLOR_RED}❌ 输入无效，请选择 1-6 之间的数字。${COLOR_RESET}"
     ;;
 esac
 
