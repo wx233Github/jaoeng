@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.13.0 优化：启动时状态报告后直接显示菜单，状态报告中Watchtower配置与运行状态区分更明确。
+# v2.13.1 修复了主菜单无法循环显示的问题，增加了退出选项，优化用户交互体验。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,7 +12,7 @@
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.13.0" # 版本更新，反映修复和优化
+VERSION="2.13.1" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -809,41 +809,46 @@ echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}
 show_status
 # 移除这里的 press_enter_to_continue，实现直接显示菜单
 
-# 3. 显示主菜单
-echo -e "\n${COLOR_GREEN}===========================================${COLOR_RESET}"
-echo "1) 🚀 设置/管理 Docker 更新模式"
-echo "2) 📋 查看 Docker 容器信息"
-echo "3) ⚙️ 配置通知方式 (Telegram/Email)"
-echo "4) 🧹 管理更新任务 (停止Watchtower/移除Cron)"
-echo "5) 📝 查看/编辑脚本配置"
-echo "6) 🆕 运行一次 Watchtower (立即检查并更新)"
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-read -p "请输入选择 [1-6]: " MODE # 注意这里选项编号的变化
+# 3. 显示主菜单并循环
+while true; do
+    echo -e "\n${COLOR_GREEN}===========================================${COLOR_RESET}"
+    echo "0) 🚪 退出脚本"
+    echo "1) 🚀 设置/管理 Docker 更新模式"
+    echo "2) 📋 查看 Docker 容器信息"
+    echo "3) ⚙️ 配置通知方式 (Telegram/Email)"
+    echo "4) 🧹 管理更新任务 (停止Watchtower/移除Cron)"
+    echo "5) 📝 查看/编辑脚本配置"
+    echo "6) 🆕 运行一次 Watchtower (立即检查并更新)"
+    echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+    read -p "请输入选择 [0-6]: " MODE # 注意这里选项编号的变化
 
-case "$MODE" in
-1)
-    update_menu
-    ;;
-2)
-    show_container_info
-    ;;
-3)
-    configure_notify
-    ;;
-4)
-    manage_tasks
-    ;;
-5) # 原来的选项 5
-    view_and_edit_config
-    ;;
-6) # 原来的选项 6
-    run_watchtower_once
-    ;;
-*)
-    echo -e "${COLOR_RED}❌ 输入无效，请选择 1-6 之间的数字。${COLOR_RESET}"
-    press_enter_to_continue # 在无效输入后也暂停
-    ;;
-esac
-
-echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
-press_enter_to_continue # 脚本最终完成时也添加一个暂停，以便用户阅读最后一行“操作完成”
+    case "$MODE" in
+    0)
+        echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
+        press_enter_to_continue # 脚本最终完成时也添加一个暂停，以便用户阅读最后一行“操作完成”
+        break # 跳出循环，退出脚本
+        ;;
+    1)
+        update_menu
+        ;;
+    2)
+        show_container_info
+        ;;
+    3)
+        configure_notify
+        ;;
+    4)
+        manage_tasks
+        ;;
+    5)
+        view_and_edit_config
+        ;;
+    6)
+        run_watchtower_once
+        ;;
+    *)
+        echo -e "${COLOR_RED}❌ 输入无效，请选择 0-6 之间的数字。${COLOR_RESET}"
+        press_enter_to_continue # 在无效输入后也暂停
+        ;;
+    esac
+done
