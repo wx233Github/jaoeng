@@ -17,7 +17,7 @@ BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 # 格式: "显示名:真实路径"
 SCRIPTS=(
     "nginx_cf:tools/nginx_ch.sh"
-    "Watchtower:tools/Watchtower.sh"
+    "Watchtower(docker 更新):tools/Watchtower.sh"
     "安装脚本:scripts/install.sh"
     
 )
