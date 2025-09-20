@@ -1,18 +1,18 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.9.0 移除了手动更新 Docker 项目 (单个容器/Compose) 的选项，简化菜单。
+# v2.12.0 进一步优化：持久化Watchtower/Cron启用状态，统一Watchtower启动逻辑，增强配置编辑提示，更健壮的Watchtower参数获取。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
 # - 通知配置菜单
-# - 查看容器信息（中文化 + 镜像标签 + 应用版本 - 注意：应用版本获取具有局限性）
+# - 查看容器信息（中文化 + 镜像标签 + 应用版本 - 优化：优先检查Docker标签）
 # - 设置成功提示中文化 + emoji
 # - 任务管理 (停止Watchtower, 移除Cron任务)
-# - 全面状态报告 (脚本启动时直接显示)
+# - 全面状态报告 (脚本启动时直接显示 - 优化：配置和运行状态对比)
 # - 脚本配置查看与编辑
-# - 运行一次 Watchtower (立即检查并更新)
+# - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.9.0"
+VERSION="2.12.0"
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -47,8 +47,14 @@ else
     EMAIL_TO=""
     WATCHTOWER_LABELS="" # Watchtower 标签配置
     WATCHTOWER_EXTRA_ARGS="" # Watchtower 额外参数
+    WATCHTOWER_DEBUG_ENABLED="false" # Watchtower 调试模式是否启用
+    WATCHTOWER_CONFIG_INTERVAL="" # 脚本配置的Watchtower检查间隔 (秒)
+    WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false" # 脚本配置的Watchtower智能模式 (true/false)
+    WATCHTOWER_ENABLED="false" # 脚本配置的Watchtower是否应运行 (true/false)
+
     DOCKER_COMPOSE_PROJECT_DIR_CRON="" # Cron模式下 Docker Compose 项目目录
-    CRON_HOUR="" # Cron模式下的小时
+    CRON_HOUR="" # Cron模式下的小时 (0-23)
+    CRON_TASK_ENABLED="false" # 脚本配置的Cron任务是否应运行 (true/false)
 fi
 
 # 🔹 通用确认函数
@@ -59,6 +65,12 @@ confirm_action() {
         y|Y ) return 0 ;;
         * ) return 1 ;;
     esac
+}
+
+# 🔹 提示用户按回车键继续
+press_enter_to_continue() {
+    echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
+    read -r # 读取一个空行，等待用户按Enter
 }
 
 # 🔹 通知函数 (脚本自身的通知，Watchtower 可配置自己的通知)
@@ -86,8 +98,13 @@ TG_CHAT_ID="$TG_CHAT_ID"
 EMAIL_TO="$EMAIL_TO"
 WATCHTOWER_LABELS="$WATCHTOWER_LABELS"
 WATCHTOWER_EXTRA_ARGS="$WATCHTOWER_EXTRA_ARGS"
+WATCHTOWER_DEBUG_ENABLED="$WATCHTOWER_DEBUG_ENABLED"
+WATCHTOWER_CONFIG_INTERVAL="$WATCHTOWER_CONFIG_INTERVAL"
+WATCHTOWER_CONFIG_SELF_UPDATE_MODE="$WATCHTOWER_CONFIG_SELF_UPDATE_MODE"
+WATCHTOWER_ENABLED="$WATCHTOWER_ENABLED"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="$DOCKER_COMPOSE_PROJECT_DIR_CRON"
 CRON_HOUR="$CRON_HOUR"
+CRON_TASK_ENABLED="$CRON_TASK_ENABLED"
 EOF
     echo -e "${COLOR_GREEN}✅ 配置已保存到 $CONFIG_FILE${COLOR_RESET}"
 }
@@ -97,9 +114,9 @@ configure_notify() {
     echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
 
     if confirm_action "是否启用 Telegram 通知？(当前: ${TG_BOT_TOKEN:+已设置} ${TG_BOT_TOKEN:-未设置})"; then
-        read -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN_NEW
-        read -p "请输入 Telegram Chat ID: " TG_CHAT_ID_NEW
+        read -p "请输入 Telegram Bot Token (空输入不修改): " TG_BOT_TOKEN_NEW
         TG_BOT_TOKEN="${TG_BOT_TOKEN_NEW:-$TG_BOT_TOKEN}" # 允许空输入保留原值
+        read -p "请输入 Telegram Chat ID (空输入不修改): " TG_CHAT_ID_NEW
         TG_CHAT_ID="${TG_CHAT_ID_NEW:-$TG_CHAT_ID}"
     else
         TG_BOT_TOKEN=""
@@ -107,7 +124,7 @@ configure_notify() {
     fi
 
     if confirm_action "是否启用 Email 通知？(当前: ${EMAIL_TO:+已设置} ${EMAIL_TO:-未设置})"; then
-        read -p "请输入接收通知的邮箱地址: " EMAIL_TO_NEW
+        read -p "请输入接收通知的邮箱地址 (空输入不修改): " EMAIL_TO_NEW
         EMAIL_TO="${EMAIL_TO_NEW:-$EMAIL_TO}"
         if [ -n "$EMAIL_TO" ] && ! command -v mail &>/dev/null; then
             echo -e "${COLOR_YELLOW}⚠️ 'mail' 命令未找到。如果需要 Email 通知，请安装并配置邮件传输代理 (MTA)。${COLOR_RESET}"
@@ -118,27 +135,38 @@ configure_notify() {
     fi
 
     save_config
+    press_enter_to_continue
 }
 
 # 🔹 Watchtower 标签和额外参数配置
 configure_watchtower_settings() {
     echo -e "${COLOR_YELLOW}⚙️ Watchtower 额外配置${COLOR_RESET}"
-    read -p "是否为 Watchtower 配置标签筛选？(y/n) (例如：要更新带有 'com.centurylabs.watchtower.enable=true' 标签的容器，请输入 'com.centurylabs.watchtower.enable=true') (当前: ${WATCHTOWER_LABELS:-无}): " label_choice
+
+    read -p "是否为 Watchtower 配置标签筛选？(y/n) (例如：com.centurylabs.watchtower.enable=true) (当前: ${WATCHTOWER_LABELS:-无}): " label_choice
     if [[ "$label_choice" == "y" || "$label_choice" == "Y" ]]; then
-        read -p "请输入 Watchtower 筛选标签: " WATCHTOWER_LABELS_NEW
-        WATCHTOWER_LABELS="${WATCHTOWER_LABELS_NEW:-$WATCHTOWER_LABELS}"
+        read -p "请输入 Watchtower 筛选标签 (空输入取消): " WATCHTOWER_LABELS_NEW
+        WATCHTOWER_LABELS="${WATCHTOWER_LABELS_NEW:-}"
     else
         WATCHTOWER_LABELS=""
     fi
 
     read -p "是否为 Watchtower 配置额外启动参数？(y/n) (例如：--no-startup-message --notification-url=https://your.webhook.com/path) (当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice
     if [[ "$extra_args_choice" == "y" || "$extra_args_choice" == "Y" ]]; then
-        read -p "请输入 Watchtower 额外参数: " WATCHTOWER_EXTRA_ARGS_NEW
-        WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_NEW:-$WATCHTOWER_EXTRA_ARGS}"
+        read -p "请输入 Watchtower 额外参数 (空输入取消): " WATCHTOWER_EXTRA_ARGS_NEW
+        WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_NEW:-}"
     else
         WATCHTOWER_EXTRA_ARGS=""
     fi
+
+    read -p "是否启用 Watchtower 调试模式 (--debug)？(y/n) (当前: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "是" || echo "否")): " debug_choice
+    if [[ "$debug_choice" == "y" || "$debug_choice" == "Y" ]]; then
+        WATCHTOWER_DEBUG_ENABLED="true"
+    else
+        WATCHTOWER_DEBUG_ENABLED="false"
+    fi
+
     save_config
+    # 不在这里调用 press_enter_to_continue，因为这个函数可能被其他模式配置函数调用，由主调用者负责暂停
 }
 
 
@@ -161,22 +189,109 @@ show_container_info() {
 
     docker ps -a --format "{{.Names}} {{.Image}} {{.CreatedAt}} {{.Status}}" | while read -r name image created status; do # 使用 -r 防止 read 处理反斜杠
         local APP_VERSION="N/A"
-        # 尝试获取容器内部应用版本 (具有局限性，见前述说明)
-        if docker exec "$name" sh -c "test -d /app" &>/dev/null; then
-            local CONTAINER_APP_EXECUTABLE=$(docker exec "$name" sh -c "find /app -maxdepth 1 -type f -executable -print -quit" 2>/dev/null || true)
-            if [ -n "$CONTAINER_APP_EXECUTABLE" ]; then
-                local RAW_VERSION=$(docker exec "$name" sh -c "$CONTAINER_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
-                APP_VERSION=$(echo "$RAW_VERSION" | head -n 1 | cut -c 1-15 | tr -d '\n')
+        local IMAGE_NAME_FOR_LABELS=$(docker inspect "$name" --format '{{.Config.Image}}' 2>/dev/null || true)
+        
+        # 优化：优先尝试从Docker Label获取应用版本
+        if [ -n "$IMAGE_NAME_FOR_LABELS" ]; then
+            APP_VERSION=$(docker inspect "$IMAGE_NAME_FOR_LABELS" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || \
+                          docker inspect "$IMAGE_NAME_FOR_LABELS" --format '{{index .Config.Labels "app.version"}}' 2>/dev/null || \
+                          true)
+            APP_VERSION=$(echo "$APP_VERSION" | head -n 1 | cut -c 1-15 | tr -d '\n')
+            if [ -z "$APP_VERSION" ]; then
+                APP_VERSION="N/A" # 如果标签为空，重置为N/A
+            fi
+        fi
+
+        # 如果标签没有找到版本，再尝试原有启发式方法 (此方法通用性较差，通常只对特定应用有效)
+        if [ "$APP_VERSION" = "N/A" ]; then
+            if docker exec "$name" sh -c "test -d /app" &>/dev/null; then
+                local CONTAINER_APP_EXECUTABLE=$(docker exec "$name" sh -c "find /app -maxdepth 1 -type f -executable -print -quit" 2>/dev/null || true)
+                if [ -n "$CONTAINER_APP_EXECUTABLE" ]; then
+                    local RAW_VERSION=$(docker exec "$name" sh -c "$CONTAINER_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
+                    APP_VERSION=$(echo "$RAW_VERSION" | head -n 1 | cut -c 1-15 | tr -d '\n')
+                fi
             fi
         fi
         printf "%-20s %-45s %-25s %-15s %-15s\n" "$name" "$image" "$created" "$status" "$APP_VERSION"
     done
+    press_enter_to_continue
 }
+
+# 🔹 统一的 Watchtower 容器启动逻辑
+_start_watchtower_container_logic() {
+    local wt_interval="$1"
+    local enable_self_update="$2"
+    local mode_description="$3" # "Watchtower模式" 或 "智能 Watchtower模式" 或 "一次性更新"
+
+    echo "⬇️ 正在拉取 Watchtower 镜像..."
+    docker pull containrrr/watchtower || {
+        echo -e "${COLOR_RED}❌ 无法拉取 containrrr/watchtower 镜像。请检查网络连接或 Docker Hub 状态。${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：$mode_description 运行失败，无法拉取镜像。"
+        return 1
+    }
+
+    local WT_RUN_ARGS=""
+    if [ "$mode_description" = "一次性更新" ]; then
+        WT_RUN_ARGS="--rm --run-once"
+    else
+        WT_RUN_ARGS="-d --name watchtower --restart unless-stopped"
+    fi
+
+    local WT_CMD_ARGS="--cleanup --interval $wt_interval $WATCHTOWER_EXTRA_ARGS"
+    if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
+        WT_CMD_ARGS="$WT_CMD_ARGS --debug"
+    fi
+    if [ -n "$WATCHTOWER_LABELS" ]; then
+        WT_CMD_ARGS="$WT_CMD_ARGS --label-enable $WATCHTOWER_LABELS"
+        echo -e "${COLOR_YELLOW}ℹ️ $mode_description 将只更新带有标签 '$WATCHTOWER_LABELS' 的容器。${COLOR_RESET}"
+    fi
+
+    local FINAL_CMD="docker run $WT_RUN_ARGS -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower $WT_CMD_ARGS"
+    if [ "$enable_self_update" = "true" ]; then
+        FINAL_CMD="$FINAL_CMD watchtower"
+    fi
+
+    echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"
+    local watchtower_output=""
+    local watchtower_status=0
+
+    # 临时禁用 set -e 以捕获命令输出和状态
+    set +e
+    if [ "$mode_description" = "一次性更新" ]; then
+        watchtower_output=$(eval "$FINAL_CMD" 2>&1)
+        watchtower_status=$?
+        echo "$watchtower_output" # 打印一次性运行的日志
+    else
+        eval "$FINAL_CMD" &>/dev/null # 后台运行，不直接打印输出
+        watchtower_status=$?
+        if [ $watchtower_status -ne 0 ]; then
+             echo -e "${COLOR_RED}❌ $mode_description 启动失败！请检查日志。${COLOR_RESET}"
+        fi
+        sleep 5 # 等待后台容器启动
+        if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$' && [ $watchtower_status -eq 0 ]; then
+            # 如果 docker run 成功但容器没有运行，可能是其他原因，这里认为是启动失败
+            watchtower_status=1
+            echo -e "${COLOR_RED}❌ $mode_description 启动失败，容器未运行！${COLOR_RESET}"
+        fi
+    fi
+    set -e # 重新启用错误检查
+
+    if [ $watchtower_status -eq 0 ]; then
+        echo -e "${COLOR_GREEN}✅ $mode_description 成功完成/启动！${COLOR_RESET}"
+        send_notify "✅ Docker 自动更新助手：$mode_description 成功。"
+        return 0
+    else
+        echo -e "${COLOR_RED}❌ $mode_description 失败！${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：$mode_description 失败。"
+        return 1
+    fi
+}
+
 
 # 🔹 Watchtower 模式配置
 configure_watchtower() {
     local MODE_NAME="$1" # "Watchtower模式" 或 "智能 Watchtower模式"
-    local ENABLE_SELF_UPDATE="$2" # 是否启用自身更新 (true/false)
+    local ENABLE_SELF_UPDATE_PARAM="$2" # 是否启用自身更新 (true/false)
 
     echo -e "${COLOR_YELLOW}🚀 $MODE_NAME ${COLOR_RESET}"
 
@@ -203,69 +318,39 @@ configure_watchtower() {
 
     echo -e "${COLOR_GREEN}⏱ Watchtower检查间隔设置为 $WT_INTERVAL 秒${COLOR_RESET}"
     
-    # 允许用户在设置模式时修改标签和额外参数
+    # 允许用户在设置模式时修改标签和额外参数，以及调试模式
     configure_watchtower_settings
+
+    # 保存脚本配置中的Watchtower状态
+    WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL"
+    WATCHTOWER_CONFIG_SELF_UPDATE_MODE="$ENABLE_SELF_UPDATE_PARAM"
+    WATCHTOWER_ENABLED="true" # 启用Watchtower
+    save_config
 
     # 停止并删除旧的 Watchtower 容器 (忽略错误，因为可能不存在)
     set +e # 允许 docker rm 失败
     docker rm -f watchtower &>/dev/null || true
     set -e # 重新启用错误检查
         
-    echo "⬇️ 正在拉取 Watchtower 镜像..."
-    docker pull containrrr/watchtower || {
-        echo -e "${COLOR_RED}❌ 无法拉取 containrrr/watchtower 镜像。请检查网络连接或 Docker Hub 状态。${COLOR_RESET}"
-        send_notify "❌ Docker 自动更新助手：无法拉取 Watchtower 镜像。"
-        exit 1
-    }
-
-    local WT_ARGS="--cleanup --interval $WT_INTERVAL --debug $WATCHTOWER_EXTRA_ARGS"
-    if [ -n "$WATCHTOWER_LABELS" ]; then
-        WT_ARGS="$WT_ARGS --label-enable $WATCHTOWER_LABELS"
-        echo -e "${COLOR_YELLOW}ℹ️ Watchtower 将只更新带有标签 '$WATCHTOWER_LABELS' 的容器。${COLOR_RESET}"
-    fi
-
-    if [ "$ENABLE_SELF_UPDATE" = "true" ]; then
-        echo "尝试启动 Watchtower 智能模式 (Watchtower 尝试更新自身)..."
-        docker run -d \
-          --name watchtower \
-          --restart unless-stopped \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          containrrr/watchtower \
-          $WT_ARGS \
-          watchtower || local FALLBACK=1 # 如果失败，设置FALLBACK标记
-        
-        sleep 5 # 等待 Watchtower 容器启动
-        if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$' || [ "$FALLBACK" = "1" ]; then
-            echo -e "${COLOR_YELLOW}⚠️ Watchtower 智能模式启动失败或不稳定，回退到安全模式...${COLOR_RESET}"
-            set +e # 允许 docker rm 失败
-            docker rm -f watchtower &>/dev/null || true
-            set -e # 重新启用错误检查
-
-            docker run -d \
-              --name watchtower \
-              --restart unless-stopped \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              containrrr/watchtower \
-              $WT_ARGS
-            send_notify "⚠️ Docker 自动更新助手：Watchtower 智能模式失败，已回退到不更新自身模式。"
-            echo -e "${COLOR_YELLOW}⚠️ Watchtower 智能模式回退完成！它将更新所有符合条件的容器，但不会尝试更新自身。${COLOR_RESET}"
+    if ! _start_watchtower_container_logic "$WT_INTERVAL" "$ENABLE_SELF_UPDATE_PARAM" "$MODE_NAME"; then
+        # 如果启动失败，可能需要回退到安全模式 (仅智能模式需要)
+        if [ "$ENABLE_SELF_UPDATE_PARAM" = "true" ]; then
+            echo -e "${COLOR_YELLOW}⚠️ Watchtower 智能模式启动失败，尝试回退到不更新自身模式...${COLOR_RESET}"
+            set +e; docker rm -f watchtower &>/dev/null; set -e # 确保旧的已移除
+            if _start_watchtower_container_logic "$WT_INTERVAL" "false" "Watchtower安全模式"; then
+                 send_notify "⚠️ Docker 自动更新助手：Watchtower 智能模式失败，已回退到不更新自身模式。"
+                 echo -e "${COLOR_YELLOW}⚠️ Watchtower 智能模式回退完成！它将更新所有符合条件的容器，但不会尝试更新自身。${COLOR_RESET}"
+            else
+                 send_notify "❌ Docker 自动更新助手：Watchtower 智能模式回退失败！请手动检查。"
+                 echo -e "${COLOR_RED}❌ Watchtower 智能模式回退失败！请手动检查。${COLOR_RESET}"
+            fi
         else
-            send_notify "✅ Watchtower 智能模式启动成功（Watchtower 将尝试更新自身）"
-            echo -e "${COLOR_GREEN}🎉 Watchtower 智能模式设置成功！它将自动监控并更新所有符合条件的容器，包括自身。${COLOR_RESET}"
+            # 非智能模式启动失败，直接报告错误
+            echo -e "${COLOR_RED}❌ $MODE_NAME 启动失败，请检查配置和日志。${COLOR_RESET}"
         fi
-    else
-        echo "启动 Watchtower 模式..."
-        docker run -d \
-          --name watchtower \
-          --restart unless-stopped \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          containrrr/watchtower \
-          $WT_ARGS
-
-        send_notify "✅ Watchtower 已启动，每 $WT_INTERVAL 秒检查更新。"
-        echo -e "${COLOR_GREEN}🎉 Watchtower 设置成功！它将自动监控并更新除自身外的所有符合条件的容器。${COLOR_RESET}"
     fi
     echo "您可以使用选项2查看 Docker 容器信息。"
+    press_enter_to_continue
 }
 
 # 🔹 Cron 定时任务配置
@@ -301,6 +386,7 @@ configure_cron_task() {
     # 更新全局变量并保存配置
     CRON_HOUR="$CRON_HOUR_TEMP"
     DOCKER_COMPOSE_PROJECT_DIR_CRON="$DOCKER_COMPOSE_PROJECT_DIR_TEMP"
+    CRON_TASK_ENABLED="true" # 启用Cron任务
     save_config
     
     # 定义 Cron 脚本路径
@@ -358,6 +444,7 @@ EOF_INNER_SCRIPT
     echo -e "${COLOR_GREEN}🎉 Cron 定时任务设置成功！每天 $CRON_HOUR 点会尝试更新您的 Docker Compose 项目。${COLOR_RESET}"
     echo -e "更新日志可以在 '${COLOR_YELLOW}$LOG_FILE${COLOR_RESET}' 文件中查看。"
     echo "您可以使用选项2查看 Docker 容器信息。"
+    press_enter_to_continue
 }
 
 
@@ -400,6 +487,11 @@ manage_tasks() {
                     docker stop watchtower &>/dev/null
                     docker rm watchtower &>/dev/null
                     set -e # 重新启用错误检查
+                    # 清空配置中的Watchtower相关变量
+                    WATCHTOWER_CONFIG_INTERVAL=""
+                    WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"
+                    WATCHTOWER_ENABLED="false" # 禁用Watchtower
+                    save_config
                     send_notify "🗑️ Watchtower 容器已停止并移除。"
                     echo -e "${COLOR_GREEN}✅ Watchtower 容器已停止并移除。${COLOR_RESET}"
                 else
@@ -420,6 +512,7 @@ manage_tasks() {
                     # 清空配置中的Cron相关变量
                     DOCKER_COMPOSE_PROJECT_DIR_CRON=""
                     CRON_HOUR=""
+                    CRON_TASK_ENABLED="false" # 禁用Cron任务
                     save_config
                     send_notify "🗑️ Cron 定时任务已移除。"
                     echo -e "${COLOR_GREEN}✅ Cron 定时任务已移除。${COLOR_RESET}"
@@ -434,6 +527,7 @@ manage_tasks() {
             echo -e "${COLOR_RED}❌ 输入无效，请选择 1-2 之间的数字。${COLOR_RESET}"
             ;;
     esac
+    press_enter_to_continue
 }
 
 # 🔹 状态报告
@@ -441,19 +535,27 @@ show_status() {
     echo -e "\n${COLOR_YELLOW}📊 当前自动化更新状态报告：${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
 
-    # Watchtower 状态
+    # Watchtower 状态 (脚本配置 vs 运行状态)
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
+    echo "  - 脚本配置状态: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "${COLOR_GREEN}已启用${COLOR_RESET}" || echo "${COLOR_RED}已禁用${COLOR_RESET}")"
+    echo "  - 配置的检查间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"
+    echo "  - 配置的智能模式 (更新自身): $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")"
+    echo "  - 配置的标签筛选: ${WATCHTOWER_LABELS:-无}"
+    echo "  - 配置的额外参数: ${WATCHTOWER_EXTRA_ARGS:-无}"
+    echo "  - 配置的调试模式: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "启用" || echo "禁用")"
+
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_GREEN}✅ Watchtower 容器正在运行。${COLOR_RESET}"
         local wt_status=$(docker inspect watchtower --format "{{.State.Status}}")
         local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}") # 获取完整的Cmd数组
 
-        local wt_interval="N/A"
-        local wt_labels_from_cmd="无"
-        local is_self_updating="否"
+        local wt_interval_running="N/A"
+        local wt_labels_running="无"
+        local is_self_updating_running="否"
+        local debug_mode_running="禁用"
         
         # 使用 awk 从 JSON 数组中解析参数
-        wt_interval=$(echo "$wt_cmd_json" | awk '{
+        wt_interval_running=$(echo "$wt_cmd_json" | awk '{
             for (i=1; i<=NF; i++) {
                 if ($i ~ /"--interval"/) {
                     val = $(i+1); gsub(/"/, "", val); gsub(/,/, "", val); print val; exit;
@@ -461,7 +563,7 @@ show_status() {
             }
         }' FS=', *' | head -n 1)
 
-        wt_labels_from_cmd=$(echo "$wt_cmd_json" | awk '{
+        wt_labels_running=$(echo "$wt_cmd_json" | awk '{
             for (i=1; i<=NF; i++) {
                 if ($i ~ /"--label-enable"/) {
                     val = $(i+1); gsub(/"/, "", val); gsub(/,/, "", val); print val; exit;
@@ -469,17 +571,19 @@ show_status() {
             }
         }' FS=', *' | head -n 1)
         
-        # 检查 "watchtower" 是否是最后一个参数，或者在参数中显式出现
         if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
-            is_self_updating="是"
+            is_self_updating_running="是"
         fi
-        
-        echo "  - 运行状态: $wt_status"
-        echo "  - 检查间隔: ${wt_interval:-N/A} 秒"
-        echo "  - 智能模式 (更新自身): $is_self_updating"
-        echo "  - 标签筛选 (配置): ${WATCHTOWER_LABELS:-无}" # 从配置文件获取
-        echo "  - 标签筛选 (运行): ${wt_labels_from_cmd:-无}" # 从运行参数解析
-        echo "  - 额外参数 (配置): ${WATCHTOWER_EXTRA_ARGS:-无}" # 从配置文件获取
+        if echo "$wt_cmd_json" | grep -q '"--debug"'; then
+            debug_mode_running="启用"
+        fi
+
+        echo "  - 容器运行状态: $wt_status"
+        echo "  - 实际检查间隔 (运行): ${wt_interval_running:-N/A} 秒"
+        echo "  - 实际智能模式 (运行): $is_self_updating_running"
+        echo "  - 实际标签筛选 (运行): ${wt_labels_running:-无}"
+        echo "  - 实际调试模式 (运行): ${debug_mode_running:-禁用}"
+        # 注意：实际额外参数的解析依然复杂，这里只报告配置的
     elif docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_YELLOW}⚠️ Watchtower 容器已存在但未运行。${COLOR_RESET}"
     else
@@ -489,17 +593,20 @@ show_status() {
     # Cron 任务状态
     echo -e "${COLOR_BLUE}--- Cron 定时任务状态 ---${COLOR_RESET}"
     local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
+    echo "  - 脚本配置状态: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "${COLOR_GREEN}已启用${COLOR_RESET}" || echo "${COLOR_RED}已禁用${COLOR_RESET}")"
+    echo "  - 配置的每天更新时间: ${CRON_HOUR:-未设置} 点"
+    echo "  - 配置的 Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+
     if crontab -l 2>/dev/null | grep -q "$CRON_UPDATE_SCRIPT"; then
-        echo -e "${COLOR_GREEN}✅ Cron 定时任务已配置。${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}✅ Cron 定时任务已配置并激活。${COLOR_RESET}"
         local cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT")
-        echo "  - 定时表达式: $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
-        echo "  - 每天更新时间 (配置): ${CRON_HOUR:-未设置} 点"
-        echo "  - Docker Compose 项目目录 (配置): ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+        echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
         echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
     else
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
     fi
     echo "-------------------------------------------------------------------------------------------------------------------"
+    # 这里不加 press_enter_to_continue，因为此函数在脚本启动时就调用，避免额外暂停
 }
 
 # 🔹 配置查看与编辑
@@ -511,10 +618,15 @@ view_and_edit_config() {
     echo "3) Email 接收地址:     ${EMAIL_TO:-未设置}"
     echo "4) Watchtower 标签筛选: ${WATCHTOWER_LABELS:-无}"
     echo "5) Watchtower 额外参数: ${WATCHTOWER_EXTRA_ARGS:-无}"
-    echo "6) Cron 更新小时:      ${CRON_HOUR:-未设置}"
-    echo "7) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+    echo "6) Watchtower 调试模式: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "启用" || echo "禁用")"
+    echo "7) Watchtower 配置间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"
+    echo "8) Watchtower 智能模式: $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")"
+    echo "9) Watchtower 脚本配置启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"
+    echo "10) Cron 更新小时:      ${CRON_HOUR:-未设置}"
+    echo "11) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+    echo "12) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"
     echo "-------------------------------------------------------------------------------------------------------------------"
-    read -p "请输入要编辑的选项编号 (1-7) 或按 Enter 返回主菜单: " edit_choice
+    read -p "请输入要编辑的选项编号 (1-12) 或按 Enter 返回主菜单: " edit_choice
 
     case "$edit_choice" in
         1)
@@ -539,143 +651,56 @@ view_and_edit_config() {
             read -p "请输入新的 Watchtower 标签筛选 (当前: ${WATCHTOWER_LABELS:-无}, 空输入取消筛选): " WATCHTOWER_LABELS_NEW
             WATCHTOWER_LABELS="${WATCHTOWER_LABELS_NEW:-}" # 允许空输入来清除
             save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 标签筛选已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
             ;;
         5)
             read -p "请输入新的 Watchtower 额外参数 (当前: ${WATCHTOWER_EXTRA_ARGS:-无}, 空输入取消额外参数): " WATCHTOWER_EXTRA_ARGS_NEW
             WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_NEW:-}" # 允许空输入来清除
             save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 额外参数已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
             ;;
         6)
-            local CRON_HOUR_TEMP=""
+            local debug_choice=""
+            read -p "是否启用 Watchtower 调试模式 (--debug)？(y/n) (当前: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "是" || echo "否")): " debug_choice
+            if [[ "$debug_choice" == "y" || "$debug_choice" == "Y" ]]; then
+                WATCHTOWER_DEBUG_ENABLED="true"
+            else
+                WATCHTOWER_DEBUG_ENABLED="false"
+            fi
+            save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 调试模式已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
+            ;;
+        7) # Watchtower 配置间隔
+            local WT_INTERVAL_TEMP=""
             while true; do
-                read -p "请输入新的 Cron 更新小时 (0-23, 当前: ${CRON_HOUR:-未设置}, 空输入不修改): " CRON_HOUR_INPUT
-                if [ -z "$CRON_HOUR_INPUT" ]; then # 如果新输入为空，则保留旧值
-                    CRON_HOUR_TEMP="$CRON_HOUR"
+                read -p "请输入新的 Watchtower 检查间隔（例如 300s / 2h / 1d，当前: ${WATCHTOWER_CONFIG_INTERVAL:-未设置}秒): " INTERVAL_INPUT
+                INTERVAL_INPUT=${INTERVAL_INPUT:-${WATCHTOWER_CONFIG_INTERVAL:-300}} # 允许空输入保留原值或使用默认值
+                if [[ "$INTERVAL_INPUT" =~ ^([0-9]+)s$ ]]; then
+                    WT_INTERVAL_TEMP=${BASH_REMATCH[1]}
                     break
-                elif [[ "$CRON_HOUR_INPUT" =~ ^[0-9]+$ ]] && [ "$CRON_HOUR_INPUT" -ge 0 ] && [ "$CRON_HOUR_INPUT" -le 23 ]; then
-                    CRON_HOUR_TEMP="$CRON_HOUR_INPUT"
+                elif [[ "$INTERVAL_INPUT" =~ ^([0-9]+)h$ ]]; then
+                    WT_INTERVAL_TEMP=$((${BASH_REMATCH[1]}*3600))
                     break
+                elif [[ "$INTERVAL_INPUT" =~ ^([0-9]+)d$ ]]; then
+                    WT_INTERVAL_TEMP=$((${BASH_REMATCH[1]}*86400))
+                    break
+                elif [[ "$INTERVAL_INPUT" =~ ^[0-9]+$ ]]; then # 仅数字，默认为秒
+                     WT_INTERVAL_TEMP="$INTERVAL_INPUT"
+                     break
                 else
-                    echo -e "${COLOR_RED}❌ 小时输入无效，请在 0-23 之间输入一个数字。${COLOR_RESET}"
+                    echo -e "${COLOR_RED}❌ 输入格式错误，请使用例如 '300s', '2h', '1d' 或纯数字 (秒) 等格式。${COLOR_RESET}"
                 fi
             done
-            CRON_HOUR="$CRON_HOUR_TEMP"
+            WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TEMP"
             save_config
-            # 提示用户可能需要重新设置Cron任务
-            echo -e "${COLOR_YELLOW}ℹ️ Cron 更新小时已修改，您可能需要重新配置 Cron 定时任务 (选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 检查间隔已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
             ;;
-        7)
-            local DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
-            while true; do
-                read -p "请输入新的 Cron Docker Compose 项目目录 (当前: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}, 空输入取消设置): " DOCKER_COMPOSE_PROJECT_DIR_INPUT
-                if [ -z "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
-                    DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
-                    break
-                elif [ ! -d "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
-                    echo -e "${COLOR_RED}❌ 指定的目录 '$DOCKER_COMPOSE_PROJECT_DIR_INPUT' 不存在。请检查路径是否正确。${COLOR_RESET}"
-                else
-                    DOCKER_COMPOSE_PROJECT_DIR_TEMP="$DOCKER_COMPOSE_PROJECT_DIR_INPUT"
-                    break
-                fi
-            done
-            DOCKER_COMPOSE_PROJECT_DIR_CRON="$DOCKER_COMPOSE_PROJECT_DIR_TEMP"
-            save_config
-            # 提示用户可能需要重新设置Cron任务
-            echo -e "${COLOR_YELLOW}ℹ️ Cron Docker Compose 项目目录已修改，您可能需要重新配置 Cron 定时任务 (选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
-            ;;
-        *)
-            echo -e "${COLOR_YELLOW}ℹ️ 返回主菜单。${COLOR_RESET}"
-            ;;
-    esac
-}
-
-# 🔹 运行一次 Watchtower (立即检查并更新)
-run_watchtower_once() {
-    echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
-
-    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-        echo -e "${COLOR_YELLOW}⚠️ 注意：Watchtower 容器已在后台运行。${COLOR_RESET}"
-        echo -e "${COLOR_YELLOW}      本次一次性更新将独立执行，不会影响后台运行的 Watchtower 进程。${COLOR_RESET}"
-        echo -e "${COLOR_YELLOW}      如果希望停止后台 Watchtower，请使用主菜单选项 4 -> 1。${COLOR_RESET}"
-        if ! confirm_action "是否继续运行一次性 Watchtower 更新？"; then
-            echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
-            return 0
-        fi
-    fi
-
-    echo "⬇️ 正在拉取 Watchtower 镜像..."
-    docker pull containrrr/watchtower || {
-        echo -e "${COLOR_RED}❌ 无法拉取 containrrr/watchtower 镜像。请检查网络连接或 Docker Hub 状态。${COLOR_RESET}"
-        send_notify "❌ Docker 自动更新助手：一次性 Watchtower 运行失败，无法拉取镜像。"
-        return 1
-    }
-
-    local WT_ARGS="--run-once --cleanup --debug $WATCHTOWER_EXTRA_ARGS"
-    if [ -n "$WATCHTOWER_LABELS" ]; then
-        WT_ARGS="$WT_ARGS --label-enable $WATCHTOWER_LABELS"
-        echo -e "${COLOR_YELLOW}ℹ️ 一次性 Watchtower 将只更新带有标签 '$WATCHTOWER_LABELS' 的容器。${COLOR_RESET}"
-    fi
-
-    echo -e "${COLOR_BLUE}--- 正在运行一次性 Watchtower 更新 ---${COLOR_RESET}"
-    # 使用 --rm 确保容器运行完毕后自动删除
-    local watchtower_output=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower $WT_ARGS 2>&1)
-    local watchtower_status=$?
-
-    echo "$watchtower_output" # 输出 Watchtower 的日志
-
-    if [ $watchtower_status -eq 0 ]; then
-        echo -e "${COLOR_GREEN}✅ Watchtower 一次性更新成功完成！${COLOR_RESET}"
-        send_notify "✅ Docker 自动更新助手：Watchtower 一次性更新成功完成。"
-    else
-        echo -e "${COLOR_RED}❌ Watchtower 一次性更新失败！${COLOR_RESET}"
-        send_notify "❌ Docker 自动更新助手：Watchtower 一次性更新失败。"
-    fi
-}
-
-
-# --- 脚本主执行流程 ---
-
-# 1. 显示脚本欢迎信息
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-
-# 2. 直接显示当前自动化更新状态报告
-show_status
-
-# 3. 显示主菜单
-echo -e "\n${COLOR_GREEN}===========================================${COLOR_RESET}"
-echo "1) 🚀 设置/管理 Docker 更新模式"
-echo "2) 📋 查看 Docker 容器信息"
-echo "3) ⚙️ 配置通知方式 (Telegram/Email)"
-echo "4) 🧹 管理更新任务 (停止Watchtower/移除Cron)"
-echo "5) 📝 查看/编辑脚本配置"
-echo "6) 🆕 运行一次 Watchtower (立即检查并更新)" # 新的选项 6
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-read -p "请输入选择 [1-6]: " MODE # 注意这里选项编号的变化
-
-case "$MODE" in
-1)
-    update_menu
-    ;;
-2)
-    show_container_info
-    ;;
-3)
-    configure_notify
-    ;;
-4)
-    manage_tasks
-    ;;
-5) # 原来的选项 6
-    view_and_edit_config
-    ;;
-6) # 原来的选项 7 (现在是新的 6)
-    run_watchtower_once
-    ;;
-*)
-    echo -e "${COLOR_RED}❌ 输入无效，请选择 1-6 之间的数字。${COLOR_RESET}"
-    ;;
-esac
-
-echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
+        8) # Watchtower 智能模式
+            local self_update_choice=""
+            read -p "是否启用 Watchtower 智能模式 (更新自身)？(y/n) (当前: $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")): " self_update_choice
+            if [[ "$self_update_choice" == "y" || "$self_update_choice" == "Y" ]]; then
+                WATCHTOWER_CONFIG_SELF_UPDATE_MODE="true"
+            else
+                WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"
+            F"
+            F
