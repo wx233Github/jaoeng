@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.12.0 进一步优化：持久化Watchtower/Cron启用状态，统一Watchtower启动逻辑，增强配置编辑提示，更健壮的Watchtower参数获取。
+# v2.12.1 修复了 unexpected EOF 错误，确保所有代码块正确闭合。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -8,11 +8,11 @@
 # - 查看容器信息（中文化 + 镜像标签 + 应用版本 - 优化：优先检查Docker标签）
 # - 设置成功提示中文化 + emoji
 # - 任务管理 (停止Watchtower, 移除Cron任务)
-# - 全面状态报告 (脚本启动时直接显示 - 优化：配置和运行状态对比)
+# - 全面状态报告 (脚本启动时直接显示 - 优化：Watchtower配置和运行状态分离)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.12.0"
+VERSION="2.12.1" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -702,5 +702,173 @@ view_and_edit_config() {
                 WATCHTOWER_CONFIG_SELF_UPDATE_MODE="true"
             else
                 WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"
-            F"
-            F
+            fi
+            save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 智能模式已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
+            ;;
+        9) # Watchtower 脚本配置启用
+            local wt_enabled_choice=""
+            read -p "是否启用 Watchtower 脚本配置？(y/n) (当前: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")): " wt_enabled_choice
+            if [[ "$wt_enabled_choice" == "y" || "$wt_enabled_choice" == "Y" ]]; then
+                WATCHTOWER_ENABLED="true"
+            else
+                WATCHTOWER_ENABLED="false"
+            fi
+            save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Watchtower 脚本配置启用状态已修改，您可能需要根据此状态启动/停止 Watchtower 容器 (主菜单选项 1 或 4)。${COLOR_RESET}"
+            ;;
+        10) # Cron 更新小时
+            local CRON_HOUR_TEMP=""
+            while true; do
+                read -p "请输入新的 Cron 更新小时 (0-23, 当前: ${CRON_HOUR:-未设置}, 空输入不修改): " CRON_HOUR_INPUT
+                if [ -z "$CRON_HOUR_INPUT" ]; then # 如果新输入为空，则保留旧值
+                    CRON_HOUR_TEMP="$CRON_HOUR"
+                    break
+                elif [[ "$CRON_HOUR_INPUT" =~ ^[0-9]+$ ]] && [ "$CRON_HOUR_INPUT" -ge 0 ] && [ "$CRON_HOUR_INPUT" -le 23 ]; then
+                    CRON_HOUR_TEMP="$CRON_HOUR_INPUT"
+                    break
+                else
+                    echo -e "${COLOR_RED}❌ 小时输入无效，请在 0-23 之间输入一个数字。${COLOR_RESET}"
+                fi
+            done
+            CRON_HOUR="$CRON_HOUR_TEMP"
+            save_config
+            # 提示用户可能需要重新设置Cron任务
+            echo -e "${COLOR_YELLOW}ℹ️ Cron 更新小时已修改，您可能需要重新配置 Cron 定时任务 (主菜单选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
+            ;;
+        11) # Cron Docker Compose 项目目录
+            local DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
+            while true; do
+                read -p "请输入新的 Cron Docker Compose 项目目录 (当前: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}, 空输入取消设置): " DOCKER_COMPOSE_PROJECT_DIR_INPUT
+                if [ -z "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
+                    DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
+                    break
+                elif [ ! -d "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
+                    echo -e "${COLOR_RED}❌ 指定的目录 '$DOCKER_COMPOSE_PROJECT_DIR_INPUT' 不存在。请检查路径是否正确。${COLOR_RESET}"
+                else
+                    DOCKER_COMPOSE_PROJECT_DIR_TEMP="$DOCKER_COMPOSE_PROJECT_DIR_INPUT"
+                    break
+                fi
+            done
+            DOCKER_COMPOSE_PROJECT_DIR_CRON="$DOCKER_COMPOSE_PROJECT_DIR_TEMP"
+            save_config
+            # 提示用户可能需要重新设置Cron任务
+            echo -e "${COLOR_YELLOW}ℹ️ Cron Docker Compose 项目目录已修改，您可能需要重新配置 Cron 定时任务 (主菜单选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
+            ;;
+        12) # Cron 脚本配置启用
+            local cron_enabled_choice=""
+            read -p "是否启用 Cron 脚本配置？(y/n) (当前: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")): " cron_enabled_choice
+            if [[ "$cron_enabled_choice" == "y" || "$cron_enabled_choice" == "Y" ]]; then
+                CRON_TASK_ENABLED="true"
+            else
+                CRON_TASK_ENABLED="false"
+            fi
+            save_config
+            echo -e "${COLOR_YELLOW}ℹ️ Cron 脚本配置启用状态已修改，您可能需要根据此状态移除/重新设置 Cron 定时任务 (主菜单选项 1 或 4)。${COLOR_RESET}"
+            ;;
+        *)
+            echo -e "${COLOR_YELLOW}ℹ️ 返回主菜单。${COLOR_RESET}"
+            ;;
+    esac
+    press_enter_to_continue
+}
+
+# 🔹 运行一次 Watchtower (立即检查并更新)
+run_watchtower_once() {
+    echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
+
+    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+        echo -e "${COLOR_YELLOW}⚠️ 注意：Watchtower 容器已在后台运行。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}      本次一次性更新将独立执行，不会影响后台运行的 Watchtower 进程。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}      如果希望停止后台 Watchtower，请使用主菜单选项 4 -> 1。${COLOR_RESET}"
+        if ! confirm_action "是否继续运行一次性 Watchtower 更新？"; then
+            echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
+            press_enter_to_continue # 在操作取消后也暂停
+            return 0
+        fi
+    fi
+
+    echo "⬇️ 正在拉取 Watchtower 镜像..."
+    docker pull containrrr/watchtower || {
+        echo -e "${COLOR_RED}❌ 无法拉取 containrrr/watchtower 镜像。请检查网络连接或 Docker Hub 状态。${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：一次性 Watchtower 运行失败，无法拉取镜像。"
+        press_enter_to_continue # 在错误后也暂停
+        return 1
+    }
+
+    local WT_ARGS="--run-once --cleanup $WATCHTOWER_EXTRA_ARGS"
+    if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
+        WT_ARGS="$WT_ARGS --debug"
+    fi
+    if [ -n "$WATCHTOWER_LABELS" ]; then
+        WT_ARGS="$WT_ARGS --label-enable $WATCHTOWER_LABELS"
+        echo -e "${COLOR_YELLOW}ℹ️ 一次性 Watchtower 将只更新带有标签 '$WATCHTOWER_LABELS' 的容器。${COLOR_RESET}"
+    fi
+
+    echo -e "${COLOR_BLUE}--- 正在运行一次性 Watchtower 更新 ---${COLOR_RESET}"
+    # 使用 --rm 确保容器运行完毕后自动删除
+    local watchtower_output=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower $WT_ARGS 2>&1)
+    local watchtower_status=$?
+
+    echo "$watchtower_output" # 输出 Watchtower 的日志
+
+    if [ $watchtower_status -eq 0 ]; then
+        echo -e "${COLOR_GREEN}✅ Watchtower 一次性更新成功完成！${COLOR_RESET}"
+        send_notify "✅ Docker 自动更新助手：Watchtower 一次性更新成功完成。"
+    else
+        echo -e "${COLOR_RED}❌ Watchtower 一次性更新失败！${COLOR_RESET}"
+        send_notify "❌ Docker 自动更新助手：Watchtower 一次性更新失败。"
+    fi
+    press_enter_to_continue # 在操作完成后暂停
+}
+
+
+# --- 脚本主执行流程 ---
+
+# 1. 显示脚本欢迎信息
+echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
+echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+
+# 2. 直接显示当前自动化更新状态报告
+show_status
+press_enter_to_continue # 在初始状态报告后暂停
+
+# 3. 显示主菜单
+echo -e "\n${COLOR_GREEN}===========================================${COLOR_RESET}"
+echo "1) 🚀 设置/管理 Docker 更新模式"
+echo "2) 📋 查看 Docker 容器信息"
+echo "3) ⚙️ 配置通知方式 (Telegram/Email)"
+echo "4) 🧹 管理更新任务 (停止Watchtower/移除Cron)"
+echo "5) 📝 查看/编辑脚本配置"
+echo "6) 🆕 运行一次 Watchtower (立即检查并更新)"
+echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+read -p "请输入选择 [1-6]: " MODE # 注意这里选项编号的变化
+
+case "$MODE" in
+1)
+    update_menu
+    ;;
+2)
+    show_container_info
+    ;;
+3)
+    configure_notify
+    ;;
+4)
+    manage_tasks
+    ;;
+5) # 原来的选项 5
+    view_and_edit_config
+    ;;
+6) # 原来的选项 6
+    run_watchtower_once
+    ;;
+*)
+    echo -e "${COLOR_RED}❌ 输入无效，请选择 1-6 之间的数字。${COLOR_RESET}"
+    press_enter_to_continue # 在无效输入后也暂停
+    ;;
+esac
+
+echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
+press_enter_to_continue # 脚本最终完成时也添加一个暂停，以便用户阅读最后一行“操作完成”
