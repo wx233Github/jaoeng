@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.13.1 修复了主菜单无法循环显示的问题，增加了退出选项，优化用户交互体验。
+# v2.13.2 修复了退出脚本时不需要回车的问题。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,7 +12,7 @@
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.13.1" # 版本更新，反映修复
+VERSION="2.13.2" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -803,11 +803,10 @@ run_watchtower_once() {
 # 1. 显示脚本欢迎信息
 echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
 echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+echo -e "${COLOR_GREEN}===========================================${COLOR_GREEN}"
 
 # 2. 直接显示当前自动化更新状态报告
 show_status
-# 移除这里的 press_enter_to_continue，实现直接显示菜单
 
 # 3. 显示主菜单并循环
 while true; do
@@ -825,7 +824,7 @@ while true; do
     case "$MODE" in
     0)
         echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
-        press_enter_to_continue # 脚本最终完成时也添加一个暂停，以便用户阅读最后一行“操作完成”
+        # 移除了这里的 press_enter_to_continue，实现直接退出
         break # 跳出循环，退出脚本
         ;;
     1)
