@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.2.0 进一步优化：启动脚本时直接显示全面状态报告。
+# v2.3.0 修复了 Watchtower 状态报告中的 grep 错误，并提升了参数解析的健壮性。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,7 +12,7 @@
 # - 脚本配置查看与编辑
 # - 重新加载脚本
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -142,8 +142,8 @@ configure_watchtower_settings() {
 }
 
 
-# 🔹 获取 Docker Compose 命令的函数
-get_docker_compose_command() {
+# 🔹 获取 Docker Compose 命令的函数 (用于主脚本)
+get_docker_compose_command_main() {
     if command -v docker compose &>/dev/null; then
         echo "docker compose"
     elif command -v docker-compose &>/dev/null; then
@@ -324,7 +324,15 @@ fi
 cd "\$PROJECT_DIR" || { echo "\$(date '+%Y-%m-%d %H:%M:%S') - 错误：无法切换到目录 '\$PROJECT_DIR'。" >> "\$LOG_FILE" 2>&1; exit 1; }
 
 # 优先使用 'docker compose' (V2)，如果不存在则回退到 'docker-compose' (V1)
-DOCKER_COMPOSE_CMD="$(get_docker_compose_command)"
+# 将 Docker Compose 命令检测逻辑直接嵌入到 Cron 脚本中
+if command -v docker compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker compose"
+elif command -v docker-compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+else
+    DOCKER_COMPOSE_CMD=""
+fi
+
 if [ -n "\$DOCKER_COMPOSE_CMD" ]; then
     echo "\$(date '+%Y-%m-%d %H:%M:%S') - 使用 '\$DOCKER_COMPOSE_CMD' 命令进行拉取和更新。" >> "\$LOG_FILE" 2>&1
     "\$DOCKER_COMPOSE_CMD" pull >> "\$LOG_FILE" 2>&1
@@ -438,41 +446,28 @@ show_status() {
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_GREEN}✅ Watchtower 容器正在运行。${COLOR_RESET}"
         local wt_status=$(docker inspect watchtower --format "{{.State.Status}}")
-        local wt_cmd=$(docker inspect watchtower --format "{{json .Config.Cmd}}") # 获取完整的Cmd数组
+        local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}") # 获取完整的Cmd数组
 
         local wt_interval="N/A"
-        local wt_labels="无"
-        local wt_extra_args="无"
+        local wt_labels_from_cmd="无"
         local is_self_updating="否"
-
-        # 解析 Watchtower 命令参数
-        if echo "$wt_cmd" | grep -q "--interval"; then
-            wt_interval=$(echo "$wt_cmd" | grep -oP '--interval", "\K[^"]+')
-        fi
-        if echo "$wt_cmd" | grep -q "--label-enable"; then
-            wt_labels=$(echo "$wt_cmd" | grep -oP '--label-enable", "\K[^"]+')
-        fi
-        if echo "$wt_cmd" | grep -q 'watchtower"$'; then # 检查Cmd数组末尾是否有"watchtower"
+        
+        # 使用 awk 从 JSON 数组中解析参数
+        # 注意：awk -F', *' 用于分割JSON数组中的元素
+        wt_interval=$(echo "$wt_cmd_json" | awk -F', *' '{ for (i=1; i<=NF; i++) { if ($i ~ /"--interval"/) { gsub(/"/, "", $(i+1)); print $(i+1) } } }' | head -n 1)
+        wt_labels_from_cmd=$(echo "$wt_cmd_json" | awk -F', *' '{ for (i=1; i<=NF; i++) { if ($i ~ /"--label-enable"/) { gsub(/"/, "", $(i+1)); print $(i+1) } } }' | head -n 1)
+        
+        # 检查 "watchtower" 是否是最后一个参数，或者在参数中显式出现
+        if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
             is_self_updating="是"
         fi
-
-        # 尝试提取用户自定义的额外参数，排除 Watchtower 自身常用的参数
-        local common_wt_args="--cleanup|--interval|--debug|--label-enable|--no-startup-message|--notification-url|--monitor-only"
-        local cleaned_wt_cmd=$(echo "$wt_cmd" | sed -E 's/"watchtower"//g' | sed -E 's/"--cleanup"//g' | sed -E 's/"--interval", "[^"]*"//g' | sed -E 's/"--debug"//g' | sed -E 's/"--label-enable", "[^"]*"//g' | sed -E 's/\[|\]|,|"/ /g' | xargs)
         
-        # 简单地判断是否有非内置额外参数
-        if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
-            wt_extra_args="$WATCHTOWER_EXTRA_ARGS"
-        elif [ -n "$cleaned_wt_cmd" ] && ! echo "$cleaned_wt_cmd" | grep -q -E "$common_wt_args"; then
-            wt_extra_args="$cleaned_wt_cmd"
-        fi
-
-
         echo "  - 运行状态: $wt_status"
         echo "  - 检查间隔: ${wt_interval:-N/A} 秒"
         echo "  - 智能模式 (更新自身): $is_self_updating"
-        echo "  - 标签筛选: ${wt_labels:-无}"
-        echo "  - 额外参数: ${wt_extra_args:-无}"
+        echo "  - 标签筛选 (配置): ${WATCHTOWER_LABELS:-无}" # 从配置文件获取
+        echo "  - 标签筛选 (运行): ${wt_labels_from_cmd:-无}" # 从运行参数解析
+        echo "  - 额外参数 (配置): ${WATCHTOWER_EXTRA_ARGS:-无}" # 从配置文件获取
     elif docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_YELLOW}⚠️ Watchtower 容器已存在但未运行。${COLOR_RESET}"
     else
@@ -486,8 +481,8 @@ show_status() {
         echo -e "${COLOR_GREEN}✅ Cron 定时任务已配置。${COLOR_RESET}"
         local cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT")
         echo "  - 定时表达式: $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
-        echo "  - 每天更新时间: ${CRON_HOUR:-未设置} 点"
-        echo "  - Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+        echo "  - 每天更新时间 (配置): ${CRON_HOUR:-未设置} 点"
+        echo "  - Docker Compose 项目目录 (配置): ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
         echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
     else
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
