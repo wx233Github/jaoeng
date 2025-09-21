@@ -43,11 +43,12 @@ MAIN_MENU=(
     "item:Nginx:nginx.sh"
     "submenu:常用工具:TOOLS_MENU"
     "item:证书申请:cert.sh"
+    "item:tools:tools .sh"
     "func:更新所有模块缓存:update_all_modules_parallel"
 )
 
 TOOLS_MENU=(
-    "item:Watchtower (Docker 更新):Watchtower.sh"
+    "item:Watchtower (Docker 更新):tools/Watchtower.sh"
     "item:BBR/系统网络优化:tcp.sh"
     "item:系统信息查看:sysinfo.sh"
     "back:返回主菜单:main_menu"
