@@ -43,7 +43,7 @@ MAIN_MENU=(
     "item:Nginx:nginx.sh"
     "submenu:常用工具:TOOLS_MENU"
     "item:证书申请:cert.sh"
-    "item:tools:tools .sh"
+    "item:tools:tools.sh"
     "func:更新所有模块缓存:update_all_modules_parallel"
 )
 
