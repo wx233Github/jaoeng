@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.4 - 静默检查版)
+# 🚀 VPS 一键安装入口脚本 (v5.5 - 菜单优化版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
 # - 入口脚本自动更新, 精细退出码处理
@@ -37,9 +37,10 @@ SCRIPT_PATH="$INSTALL_DIR/install.sh"
 BIN_DIR="/usr/local/bin"
 
 # ====================== 菜单定义 ======================
+# 【已优化】菜单项显示更简洁
 MAIN_MENU=(
-    "item:Docker 相关:docker.sh"
-    "item:Nginx 相关:nginx.sh"
+    "item:Docker:docker.sh"
+    "item:Nginx:nginx.sh"
     "submenu:常用工具:TOOLS_MENU"
     "item:证书申请:cert.sh"
     "func:更新所有模块缓存:update_all_modules_parallel"
@@ -53,7 +54,6 @@ TOOLS_MENU=(
 )
 
 # ====================== 检查与初始化 ======================
-# 【已优化】检查依赖，成功时静默
 check_dependencies() {
     local missing_deps=()
     local deps=("curl" "cmp" "ln")
@@ -64,10 +64,8 @@ check_dependencies() {
     done
 
     if [ ${#missing_deps[@]} -gt 0 ]; then
-        # 仅在缺少依赖时输出错误并退出
         log_error "缺少必要的命令: ${missing_deps[*]}. 请先安装它们。"
     fi
-    # 成功时不再有任何输出
 }
 
 if [ "$(id -u)" -ne 0 ]; then log_error "请使用 root 用户运行此脚本"; fi
@@ -188,7 +186,7 @@ display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.4)"
+    local header_text="🚀 VPS 一键安装入口 (v5.5)"
     if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
     echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
