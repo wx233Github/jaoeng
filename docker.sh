@@ -1,19 +1,17 @@
 #!/bin/bash
 
 # ===================================================================================
-# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.3
+# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.4
 #
-# 新特性 (v2.3):
-#   - 支持作为子脚本被调用: 通过 IS_NESTED_CALL 环境变量进行集成。
-#   - 优化的退出逻辑: 用户选择返回时，会根据调用环境返回特定退出码 (10)。
+# 新特性 (v2.4):
+#   - 优化集成体验: 作为子脚本调用时，不再清屏，并且返回主菜单时会静默退出。
 # ===================================================================================
 
-# (*** 新增 ***) 识别是否作为子脚本被调用
+# 识别是否作为子脚本被调用
 IS_NESTED_CALL="${IS_NESTED_CALL:-false}"
 
 # --- 全局变量和常量 ---
 readonly C_RESET='\e[0m'
-# ... (其他颜色变量不变)
 readonly C_GREEN='\e[0;32m'
 readonly C_YELLOW='\e[1;33m'
 readonly C_RED='\e[0;31m'
@@ -31,14 +29,12 @@ CODENAME=""
 # --- 辅助函数 ---
 
 cecho() {
-    # ... (函数不变)
     local color="$1"
     local message="$2"
     printf "${color}%s${C_RESET}\n" "$message"
 }
 
 spinner() {
-    # ... (函数不变)
     local pid=$!
     local message="$1"
     local spinstr='|/-\'
@@ -55,15 +51,15 @@ spinner() {
     cecho "$C_GREEN" "✓ 完成"
 }
 
-# (*** 新增 ***) 处理用户选择退出的逻辑
-# 根据是否被主脚本调用，返回不同的退出码
+# (*** 关键修改 ***) 退出逻辑现在完全符合您的要求
+# 在被主脚本调用时，会静默退出
 handle_exit() {
     if [ "$IS_NESTED_CALL" = "true" ]; then
-        # 返回 10，告知主脚本用户选择了“返回”
+        # 返回 10，告知主脚本用户选择了“返回”。不打印任何信息。
         exit 10
     else
-        # 独立运行时，正常退出
-        cecho "$C_BLUE" "👋 脚本已退出。"
+        # 独立运行时，打印提示信息后正常退出
+        cecho "$C_BLUE" "👋 操作已取消，脚本退出。"
         exit 0
     fi
 }
@@ -72,10 +68,11 @@ handle_exit() {
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         cecho "$C_RED" "❌ 错误: 请使用 root 用户运行此脚本，或在命令前添加 sudo。"
-        exit 1 # 错误退出，保持不变
+        exit 1
     fi
 }
 
+# ... (determine_install_source 和 check_distro 函数无变化)
 determine_install_source() {
     cecho "$C_BLUE" "🌐 正在检测最佳 Docker 安装源..."
     if curl -s --connect-timeout 5 -o /dev/null "$DOCKER_URL_OFFICIAL"; then
@@ -89,11 +86,11 @@ determine_install_source() {
             cecho "$C_GREEN" "   -> 已切换到国内镜像源: ${DOCKER_INSTALL_URL}"
             if ! curl -s --connect-timeout 5 -o /dev/null "$DOCKER_INSTALL_URL"; then
                  cecho "$C_RED" "❌ 错误: 国内镜像源也无法连接。请检查您的网络设置。"
-                 exit 1 # 错误退出，保持不变
+                 exit 1
             fi
         else
             cecho "$C_RED" "❌ 用户取消操作，无法继续安装。"
-            exit 1 # 错误退出，保持不变
+            exit 1
         fi
     fi
 }
@@ -103,17 +100,16 @@ check_distro() {
         . /etc/os-release
         case "$ID" in
             ubuntu|debian) DISTRO=$ID; CODENAME=$VERSION_CODENAME ;;
-            *) cecho "$C_RED" "❌ 错误: 不支持的系统: $ID。"; exit 1 ;; # 错误退出，保持不变
+            *) cecho "$C_RED" "❌ 错误: 不支持的系统: $ID。"; exit 1 ;;
         esac
     else
-        cecho "$C_RED" "❌ 错误: 无法检测到系统发行版信息。"; exit 1 # 错误退出，保持不变
+        cecho "$C_RED" "❌ 错误: 无法检测到系统发行版信息。"; exit 1
     fi
 }
 
+
 # --- 核心功能函数 ---
 # (uninstall_docker, configure_docker_mirror, add_user_to_docker_group, install_docker 函数内容均无变化)
-# ...
-
 uninstall_docker() {
     cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
     read -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm
@@ -144,7 +140,7 @@ configure_docker_mirror() {
     if [[ "$configure_needed" == true ]]; then
         mkdir -p /etc/docker
         cat > /etc/docker/daemon.json <<EOF
-{ "registry-mirrors": [ "https://mirror.baidubce.com", "https://hub-mirror.c.163.com", "https://docker.m.daoud.io" ] }
+{ "registry-mirrors": [ "https://mirror.baidubce.com", "https://hub-mirror.c.163.com", "https://docker.m.daocloud.io" ] }
 EOF
         (systemctl daemon-reload && systemctl restart docker) & spinner "   -> 正在应用配置并重启 Docker..."
         cecho "$C_GREEN" "✅ 镜像加速器配置完成！"
@@ -194,9 +190,17 @@ install_docker() {
 
 main() {
     check_root
-    clear
+
+    # (*** 关键修改 ***) 仅在独立运行时才清屏
+    if [ "$IS_NESTED_CALL" != "true" ]; then
+        clear
+    fi
+
+    # 增加一个换行，让子菜单和主菜单之间有视觉分隔
+    echo
+
     cecho "$C_BLUE" "==================================================="
-    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.3  "
+    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.4  "
     cecho "$C_BLUE" "==================================================="
     
     if command -v docker &> /dev/null; then
@@ -210,7 +214,6 @@ main() {
         echo "  3) 配置镜像加速和用户组"
         read -p "请输入选项 [1-3] (直接回车返回): " choice
         
-        # (*** 关键修改 ***) 调用新的退出处理函数
         if [[ -z "$choice" ]]; then
             handle_exit
         fi
@@ -219,7 +222,7 @@ main() {
             1) uninstall_docker && install_docker ;;
             2) uninstall_docker ;;
             3) DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;; # 错误退出，保持不变
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;;
         esac
     else
         cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
@@ -227,18 +230,15 @@ main() {
         echo "  1) 安装 Docker 和 Docker Compose"
         read -p "请输入选项 [1] (直接回车返回): " choice
         
-        # (*** 关键修改 ***) 调用新的退出处理函数
         if [[ -z "$choice" ]]; then
             handle_exit
         fi
         
         case $choice in
             1) install_docker ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;; # 错误退出，保持不变
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;;
         esac
     fi
-    
-    # 当任务成功执行后，脚本会自然结束，隐式返回退出码 0，这符合要求
 }
 
 # --- 脚本执行入口 ---
