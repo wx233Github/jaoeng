@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.6 - 路径修复版)
+# 🚀 VPS 一键安装入口脚本 (v5.7 - 交互修复版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
 # - 入口脚本自动更新, 精细退出码处理
@@ -10,6 +10,7 @@
 # - 优化交互：主菜单回车退出，子菜单回车返回
 # - 修正子脚本环境变量传递，实现完美静默返回
 # - 修复了下载到子目录时的路径创建问题
+# - 修复: 子脚本取消操作(返回码10)后，主脚本会暂停等待，而不是直接刷新菜单
 # =============================================================
 
 # --- 严格模式 ---
@@ -57,7 +58,7 @@ TOOLS_MENU=(
 # ====================== 检查与初始化 ======================
 check_dependencies() {
     local missing_deps=()
-    local deps=("curl" "cmp" "ln" "dirname") # 添加 dirname 作为依赖
+    local deps=("curl" "cmp" "ln" "dirname")
     for cmd in "${deps[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
             missing_deps+=("$cmd")
@@ -111,15 +112,11 @@ self_update() {
 }
 
 # ====================== 模块管理与执行 ======================
-# 【已修正】下载模块到缓存 (自动创建子目录)
 download_module_to_cache() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
     
-    # --- 核心修正 ---
-    # 在下载前，确保文件所在的目录存在
-    # dirname 会提取路径中的目录部分
     mkdir -p "$(dirname "$local_file")"
 
     if curl -fsSL --connect-timeout 5 --max-time 60 "$url" -o "$local_file"; then
@@ -162,6 +159,7 @@ update_all_modules_parallel() {
     read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
 }
 
+# 【核心修复】
 execute_module() {
     local script_name="$1"
     local display_name="$2"
@@ -170,19 +168,23 @@ execute_module() {
     if [ ! -f "$local_path" ]; then
         log_info "本地未找到模块 [$script_name]，正在下载..."
         if ! download_module_to_cache "$script_name"; then
-            # 这里的错误提示现在更准确了，因为下载失败可能是多种原因
             log_error "下载或保存模块 $script_name 失败。请检查网络、权限或磁盘空间。"
             read -p "$(echo -e "${YELLOW}按回车键返回...${NC}")"
             return
         fi
     fi
     chmod +x "$local_path"
+    
     local exit_code=0
+    # 在子shell中执行，并将环境变量传递进去
     ( IS_NESTED_CALL=true bash "$local_path" ) || exit_code=$?
-    if [ "$exit_code" -eq 10 ]; then
-        :
-    elif [ "$exit_code" -eq 0 ]; then
+    
+    # 统一处理所有非0非10的返回情况，并在返回码为10时也进行暂停
+    if [ "$exit_code" -eq 0 ]; then
         log_success "模块 [$display_name] 执行完毕。"
+        read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
+    elif [ "$exit_code" -eq 10 ]; then
+        # 当用户在子脚本中选择“返回”时 (退出码10)，我们在这里进行暂停
         read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
     else
         log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"
@@ -190,12 +192,13 @@ execute_module() {
     fi
 }
 
-# ====================== 【核心】通用菜单显示函数 ======================
+
+# ====================== 通用菜单显示函数 ======================
 display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.6)"
+    local header_text="🚀 VPS 一键安装入口 (v5.7)"
     if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
     echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
