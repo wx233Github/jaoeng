@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.13.2 修复了退出脚本时不需要回车的问题。
+# v2.13.3 优化：智能判断是否在终端输出颜色，避免在非终端环境显示乱码。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,16 +12,25 @@
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.13.2" # 版本更新，反映修复
+VERSION="2.13.3" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
-# --- 颜色定义 ---
-COLOR_GREEN="\033[0;32m"
-COLOR_RED="\033[0;31m"
-COLOR_YELLOW="\033[0;33m"
-COLOR_BLUE="\033[0;34m"
-COLOR_RESET="\033[0m"
+# --- 颜色定义 (优化：智能判断是否在终端输出颜色) ---
+if [ -t 1 ]; then # 检查标准输出是否是终端
+    COLOR_GREEN="\033[0;32m"
+    COLOR_RED="\033[0;31m"
+    COLOR_YELLOW="\033[0;33m"
+    COLOR_BLUE="\033[0;34m"
+    COLOR_RESET="\033[0m"
+else
+    # 如果不是终端，颜色变量为空
+    COLOR_GREEN=""
+    COLOR_RED=""
+    COLOR_YELLOW=""
+    COLOR_BLUE=""
+    COLOR_RESET=""
+fi
 
 # 确保脚本以 root 权限运行，因为需要操作 Docker 和修改 crontab
 if [ "$(id -u)" -ne 0 ]; then
@@ -807,6 +816,7 @@ echo -e "${COLOR_GREEN}===========================================${COLOR_GREEN}
 
 # 2. 直接显示当前自动化更新状态报告
 show_status
+# 移除了这里的 press_enter_to_continue，实现直接显示菜单
 
 # 3. 显示主菜单并循环
 while true; do
