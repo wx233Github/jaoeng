@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ===================================================================================
-# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.4
+# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.6
 #
-# 新特性 (v2.4):
-#   - 优化集成体验: 作为子脚本调用时，不再清屏，并且返回主菜单时会静默退出。
+# 新特性 (v2.6):
+#   - 修复: 在“重新安装”流程中，即使用户取消了卸载步骤，脚本依然会继续安装的逻辑错误。
 # ===================================================================================
 
 # 识别是否作为子脚本被调用
@@ -51,8 +51,6 @@ spinner() {
     cecho "$C_GREEN" "✓ 完成"
 }
 
-# (*** 关键修改 ***) 退出逻辑现在完全符合您的要求
-# 在被主脚本调用时，会静默退出
 handle_exit() {
     if [ "$IS_NESTED_CALL" = "true" ]; then
         # 返回 10，告知主脚本用户选择了“返回”。不打印任何信息。
@@ -72,7 +70,6 @@ check_root() {
     fi
 }
 
-# ... (determine_install_source 和 check_distro 函数无变化)
 determine_install_source() {
     cecho "$C_BLUE" "🌐 正在检测最佳 Docker 安装源..."
     if curl -s --connect-timeout 5 -o /dev/null "$DOCKER_URL_OFFICIAL"; then
@@ -109,7 +106,6 @@ check_distro() {
 
 
 # --- 核心功能函数 ---
-# (uninstall_docker, configure_docker_mirror, add_user_to_docker_group, install_docker 函数内容均无变化)
 uninstall_docker() {
     cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
     read -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm
@@ -121,6 +117,8 @@ uninstall_docker() {
         cecho "$C_GREEN" "✅ Docker 和 Compose 已成功卸载。"
     else
         cecho "$C_YELLOW" "🚫 操作已取消。"
+        # 【关键修复】返回一个失败的退出码 (1)，这样 && 命令链就会中断，不会继续执行安装。
+        return 1
     fi
 }
 
@@ -172,7 +170,7 @@ install_docker() {
     (apt-get remove -y docker docker-engine docker.io containerd runc >/dev/null 2&>1) & spinner "   -> 清理旧版本 Docker (如有)..."
     (apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg >/dev/null 2>&1) & spinner "   -> 更新软件源并安装必要依赖..."
     install -m 0755 -d /etc/apt/keyrings
-    (curl -fsSL "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg) & spinner "   -> 添加 Docker GPG 密钥..."
+    (curl -fsSL "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg) & spinner "   -> 添加 Docker GPG 密钥..."
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${CODENAME} stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
     (apt-get update -qq >/dev/null 2>&1 && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1) & spinner "   -> 安装 Docker 引擎和 Compose 插件..."
     (systemctl enable --now docker >/dev/null 2>&1) & spinner "   -> 启动 Docker 并设置开机自启..."
@@ -191,16 +189,14 @@ install_docker() {
 main() {
     check_root
 
-    # (*** 关键修改 ***) 仅在独立运行时才清屏
     if [ "$IS_NESTED_CALL" != "true" ]; then
         clear
     fi
 
-    # 增加一个换行，让子菜单和主菜单之间有视觉分隔
     echo
 
     cecho "$C_BLUE" "==================================================="
-    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.4  "
+    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.6  "
     cecho "$C_BLUE" "==================================================="
     
     if command -v docker &> /dev/null; then
