@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.13.3 优化：智能判断是否在终端输出颜色，避免在非终端环境显示乱码。
+# v2.14.0 优化：子菜单回车返回上一级，主菜单回车直接退出脚本，提升用户交互体验。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,11 +12,11 @@
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.13.3" # 版本更新，反映修复
+VERSION="2.14.0" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
-# --- 颜色定义 (优化：智能判断是否在终端输出颜色) ---
+# --- 颜色定义 ---
 if [ -t 1 ]; then # 检查标准输出是否是终端
     COLOR_GREEN="\033[0;32m"
     COLOR_RED="\033[0;31m"
@@ -351,7 +351,7 @@ configure_watchtower() {
                  echo -e "${COLOR_YELLOW}⚠️ Watchtower 智能模式回退完成！它将更新所有符合条件的容器，但不会尝试更新自身。${COLOR_RESET}"
             else
                  send_notify "❌ Docker 自动更新助手：Watchtower 智能模式回退失败！请手动检查。"
-                 echo -e "${COLOR_RED}❌ Watchtower 智能模式回退失败！请手动检查。${COLOR_RESET}"
+                 echo -e "${COLOR_RED}❌ $MODE_NAME 启动失败，请检查配置和日志。${COLOR_RESET}"
             fi
         else
             # 非智能模式启动失败，直接报告错误
@@ -463,7 +463,11 @@ update_menu() {
     echo "1) 🚀 Watchtower模式 (自动监控并更新所有运行中的容器镜像)"
     echo "2) 🕑 Cron定时任务模式 (通过 Docker Compose 定时拉取并重启指定项目)"
     echo "3) 🤖 智能 Watchtower模式 (Watchtower 尝试更新自身)"
-    read -p "请输入选择 [1-3]: " MODE_CHOICE
+    read -p "请输入选择 [1-3] 或按 Enter 返回主菜单: " MODE_CHOICE # 优化提示
+
+    if [ -z "$MODE_CHOICE" ]; then # 如果输入为空，则返回
+        return
+    fi
 
     case "$MODE_CHOICE" in
     1)
@@ -477,6 +481,7 @@ update_menu() {
         ;;
     *)
         echo -e "${COLOR_RED}❌ 输入无效，请选择 1-3 之间的数字。${COLOR_RESET}"
+        press_enter_to_continue # 在无效输入后也暂停
         ;;
     esac
 }
@@ -486,7 +491,11 @@ manage_tasks() {
     echo -e "${COLOR_YELLOW}⚙️ 任务管理：${COLOR_RESET}"
     echo "1) 停止并移除 Watchtower 容器"
     echo "2) 移除 Cron 定时任务"
-    read -p "请输入选择 [1-2]: " MANAGE_CHOICE
+    read -p "请输入选择 [1-2] 或按 Enter 返回主菜单: " MANAGE_CHOICE # 优化提示
+
+    if [ -z "$MANAGE_CHOICE" ]; then # 如果输入为空，则返回
+        return
+    fi
 
     case "$MANAGE_CHOICE" in
         1)
@@ -534,6 +543,7 @@ manage_tasks() {
             ;;
         *)
             echo -e "${COLOR_RED}❌ 输入无效，请选择 1-2 之间的数字。${COLOR_RESET}"
+            press_enter_to_continue # 在无效输入后也暂停
             ;;
     esac
     press_enter_to_continue
@@ -638,6 +648,10 @@ view_and_edit_config() {
     echo "12) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"
     echo "-------------------------------------------------------------------------------------------------------------------"
     read -p "请输入要编辑的选项编号 (1-12) 或按 Enter 返回主菜单: " edit_choice
+
+    if [ -z "$edit_choice" ]; then # 如果输入为空，则返回
+        return
+    fi
 
     case "$edit_choice" in
         1)
@@ -816,7 +830,7 @@ echo -e "${COLOR_GREEN}===========================================${COLOR_GREEN}
 
 # 2. 直接显示当前自动化更新状态报告
 show_status
-# 移除了这里的 press_enter_to_continue，实现直接显示菜单
+# 移除这里的 press_enter_to_continue，实现直接显示菜单
 
 # 3. 显示主菜单并循环
 while true; do
@@ -829,7 +843,11 @@ while true; do
     echo "5) 📝 查看/编辑脚本配置"
     echo "6) 🆕 运行一次 Watchtower (立即检查并更新)"
     echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-    read -p "请输入选择 [0-6]: " MODE # 注意这里选项编号的变化
+    read -p "请输入选择 [0-6] 或按 Enter 退出脚本: " MODE # 优化提示
+
+    if [ -z "$MODE" ]; then # 如果输入为空，则视为选择0
+        MODE="0"
+    fi
 
     case "$MODE" in
     0)
