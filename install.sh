@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.5 - 菜单优化版)
+# 🚀 VPS 一键安装入口脚本 (v5.6 - 路径修复版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
 # - 入口脚本自动更新, 精细退出码处理
@@ -9,6 +9,7 @@
 # - 支持多级子菜单，易于扩展
 # - 优化交互：主菜单回车退出，子菜单回车返回
 # - 修正子脚本环境变量传递，实现完美静默返回
+# - 修复了下载到子目录时的路径创建问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -37,7 +38,6 @@ SCRIPT_PATH="$INSTALL_DIR/install.sh"
 BIN_DIR="/usr/local/bin"
 
 # ====================== 菜单定义 ======================
-# 【已优化】菜单项显示更简洁
 MAIN_MENU=(
     "item:Docker:docker.sh"
     "item:Nginx:nginx.sh"
@@ -57,7 +57,7 @@ TOOLS_MENU=(
 # ====================== 检查与初始化 ======================
 check_dependencies() {
     local missing_deps=()
-    local deps=("curl" "cmp" "ln")
+    local deps=("curl" "cmp" "ln" "dirname") # 添加 dirname 作为依赖
     for cmd in "${deps[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
             missing_deps+=("$cmd")
@@ -111,10 +111,17 @@ self_update() {
 }
 
 # ====================== 模块管理与执行 ======================
+# 【已修正】下载模块到缓存 (自动创建子目录)
 download_module_to_cache() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
+    
+    # --- 核心修正 ---
+    # 在下载前，确保文件所在的目录存在
+    # dirname 会提取路径中的目录部分
+    mkdir -p "$(dirname "$local_file")"
+
     if curl -fsSL --connect-timeout 5 --max-time 60 "$url" -o "$local_file"; then
         if [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; return 1; fi
     else
@@ -163,7 +170,8 @@ execute_module() {
     if [ ! -f "$local_path" ]; then
         log_info "本地未找到模块 [$script_name]，正在下载..."
         if ! download_module_to_cache "$script_name"; then
-            log_error "下载模块 $script_name 失败。请检查网络。"
+            # 这里的错误提示现在更准确了，因为下载失败可能是多种原因
+            log_error "下载或保存模块 $script_name 失败。请检查网络、权限或磁盘空间。"
             read -p "$(echo -e "${YELLOW}按回车键返回...${NC}")"
             return
         fi
@@ -187,7 +195,7 @@ display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.5)"
+    local header_text="🚀 VPS 一键安装入口 (v5.6)"
     if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
     echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
