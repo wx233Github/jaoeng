@@ -1,13 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.1 - 修复版)
+# 🚀 VPS 一键安装入口脚本 (v5.2 - 交互优化版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
-# - 入口脚本自动更新
-# - 精细的子脚本退出码处理
-# - 启动时依赖检查
+# - 入口脚本自动更新, 精细退出码处理, 依赖检查
 # - 健壮的网络操作 (带超时)
 # - 支持多级子菜单，易于扩展
+# - 优化交互：主菜单回车退出，子菜单回车返回
 # =============================================================
 
 # --- 严格模式 ---
@@ -36,21 +35,13 @@ SCRIPT_PATH="$INSTALL_DIR/install.sh"
 BIN_DIR="/usr/local/bin"
 
 # ====================== 菜单定义 ======================
-# 格式: "类型:显示名:动作参数"
-# 类型:
-#   - item: 普通脚本项，动作为脚本文件名
-#   - submenu: 子菜单入口，动作为子菜单数组的名称
-#   - func:   直接调用一个函数，动作为函数名
-#   - back:   返回上一级菜单 (特殊项)
-#   - exit:   退出脚本 (特殊项)
-
+# 【修改点 1】: 从主菜单中移除了 "exit:退出脚本:exit" 这一项
 MAIN_MENU=(
     "item:Docker 相关:docker.sh"
     "item:Nginx 相关:nginx.sh"
     "submenu:常用工具:TOOLS_MENU"
     "item:证书申请:cert.sh"
     "func:更新所有模块缓存:update_all_modules_parallel"
-    "exit:退出脚本:exit"
 )
 
 TOOLS_MENU=(
@@ -61,7 +52,6 @@ TOOLS_MENU=(
 )
 
 # ====================== 检查与初始化 ======================
-
 check_dependencies() {
     log_info "正在检查系统依赖..."
     local missing_deps=()
@@ -78,17 +68,10 @@ check_dependencies() {
     log_success "所有依赖项均已满足。"
 }
 
-# 检查 root 权限
-if [ "$(id -u)" -ne 0 ]; then
-    log_error "请使用 root 用户运行此脚本"
-fi
-
-# 创建持久化目录
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$BIN_DIR"
+if [ "$(id -u)" -ne 0 ]; then log_error "请使用 root 用户运行此脚本"; fi
+mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
 # ====================== 入口脚本自我管理 ======================
-
 save_entry_script() {
     log_info "正在检查并保存入口脚本到 $SCRIPT_PATH..."
     if ! curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$SCRIPT_PATH"; then
@@ -109,11 +92,7 @@ setup_shortcut() {
 }
 
 self_update() {
-    # FIX: 修复了单行 if 语句缺少 'then' 关键字导致的语法错误
-    if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then
-        return
-    fi
-
+    if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then return; fi
     log_info "正在检查入口脚本更新..."
     local temp_script="/tmp/install.sh.tmp"
     if curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$temp_script"; then
@@ -131,19 +110,12 @@ self_update() {
 }
 
 # ====================== 模块管理与执行 ======================
-
 download_module_to_cache() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
     local url="$BASE_URL/$script_name"
-    
     if curl -fsSL --connect-timeout 5 --max-time 60 "$url" -o "$local_file"; then
-        if [ -s "$local_file" ]; then
-            return 0
-        else
-            rm -f "$local_file"
-            return 1
-        fi
+        if [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; return 1; fi
     else
         return 1
     fi
@@ -157,8 +129,7 @@ precache_modules_background() {
             for entry in "${menu_ref[@]}"; do
                 type="${entry%%:*}"
                 if [ "$type" == "item" ]; then
-                    script_name=$(echo "$entry" | cut -d: -f3)
-                    download_module_to_cache "$script_name" &
+                    script_name=$(echo "$entry" | cut -d: -f3); download_module_to_cache "$script_name" &
                 fi
             done
         done
@@ -174,9 +145,7 @@ update_all_modules_parallel() {
         for entry in "${menu_ref[@]}"; do
             type="${entry%%:*}"
             if [ "$type" == "item" ]; then
-                script_name=$(echo "$entry" | cut -d: -f3)
-                download_module_to_cache "$script_name" &
-                pids+=($!)
+                script_name=$(echo "$entry" | cut -d: -f3); download_module_to_cache "$script_name" & pids+=($!)
             fi
         done
     done
@@ -201,14 +170,9 @@ execute_module() {
     chmod +x "$local_path"
     local exit_code=0
     ( bash "$local_path" ) || exit_code=$?
-    if [ "$exit_code" -eq 10 ]; then
-        log_info "模块 [$display_name] 已返回。"
-    elif [ "$exit_code" -eq 0 ]; then
-        log_success "模块 [$display_name] 执行完毕。"
-        read -p "$(echo -e "${BLUE}按回车键返回...${NC}")"
-    else
-        log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"
-        read -p "$(echo -e "${YELLOW}按回车键返回...${NC}")"
+    if [ "$exit_code" -eq 10 ]; then log_info "模块 [$display_name] 已返回。";
+    elif [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; read -p "$(echo -e "${BLUE}按回车键返回...${NC}")";
+    else log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"; read -p "$(echo -e "${YELLOW}按回车键返回...${NC}")";
     fi
 }
 
@@ -217,30 +181,37 @@ display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.1)"
-    if [ "$menu_name" != "MAIN_MENU" ]; then
-        header_text="🛠️ ${menu_name//_/ }"
-    fi
+    local header_text="🚀 VPS 一键安装入口 (v5.2)"
+    if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
-    echo ""
-    echo -e "${BLUE}==========================================${NC}"
-    echo -e "  ${header_text}"
-    echo -e "${BLUE}==========================================${NC}"
+    echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
 
     local i=1
     for item in "${menu_items[@]}"; do
-        local display_text=$(echo "$item" | cut -d: -f2)
-        echo -e " ${YELLOW}$i.${NC} $display_text"
-        ((i++))
+        local display_text=$(echo "$item" | cut -d: -f2); echo -e " ${YELLOW}$i.${NC} $display_text"; ((i++))
     done
     echo ""
 
-    read -p "$(echo -e "${BLUE}请选择操作 (1-${#menu_items[@]}):${NC} ")" choice
+    # 【修改点 2】: 根据当前菜单，显示不同的回车提示
+    if [ "$menu_name" == "MAIN_MENU" ]; then
+        read -p "$(echo -e "${BLUE}请选择操作 (1-${#menu_items[@]}) 或按 Enter 退出:${NC} ")" choice
+    else
+        read -p "$(echo -e "${BLUE}请选择操作 (1-${#menu_items[@]}) 或按 Enter 返回:${NC} ")" choice
+    fi
+
+    # 【修改点 3】: 优先处理空回车的情况
+    if [ -z "$choice" ]; then
+        if [ "$menu_name" == "MAIN_MENU" ]; then
+            log_info "已退出脚本。"
+            exit 0
+        else
+            # 在子菜单中，空回车等同于返回
+            return 1
+        fi
+    fi
 
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#menu_items[@]}" ]; then
-        log_warning "无效选项，请重新输入。"
-        sleep 1
-        return 0
+        log_warning "无效选项，请重新输入。"; sleep 1; return 0
     fi
 
     local selected_item="${menu_items[$((choice-1))]}"
@@ -249,22 +220,12 @@ display_menu() {
     local action=$(echo "$selected_item" | cut -d: -f3)
 
     case "$type" in
-        item)
-            execute_module "$action" "$name"
-            ;;
-        submenu)
-            display_menu "$action"
-            ;;
-        func)
-            "$action"
-            ;;
-        back)
-            return 1
-            ;;
-        exit)
-            log_info "退出脚本。"
-            exit 0
-            ;;
+        item) execute_module "$action" "$name" ;;
+        submenu) display_menu "$action" ;;
+        func) "$action" ;;
+        back) return 1 ;;
+        # 'exit' 类型已从主菜单移除，但保留逻辑以备后用
+        exit) log_info "退出脚本。"; exit 0 ;;
     esac
     return 0
 }
@@ -277,9 +238,7 @@ main() {
     self_update
     precache_modules_background
 
-    while true; do
-        display_menu "MAIN_MENU"
-    done
+    while true; do display_menu "MAIN_MENU"; done
 }
 
 main "$@"
