@@ -1,15 +1,19 @@
 #!/bin/bash
 
 # ===================================================================================
-# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.2
+# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.3
 #
-# 新特性 (v2.2):
-#   - 交互优化: 菜单选项从 1 开始编号，直接按回车键退出脚本。
-#   - 文本优化: 菜单描述更清晰，例如明确卸载目标包含 Compose。
+# 新特性 (v2.3):
+#   - 支持作为子脚本被调用: 通过 IS_NESTED_CALL 环境变量进行集成。
+#   - 优化的退出逻辑: 用户选择返回时，会根据调用环境返回特定退出码 (10)。
 # ===================================================================================
+
+# (*** 新增 ***) 识别是否作为子脚本被调用
+IS_NESTED_CALL="${IS_NESTED_CALL:-false}"
 
 # --- 全局变量和常量 ---
 readonly C_RESET='\e[0m'
+# ... (其他颜色变量不变)
 readonly C_GREEN='\e[0;32m'
 readonly C_YELLOW='\e[1;33m'
 readonly C_RED='\e[0;31m'
@@ -27,12 +31,14 @@ CODENAME=""
 # --- 辅助函数 ---
 
 cecho() {
+    # ... (函数不变)
     local color="$1"
     local message="$2"
     printf "${color}%s${C_RESET}\n" "$message"
 }
 
 spinner() {
+    # ... (函数不变)
     local pid=$!
     local message="$1"
     local spinstr='|/-\'
@@ -49,10 +55,24 @@ spinner() {
     cecho "$C_GREEN" "✓ 完成"
 }
 
+# (*** 新增 ***) 处理用户选择退出的逻辑
+# 根据是否被主脚本调用，返回不同的退出码
+handle_exit() {
+    if [ "$IS_NESTED_CALL" = "true" ]; then
+        # 返回 10，告知主脚本用户选择了“返回”
+        exit 10
+    else
+        # 独立运行时，正常退出
+        cecho "$C_BLUE" "👋 脚本已退出。"
+        exit 0
+    fi
+}
+
+
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         cecho "$C_RED" "❌ 错误: 请使用 root 用户运行此脚本，或在命令前添加 sudo。"
-        exit 1
+        exit 1 # 错误退出，保持不变
     fi
 }
 
@@ -69,11 +89,11 @@ determine_install_source() {
             cecho "$C_GREEN" "   -> 已切换到国内镜像源: ${DOCKER_INSTALL_URL}"
             if ! curl -s --connect-timeout 5 -o /dev/null "$DOCKER_INSTALL_URL"; then
                  cecho "$C_RED" "❌ 错误: 国内镜像源也无法连接。请检查您的网络设置。"
-                 exit 1
+                 exit 1 # 错误退出，保持不变
             fi
         else
             cecho "$C_RED" "❌ 用户取消操作，无法继续安装。"
-            exit 1
+            exit 1 # 错误退出，保持不变
         fi
     fi
 }
@@ -83,14 +103,16 @@ check_distro() {
         . /etc/os-release
         case "$ID" in
             ubuntu|debian) DISTRO=$ID; CODENAME=$VERSION_CODENAME ;;
-            *) cecho "$C_RED" "❌ 错误: 不支持的系统: $ID。"; exit 1 ;;
+            *) cecho "$C_RED" "❌ 错误: 不支持的系统: $ID。"; exit 1 ;; # 错误退出，保持不变
         esac
     else
-        cecho "$C_RED" "❌ 错误: 无法检测到系统发行版信息。"; exit 1
+        cecho "$C_RED" "❌ 错误: 无法检测到系统发行版信息。"; exit 1 # 错误退出，保持不变
     fi
 }
 
 # --- 核心功能函数 ---
+# (uninstall_docker, configure_docker_mirror, add_user_to_docker_group, install_docker 函数内容均无变化)
+# ...
 
 uninstall_docker() {
     cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
@@ -107,31 +129,22 @@ uninstall_docker() {
 }
 
 configure_docker_mirror() {
-    local prompt
-    local default_choice="n"
-    local choice
-
+    local prompt; local default_choice="n"; local choice
     if [[ "$DOCKER_INSTALL_URL" == "$DOCKER_URL_MIRROR" ]]; then
-        prompt="🤔 检测到您使用了国内安装源，强烈推荐配置 Docker Hub 镜像加速器，是否配置？[Y/n]: "
-        default_choice="y"
+        prompt="🤔 检测到您使用了国内安装源，强烈推荐配置 Docker Hub 镜像加速器，是否配置？[Y/n]: "; default_choice="y"
     else
         prompt="🤔 是否需要为 Docker Hub 配置国内镜像加速器 (适合从国内拉取镜像)？[y/N]: "
     fi
-    
     read -p "$(echo -e ${C_YELLOW}${prompt}${C_RESET})" choice
-
     local configure_needed=false
     if [[ "$default_choice" == "y" && (-z "$choice" || "$choice" =~ ^[yY]$) ]] || \
        [[ "$default_choice" == "n" && "$choice" =~ ^[yY]$ ]]; then
         configure_needed=true
     fi
-
     if [[ "$configure_needed" == true ]]; then
         mkdir -p /etc/docker
         cat > /etc/docker/daemon.json <<EOF
-{
-  "registry-mirrors": [ "https://mirror.baidubce.com", "https://hub-mirror.c.163.com", "https://docker.m.daocloud.io" ]
-}
+{ "registry-mirrors": [ "https://mirror.baidubce.com", "https://hub-mirror.c.163.com", "https://docker.m.daoud.io" ] }
 EOF
         (systemctl daemon-reload && systemctl restart docker) & spinner "   -> 正在应用配置并重启 Docker..."
         cecho "$C_GREEN" "✅ 镜像加速器配置完成！"
@@ -158,8 +171,7 @@ add_user_to_docker_group() {
 
 install_docker() {
     cecho "$C_BLUE" "🚀 开始安装 Docker & Docker Compose..."
-    determine_install_source
-    check_distro
+    determine_install_source; check_distro
     cecho "$C_GREEN" "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
     (apt-get remove -y docker docker-engine docker.io containerd runc >/dev/null 2&>1) & spinner "   -> 清理旧版本 Docker (如有)..."
     (apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg >/dev/null 2>&1) & spinner "   -> 更新软件源并安装必要依赖..."
@@ -172,8 +184,7 @@ install_docker() {
     printf "   Docker 版本: %s\n" "$(docker --version)"
     printf "   Compose 版本: %s\n" "$(docker compose version)"
     (docker run --rm hello-world >/dev/null 2>&1 && docker image rm hello-world >/dev/null 2>&1) & spinner "   -> 运行 hello-world 容器进行功能测试..."
-    configure_docker_mirror
-    add_user_to_docker_group
+    configure_docker_mirror; add_user_to_docker_group
     cecho "$C_GREEN" "--------------------------------------------------"
     cecho "$C_GREEN" "✅ 所有操作已完成！"
     cecho "$C_YELLOW" "💡 重要提示：如果添加了用户到 docker 组，请务必重新登录或重启系统！"
@@ -185,7 +196,7 @@ main() {
     check_root
     clear
     cecho "$C_BLUE" "==================================================="
-    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.2  "
+    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.3  "
     cecho "$C_BLUE" "==================================================="
     
     if command -v docker &> /dev/null; then
@@ -197,40 +208,37 @@ main() {
         echo "  1) 重新安装 Docker 和 Compose"
         echo "  2) 卸载 Docker 和 Compose"
         echo "  3) 配置镜像加速和用户组"
-        # (*** 关键修改 ***) 调整了提示语
-        read -p "请输入选项 [1-3] (直接回车退出): " choice
+        read -p "请输入选项 [1-3] (直接回车返回): " choice
         
-        # (*** 关键修改 ***) 优先处理回车退出的情况
+        # (*** 关键修改 ***) 调用新的退出处理函数
         if [[ -z "$choice" ]]; then
-            cecho "$C_BLUE" "👋 操作取消，退出脚本。"
-            exit 0
+            handle_exit
         fi
 
         case $choice in
             1) uninstall_docker && install_docker ;;
             2) uninstall_docker ;;
-            3) DOCKER_INSTALL_URL=""
-               configure_docker_mirror && add_user_to_docker_group ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'，退出。"; exit 1 ;;
+            3) DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group ;;
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;; # 错误退出，保持不变
         esac
     else
         cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
         cecho "$C_YELLOW" "请选择要执行的操作:"
         echo "  1) 安装 Docker 和 Docker Compose"
-        # (*** 关键修改 ***) 调整了提示语
-        read -p "请输入选项 [1] (直接回车退出): " choice
+        read -p "请输入选项 [1] (直接回车返回): " choice
         
-        # (*** 关键修改 ***) 优先处理回车退出的情况
+        # (*** 关键修改 ***) 调用新的退出处理函数
         if [[ -z "$choice" ]]; then
-            cecho "$C_BLUE" "👋 操作取消，退出脚本。"
-            exit 0
+            handle_exit
         fi
         
         case $choice in
             1) install_docker ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'，退出。"; exit 1 ;;
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;; # 错误退出，保持不变
         esac
     fi
+    
+    # 当任务成功执行后，脚本会自然结束，隐式返回退出码 0，这符合要求
 }
 
 # --- 脚本执行入口 ---
