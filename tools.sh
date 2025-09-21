@@ -42,7 +42,7 @@ cleanup() {
 }
 
 # 在脚本退出时执行 cleanup 函数
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 # 检查 root 权限
 if [ "$(id -u)" -ne 0 ]; then
