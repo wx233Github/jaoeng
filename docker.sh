@@ -222,7 +222,9 @@ main() {
                 1) 
                     # 如果 uninstall_docker 返回 1 (取消)，&& 将阻止 install_docker 执行
                     # 然后循环会继续，重新显示此菜单
-                    uninstall_docker && install_docker 
+                    if uninstall_docker; then
+                        install_docker
+                    fi
                     ;;
                 2) 
                     uninstall_docker 
