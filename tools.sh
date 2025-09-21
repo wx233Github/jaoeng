@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS GitHub 一键脚本拉取入口 (彻底修正版)
+# 🚀 VPS GitHub 一键脚本拉取入口 (最终修正版)
 # =============================================
 
 # --- 严格模式 ---
@@ -161,12 +161,13 @@ main_menu() {
             download "$file"
             
             # --- 执行下载的子脚本 ---
-            # 临时禁用 exit-on-error (set -e)，因为我们期望子脚本可能返回
-            # 一个非零的退出码 (例如 10)，我们需要手动捕获并处理它，而不是让脚本直接退出。
-            set +e
-            ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" )
-            local child_script_exit_code=$? # 捕获子脚本的退出码
-            set -e # 操作完成后，立即重新启用 exit-on-error，保持脚本的健壮性
+            # 使用 if ! ... then ... fi 结构来安全地执行命令并捕获非零退出码。
+            # 这种结构不会被 set -e 中断，是处理预期非零返回值的最佳实践。
+            local child_script_exit_code=0 # 默认为成功 (0)
+            if ! ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" ); then
+                # 如果子脚本返回非零值，if ! ... 条件为真，进入此代码块
+                child_script_exit_code=$? # 捕获真实的非零退出码
+            fi
 
             # --- 处理子脚本的退出状态 ---
             if [ "$child_script_exit_code" -eq 10 ]; then
@@ -180,7 +181,7 @@ main_menu() {
                 read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
             else
                 # 子脚本因错误退出 (非 0 且非 10 的退出码)。
-                log_warning "脚本 [$name] 执行失败，请检查输出。"
+                log_warning "脚本 [$name] 执行失败 (退出码: $child_script_exit_code)，请检查输出。"
                 read -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
             fi
 
