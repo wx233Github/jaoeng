@@ -1074,7 +1074,8 @@ manage_configs() {
         echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)"
         echo "5. 导入现有 Nginx 配置到本脚本管理" # 新增选项
         echo "0. 返回主菜单"
-        read -rp "请输入选项: " MANAGE_CHOICE
+        read -rp "请输入选项 [回车返回]: " MANAGE_CHOICE
+        MANAGE_CHOICE=${MANAGE_CHOICE:-0}
         case "$MANAGE_CHOICE" in
             1) # 手动续期
                 read -rp "请输入要续期的域名: " DOMAIN_TO_RENEW
@@ -1681,7 +1682,8 @@ manage_acme_accounts() {
         echo "3. 设置默认账户"
         echo "0. 返回主菜单"
         echo "=============================================="
-        read -rp "请输入选项: " ACCOUNT_CHOICE
+        read -rp "请输入选项 [回车返回]: " ACCOUNT_CHOICE
+        ACCOUNT_CHOICE=${ACCOUNT_CHOICE:-0}
         case "$ACCOUNT_CHOICE" in
             1)
                 echo -e "${BLUE}🔍 已注册 acme.sh 账户列表:${RESET}"
@@ -1754,7 +1756,8 @@ main_menu() {
         echo "4. 管理 acme.sh 账户"
         echo "0. 退出"
         echo "=============================================="
-        read -rp "请输入选项: " MAIN_CHOICE
+        read -rp "请输入选项 [回车退出]: " MAIN_CHOICE
+        MAIN_CHOICE=${MAIN_CHOICE:-0}
         case "$MAIN_CHOICE" in
             1)
                 configure_nginx_projects
@@ -1769,7 +1772,6 @@ main_menu() {
                 manage_acme_accounts
                 ;;
             0)
-                # <<<--- MODIFICATION START ---<<<
                 if [ "$IS_NESTED_CALL" = "true" ]; then
                     # 如果是被主脚本调用的，返回退出码 10，代表“返回主菜单”
                     exit 10
@@ -1779,7 +1781,6 @@ main_menu() {
                     echo -e "${BLUE}--- 脚本执行结束: $(date +"%Y-%m-%d %H:%M:%S") ---${RESET}"
                     exit 0
                 fi
-                # >>>--- MODIFICATION END ---<<<
                 ;;
             *)
                 echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
