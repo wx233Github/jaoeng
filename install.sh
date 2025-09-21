@@ -1,9 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.3 - 交互终极版)
+# 🚀 VPS 一键安装入口脚本 (v5.4 - 静默检查版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
-# - 入口脚本自动更新, 精细退出码处理, 依赖检查
+# - 入口脚本自动更新, 精细退出码处理
+# - 依赖检查成功时静默，失败时报错
 # - 健壮的网络操作 (带超时)
 # - 支持多级子菜单，易于扩展
 # - 优化交互：主菜单回车退出，子菜单回车返回
@@ -52,8 +53,8 @@ TOOLS_MENU=(
 )
 
 # ====================== 检查与初始化 ======================
+# 【已优化】检查依赖，成功时静默
 check_dependencies() {
-    log_info "正在检查系统依赖..."
     local missing_deps=()
     local deps=("curl" "cmp" "ln")
     for cmd in "${deps[@]}"; do
@@ -63,9 +64,10 @@ check_dependencies() {
     done
 
     if [ ${#missing_deps[@]} -gt 0 ]; then
+        # 仅在缺少依赖时输出错误并退出
         log_error "缺少必要的命令: ${missing_deps[*]}. 请先安装它们。"
     fi
-    log_success "所有依赖项均已满足。"
+    # 成功时不再有任何输出
 }
 
 if [ "$(id -u)" -ne 0 ]; then log_error "请使用 root 用户运行此脚本"; fi
@@ -154,14 +156,11 @@ update_all_modules_parallel() {
     read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
 }
 
-# 【已修正】执行模块并处理其退出码 (终极版)
 execute_module() {
     local script_name="$1"
     local display_name="$2"
     local local_path="$INSTALL_DIR/$script_name"
-
     log_info "您选择了 [$display_name]"
-
     if [ ! -f "$local_path" ]; then
         log_info "本地未找到模块 [$script_name]，正在下载..."
         if ! download_module_to_cache "$script_name"; then
@@ -171,24 +170,14 @@ execute_module() {
         fi
     fi
     chmod +x "$local_path"
-
-    # --- 核心修改 ---
-    # 1. 通过 "VAR=value command" 的方式传递 IS_NESTED_CALL 环境变量给子进程。
-    # 2. 捕获子脚本的退出码。
     local exit_code=0
     ( IS_NESTED_CALL=true bash "$local_path" ) || exit_code=$?
-
-    # 3. 根据退出码进行精细处理。
     if [ "$exit_code" -eq 10 ]; then
-        # 退出码为 10 时，子脚本请求静默返回主菜单。
-        # 我们在这里不做任何操作，直接结束函数，主循环会自然显示菜单。
-        : # ':' 是一个空命令，表示“什么都不做”，让逻辑更清晰。
+        :
     elif [ "$exit_code" -eq 0 ]; then
-        # 退出码为 0 时，表示子脚本成功完成了一个实际操作。
         log_success "模块 [$display_name] 执行完毕。"
         read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
     else
-        # 其他非零退出码表示执行出错。
         log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"
         read -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
     fi
@@ -199,7 +188,7 @@ display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.3)"
+    local header_text="🚀 VPS 一键安装入口 (v5.4)"
     if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
     echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
