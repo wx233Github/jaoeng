@@ -81,7 +81,6 @@ confirm_action() {
 
 # 【补全】优化的“按回车继续”提示：press_enter_to_continue 函数现在会检查 IS_NESTED_CALL 变量。
 # 作用：当作为子脚本运行时，不再显示多余的“按回车继续”提示，因为这个提示由父脚本统一管理，使得用户体验更清爽。
-# 🔹 提示用户按回车键继续 (修改：如果嵌套调用，则不作任何操作)
 press_enter_to_continue() {
     if [ "$IS_NESTED_CALL" = "false" ]; then # 仅当非嵌套调用时才提示
         echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
@@ -198,17 +197,17 @@ get_docker_compose_command_main() {
     fi
 }
 
-# 🔹 查看容器信息（中文化 + 镜像标签 + 内部应用版本）
+# 【补全】健壮的管道输出：在 show_container_info 和 show_status 函数中，将 docker ps ... | while 结构升级为 while ... < <(docker ps ...) 的进程替换结构。
+# 作用：解决了在某些嵌套调用场景下，状态报告和容器列表为空白的问题，确保内容能正确显示。
 show_container_info() {
     echo -e "${COLOR_YELLOW}📋 Docker 容器信息：${COLOR_RESET}"
     printf "%-20s %-45s %-25s %-15s %-15s\n" "容器名称" "镜像" "创建时间" "状态" "应用版本"
     echo "-------------------------------------------------------------------------------------------------------------------"
 
-    # 【补全】健壮的管道输出：在 show_container_info 和 show_status 函数中，将 docker ps ... | while 结构升级为 while ... < <(docker ps ...) 的进程替换结构。
-    # 作用：解决了在某些嵌套调用场景下，状态报告和容器列表为空白的问题，确保内容能正确显示。
-    docker ps -a --format "{{.Names}} {{.Image}} {{.CreatedAt}} {{.Status}}" | while read -r name image created status; do # 使用 -r 防止 read 处理反斜杠
+    while read -r name image created status; do # 使用 -r 防止 read 处理反斜杠
         local APP_VERSION="N/A"
-        local IMAGE_NAME_FOR_LABELS=$(docker inspect "$name" --format '{{.Config.Image}}' 2>/dev/null || true)
+        local IMAGE_NAME_FOR_LABELS
+        IMAGE_NAME_FOR_LABELS=$(docker inspect "$name" --format '{{.Config.Image}}' 2>/dev/null || true)
         
         # 优化：优先尝试从Docker Label获取应用版本
         if [ -n "$IMAGE_NAME_FOR_LABELS" ]; then
@@ -224,15 +223,17 @@ show_container_info() {
         # 如果标签没有找到版本，再尝试原有启发式方法 (此方法通用性较差，通常只对特定应用有效)
         if [ "$APP_VERSION" = "N/A" ]; then
             if docker exec "$name" sh -c "test -d /app" &>/dev/null; then
-                local CONTAINER_APP_EXECUTABLE=$(docker exec "$name" sh -c "find /app -maxdepth 1 -type f -executable -print -quit" 2>/dev/null || true)
+                local CONTAINER_APP_EXECUTABLE
+                CONTAINER_APP_EXECUTABLE=$(docker exec "$name" sh -c "find /app -maxdepth 1 -type f -executable -print -quit" 2>/dev/null || true)
                 if [ -n "$CONTAINER_APP_EXECUTABLE" ]; then
-                    local RAW_VERSION=$(docker exec "$name" sh -c "$CONTAINER_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
+                    local RAW_VERSION
+                    RAW_VERSION=$(docker exec "$name" sh -c "$CONTAINER_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
                     APP_VERSION=$(echo "$RAW_VERSION" | head -n 1 | cut -c 1-15 | tr -d '\n')
                 fi
             fi
         fi
         printf "%-20s %-45s %-25s %-15s %-15s\n" "$name" "$image" "$created" "$status" "$APP_VERSION"
-    done
+    done < <(docker ps -a --format "{{.Names}} {{.Image}} {{.CreatedAt}} {{.Status}}")
     press_enter_to_continue # 调用修改后的函数
     return 0 # 确保函数有返回码
 }
@@ -419,7 +420,7 @@ configure_cron_task() {
     # 使用 <<'EOF_INNER_SCRIPT' 来防止在生成脚本时，父脚本的变量被意外展开
     cat > "$CRON_UPDATE_SCRIPT" <<EOF_INNER_SCRIPT
 #!/bin/bash
-PROJECT_DIR=$(printf "%q" "$DOCKER_COMPOSE_PROJECT_DIR_CRON") # 这是父脚本传过来的项目目录，已安全引用
+PROJECT_DIR="$DOCKER_COMPOSE_PROJECT_DIR_CRON"
 LOG_FILE="$LOG_FILE"
 
 echo "\$(date '+%Y-%m-%d %H:%M:%S') - 开始执行 Docker Compose 更新，项目目录: \$PROJECT_DIR" >> "\$LOG_FILE" 2>&1
@@ -470,8 +471,8 @@ EOF_INNER_SCRIPT
     return 0 # 成功完成，返回零值
 }
 
-
-# 🔹 更新模式子菜单
+# 【补全】正确的子菜单返回逻辑：在 update_menu, manage_tasks, view_and_edit_config 等所有子菜单函数中，将处理“回车返回”的 return 10 (或类似逻辑) 修改为 return 0。
+# 作用：解决了在子菜单中按回车会直接退出整个 Watchtower.sh 脚本的问题，现在它会正确返回到 Watchtower.sh 的主菜单。
 update_menu() {
     echo -e "${COLOR_YELLOW}请选择更新模式：${COLOR_RESET}"
     echo "1) 🚀 Watchtower模式 (自动监控并更新所有运行中的容器镜像)"
@@ -480,7 +481,7 @@ update_menu() {
     read -p "请输入选择 [1-3] 或按 Enter 返回主菜单: " MODE_CHOICE # 优化提示
 
     if [ -z "$MODE_CHOICE" ]; then # 如果输入为空，则返回
-        return 10 # 返回一个特定代码表示返回上一级菜单
+        return 0 # 修复：返回0以正确返回主菜单，而不是退出脚本
     fi
 
     case "$MODE_CHOICE" in
@@ -498,8 +499,6 @@ update_menu() {
         press_enter_to_continue # 在无效输入后也暂停
         ;;
     esac
-    # 【补全】正确的子菜单返回逻辑：在 update_menu, manage_tasks, view_and_edit_config 等所有子菜单函数中，将处理“回车返回”的 return 10 (或类似逻辑) 修改为 return 0。
-    # 作用：解决了在子菜单中按回车会直接退出整个 Watchtower.sh 脚本的问题，现在它会正确返回到 Watchtower.sh 的主菜单。
     return 0 # 成功处理一个子菜单选项后返回 0
 }
 
@@ -511,7 +510,7 @@ manage_tasks() {
     read -p "请输入选择 [1-2] 或按 Enter 返回主菜单: " MANAGE_CHOICE # 优化提示
 
     if [ -z "$MANAGE_CHOICE" ]; then # 如果输入为空，则返回
-        return 10 # 返回一个特定代码表示返回上一级菜单
+        return 0 # 修复：返回0以正确返回主菜单，而不是退出脚本
     fi
 
     case "$MANAGE_CHOICE" in
@@ -564,8 +563,6 @@ manage_tasks() {
             ;;
     esac
     press_enter_to_continue # 调用修改后的函数
-    # 【补全】正确的子菜单返回逻辑：在 update_menu, manage_tasks, view_and_edit_config 等所有子菜单函数中，将处理“回车返回”的 return 10 (或类似逻辑) 修改为 return 0。
-    # 作用：解决了在子菜单中按回车会直接退出整个 Watchtower.sh 脚本的问题，现在它会正确返回到 Watchtower.sh 的主菜单。
     return 0 # 成功处理一个子菜单选项后返回 0
 }
 
@@ -586,8 +583,10 @@ show_status() {
     echo -e "${COLOR_BLUE}--- Watchtower 容器实际运行状态 ---${COLOR_RESET}" # 明确为容器运行状态
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_GREEN}✅ Watchtower 容器正在运行。${COLOR_RESET}"
-        local wt_status=$(docker inspect watchtower --format "{{.State.Status}}")
-        local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}") # 获取完整的Cmd数组
+        local wt_status
+        wt_status=$(docker inspect watchtower --format "{{.State.Status}}")
+        local wt_cmd_json
+        wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}") # 获取完整的Cmd数组
 
         local wt_interval_running="N/A"
         local wt_labels_running="无"
@@ -595,21 +594,21 @@ show_status() {
         local debug_mode_running="禁用"
         
         # 使用 awk 从 JSON 数组中解析参数
-        wt_interval_running=$(echo "$wt_cmd_json" | awk '{
+        wt_interval_running=$(echo "$wt_cmd_json" | awk -F', *' '{
             for (i=1; i<=NF; i++) {
                 if ($i ~ /"--interval"/) {
-                    val = $(i+1); gsub(/"/, "", val); gsub(/,/, "", val); print val; exit;
+                    val = $(i+1); gsub(/"|,/, "", val); print val; exit;
                 }
             }
-        }' FS=', *' | head -n 1)
+        }' | head -n 1)
 
-        wt_labels_running=$(echo "$wt_cmd_json" | awk '{
+        wt_labels_running=$(echo "$wt_cmd_json" | awk -F', *' '{
             for (i=1; i<=NF; i++) {
                 if ($i ~ /"--label-enable"/) {
-                    val = $(i+1); gsub(/"/, "", val); gsub(/,/, "", val); print val; exit;
+                    val = $(i+1); gsub(/"|,/, "", val); print val; exit;
                 }
             }
-        }' FS=', *' | head -n 1)
+        }' | head -n 1)
         
         if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
             is_self_updating_running="是"
@@ -640,7 +639,8 @@ show_status() {
     local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
     if crontab -l 2>/dev/null | grep -q "$CRON_UPDATE_SCRIPT"; then
         echo -e "${COLOR_GREEN}✅ Cron 定时任务已配置并激活。${COLOR_RESET}"
-        local cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT")
+        local cron_entry
+        cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT")
         echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
         echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
     else
@@ -670,7 +670,7 @@ view_and_edit_config() {
     read -p "请输入要编辑的选项编号 (1-12) 或按 Enter 返回主菜单: " edit_choice
 
     if [ -z "$edit_choice" ]; then # 如果输入为空，则返回
-        return 10 # 返回一个特定代码表示返回上一级菜单
+        return 0 # 修复：返回0以正确返回主菜单，而不是退出脚本
     fi
 
     case "$edit_choice" in
@@ -816,8 +816,6 @@ view_and_edit_config() {
             ;;
     esac
     press_enter_to_continue # 调用修改后的函数
-    # 【补全】正确的子菜单返回逻辑：在 update_menu, manage_tasks, view_and_edit_config 等所有子菜单函数中，将处理“回车返回”的 return 10 (或类似逻辑) 修改为 return 0。
-    # 作用：解决了在子菜单中按回车会直接退出整个 Watchtower.sh 脚本的问题，现在它会正确返回到 Watchtower.sh 的主菜单。
     return 0 # 成功处理一个子菜单选项后返回 0
 }
 
