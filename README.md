@@ -47,6 +47,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/inst
 sudo jb --save-self
 ```
 
+```
+curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh -o /opt/vps_install_modules/install.sh && chmod +x /opt/vps_install_modules/install.sh
+```
+
 ---
 
 ## 卸载
