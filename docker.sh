@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ===================================================================================
-# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.1
+# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.2
 #
-# 新特性 (v2.1):
-#   - 上下文感知: 仅当用户使用国内安装源时，才主动推荐配置 Docker Hub 镜像加速。
+# 新特性 (v2.2):
+#   - 交互优化: 菜单选项从 1 开始编号，直接按回车键退出脚本。
+#   - 文本优化: 菜单描述更清晰，例如明确卸载目标包含 Compose。
 # ===================================================================================
 
 # --- 全局变量和常量 ---
@@ -92,46 +93,36 @@ check_distro() {
 # --- 核心功能函数 ---
 
 uninstall_docker() {
-    # ... (此函数无变化)
-    cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 吗？这将删除所有 Docker 相关的软件包、镜像、容器和卷！"
+    cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
     read -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm
     if [[ "$confirm" == "yes" ]]; then
-        cecho "$C_BLUE" "🧹 开始卸载 Docker..."
+        cecho "$C_BLUE" "🧹 开始卸载..."
         (systemctl stop docker.service docker.socket >/dev/null 2>&1) & spinner "   -> 停止 Docker 服务..."
-        (apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get autoremove -y >/dev/null 2>&1) & spinner "   -> 卸载 Docker 相关软件包..."
+        (apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get autoremove -y >/dev/null 2>&1) & spinner "   -> 卸载 Docker 和 Compose 软件包..."
         (rm -rf /var/lib/docker /var/lib/containerd /etc/docker /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list) & spinner "   -> 删除残留文件和配置..."
-        cecho "$C_GREEN" "✅ Docker 已成功卸载。"
+        cecho "$C_GREEN" "✅ Docker 和 Compose 已成功卸载。"
     else
         cecho "$C_YELLOW" "🚫 操作已取消。"
     fi
 }
 
-# (*** 关键修改在此函数 ***)
-# 智能配置 Docker Hub 国内镜像加速器
 configure_docker_mirror() {
     local prompt
-    local default_choice="n" # 默认不配置
+    local default_choice="n"
     local choice
 
-    # 根据使用的安装源决定提示语和默认选项
     if [[ "$DOCKER_INSTALL_URL" == "$DOCKER_URL_MIRROR" ]]; then
         prompt="🤔 检测到您使用了国内安装源，强烈推荐配置 Docker Hub 镜像加速器，是否配置？[Y/n]: "
-        default_choice="y" # 使用国内源，则默认配置
+        default_choice="y"
     else
-        # 即使主菜单调用此函数，也需要一个 DOCKER_INSTALL_URL 值
-        # 如果是直接从菜单调用，该值为空，则使用默认的非推荐提示
         prompt="🤔 是否需要为 Docker Hub 配置国内镜像加速器 (适合从国内拉取镜像)？[y/N]: "
     fi
     
     read -p "$(echo -e ${C_YELLOW}${prompt}${C_RESET})" choice
 
-    # 判断用户选择
     local configure_needed=false
-    if [[ "$default_choice" == "y" && (-z "$choice" || "$choice" =~ ^[yY]$) ]]; then
-        # 默认 'y'，用户回车或输入 'y'
-        configure_needed=true
-    elif [[ "$default_choice" == "n" && "$choice" =~ ^[yY]$ ]]; then
-        # 默认 'n'，用户输入 'y'
+    if [[ "$default_choice" == "y" && (-z "$choice" || "$choice" =~ ^[yY]$) ]] || \
+       [[ "$default_choice" == "n" && "$choice" =~ ^[yY]$ ]]; then
         configure_needed=true
     fi
 
@@ -139,11 +130,7 @@ configure_docker_mirror() {
         mkdir -p /etc/docker
         cat > /etc/docker/daemon.json <<EOF
 {
-  "registry-mirrors": [
-    "https://mirror.baidubce.com",
-    "https://hub-mirror.c.163.com",
-    "https://docker.m.daocloud.io"
-  ]
+  "registry-mirrors": [ "https://mirror.baidubce.com", "https://hub-mirror.c.163.com", "https://docker.m.daocloud.io" ]
 }
 EOF
         (systemctl daemon-reload && systemctl restart docker) & spinner "   -> 正在应用配置并重启 Docker..."
@@ -152,7 +139,6 @@ EOF
 }
 
 add_user_to_docker_group() {
-    # ... (此函数无变化)
     local user_to_add=""
     if [ -n "$SUDO_USER" ]; then
         user_to_add=$SUDO_USER
@@ -172,31 +158,22 @@ add_user_to_docker_group() {
 
 install_docker() {
     cecho "$C_BLUE" "🚀 开始安装 Docker & Docker Compose..."
-    
     determine_install_source
     check_distro
     cecho "$C_GREEN" "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
-
     (apt-get remove -y docker docker-engine docker.io containerd runc >/dev/null 2&>1) & spinner "   -> 清理旧版本 Docker (如有)..."
     (apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg >/dev/null 2>&1) & spinner "   -> 更新软件源并安装必要依赖..."
-
     install -m 0755 -d /etc/apt/keyrings
     (curl -fsSL "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg) & spinner "   -> 添加 Docker GPG 密钥..."
-
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${CODENAME} stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
     (apt-get update -qq >/dev/null 2>&1 && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1) & spinner "   -> 安装 Docker 引擎和 Compose 插件..."
     (systemctl enable --now docker >/dev/null 2>&1) & spinner "   -> 启动 Docker 并设置开机自启..."
-
     cecho "$C_GREEN" "🎉 Docker 安装成功！"
     printf "   Docker 版本: %s\n" "$(docker --version)"
     printf "   Compose 版本: %s\n" "$(docker compose version)"
     (docker run --rm hello-world >/dev/null 2>&1 && docker image rm hello-world >/dev/null 2>&1) & spinner "   -> 运行 hello-world 容器进行功能测试..."
-    
-    # 后续配置，这里的调用保持不变
     configure_docker_mirror
     add_user_to_docker_group
-    
     cecho "$C_GREEN" "--------------------------------------------------"
     cecho "$C_GREEN" "✅ 所有操作已完成！"
     cecho "$C_YELLOW" "💡 重要提示：如果添加了用户到 docker 组，请务必重新登录或重启系统！"
@@ -208,38 +185,50 @@ main() {
     check_root
     clear
     cecho "$C_BLUE" "==================================================="
-    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.1  "
+    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.2  "
     cecho "$C_BLUE" "==================================================="
     
-    # ... (主菜单逻辑无变化)
     if command -v docker &> /dev/null; then
         cecho "$C_GREEN" "\n✅ 检测到 Docker 已安装。"
         printf "   Docker 版本: %s\n" "$(docker --version)"
         printf "   Compose 版本: %s\n\n" "$(docker compose version 2>/dev/null || echo '未安装')"
+        
         cecho "$C_YELLOW" "请选择要执行的操作:"
-        echo "  1) 重新安装 Docker"
-        echo "  2) 仅卸载 Docker"
-        echo "  3) (重新)配置镜像加速和用户组"
-        echo "  0) 退出脚本"
-        read -p "请输入选项 [1, 2, 3, 0]: " choice
+        echo "  1) 重新安装 Docker 和 Compose"
+        echo "  2) 卸载 Docker 和 Compose"
+        echo "  3) 配置镜像加速和用户组"
+        # (*** 关键修改 ***) 调整了提示语
+        read -p "请输入选项 [1-3] (直接回车退出): " choice
+        
+        # (*** 关键修改 ***) 优先处理回车退出的情况
+        if [[ -z "$choice" ]]; then
+            cecho "$C_BLUE" "👋 操作取消，退出脚本。"
+            exit 0
+        fi
+
         case $choice in
             1) uninstall_docker && install_docker ;;
             2) uninstall_docker ;;
-            3) DOCKER_INSTALL_URL="" # 确保非安装流程下触发默认提示
+            3) DOCKER_INSTALL_URL=""
                configure_docker_mirror && add_user_to_docker_group ;;
-            0) cecho "$C_BLUE" "👋 退出脚本。"; exit 0 ;;
-            *) cecho "$C_RED" "❌ 无效选项，退出。"; exit 1 ;;
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'，退出。"; exit 1 ;;
         esac
     else
         cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
         cecho "$C_YELLOW" "请选择要执行的操作:"
         echo "  1) 安装 Docker 和 Docker Compose"
-        echo "  0) 退出脚本"
-        read -p "请输入选项 [1, 0]: " choice
+        # (*** 关键修改 ***) 调整了提示语
+        read -p "请输入选项 [1] (直接回车退出): " choice
+        
+        # (*** 关键修改 ***) 优先处理回车退出的情况
+        if [[ -z "$choice" ]]; then
+            cecho "$C_BLUE" "👋 操作取消，退出脚本。"
+            exit 0
+        fi
+        
         case $choice in
             1) install_docker ;;
-            0) cecho "$C_BLUE" "👋 退出脚本。"; exit 0 ;;
-            *) cecho "$C_RED" "❌ 无效选项，退出。"; exit 1 ;;
+            *) cecho "$C_RED" "❌ 无效选项 '${choice}'，退出。"; exit 1 ;;
         esac
     fi
 }
