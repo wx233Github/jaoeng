@@ -835,12 +835,68 @@ run_watchtower_once() {
 }
 
 
+# --- [修复] 新增 main_menu 函数 ---
+# 🔹 主菜单
+main_menu() {
+    while true; do
+        clear # 清屏以获得更好的体验
+        echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+        echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION - 主菜单${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+        echo "1) 🚀 设置更新模式 (Watchtower / Cron / 智能模式)"
+        echo "2) 📋 查看容器信息"
+        echo "3) 🔔 配置通知 (Telegram / Email)"
+        echo "4) ⚙️ 任务管理 (停止/移除)"
+        echo "5) 📝 查看/编辑脚本配置"
+        echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
+        echo -e "-------------------------------------------"
+        echo "7) 退出脚本"
+        echo -e "-------------------------------------------"
+        read -p "请输入选择 [1-7] (按 Enter 直接退出): " choice
+
+        # 主菜单回车直接退出
+        if [ -z "$choice" ]; then
+            choice=7
+        fi
+
+        case "$choice" in
+            1)
+                update_menu
+                ;;
+            2)
+                show_container_info
+                ;;
+            3)
+                configure_notify
+                ;;
+            4)
+                manage_tasks
+                ;;
+            5)
+                view_and_edit_config
+                ;;
+            6)
+                run_watchtower_once
+                ;;
+            7)
+                echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
+                return 0 # 返回0表示正常退出
+                ;;
+            *)
+                echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
+                press_enter_to_continue
+                ;;
+        esac
+    done
+}
+
+
 # --- 脚本主执行流程 ---
 
 # 1. 显示脚本欢迎信息
 echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
 echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
-echo -e "${COLOR_GREEN}===========================================${COLOR_GREEN}"
+echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
 
 # 2. 直接显示当前自动化更新状态报告
 show_status
