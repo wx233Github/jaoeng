@@ -366,6 +366,10 @@ show_status() {
         local wt_status; wt_status=$(docker inspect watchtower --format "{{.State.Status}}")
         if [[ "$wt_status" == "running" ]]; then
             echo -e "  - 容器状态: ${COLOR_GREEN}${wt_status}${COLOR_RESET}"
+            local wt_cmd_json; wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}")
+            local wt_interval_running="N/A"
+            wt_interval_running=$(echo "$wt_cmd_json" | awk -F'[, ]+' '{for(i=1;i<=NF;i++) if($i=="--interval") {gsub(/"/,"",$(i+1)); print $(i+1)}}')
+            echo "  - 实际检查间隔 (运行): ${wt_interval_running:-N/A} 秒"
         else
             echo -e "  - 容器状态: ${COLOR_YELLOW}${wt_status}${COLOR_RESET}"
         fi
@@ -409,19 +413,54 @@ view_and_edit_config() {
     if [ -z "$edit_choice" ]; then return 0; fi
 
     case "$edit_choice" in
-        1) read -p "新 Telegram Bot Token: " TG_BOT_TOKEN ;;
-        2) read -p "新 Telegram Chat ID: " TG_CHAT_ID ;;
-        3) read -p "新 Email 接收地址: " EMAIL_TO ;;
-        4) read -p "新 Watchtower 标签筛选 (空则取消): " WATCHTOWER_LABELS ;;
-        5) read -p "新 Watchtower 额外参数 (空则取消): " WATCHTOWER_EXTRA_ARGS ;;
-        6) read -p "启用 Watchtower 调试模式 (y/n)? " choice; [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_DEBUG_ENABLED="true" || WATCHTOWER_DEBUG_ENABLED="false" ;;
-        7) read -p "新 Watchtower 检查间隔 (秒): " WATCHTOWER_CONFIG_INTERVAL ;;
-        8) read -p "启用 Watchtower 智能模式 (y/n)? " choice; [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_CONFIG_SELF_UPDATE_MODE="true" || WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false" ;;
-        9) read -p "启用 Watchtower 脚本配置 (y/n)? " choice; [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_ENABLED="true" || WATCHTOWER_ENABLED="false" ;;
-        10) read -p "新 Cron 更新小时 (0-23): " CRON_HOUR ;;
-        11) read -p "新 Cron Docker Compose 项目目录: " DOCKER_COMPOSE_PROJECT_DIR_CRON ;;
-        12) read -p "启用 Cron 脚本配置 (y/n)? " choice; [[ "$choice" =~ ^[Yy]$ ]] && CRON_TASK_ENABLED="true" || CRON_TASK_ENABLED="false" ;;
-        *) echo -e "${COLOR_YELLOW}ℹ️ 无效选项。${COLOR_RESET}"; press_enter_to_continue; return 0 ;;
+        1)
+            read -p "请输入新的 Telegram Bot Token (当前: ${TG_BOT_TOKEN:-未设置}, 空输入不修改): " TG_BOT_TOKEN_NEW
+            TG_BOT_TOKEN="${TG_BOT_TOKEN_NEW:-$TG_BOT_TOKEN}"
+            ;;
+        2)
+            read -p "请输入新的 Telegram Chat ID (当前: ${TG_CHAT_ID:-未设置}, 空输入不修改): " TG_CHAT_ID_NEW
+            TG_CHAT_ID="${TG_CHAT_ID_NEW:-$TG_CHAT_ID}"
+            ;;
+        3)
+            read -p "请输入新的 Email 接收地址 (当前: ${EMAIL_TO:-未设置}, 空输入不修改): " EMAIL_TO_NEW
+            EMAIL_TO="${EMAIL_TO_NEW:-$EMAIL_TO}"
+            ;;
+        4)
+            read -p "请输入新的 Watchtower 标签筛选 (当前: ${WATCHTOWER_LABELS:-无}, 空输入取消筛选): " WATCHTOWER_LABELS_NEW
+            WATCHTOWER_LABELS="${WATCHTOWER_LABELS_NEW:-}"
+            ;;
+        5)
+            read -p "请输入新的 Watchtower 额外参数 (当前: ${WATCHTOWER_EXTRA_ARGS:-无}, 空输入取消额外参数): " WATCHTOWER_EXTRA_ARGS_NEW
+            WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_NEW:-}"
+            ;;
+        6)
+            read -p "是否启用 Watchtower 调试模式 (y/n)? (当前: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "是" || echo "否")): " choice
+            [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_DEBUG_ENABLED="true" || WATCHTOWER_DEBUG_ENABLED="false"
+            ;;
+        7)
+            read -p "请输入新的 Watchtower 检查间隔 (秒): " WATCHTOWER_CONFIG_INTERVAL
+            ;;
+        8)
+            read -p "是否启用 Watchtower 智能模式 (y/n)? (当前: $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")): " choice
+            [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_CONFIG_SELF_UPDATE_MODE="true" || WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"
+            ;;
+        9)
+            read -p "是否启用 Watchtower 脚本配置 (y/n)? (当前: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")): " choice
+            [[ "$choice" =~ ^[Yy]$ ]] && WATCHTOWER_ENABLED="true" || WATCHTOWER_ENABLED="false"
+            ;;
+        10)
+            read -p "请输入新的 Cron 更新小时 (0-23): " CRON_HOUR
+            ;;
+        11)
+            read -p "请输入新的 Cron Docker Compose 项目目录: " DOCKER_COMPOSE_PROJECT_DIR_CRON
+            ;;
+        12)
+            read -p "是否启用 Cron 脚本配置 (y/n)? (当前: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")): " choice
+            [[ "$choice" =~ ^[Yy]$ ]] && CRON_TASK_ENABLED="true" || CRON_TASK_ENABLED="false"
+            ;;
+        *)
+            echo -e "${COLOR_YELLOW}ℹ️ 无效选项。${COLOR_RESET}"; press_enter_to_continue; return 0
+            ;;
     esac
     
     save_config
