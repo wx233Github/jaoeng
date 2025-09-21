@@ -16,6 +16,9 @@ VERSION="2.14.0" # 版本更新，反映修复
 SCRIPT_NAME="docker_auto_update.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
+# --- 全局变量，判断是否为嵌套调用 ---
+IS_NESTED_CALL="${IS_NESTED_CALL:-false}" # 默认值为 false，如果父脚本设置了，则会被覆盖为 true
+
 # --- 颜色定义 ---
 if [ -t 1 ]; then # 检查标准输出是否是终端
     COLOR_GREEN="\033[0;32m"
@@ -38,7 +41,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-set -e # 任何命令失败都立即退出脚本
+set -euo pipefail # 任何命令失败都立即退出脚本
 
 # 检查 Docker
 if ! command -v docker &>/dev/null; then
@@ -76,10 +79,12 @@ confirm_action() {
     esac
 }
 
-# 🔹 提示用户按回车键继续
+# 🔹 提示用户按回车键继续 (修改：如果嵌套调用，则不作任何操作)
 press_enter_to_continue() {
-    echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
-    read -r # 读取一个空行，等待用户按Enter
+    if [ "$IS_NESTED_CALL" = "false" ]; then # 仅当非嵌套调用时才提示
+        echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
+        read -r # 读取一个空行，等待用户按Enter
+    fi
 }
 
 # 🔹 通知函数 (脚本自身的通知，Watchtower 可配置自己的通知)
@@ -144,7 +149,7 @@ configure_notify() {
     fi
 
     save_config
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
 }
 
 # 🔹 Watchtower 标签和额外参数配置
@@ -175,7 +180,7 @@ configure_watchtower_settings() {
     fi
 
     save_config
-    # 不在这里调用 press_enter_to_continue，因为这个函数可能被其他模式配置函数调用，由主调用者负责暂停
+    # 不在这里调用 press_enter_to_continue，由主调用者负责暂停
 }
 
 
@@ -223,7 +228,7 @@ show_container_info() {
         fi
         printf "%-20s %-45s %-25s %-15s %-15s\n" "$name" "$image" "$created" "$status" "$APP_VERSION"
     done
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
 }
 
 # 🔹 统一的 Watchtower 容器启动逻辑
@@ -357,9 +362,11 @@ configure_watchtower() {
             # 非智能模式启动失败，直接报告错误
             echo -e "${COLOR_RED}❌ $MODE_NAME 启动失败，请检查配置和日志。${COLOR_RESET}"
         fi
+        return 1 # 启动失败，返回非零值
     fi
     echo "您可以使用选项2查看 Docker 容器信息。"
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
+    return 0 # 成功完成，返回零值
 }
 
 # 🔹 Cron 定时任务配置
@@ -453,7 +460,8 @@ EOF_INNER_SCRIPT
     echo -e "${COLOR_GREEN}🎉 Cron 定时任务设置成功！每天 $CRON_HOUR 点会尝试更新您的 Docker Compose 项目。${COLOR_RESET}"
     echo -e "更新日志可以在 '${COLOR_YELLOW}$LOG_FILE${COLOR_RESET}' 文件中查看。"
     echo "您可以使用选项2查看 Docker 容器信息。"
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
+    return 0 # 成功完成，返回零值
 }
 
 
@@ -466,7 +474,7 @@ update_menu() {
     read -p "请输入选择 [1-3] 或按 Enter 返回主菜单: " MODE_CHOICE # 优化提示
 
     if [ -z "$MODE_CHOICE" ]; then # 如果输入为空，则返回
-        return
+        return # 子菜单返回，父脚本继续其主菜单循环
     fi
 
     case "$MODE_CHOICE" in
@@ -484,6 +492,7 @@ update_menu() {
         press_enter_to_continue # 在无效输入后也暂停
         ;;
     esac
+    # 这里不需要额外的 return，因为 configure_watchtower/cron_task 内部已经处理了暂停和返回
 }
 
 # 🔹 任务管理菜单
@@ -494,7 +503,7 @@ manage_tasks() {
     read -p "请输入选择 [1-2] 或按 Enter 返回主菜单: " MANAGE_CHOICE # 优化提示
 
     if [ -z "$MANAGE_CHOICE" ]; then # 如果输入为空，则返回
-        return
+        return # 子菜单返回
     fi
 
     case "$MANAGE_CHOICE" in
@@ -546,7 +555,8 @@ manage_tasks() {
             press_enter_to_continue # 在无效输入后也暂停
             ;;
     esac
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
+    return 0 # 成功完成，返回零值
 }
 
 # 🔹 状态报告
@@ -650,7 +660,7 @@ view_and_edit_config() {
     read -p "请输入要编辑的选项编号 (1-12) 或按 Enter 返回主菜单: " edit_choice
 
     if [ -z "$edit_choice" ]; then # 如果输入为空，则返回
-        return
+        return # 子菜单返回
     fi
 
     case "$edit_choice" in
@@ -795,7 +805,8 @@ view_and_edit_config() {
             echo -e "${COLOR_YELLOW}ℹ️ 返回主菜单。${COLOR_RESET}"
             ;;
     esac
-    press_enter_to_continue
+    press_enter_to_continue # 调用修改后的函数
+    return 0 # 成功完成，返回零值
 }
 
 # 🔹 运行一次 Watchtower (立即检查并更新)
@@ -818,6 +829,7 @@ run_watchtower_once() {
         return 1
     fi
     press_enter_to_continue # 在操作完成后暂停
+    return 0 # 成功完成，返回零值
 }
 
 
@@ -834,6 +846,8 @@ show_status
 
 # 3. 显示主菜单并循环
 while true; do
+    # clear # <-- 已移除清屏命令
+    
     echo -e "\n${COLOR_GREEN}===========================================${COLOR_RESET}"
     echo "0) 🚪 退出脚本"
     echo "1) 🚀 设置/管理 Docker 更新模式"
@@ -843,7 +857,7 @@ while true; do
     echo "5) 📝 查看/编辑脚本配置"
     echo "6) 🆕 运行一次 Watchtower (立即检查并更新)"
     echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-    read -p "请输入选择 [0-6] 或按 Enter 退出脚本: " MODE # 优化提示
+    read -p "请输入选择 [0-6] 或按 Enter 退出脚本: " MODE
 
     if [ -z "$MODE" ]; then # 如果输入为空，则视为选择0
         MODE="0"
@@ -851,9 +865,13 @@ while true; do
 
     case "$MODE" in
     0)
-        echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}"
-        # 移除了这里的 press_enter_to_continue，实现直接退出
-        break # 跳出循环，退出脚本
+        # 如果是嵌套调用，并且是用户主动从菜单选择退出，则以特定退出码退出，不打印任何成功信息
+        if [ "$IS_NESTED_CALL" = "true" ]; then
+            exit 10 # <-- 特定退出码表示用户选择返回父菜单
+        else
+            echo -e "${COLOR_GREEN}✅ 操作完成。${COLOR_RESET}" # 非嵌套调用时，打印操作完成
+            break # 退出循环，脚本将以 0 退出（如果之前没有错误）
+        fi
         ;;
     1)
         update_menu
@@ -875,7 +893,12 @@ while true; do
         ;;
     *)
         echo -e "${COLOR_RED}❌ 输入无效，请选择 0-6 之间的数字。${COLOR_RESET}"
-        press_enter_to_continue # 在无效输入后也暂停
+        press_enter_to_continue # 在无效输入后也暂停，这个函数现在是条件性的
         ;;
     esac
 done
+
+# 如果非嵌套调用，且循环正常结束（即非用户主动退出），确保脚本以0退出
+if [ "$IS_NESTED_CALL" = "false" ]; then
+    exit 0
+fi
