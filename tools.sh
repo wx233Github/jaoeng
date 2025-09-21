@@ -161,8 +161,12 @@ main_menu() {
             download "$file"
             
             # --- 执行下载的子脚本 ---
+            # 临时禁用 exit-on-error (set -e)，因为我们期望子脚本可能返回
+            # 一个非零的退出码 (例如 10)，我们需要手动捕获并处理它，而不是让脚本直接退出。
+            set +e
             ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" )
             local child_script_exit_code=$? # 捕获子脚本的退出码
+            set -e # 操作完成后，立即重新启用 exit-on-error，保持脚本的健壮性
 
             # --- 处理子脚本的退出状态 ---
             if [ "$child_script_exit_code" -eq 10 ]; then
