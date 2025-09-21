@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5 - 专业版)
+# 🚀 VPS 一键安装入口脚本 (v5.1 - 修复版)
 # 特性:
 # - 持久化缓存 & 快捷指令 (jb)
 # - 入口脚本自动更新
@@ -90,7 +90,6 @@ mkdir -p "$BIN_DIR"
 # ====================== 入口脚本自我管理 ======================
 
 save_entry_script() {
-    # ... (此函数内容与上一版相同，为简洁省略)
     log_info "正在检查并保存入口脚本到 $SCRIPT_PATH..."
     if ! curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$SCRIPT_PATH"; then
         if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then
@@ -103,7 +102,6 @@ save_entry_script() {
 }
 
 setup_shortcut() {
-    # ... (此函数内容与上一版相同，为简洁省略)
     if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then
         ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"
         log_success "快捷指令 'jb' 已创建。未来可直接输入 'jb' 运行。"
@@ -111,8 +109,11 @@ setup_shortcut() {
 }
 
 self_update() {
-    # ... (此函数内容与上一版相同，为简洁省略)
-    if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; return; fi
+    # FIX: 修复了单行 if 语句缺少 'then' 关键字导致的语法错误
+    if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then
+        return
+    fi
+
     log_info "正在检查入口脚本更新..."
     local temp_script="/tmp/install.sh.tmp"
     if curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$temp_script"; then
