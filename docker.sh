@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ===================================================================================
-# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.8
+# 🚀 Docker & Docker Compose 终极一键脚本 (Ubuntu/Debian) v2.9
 #
-# 新特性 (v2.8):
-#   - 终极修复: 在作为子脚本退出前清空输入缓冲区，彻底解决父脚本“按回车继续”被跳过的问题。
+# 新特性 (v2.9):
+#   - 行为重构: 内部操作的取消会返回到自身的菜单，而不是直接退出到父脚本。
 # ===================================================================================
 
 # 识别是否作为子脚本被调用
@@ -53,15 +53,9 @@ spinner() {
 
 handle_exit() {
     if [ "$IS_NESTED_CALL" = "true" ]; then
-        # 【关键修复】在退出前，清空标准输入缓冲区。
-        # 这可以防止子脚本中残留的按键（如回车）干扰父脚本的下一次 read 命令，
-        # 从而解决了父脚本的“按回车继续”提示被自动跳过的问题。
         while read -r -t 0; do read -r; done
-        
-        # 现在才以“返回”状态码退出
         exit 10
     else
-        # 独立运行时，打印提示信息后正常退出
         cecho "$C_BLUE" "👋 操作已取消，脚本退出。"
         exit 0
     fi
@@ -111,6 +105,7 @@ check_distro() {
 
 
 # --- 核心功能函数 ---
+# 【核心修改 1】: 取消时不再调用 handle_exit，而是返回 1
 uninstall_docker() {
     cecho "$C_YELLOW" "🤔 你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
     read -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm
@@ -120,9 +115,10 @@ uninstall_docker() {
         (apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 && apt-get autoremove -y >/dev/null 2>&1) & spinner "   -> 卸载 Docker 和 Compose 软件包..."
         (rm -rf /var/lib/docker /var/lib/containerd /etc/docker /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list) & spinner "   -> 删除残留文件和配置..."
         cecho "$C_GREEN" "✅ Docker 和 Compose 已成功卸载。"
+        return 0 # 明确返回成功
     else
         cecho "$C_YELLOW" "🚫 操作已取消。"
-        handle_exit
+        return 1 # 明确返回“取消”状态，让调用者决定如何处理
     fi
 }
 
@@ -189,65 +185,72 @@ install_docker() {
 }
 
 # --- 主程序逻辑 ---
-
+# 【核心修改 2】: 主函数现在是一个循环，可以处理内部返回
 main() {
     check_root
 
-    if [ "$IS_NESTED_CALL" != "true" ]; then
-        clear
-    fi
-
-    echo
-
-    cecho "$C_BLUE" "==================================================="
-    cecho "$C_BLUE" "  Docker & Docker Compose 交互式管理脚本 v2.8  "
-    cecho "$C_BLUE" "==================================================="
-    
-    if command -v docker &> /dev/null; then
-        cecho "$C_GREEN" "\n✅ 检测到 Docker 已安装。"
-        printf "   Docker 版本: %s\n" "$(docker --version)"
-        printf "   Compose 版本: %s\n\n" "$(docker compose version 2>/dev/null || echo '未安装')"
-        
-        cecho "$C_YELLOW" "请选择要执行的操作:"
-        echo "  1) 重新安装 Docker 和 Compose"
-        echo "  2) 卸载 Docker 和 Compose"
-        echo "  3) 配置镜像加速和用户组"
-        read -p "请输入选项 [1-3] (直接回车返回): " choice
-        
-        if [[ -z "$choice" ]]; then
-            handle_exit
+    while true; do
+        # 仅在独立运行时才清屏
+        if [ "$IS_NESTED_CALL" != "true" ]; then
+            clear
+        else
+            # 作为子脚本时，打印分隔符而不是清屏
+            echo
         fi
 
-        case $choice in
-            1) 
-                uninstall_docker && install_docker 
-                ;;
-            2) 
-                uninstall_docker 
-                ;;
-            3) 
-                DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group 
-                ;;
-            *) 
-                cecho "$C_RED" "❌ 无效选项 '${choice}'。"; 
-                exit 1 
-                ;;
-        esac
-    else
-        cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
-        cecho "$C_YELLOW" "请选择要执行的操作:"
-        echo "  1) 安装 Docker 和 Compose"
-        read -p "请输入选项 [1] (直接回车返回): " choice
+        cecho "$C_BLUE" "==================================================="
+        cecho "$C_BLUE" "      Docker & Docker Compose 管理菜单 v2.9      "
+        cecho "$C_BLUE" "==================================================="
         
-        if [[ -z "$choice" ]]; then
-            handle_exit
+        local choice
+        if command -v docker &> /dev/null; then
+            cecho "$C_GREEN" "\n✅ 检测到 Docker 已安装。"
+            printf "   Docker 版本: %s\n" "$(docker --version)"
+            printf "   Compose 版本: %s\n\n" "$(docker compose version 2>/dev/null || echo '未安装')"
+            
+            cecho "$C_YELLOW" "请选择要执行的操作:"
+            echo "  1) 重新安装 Docker 和 Compose"
+            echo "  2) 卸载 Docker 和 Compose"
+            echo "  3) 配置镜像加速和用户组"
+            read -p "请输入选项 [1-3] (直接回车返回上级菜单): " choice
+            
+            if [[ -z "$choice" ]]; then
+                handle_exit # 用户按回车，明确表示要返回上级
+            fi
+
+            case $choice in
+                1) 
+                    # 如果 uninstall_docker 返回 1 (取消)，&& 将阻止 install_docker 执行
+                    # 然后循环会继续，重新显示此菜单
+                    uninstall_docker && install_docker 
+                    ;;
+                2) 
+                    uninstall_docker 
+                    ;;
+                3) 
+                    DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group 
+                    ;;
+                *) 
+                    cecho "$C_RED" "❌ 无效选项 '${choice}'。"
+                    sleep 1
+                    ;;
+            esac
+        else
+            cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
+            cecho "$C_YELLOW" "请选择要执行的操作:"
+            echo "  1) 安装 Docker 和 Compose"
+            read -p "请输入选项 [1] (直接回车返回上级菜单): " choice
+            
+            if [[ -z "$choice" ]]; then
+                handle_exit # 用户按回车，明确表示要返回上级
+            fi
+            
+            case $choice in
+                1) install_docker ;;
+                *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; sleep 1 ;;
+            esac
         fi
-        
-        case $choice in
-            1) install_docker ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;;
-        esac
-    fi
+    done
 }
 
 # --- 脚本执行入口 ---
