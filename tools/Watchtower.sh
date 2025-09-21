@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.14.0 优化：子菜单回车返回上一级，主菜单回车直接退出脚本，提升用户交互体验。
+# v2.14.1 结构优化：将主执行流程封装到 main 函数中，确保所有函数在调用前都已加载，增加脚本健壮性。
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -12,8 +12,8 @@
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 
-VERSION="2.14.0" # 版本更新，反映修复
-SCRIPT_NAME="docker_auto_update.sh"
+VERSION="2.14.1" # 版本更新，反映修复
+SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
 # --- 全局变量，判断是否为嵌套调用 ---
@@ -834,8 +834,6 @@ run_watchtower_once() {
     return 0 # 成功完成，返回零值
 }
 
-
-# --- [修复] 新增 main_menu 函数 ---
 # 🔹 主菜单
 main_menu() {
     while true; do
@@ -850,9 +848,14 @@ main_menu() {
         echo "5) 📝 查看/编辑脚本配置"
         echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
         echo -e "-------------------------------------------"
-        echo "7) 退出脚本"
+        # 修正：根据 IS_NESTED_CALL 变量决定退出选项的文本
+        if [ "$IS_NESTED_CALL" = "true" ]; then
+            echo "7) 返回上级菜单"
+        else
+            echo "7) 退出脚本"
+        fi
         echo -e "-------------------------------------------"
-        read -p "请输入选择 [1-7] (按 Enter 直接退出): " choice
+        read -p "请输入选择 [1-7] (按 Enter 直接退出/返回): " choice
 
         # 主菜单回车直接退出
         if [ -z "$choice" ]; then
@@ -879,8 +882,15 @@ main_menu() {
                 run_watchtower_once
                 ;;
             7)
-                echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
-                return 0 # 返回0表示正常退出
+                # 修正：根据 IS_NESTED_CALL 决定行为
+                if [ "$IS_NESTED_CALL" = "true" ]; then
+                    echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
+                    # 使用特定的退出码 10，让父脚本知道是正常返回
+                    exit 10
+                else
+                    echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
+                    exit 0
+                fi
                 ;;
             *)
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
@@ -891,20 +901,21 @@ main_menu() {
 }
 
 
-# --- 脚本主执行流程 ---
+# --- [新增] 主执行函数 ---
+# 将所有顶级执行逻辑封装到这里
+main() {
+    # 1. 显示脚本欢迎信息
+    echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+    echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
+    echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
 
-# 1. 显示脚本欢迎信息
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
-echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+    # 2. 直接显示当前自动化更新状态报告
+    show_status
 
-# 2. 直接显示当前自动化更新状态报告
-show_status
+    # 3. 调用主菜单函数
+    main_menu
+}
 
-# 3. 调用主菜单函数
-main_menu_return_code=0
-main_menu # 调用 main_menu 函数
-main_menu_return_code=$? # 捕获 main_menu 函数的返回码
-
-# 脚本整体退出，返回 main_menu 函数的退出码
-exit "$main_menu_return_code"
+# --- [新增] 脚本的唯一入口点 ---
+# 这确保了上面的所有函数都已被 shell 解析后，才开始执行 main 函数
+main
