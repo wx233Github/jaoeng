@@ -117,8 +117,9 @@ uninstall_docker() {
         cecho "$C_GREEN" "✅ Docker 和 Compose 已成功卸载。"
     else
         cecho "$C_YELLOW" "🚫 操作已取消。"
-        # 【关键修复】调用标准的退出处理函数。
-        # 它知道如何以“返回主菜单”的方式退出 (exit 10)，而不是“报错”(exit 1)。
+        # 【关键代码】调用标准的退出处理函数。
+        # 它会以退出码 10 立即终止整个脚本，被父脚本理解为“返回”，而不是“错误”。
+        # 这对于所有调用 uninstall_docker 的地方都生效。
         handle_exit
     fi
 }
@@ -216,10 +217,23 @@ main() {
         fi
 
         case $choice in
-            1) uninstall_docker && install_docker ;;
-            2) uninstall_docker ;;
-            3) DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group ;;
-            *) cecho "$C_RED" "❌ 无效选项 '${choice}'。"; exit 1 ;;
+            1) 
+                # uninstall_docker 在取消时会通过 handle_exit 直接退出脚本，
+                # 所以只有在它成功（返回0）时，&& 后面的 install_docker 才会执行。
+                uninstall_docker && install_docker 
+                ;;
+            2) 
+                # uninstall_docker 在取消时会通过 handle_exit 直接退出脚本。
+                # 如果成功，它会正常返回，然后 case 结束，脚本正常结束。
+                uninstall_docker 
+                ;;
+            3) 
+                DOCKER_INSTALL_URL=""; configure_docker_mirror && add_user_to_docker_group 
+                ;;
+            *) 
+                cecho "$C_RED" "❌ 无效选项 '${choice}'。"; 
+                exit 1 
+                ;;
         esac
     else
         cecho "$C_YELLOW" "\nℹ️ 检测到 Docker 未安装。"
