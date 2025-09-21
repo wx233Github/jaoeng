@@ -132,7 +132,6 @@ self_update() {
 
 # ====================== 模块管理与执行 ======================
 
-# 【已增强】下载模块到缓存 (带超时和空文件检查)
 download_module_to_cache() {
     local script_name="$1"
     local local_file="$INSTALL_DIR/$script_name"
@@ -153,7 +152,6 @@ download_module_to_cache() {
 precache_modules_background() {
     log_info "正在后台静默预缓存所有模块..."
     (
-        # 遍历所有定义的菜单来查找脚本
         for menu_array_name in "MAIN_MENU" "TOOLS_MENU"; do
             declare -n menu_ref="$menu_array_name"
             for entry in "${menu_ref[@]}"; do
@@ -217,11 +215,11 @@ execute_module() {
 # ====================== 【核心】通用菜单显示函数 ======================
 display_menu() {
     local menu_name=$1
-    declare -n menu_items=$menu_name # 使用 declare -n 创建对数组的引用
+    declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5)"
+    local header_text="🚀 VPS 一键安装入口 (v5.1)"
     if [ "$menu_name" != "MAIN_MENU" ]; then
-        header_text="🛠️ ${menu_name//_/ }" # 将 TOOLS_MENU 变成 TOOLS MENU
+        header_text="🛠️ ${menu_name//_/ }"
     fi
 
     echo ""
@@ -242,7 +240,7 @@ display_menu() {
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#menu_items[@]}" ]; then
         log_warning "无效选项，请重新输入。"
         sleep 1
-        return 0 # 返回0表示继续当前菜单循环
+        return 0
     fi
 
     local selected_item="${menu_items[$((choice-1))]}"
@@ -258,10 +256,10 @@ display_menu() {
             display_menu "$action"
             ;;
         func)
-            "$action" # 直接调用函数名
+            "$action"
             ;;
         back)
-            return 1 # 返回1表示跳出当前菜单循环，返回上一级
+            return 1
             ;;
         exit)
             log_info "退出脚本。"
@@ -271,7 +269,6 @@ display_menu() {
     return 0
 }
 
-
 # ====================== 主程序入口 ======================
 main() {
     check_dependencies
@@ -280,7 +277,6 @@ main() {
     self_update
     precache_modules_background
 
-    # 主菜单循环
     while true; do
         display_menu "MAIN_MENU"
     done
