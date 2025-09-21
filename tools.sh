@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS GitHub 一键脚本拉取入口 (最终修正版)
+# 🚀 VPS GitHub 一键脚本拉取入口 (最终修正版 v3)
 # =============================================
 
 # --- 严格模式 ---
@@ -161,12 +161,15 @@ main_menu() {
             download "$file"
             
             # --- 执行下载的子脚本 ---
-            # 使用 if ! ... then ... fi 结构来安全地执行命令并捕获非零退出码。
-            # 这种结构不会被 set -e 中断，是处理预期非零返回值的最佳实践。
-            local child_script_exit_code=0 # 默认为成功 (0)
-            if ! ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" ); then
-                # 如果子脚本返回非零值，if ! ... 条件为真，进入此代码块
-                child_script_exit_code=$? # 捕获真实的非零退出码
+            # 使用 if/else 结构来明确处理成功(0)和失败(非0)两种情况。
+            # 这是捕获和处理退出码最稳健的方式，可以完美配合 set -e。
+            local child_script_exit_code
+            if ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" ); then
+                # 子脚本返回 0 (成功)
+                child_script_exit_code=0
+            else
+                # 子脚本返回非 0 (包括 10 或其他错误)
+                child_script_exit_code=$?
             fi
 
             # --- 处理子脚本的退出状态 ---
