@@ -848,23 +848,23 @@ main_menu() {
         echo "5) 📝 查看/编辑脚本配置"
         echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
         echo -e "-------------------------------------------"
-        # 修正：根据 IS_NESTED_CALL 变量决定退出选项的文本
-        if [ "$IS_NESTED_CALL" = "true" ]; then
-            echo "7) 返回上级菜单"
-        else
-            echo "7) 退出脚本"
-        fi
-        echo -e "-------------------------------------------"
 
         # ** [终极修复] **
         # 清空输入缓冲区，防止父脚本的残留回车影响本次读取
         while read -r -t 0; do read -r; done
 
-        read -p "请输入选择 [1-7] (按 Enter 直接退出/返回): " choice
+        read -p "请输入选择 [1-6] (按 Enter 直接退出/返回): " choice
 
-        # 主菜单回车直接退出
+        # 主菜单回车直接退出/返回
         if [ -z "$choice" ]; then
-            choice=7
+            if [ "$IS_NESTED_CALL" = "true" ]; then
+                echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
+                # 使用特定的退出码 10，让父脚本知道是正常返回
+                exit 10
+            else
+                echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
+                exit 0
+            fi
         fi
 
         case "$choice" in
@@ -886,19 +886,8 @@ main_menu() {
             6)
                 run_watchtower_once
                 ;;
-            7)
-                # 修正：根据 IS_NESTED_CALL 决定行为
-                if [ "$IS_NESTED_CALL" = "true" ]; then
-                    echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
-                    # 使用特定的退出码 10，让父脚本知道是正常返回
-                    exit 10
-                else
-                    echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
-                    exit 0
-                fi
-                ;;
             *)
-                echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
+                echo -e "${COLOR_RED}❌ 输入无效，请选择 1-6 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
         esac
