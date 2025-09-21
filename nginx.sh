@@ -34,6 +34,10 @@
 # - **Nginx 自定义片段**: 允许为每个域名注入自定义的 Nginx 配置片段文件，并提供智能默认路径。
 # ==============================================================================
 
+# --- 脚本集成支持 ---
+# 检查是否作为子脚本被调用
+IS_NESTED_CALL="${IS_NESTED_CALL:-false}"
+
 set -e
 set -u # 启用：遇到未定义的变量即退出，有助于发现错误
 
@@ -1765,9 +1769,17 @@ main_menu() {
                 manage_acme_accounts
                 ;;
             0)
-                echo -e "${BLUE}👋 感谢使用，已退出。${RESET}"
-                echo -e "${BLUE}--- 脚本执行结束: $(date +"%Y-%m-%d %H:%M:%S") ---${RESET}"
-                exit 0
+                # <<<--- MODIFICATION START ---<<<
+                if [ "$IS_NESTED_CALL" = "true" ]; then
+                    # 如果是被主脚本调用的，返回退出码 10，代表“返回主菜单”
+                    exit 10
+                else
+                    # 如果是独立运行的，正常退出
+                    echo -e "${BLUE}👋 感谢使用，已退出。${RESET}"
+                    echo -e "${BLUE}--- 脚本执行结束: $(date +"%Y-%m-%d %H:%M:%S") ---${RESET}"
+                    exit 0
+                fi
+                # >>>--- MODIFICATION END ---<<<
                 ;;
             *)
                 echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
