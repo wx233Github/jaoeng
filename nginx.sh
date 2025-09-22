@@ -5,7 +5,7 @@
 # 功能概览：
 # - **自动化配置**: 一键式自动配置 Nginx 反向代理和 HTTPS 证书。
 # - **后端支持**: 支持代理到 Docker 容器或本地指定端口。
-# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ）。
+# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn2, dnsutils）。
 # - **acme.sh 集成**:
 #   - 自动安装 acme.sh，并管理 Let's Encrypt 或 ZeroSSL 证书的申请、安装和自动续期。
 #   - 支持选择 `http-01` 或 `dns-01` 验证方式。
@@ -92,7 +92,7 @@ install_dependencies() {
     echo -e "${GREEN}🔍 检查并安装依赖 (适用于 Debian/Ubuntu)...${RESET}"
     apt update -y || { echo -e "${RED}❌ apt update 失败，请检查网络或源配置。${RESET}"; exit 1; }
 
-    DEPS=(nginx curl socat openssl jq) # JQ for JSON parsing
+    DEPS=(nginx curl socat openssl jq idn2 dnsutils) # JQ for JSON, idn2 for acme.sh IDN support, dnsutils for dig command
     for dep in "${DEPS[@]}"; do
         if command -v "$dep" &>/dev/null; then
             INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$dep" 2>/dev/null || echo "not-found")
