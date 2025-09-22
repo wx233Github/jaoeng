@@ -521,7 +521,6 @@ configure_nginx_projects() {
     mkdir -p "$NGINX_CUSTOM_SNIPPETS_DIR" # 创建自定义片段的默认父目录
     mkdir -p "$SSL_CERTS_BASE_DIR" # 确保证书基目录存在
 
-    local VPS_IP
     get_vps_ip
 
     # 检查并移除旧版 projects.conf 以避免冲突
