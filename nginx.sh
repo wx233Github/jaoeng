@@ -5,7 +5,7 @@
 # 功能概览：
 # - **自动化配置**: 一键式自动配置 Nginx 反向代理和 HTTPS 证书。
 # - **后端支持**: 支持代理到 Docker 容器或本地指定端口。
-# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn2, dnsutils）。
+# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn, idn2, dnsutils）。
 # - **acme.sh 集成**:
 #   - 自动安装 acme.sh，并管理 Let's Encrypt 或 ZeroSSL 证书的申请、安装和自动续期。
 #   - 支持选择 `http-01` 或 `dns-01` 验证方式。
@@ -25,7 +25,7 @@
 # - **证书续期**:
 #   - 支持手动续期指定域名的 HTTPS 证书。
 #   - **新增**: 提供“检查并自动续期所有证书”功能，可作为 Cron 任务运行。
-# - **配置删除**: 
+# - **配置删除**:
 #   - **核心改进**: 支持删除指定域名的 Nginx 配置、证书文件或所有相关数据。
 # - **acme.sh 账户管理**: 新增专门的菜单，用于查看、注册和设置默认 ACME 账户。
 # - **错误日志分析**: 对 `acme.sh` 错误日志的简单分析，提供更具体的排查建议。
@@ -169,7 +169,14 @@ install_dependencies() {
         ["socat"]="socat"
         ["openssl"]="openssl"
         ["jq"]="jq"
+        # ==============================================================================
+        # >>>>>>>>>> MODIFICATION START: 解决 IDN 错误 <<<<<<<<<<
+        # ==============================================================================
+        ["idn"]="idn" # 新增 idn 包，解决 acme.sh 的 IDN 域名处理依赖
         ["idn2"]="idn2"
+        # ==============================================================================
+        # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
+        # ==============================================================================
         ["dig"]="dnsutils" # 检查 'dig' 命令，如果缺少则安装 'dnsutils' 包
     )
 
@@ -287,18 +294,30 @@ check_domain_ip() {
         local domain_ip_v6=$(dig +short "$domain" AAAA | grep -E '^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$' | head -n1 2>/dev/null || echo "")
         if [ -z "$domain_ip_v6" ]; then
             log_message YELLOW "⚠️ 域名 ${domain} 未配置 AAAA 记录，但您的 VPS 具有 IPv6 地址。"
-            read -rp "这表示该域名可能无法通过 IPv6 访问。是否继续？[y/N]: " PROCEED_ANYWAY_AAAA_MISSING
-            PROCEED_ANYWAY_AAAA_MISSING=${PROCEED_ANYWAY_AAAA_MISSING:-n} # 默认改为 n
+            # ==============================================================================
+            # >>>>>>>>>> MODIFICATION START: 修改 IPv6 警告的默认行为 <<<<<<<<<<
+            # ==============================================================================
+            read -rp "这表示该域名可能无法通过 IPv6 访问。是否继续？[Y/n]: " PROCEED_ANYWAY_AAAA_MISSING
+            PROCEED_ANYWAY_AAAA_MISSING=${PROCEED_ANYWAY_AAAA_MISSING:-y} # 默认改为 y
             if [[ ! "$PROCEED_ANYWAY_AAAA_MISSING" =~ ^[Yy]$ ]]; then
+            # ==============================================================================
+            # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
+            # ==============================================================================
                 log_message RED "❌ 已取消当前域名的操作。"
                 return 1 # 硬性失败
             fi
             log_message YELLOW "⚠️ 已选择继续申请 (AAAA 记录缺失)。"
         elif [ "$domain_ip_v6" != "$VPS_IPV6" ]; then
             log_message RED "⚠️ 域名 ${domain} 的 IPv6 解析 ($domain_ip_v6) 与本机 IPv6 ($VPS_IPV6) 不符。"
-            read -rp "这可能导致证书申请失败或域名无法通过 IPv6 访问。是否继续？[y/N]: " PROCEED_ANYWAY_AAAA_MISMATCH
-            PROCEED_ANYWAY_AAAA_MISMATCH=${PROCEED_ANYWAY_AAAA_MISMATCH:-n} # 默认改为 n
+            # ==============================================================================
+            # >>>>>>>>>> MODIFICATION START: 修改 IPv6 警告的默认行为 <<<<<<<<<<
+            # ==============================================================================
+            read -rp "这可能导致证书申请失败或域名无法通过 IPv6 访问。是否继续？[Y/n]: " PROCEED_ANYWAY_AAAA_MISMATCH
+            PROCEED_ANYWAY_AAAA_MISMATCH=${PROCEED_ANYWAY_AAAA_MISMATCH:-y} # 默认改为 y
             if [[ ! "$PROCEED_ANYWAY_AAAA_MISMATCH" =~ ^[Yy]$ ]]; then
+            # ==============================================================================
+            # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
+            # ==============================================================================
                 log_message RED "❌ 已取消当前域名的操作。"
                 return 1 # 硬性失败
             fi
@@ -432,6 +451,9 @@ analyze_acme_error() {
     elif echo "$error_output" | grep -q "Domain key exists"; then
         log_message ERROR "   可能原因：上次申请失败后残留了域名私钥文件。"
         log_message YELLOW "   建议：脚本已在初次申请或重试时添加 --force 参数处理此问题。如果仍然失败，请尝试在管理菜单中删除该项目后重试。"
+    elif echo "$error_output" | grep -q "is an IDN"; then
+        log_message ERROR "   可能原因：域名被识别为国际化域名(IDN)，但缺少 'idn' 工具。"
+        log_message YELLOW "   建议：脚本已尝试自动安装 'idn' 包。如果问题仍然存在，请手动执行 'apt install idn' (Debian/Ubuntu) 或相应系统的命令。"
     else
         log_message ERROR "   未识别的错误类型。"
         log_message YELLOW "   建议：请仔细检查上述 acme.sh 完整错误日志，并查阅 acme.sh 官方文档或社区寻求帮助。"
@@ -569,7 +591,7 @@ configure_nginx_projects() {
     log_message INFO "请选择证书颁发机构 (CA):"
     echo "1) Let's Encrypt (默认)"
     echo "2) ZeroSSL"
-    read -rp "请输入序号: " CA_CHOICE
+    read -rp "请输入序号 [1]: " CA_CHOICE
     CA_CHOICE=${CA_CHOICE:-1}
     case $CA_CHOICE in
         1) ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"; ACME_CA_SERVER_NAME="letsencrypt";;
@@ -656,7 +678,13 @@ configure_nginx_projects() {
         log_message INFO "请选择验证方式:"
         echo "1) http-01 (通过 80 端口，推荐用于单域名)"
         echo "2) dns-01 (通过 DNS API，推荐用于泛域名或 80 端口不可用时)"
-        read -rp "请输入序号: " VALIDATION_CHOICE
+        # ==============================================================================
+        # >>>>>>>>>> MODIFICATION START: 明确验证方式的默认选项 <<<<<<<<<<
+        # ==============================================================================
+        read -rp "请输入序号 [默认: 1]: " VALIDATION_CHOICE
+        # ==============================================================================
+        # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
+        # ==============================================================================
         VALIDATION_CHOICE=${VALIDATION_CHOICE:-1}
         case $VALIDATION_CHOICE in
             1) ACME_VALIDATION_METHOD="http-01";;
