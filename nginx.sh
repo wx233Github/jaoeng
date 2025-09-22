@@ -87,7 +87,7 @@ get_vps_ip() {
 }
 
 # -----------------------------
-# 自动安装依赖（跳过已是最新版的），适用于 Debian/Ubuntu
+# 【修复 1】自动安装依赖（跳过已是最新版的），适用于 Debian/Ubuntu
 install_dependencies() {
     echo -e "${GREEN}🔍 检查并安装依赖 (适用于 Debian/Ubuntu)...${RESET}"
     apt update -y || { echo -e "${RED}❌ apt update 失败，请检查网络或源配置。${RESET}"; exit 1; }
@@ -375,7 +375,7 @@ configure_nginx_projects() {
     mkdir -p /var/www/html # 用于 acme.sh webroot 验证
     mkdir -p /etc/nginx/custom_snippets # 创建自定义片段的默认父目录
     
-    local VPS_IP 
+    local VPS_IP
     get_vps_ip
 
     # 检查并移除旧版 projects.conf 以避免冲突
@@ -383,7 +383,7 @@ configure_nginx_projects() {
         echo -e "${YELLOW}⚠️ 检测到旧版 Nginx 配置文件 /etc/nginx/sites-available/projects.conf，正在删除以避免冲突。${RESET}"
         rm -f "/etc/nginx/sites-available/projects.conf"
         rm -f "/etc/nginx/sites-enabled/projects.conf"
-        systemctl reload nginx 2>/dev/null || true # 尝试重载 Nginx
+        systemctl reload nginx 2>/dev/null || true
     fi
 
     # Ensure metadata file exists and is a valid JSON array
@@ -406,15 +406,14 @@ configure_nginx_projects() {
         PROJECTS+=("$line")
     done
 
-    # --- 新增：检查用户是否输入了任何项目 ---
+    # 【修复 2】检查用户是否输入了任何项目
     if [ ${#PROJECTS[@]} -eq 0 ]; then
         echo -e "\n${YELLOW}⚠️ 您没有输入任何项目，操作已取消。${RESET}"
-        return 1 # 返回并中止当前操作
+        return 1
     fi
-    # --- 新增结束 ---
 
     # CA 选择
-    ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory" # Let's Encrypt v2 API URL
+    ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"
     ACME_CA_SERVER_NAME="letsencrypt"
     echo -e "\n请选择证书颁发机构 (CA):"
     echo "1) Let's Encrypt (默认)"
@@ -451,8 +450,8 @@ configure_nginx_projects() {
 
     echo -e "${GREEN}🔧 正在为每个项目生成 Nginx 配置并申请证书...${RESET}"
     for P in "${PROJECTS[@]}"; do
-        MAIN_DOMAIN="${P%%:*}" 
-        TARGET_INPUT="${P##*:}" 
+        MAIN_DOMAIN="${P%%:*}"
+        TARGET_INPUT="${P##*:}"
         DOMAIN_CONF="/etc/nginx/sites-available/$MAIN_DOMAIN.conf"
         
         echo -e "\n--- 处理域名: ${BLUE}$MAIN_DOMAIN${RESET} ---"
@@ -677,7 +676,7 @@ configure_nginx_projects() {
             echo -e "${YELLOW}正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)...${RESET}"
             local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp)
 
-            # --- 修改点：添加 --force 参数 ---
+            # 【修复 3】添加 --force 参数
             ACME_ISSUE_COMMAND="$ACME_BIN --issue --force -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
             if [ "$USE_WILDCARD" = "y" ]; then
                 ACME_ISSUE_COMMAND+=" -d \"*.$MAIN_DOMAIN\""
@@ -742,7 +741,7 @@ configure_nginx_projects() {
 }
 
 # -----------------------------
-# 导入现有 Nginx 配置到本脚本管理
+# 导入现有 Nginx 配置到本脚本管理 (这部分代码是完整的)
 import_existing_project() {
     check_root
     echo "=============================================="
@@ -930,7 +929,7 @@ import_existing_project() {
 }
 
 # -----------------------------
-# 查看和管理已配置项目的函数
+# 查看和管理已配置项目的函数 (这部分代码是完整的)
 manage_configs() {
     check_root
     echo "=============================================="
@@ -1103,9 +1102,12 @@ manage_configs() {
                     rm -f "/etc/nginx/sites-enabled/$DOMAIN_TO_DELETE.conf"
                     
                     if [[ "$CERT_FILE_TO_DELETE" == "/etc/ssl/$DOMAIN_TO_DELETE.cer" ]]; then
-                        rm -rf "/etc/ssl/$DOMAIN_TO_DELETE"
+                        if [ -d "/etc/ssl/$DOMAIN_TO_DELETE" ]; then rm -rf "/etc/ssl/$DOMAIN_TO_DELETE"; fi
+                        if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; fi
+                        if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; fi
                     else
-                        rm -f "$CERT_FILE_TO_DELETE" "$KEY_FILE_TO_DELETE"
+                        if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; fi
+                        if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; fi
                     fi
 
                     if [[ -n "$CUSTOM_SNIPPET_FILE_TO_DELETE" && "$CUSTOM_SNIPPET_FILE_TO_DELETE" != "null" && -f "$CUSTOM_SNIPPET_FILE_TO_DELETE" ]]; then
@@ -1162,7 +1164,6 @@ manage_configs() {
                 local NEW_CERT_FILE="$EDIT_CERT_FILE" 
                 local NEW_KEY_FILE="$EDIT_KEY_FILE"
                 local FINAL_PROXY_TARGET_URL="http://127.0.0.1:$NEW_RESOLVED_PORT"
-
                 local NEED_REISSUE_OR_RELOAD_NGINX="n"
 
                 read -rp "修改后端目标 (格式：docker容器名 或 本地端口) [当前: $EDIT_NAME，回车不修改]: " NEW_TARGET_INPUT
@@ -1171,11 +1172,11 @@ manage_configs() {
                     if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$NEW_TARGET_INPUT"; then
                         NEW_NAME="$NEW_TARGET_INPUT"
                         NEW_TYPE="docker"
-                        HOST_MAPPED_PORT=$(docker inspect "$NEW_TARGET_INPUT" --format '{{ range $p, $conf := .NetworkSettings.Ports }}{{ if $conf }}{{ (index $conf 0).HostPort }}{{ end }}{{ end }}' | sed 's|/tcp||g' | awk '{print $1}' | head -n1)
+                        HOST_MAPPED_PORT=$(docker inspect "$NEW_TARGET_INPUT" --format '{{ range $p, $conf := .NetworkSettings.Ports }}{{ if $conf }}{{ (index $conf 0).HostPort }}{{ end }}{{ end }}' 2>/dev/null | sed 's|/tcp||g' | awk '{print $1}' | head -n1)
                         if [[ -n "$HOST_MAPPED_PORT" ]]; then
                             NEW_RESOLVED_PORT="$HOST_MAPPED_PORT"
                         else
-                            while true; do read -rp "请输入容器 $NEW_NAME 的内部端口: " USER_INTERNAL_PORT_EDIT; if [[ "$USER_INTERNAL_PORT_EDIT" =~ ^[0-9]+$ ]]; then NEW_RESOLVED_PORT="$USER_INTERNAL_PORT_EDIT"; break; fi; done
+                             while true; do read -rp "请输入容器 $NEW_NAME 的内部端口: " USER_INTERNAL_PORT_EDIT; if [[ "$USER_INTERNAL_PORT_EDIT" =~ ^[0-9]+$ && "$USER_INTERNAL_PORT_EDIT" -gt 0 && "$USER_INTERNAL_PORT_EDIT" -lt 65536 ]]; then NEW_RESOLVED_PORT="$USER_INTERNAL_PORT_EDIT"; break; else echo -e "${RED}端口无效${RESET}"; fi; done
                         fi
                     elif [[ "$NEW_TARGET_INPUT" =~ ^[0-9]+$ ]]; then
                         NEW_NAME="$NEW_TARGET_INPUT"; NEW_TYPE="local_port"; NEW_RESOLVED_PORT="$NEW_TARGET_INPUT"
@@ -1184,8 +1185,40 @@ manage_configs() {
                     fi
                     FINAL_PROXY_TARGET_URL="http://127.0.0.1:$NEW_RESOLVED_PORT"
                 fi
+
+                read -rp "修改证书验证方式 (http-01 / dns-01) [当前: $EDIT_ACME_VALIDATION_METHOD，回车不修改]: " NEW_VALIDATION_METHOD_INPUT
+                if [[ -n "$NEW_VALIDATION_METHOD_INPUT" && "$NEW_VALIDATION_METHOD_INPUT" != "$EDIT_ACME_VALIDATION_METHOD" ]]; then
+                    if [[ "$NEW_VALIDATION_METHOD_INPUT" == "http-01" || "$NEW_VALIDATION_METHOD_INPUT" == "dns-01" ]]; then
+                         NEW_ACME_VALIDATION_METHOD="$NEW_VALIDATION_METHOD_INPUT"
+                         NEED_REISSUE_OR_RELOAD_NGINX="y"
+                    else
+                        echo -e "${RED}无效的验证方式，保留原设置。${RESET}"
+                    fi
+                fi
+
+                if [ "$NEW_ACME_VALIDATION_METHOD" = "dns-01" ]; then
+                     read -rp "修改泛域名设置 (y/n) [当前: $( [[ "$EDIT_USE_WILDCARD" = "y" ]] && echo "y" || echo "n" )]: " NEW_WILDCARD_INPUT
+                     if [[ -n "$NEW_WILDCARD_INPUT" ]]; then if [[ "$NEW_WILDCARD_INPUT" =~ ^[Yy]$ ]]; then NEW_USE_WILDCARD="y"; else NEW_USE_WILDCARD="n"; fi; fi
+                     read -rp "修改 DNS API (dns_cf / dns_ali) [当前: $EDIT_DNS_API_PROVIDER]: " NEW_DNS_PROVIDER_INPUT
+                     if [[ -n "$NEW_DNS_PROVIDER_INPUT" ]]; then NEW_DNS_API_PROVIDER="$NEW_DNS_PROVIDER_INPUT"; fi
+                else
+                    NEW_USE_WILDCARD="n"; NEW_DNS_API_PROVIDER=""
+                fi
                 
-                # ... (后续的编辑逻辑，如验证方式、CA等，保持不变)
+                if [[ "$NEED_REISSUE_OR_RELOAD_NGINX" == "y" ]]; then
+                    echo "请选择新的 CA: 1) Let's Encrypt 2) ZeroSSL"
+                    read -rp "序号 [1]: " NEW_CA_CHOICE
+                    if [[ "${NEW_CA_CHOICE:-1}" == "2" ]]; then NEW_CA_SERVER_NAME="zerossl"; NEW_CA_SERVER_URL="https://acme.zerossl.com/v2/DV90"; else NEW_CA_SERVER_NAME="letsencrypt"; NEW_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"; fi
+                fi
+
+                local UPDATED_PROJECT_JSON=$(jq -n \
+                    --arg domain "$DOMAIN_TO_EDIT" --arg type "$NEW_TYPE" --arg name "$NEW_NAME" --arg resolved_port "$NEW_RESOLVED_PORT" \
+                    --arg custom_snippet "$EDIT_CUSTOM_SNIPPET_ORIGINAL" --arg acme_method "$NEW_ACME_VALIDATION_METHOD" \
+                    --arg dns_provider "$NEW_DNS_API_PROVIDER" --arg wildcard "$NEW_USE_WILDCARD" --arg ca_url "$NEW_CA_SERVER_URL" \
+                    --arg ca_name "$NEW_CA_SERVER_NAME" --arg cert_file "$NEW_CERT_FILE" --arg key_file "$NEW_KEY_FILE" \
+                    '{domain: $domain, type: $type, name: $name, resolved_port: $resolved_port, custom_snippet: $custom_snippet, acme_validation_method: $acme_method, dns_api_provider: $dns_provider, use_wildcard: $wildcard, ca_server_url: $ca_url, ca_server_name: $ca_name, cert_file: $cert_file, key_file: $key_file}')
+                
+                jq "(.[] | select(.domain == \"$DOMAIN_TO_EDIT\")) = $UPDATED_PROJECT_JSON" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
 
                 if [ "$NEED_REISSUE_OR_RELOAD_NGINX" = "y" ]; then
                     read -rp "配置已修改，是否立即更新 Nginx 并重新申请证书？[y/N]: " UPDATE_NOW
@@ -1195,9 +1228,8 @@ manage_configs() {
                             ln -sf "/etc/nginx/sites-available/$DOMAIN_TO_EDIT.conf" /etc/nginx/sites-enabled/
                             systemctl restart nginx
                         fi
-
                         local ACME_REISSUE_CMD_LOG_OUTPUT=$(mktemp)
-                        # --- 修改点：添加 --force 参数 ---
+                        # 【修复 3】添加 --force 参数
                         ACME_REISSUE_COMMAND="$ACME_BIN --issue --force -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$NEW_CA_SERVER_URL\""
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then ACME_REISSUE_COMMAND+=" -d \"*.$DOMAIN_TO_EDIT\""; fi
                         if [ "$NEW_ACME_VALIDATION_METHOD" = "http-01" ]; then ACME_REISSUE_COMMAND+=" -w /var/www/html"; fi
@@ -1206,16 +1238,57 @@ manage_configs() {
                         if ! eval "$ACME_REISSUE_COMMAND" > "$ACME_REISSUE_CMD_LOG_OUTPUT" 2>&1; then
                             cat "$ACME_REISSUE_CMD_LOG_OUTPUT"; analyze_acme_error "$(cat "$ACME_REISSUE_CMD_LOG_OUTPUT")"
                         else
-                             # ... (安装证书和更新最终配置的逻辑)
+                            INSTALL_CERT_DOMAINS="-d \"$DOMAIN_TO_EDIT\""; if [ "$NEW_USE_WILDCARD" = "y" ]; then INSTALL_CERT_DOMAINS+=" -d \"*.$DOMAIN_TO_EDIT\""; fi
+                            "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc --key-file "$NEW_KEY_FILE" --fullchain-file "$NEW_CERT_FILE" --reloadcmd "systemctl reload nginx"
+                            _NGINX_FINAL_TEMPLATE "$DOMAIN_TO_EDIT" "$FINAL_PROXY_TARGET_URL" "$NEW_CERT_FILE" "$NEW_KEY_FILE" "$EDIT_CUSTOM_SNIPPET_ORIGINAL" > "/etc/nginx/sites-available/$DOMAIN_TO_EDIT.conf"
+                            nginx -t && systemctl reload nginx
+                            echo -e "${GREEN}🚀 配置更新完成。${RESET}"
                         fi
                         rm -f "$ACME_REISSUE_CMD_LOG_OUTPUT"
                     fi
                 fi
                 ;;
             4) # 管理自定义 Nginx 配置片段
-                # ... (此部分逻辑保持不变)
+                read -rp "请输入要管理片段的域名: " DOMAIN_FOR_SNIPPET
+                if [[ -z "$DOMAIN_FOR_SNIPPET" ]]; then echo -e "${RED}❌ 域名不能为空！${RESET}"; continue; fi
+                local SNIPPET_PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_FOR_SNIPPET\")" "$PROJECTS_METADATA_FILE")
+                if [ -z "$SNIPPET_PROJECT_JSON" ]; then echo -e "${RED}❌ 域名 $DOMAIN_FOR_SNIPPET 未找到。${RESET}"; continue; fi
+
+                local CURRENT_SNIPPET_PATH=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.custom_snippet')
+                local PROJECT_TYPE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.type')
+                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.name')
+                local RESOLVED_PORT_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.resolved_port')
+                local CERT_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.cert_file // "/etc/ssl/'"$DOMAIN_FOR_SNIPPET"'.cer"')
+                local KEY_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.key_file // "/etc/ssl/'"$DOMAIN_FOR_SNIPPET"'.key"')
+
+                echo -e "\n--- 管理域名 ${BLUE}$DOMAIN_FOR_SNIPPET${RESET} 的 Nginx 配置片段 ---"
+                if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" ]]; then echo "当前片段文件: ${YELLOW}$CURRENT_SNIPPET_PATH${RESET}"; else echo "当前未设置片段文件。"; fi
+
+                local DEFAULT_SNIPPET_DIR="/etc/nginx/custom_snippets"
+                local DEFAULT_SNIPPET_FILENAME=""
+                if [ "$PROJECT_TYPE_SNIPPET" = "docker" ]; then DEFAULT_SNIPPET_FILENAME="$PROJECT_NAME_SNIPPET.conf"; else DEFAULT_SNIPPET_FILENAME="$DOMAIN_FOR_SNIPPET.conf"; fi
+                local DEFAULT_SNIPPET_PATH="$DEFAULT_SNIPPET_DIR/$DEFAULT_SNIPPET_FILENAME"
+
+                read -rp "请输入新的片段文件路径 (回车用默认: $DEFAULT_SNIPPET_PATH, 输入 'none' 清除): " NEW_SNIPPET_INPUT
+                local CHOSEN_SNIPPET_PATH=""
+                if [[ -z "$NEW_SNIPPET_INPUT" ]]; then CHOSEN_SNIPPET_PATH="$DEFAULT_SNIPPET_PATH"; elif [[ "$NEW_SNIPPET_INPUT" != "none" ]]; then CHOSEN_SNIPPET_PATH="$NEW_SNIPPET_INPUT"; fi
+
+                if [[ -n "$CHOSEN_SNIPPET_PATH" ]] && ! mkdir -p "$(dirname "$CHOSEN_SNIPPET_PATH")"; then echo -e "${RED}❌ 无法创建目录，操作取消。${RESET}"; continue; fi
+
+                local UPDATED_SNIPPET_JSON_OBJ=$(jq -n --arg custom_snippet "$CHOSEN_SNIPPET_PATH" '{custom_snippet: $custom_snippet}')
+                jq "(.[] | select(.domain == \"$DOMAIN_FOR_SNIPPET\")) |= . + $UPDATED_SNIPPET_JSON_OBJ" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                
+                local PROXY_TARGET_URL_SNIPPET="http://127.0.0.1:$RESOLVED_PORT_SNIPPET"
+                _NGINX_FINAL_TEMPLATE "$DOMAIN_FOR_SNIPPET" "$PROXY_TARGET_URL_SNIPPET" "$CERT_FILE_SNIPPET" "$KEY_FILE_SNIPPET" "$CHOSEN_SNIPPET_PATH" > "/etc/nginx/sites-available/$DOMAIN_FOR_SNIPPET.conf"
+                
+                nginx -t && systemctl reload nginx && echo -e "${GREEN}🚀 Nginx 配置已更新。${RESET}"
+
+                if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" && -z "$CHOSEN_SNIPPET_PATH" && -f "$CURRENT_SNIPPET_PATH" ]]; then
+                    read -rp "是否删除旧的片段文件 '$CURRENT_SNIPPET_PATH'？[y/N]: " DELETE_OLD_SNIPPET_CONFIRM
+                    if [[ "${DELETE_OLD_SNIPPET_CONFIRM:-y}" =~ ^[Yy]$ ]]; then rm -f "$CURRENT_SNIPPET_PATH"; fi
+                fi
                 ;;
-            5) # 导入现有 Nginx 配置
+            5)
                 import_existing_project
                 continue 
                 ;;
