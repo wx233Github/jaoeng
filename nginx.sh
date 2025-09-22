@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 # ==============================================================================
 # 🚀 Nginx 反向代理 + HTTPS 证书管理助手（基于 acme.sh）
@@ -85,7 +84,6 @@ log_message() {
 cleanup_temp_files() {
     log_message DEBUG "正在清理临时文件..."
     # 使用 find 安全地删除由本脚本创建的临时文件
-    # 确保只删除属于当前用户的临时文件，避免误删
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
     log_message DEBUG "临时文件清理完成。"
 }
@@ -94,7 +92,7 @@ trap cleanup_temp_files EXIT # 脚本退出时执行清理
 log_message INFO "--- 脚本开始执行: $(date +"%Y-%m-%d %H:%M:%S") ---"
 
 # --- acme.sh 路径查找 ---
-ACME_BIN="" # 先初始化为空
+ACME_BIN="" # 先初始化为空，但实际在逻辑中会确保其值
 find_acme_sh_path() {
     local potential_paths=(
         "$HOME/.acme.sh/acme.sh"
@@ -106,7 +104,6 @@ find_acme_sh_path() {
             return 0
         fi
     done
-    # 尝试从 PATH 中查找，并验证是否是 .acme.sh 目录下的
     if command -v acme.sh &>/dev/null; then
         local path_from_cmd=$(command -v acme.sh)
         if [[ "$path_from_cmd" == *".acme.sh/acme.sh"* ]]; then
@@ -117,11 +114,15 @@ find_acme_sh_path() {
     return 1 # 未找到
 }
 
-# 尝试找到 ACME_BIN
-ACME_BIN=$(find_acme_sh_path)
-if [[ -z "$ACME_BIN" ]]; then
+# 脚本启动时，尝试设置 ACME_BIN
+ACME_BIN_TEMP=$(find_acme_sh_path)
+if [[ -z "$ACME_BIN_TEMP" ]]; then
+    # 如果初始找不到，先假定它会安装到默认位置，以便 install_acme_sh 检查
+    ACME_BIN="$HOME/.acme.sh/acme.sh"
     log_message WARN "无法在标准位置找到 acme.sh。脚本将尝试安装它。"
-    # 不立即退出，留给 install_acme_sh 函数处理安装
+else
+    ACME_BIN="$ACME_BIN_TEMP"
+    log_message INFO "✅ acme.sh 已就绪 ($ACME_BIN)。"
 fi
 # 确保 $HOME/.acme.sh 在 PATH 中，这对 acme.sh 内部操作很重要
 export PATH="$HOME/.acme.sh:$PATH"
@@ -138,12 +139,11 @@ check_root() {
 # -----------------------------
 # 获取 VPS 公网 IPv4 和 IPv6 地址
 get_vps_ip() {
-    local VPS_IP_TEMP # 声明为 local
-    VPS_IP_TEMP=$(curl -s https://api.ipify.org)
-    VPS_IP="$VPS_IP_TEMP" # 将值赋给全局变量 VPS_IP
+    # VPS_IP 局部变量
+    VPS_IP=$(curl -s https://api.ipify.org)
     log_message INFO "🌐 VPS 公网 IP (IPv4): $VPS_IP"
 
-    # 尝试获取 IPv6 地址，如果失败则为空
+    # VPS_IPV6 全局变量，不使用 local
     VPS_IPV6=$(curl -s -6 https://api64.ipify.org 2>/dev/null || echo "")
     if [[ -n "$VPS_IPV6" ]]; then
         log_message INFO "🌐 VPS 公网 IP (IPv6): $VPS_IPV6"
@@ -208,12 +208,13 @@ detect_docker() {
 # -----------------------------
 # 安装 acme.sh
 install_acme_sh() {
+    # 再次检查 ACME_BIN 是否已是有效文件路径
     if [ ! -f "$ACME_BIN" ]; then
         log_message WARN "⚠️ acme.sh 未安装，正在安装..."
         
         read -rp "请输入用于注册 Let's Encrypt/ZeroSSL 的邮箱地址 (例如: your@example.com)，回车则不指定: " ACME_EMAIL_INPUT
         
-        ACME_EMAIL=""
+        local ACME_EMAIL=""
         if [[ -n "$ACME_EMAIL_INPUT" ]]; then
             while [[ ! "$ACME_EMAIL_INPUT" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; do
                 log_message RED "❌ 邮箱格式不正确。请重新输入，或回车不指定。"
@@ -238,15 +239,17 @@ install_acme_sh() {
             fi
         fi
         # 安装成功后，重新确定 ACME_BIN 路径并更新 PATH
-        ACME_BIN=$(find_acme_sh_path)
-        if [[ -z "$ACME_BIN" ]]; then
-            log_message ERROR "❌ acme.sh 已安装但无法找到其执行路径，请手动检查 $HOME/.acme.sh 目录。"
+        local newly_installed_acme_bin=$(find_acme_sh_path)
+        if [[ -z "$newly_installed_acme_bin" ]]; then
+            log_message ERROR "❌ acme.sh 安装成功，但无法找到其执行路径。请手动检查 $HOME/.acme.sh 目录。"
             exit 1
+        else
+            ACME_BIN="$newly_installed_acme_bin" # 更新全局 ACME_BIN
+            export PATH="$(dirname "$ACME_BIN"):$PATH" # 重新加载 PATH，确保 acme.sh 命令可用
+            log_message GREEN "✅ acme.sh 安装成功，路径设置为 $ACME_BIN。"
         fi
-        export PATH="$(dirname "$ACME_BIN"):$PATH" # 重新加载 PATH，确保 acme.sh 命令可用
-        log_message GREEN "✅ acme.sh 安装成功，路径设置为 $ACME_BIN。"
     else
-        log_message INFO "✅ acme.sh 已安装 ($ACME_BIN)"
+        log_message INFO "✅ acme.sh 已安装 ($ACME_BIN)。"
     fi
     sleep 1
 }
@@ -256,7 +259,7 @@ install_acme_sh() {
 check_domain_ip() {
     local domain="$1"
     local vps_ip_v4="$2"
-    # VPS_IPV6 是全局变量，不需要在这里声明 local
+    # VPS_IPV6 是全局变量
 
     log_message INFO "🔍 检查域名 ${domain} 的 DNS 解析..."
 
@@ -443,10 +446,9 @@ control_nginx() {
     log_message INFO "尝试 ${action} Nginx 服务..."
     
     # 检查配置语法
-    # nginx -t 将错误输出到 stderr，我们只重定向 stdout
-    if ! nginx -t 2>/dev/null; then
+    # Nginx -t 的输出直接到 stderr，不重定向，让用户看到具体错误
+    if ! nginx -t; then
         log_message ERROR "❌ Nginx 配置语法错误！请检查 '$NGINX_SITES_AVAILABLE_DIR/' 下的配置文件。"
-        nginx -t # 再次运行以便用户看到详细错误
         return 1
     fi
 
@@ -472,7 +474,7 @@ check_dns_env() {
             ;;
         dns_ali)
             if [[ -z "${Ali_Key:-}" ]]; then missing_vars+=("Ali_Key"); fi
-            if [[ -z "${Ali_Secret:-}" ]]; then missing_vars+=("Ali_Secret"); fi # 修正笔误
+            if [[ -z "${Ali_Secret:-}" ]]; then missing_vars+=("Ali_Secret"); fi # Bug: should be missing_vars - FIXED
             ;;
         *)
             log_message WARN "未知的 DNS API 提供商 '$provider'，无法检查环境变量。"
@@ -511,22 +513,25 @@ configure_nginx_projects() {
 
     install_dependencies
     detect_docker
-    install_acme_sh
+    install_acme_sh # 确保 acme.sh 已安装并 ACME_BIN 正确设置
     
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR"
     mkdir -p "$NGINX_SITES_ENABLED_DIR"
     mkdir -p "$NGINX_WEBROOT_DIR" # 用于 acme.sh webroot 验证
     mkdir -p "$NGINX_CUSTOM_SNIPPETS_DIR" # 创建自定义片段的默认父目录
-    
-    local VPS_IP_TEMP # 声明为 local，防止冲突
-    get_vps_ip # 调用函数获取全局 VPS_IP 和 VPS_IPV6
+    mkdir -p "$SSL_CERTS_BASE_DIR" # 确保证书基目录存在
+
+    local VPS_IP
+    get_vps_ip
 
     # 检查并移除旧版 projects.conf 以避免冲突
     if [ -f "$NGINX_SITES_AVAILABLE_DIR/projects.conf" ]; then
         log_message WARN "⚠️ 检测到旧版 Nginx 配置文件 $NGINX_SITES_AVAILABLE_DIR/projects.conf，正在删除以避免冲突。"
         rm -f "$NGINX_SITES_AVAILABLE_DIR/projects.conf"
         rm -f "$NGINX_SITES_ENABLED_DIR/projects.conf"
-        control_nginx reload 2>/dev/null || true # 尝试重载 Nginx，忽略错误
+        if ! control_nginx reload; then # 即使失败也继续，因为可能是旧文件导致无法重载
+            log_message WARN "Nginx 服务重载失败，可能影响后续配置，但脚本将尝试继续。"
+        fi
     fi
 
     # Ensure metadata file exists and is a valid JSON array
@@ -552,7 +557,6 @@ configure_nginx_projects() {
         PROJECTS+=("$line")
     done
 
-    # 检查用户是否输入了任何项目
     if [ ${#PROJECTS[@]} -eq 0 ]; then
         log_message YELLOW "⚠️ 您没有输入任何项目，操作已取消。"
         return 1
@@ -560,8 +564,8 @@ configure_nginx_projects() {
     sleep 1
 
     # CA 选择
-    ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"
-    ACME_CA_SERVER_NAME="letsencrypt"
+    local ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"
+    local ACME_CA_SERVER_NAME="letsencrypt"
     log_message INFO "请选择证书颁发机构 (CA):"
     echo "1) Let's Encrypt (默认)"
     echo "2) ZeroSSL"
@@ -584,10 +588,10 @@ configure_nginx_projects() {
              while [[ ! "$ZERO_SSL_ACCOUNT_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; do
                  log_message RED "❌ 邮箱格式不正确。请重新输入。"
                  read -rp "请输入用于注册 ZeroSSL 的邮箱地址: " ZERO_SSL_ACCOUNT_EMAIL
-                 [[ -z "$ZERO_SSL_ACCOUNT_EMAIL" ]] && break # 如果用户输入空，退出循环
+                 [[ -z "$ZERO_SSL_ACCOUNT_EMAIL" ]] && break
              done
              if [[ -z "$ZERO_SSL_ACCOUNT_EMAIL" ]]; then
-                 log_message RED "❌ 未输入邮箱地址，ZeroSSL 账户注册失败。请重新操作或选择 Let's Encrypt。"
+                 log_message RED "❌ 未提供邮箱，无法注册 ZeroSSL 账户。操作已取消。"
                  return 1
              fi
              log_message BLUE "➡️ 正在注册 ZeroSSL 账户: $ZERO_SSL_ACCOUNT_EMAIL..."
@@ -604,9 +608,9 @@ configure_nginx_projects() {
 
     log_message GREEN "🔧 正在为每个项目生成 Nginx 配置并申请证书..."
     for P in "${PROJECTS[@]}"; do
-        MAIN_DOMAIN="${P%%:*}"
-        TARGET_INPUT="${P##*:}"
-        DOMAIN_CONF="$NGINX_SITES_AVAILABLE_DIR/$MAIN_DOMAIN.conf"
+        local MAIN_DOMAIN="${P%%:*}"
+        local TARGET_INPUT="${P##*:}"
+        local DOMAIN_CONF="$NGINX_SITES_AVAILABLE_DIR/$MAIN_DOMAIN.conf"
         
         log_message BLUE "\n--- 处理域名: $MAIN_DOMAIN ---"
 
@@ -620,9 +624,9 @@ configure_nginx_projects() {
             continue
         fi
 
-        ACME_VALIDATION_METHOD="http-01"
-        DNS_API_PROVIDER=""
-        USE_WILDCARD="n"
+        local ACME_VALIDATION_METHOD="http-01"
+        local DNS_API_PROVIDER=""
+        local USE_WILDCARD="n"
         
         log_message INFO "请选择验证方式:"
         echo "1) http-01 (通过 80 端口，推荐用于单域名)"
@@ -653,7 +657,6 @@ configure_nginx_projects() {
                         DNS_API_PROVIDER="dns_cf"
                         ;;
                 esac
-                # 检查 DNS API 环境变量
                 if ! check_dns_env "$DNS_API_PROVIDER"; then
                     log_message ERROR "DNS 环境变量检查失败，跳过域名 $MAIN_DOMAIN 的证书申请。"
                     continue
@@ -670,15 +673,15 @@ configure_nginx_projects() {
         fi
         sleep 1
 
-        PROXY_TARGET_URL=""
-        PROJECT_TYPE=""
-        PROJECT_DETAIL=""
-        PORT_TO_USE=""
+        local PROXY_TARGET_URL=""
+        local PROJECT_TYPE=""
+        local PROJECT_DETAIL=""
+        local PORT_TO_USE=""
 
         if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$TARGET_INPUT"; then
             log_message GREEN "🔍 识别到 Docker 容器: $TARGET_INPUT"
             
-            HOST_MAPPED_PORT=$(docker inspect "$TARGET_INPUT" --format \
+            local HOST_MAPPED_PORT=$(docker inspect "$TARGET_INPUT" --format \
                 '{{ range $p, $conf := .NetworkSettings.Ports }}{{ if $conf }}{{ (index $conf 0).HostPort }}{{ end }}{{ end }}' 2>/dev/null | \
                 sed 's|/tcp||g' | awk '{print $1}' | head -n1)
 
@@ -691,7 +694,7 @@ configure_nginx_projects() {
             else
                 log_message YELLOW "⚠️ 未检测到容器 $TARGET_INPUT 映射到宿主机的端口。"
                 
-                INTERNAL_EXPOSED_PORTS_ARRAY=()
+                local INTERNAL_EXPOSED_PORTS_ARRAY=()
                 while IFS= read -r port_entry; do
                     INTERNAL_EXPOSED_PORTS_ARRAY+=("$port_entry")
                 done < <(docker inspect "$TARGET_INPUT" --format '{{ range $p, $conf := .Config.ExposedPorts }}{{ $p }}{{ end }}' 2>/dev/null | sed 's|/tcp||g' | xargs -n1)
@@ -842,7 +845,6 @@ configure_nginx_projects() {
                 log_message ERROR "❌ Nginx 重启失败，证书申请将无法进行。清理临时配置并跳过域名 $MAIN_DOMAIN。"
                 rm -f "$DOMAIN_CONF"
                 rm -f "$NGINX_SITES_ENABLED_DIR/$MAIN_DOMAIN.conf"
-                # 从 JSON 元数据中移除此项目
                 if jq -e ".[] | select(.domain == \"$MAIN_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
                     log_message YELLOW "Nginx 重启失败，从元数据中移除项目 $MAIN_DOMAIN。"
                     jq "del(.[] | select(.domain == \"$MAIN_DOMAIN\"))" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && \
@@ -856,8 +858,8 @@ configure_nginx_projects() {
             log_message YELLOW "正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)..."
             local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
 
-            # 重新添加 --force 参数
-            ACME_ISSUE_COMMAND="$ACME_BIN --issue --force -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
+            # 添加 --force 参数
+            local ACME_ISSUE_COMMAND="$ACME_BIN --issue --force -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
             if [ "$USE_WILDCARD" = "y" ]; then
                 ACME_ISSUE_COMMAND+=" -d \"*.$MAIN_DOMAIN\""
             fi
@@ -878,7 +880,7 @@ configure_nginx_projects() {
                 rm -f "$NGINX_SITES_ENABLED_DIR/$MAIN_DOMAIN.conf"
                 if [ -d "$SSL_CERTS_BASE_DIR/$MAIN_DOMAIN" ]; then rm -rf "$SSL_CERTS_BASE_DIR/$MAIN_DOMAIN"; fi # 删除创建的证书目录
 
-                if [[ -n "$CUSTOM_NGINX_SNIPPET_FILE" && "$CUSTOM_NGINX_SNIPPET_FILE" != "null" ]]; then
+                if [[ -n "$CUSTOM_NGINX_SNIPPET_FILE" && "$CUSTOM_NGINX_SNIPPET_FILE" != "null" && -f "$CUSTOM_NGINX_SNIPPET_FILE" ]]; then
                     log_message YELLOW "⚠️ 证书申请失败，删除自定义 Nginx 片段文件: $CUSTOM_NGINX_SNIPPET_FILE"
                     rm -f "$CUSTOM_NGINX_SNIPPET_FILE"
                 fi
@@ -893,18 +895,16 @@ configure_nginx_projects() {
             
             log_message GREEN "✅ 证书已成功签发，正在安装并更新 Nginx 配置..."
 
-            INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
+            local INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
             if [ "$USE_WILDCARD" = "y" ]; then
                 INSTALL_CERT_DOMAINS+=" -d \"*.$MAIN_DOMAIN\""
             fi
 
-            if ! "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
+            # acme.sh 会自动执行 --reloadcmd
+            "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
                 --key-file "$INSTALLED_KEY_FILE" \
                 --fullchain-file "$INSTALLED_CRT_FILE" \
-                --reloadcmd "systemctl reload nginx"; then
-                log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。请手动检查Nginx状态。"
-                continue # 继续下一个域名
-            fi
+                --reloadcmd "systemctl reload nginx" || { log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; continue; }
         else
             log_message YELLOW "ℹ️ 未进行证书申请或续期，将使用现有证书。"
         fi
@@ -1013,7 +1013,7 @@ import_existing_project() {
                 FINAL_PROXY_TARGET_URL="http://127.0.0.1:$FINAL_RESOLVED_PORT"
                 log_message GREEN "✅ 新目标是 Docker 容器 $FINAL_PROJECT_NAME，映射端口: $FINAL_RESOLVED_PORT。"
             else
-                INTERNAL_EXPOSED_PORTS_ARRAY=()
+                local INTERNAL_EXPOSED_PORTS_ARRAY=()
                 while IFS= read -r port_entry; do
                     INTERNAL_EXPOSED_PORTS_ARRAY+=("$port_entry")
                 done < <(docker inspect "$USER_TARGET_INPUT" --format '{{ range $p, $conf := .Config.ExposedPorts }}{{ $p }}{{ end }}' 2>/dev/null | sed 's|/tcp||g' | xargs -n1)
@@ -1129,13 +1129,18 @@ import_existing_project() {
         '{domain: $domain, type: $type, name: $name, resolved_port: $resolved_port, custom_snippet: $custom_snippet, acme_validation_method: $acme_method, dns_api_provider: $dns_provider, use_wildcard: $wildcard, ca_server_url: $ca_url, ca_server_name: $ca_name, cert_file: $cert_file, key_file: $key_file}')
     
     if [[ -n "$EXISTING_JSON_ENTRY" ]]; then
-        if ! jq "(.[] | select(.domain == \"$IMPORT_DOMAIN\")) = $NEW_PROJECT_JSON" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+        if ! jq "(.[] | select(.domain == \$domain)) = \$new_project_json" \
+            --arg domain "$IMPORT_DOMAIN" \
+            --argjson new_project_json "$NEW_PROJECT_JSON" \
+            "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
             log_message ERROR "❌ 更新项目元数据失败！"
             rm -f "${PROJECTS_METADATA_FILE}.tmp"
             return 1
         fi
     else
-        if ! jq ". + [$NEW_PROJECT_JSON]" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+        if ! jq ". + [\$new_project_json]" \
+            --argjson new_project_json "$NEW_PROJECT_JSON" \
+            "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
             log_message ERROR "❌ 写入项目元数据失败！"
             rm -f "${PROJECTS_METADATA_FILE}.tmp"
             return 1
@@ -1167,8 +1172,7 @@ manage_configs() {
         IMPORT_NOW=${IMPORT_NOW:-n}
         if [[ "$IMPORT_NOW" =~ ^[Yy]$ ]]; then
             import_existing_project
-            # 导入后返回 manage_configs 顶层，重新显示列表
-            return 0
+            return 0 # 导入后返回 manage_configs 顶层，重新显示列表
         else
             return 0
         fi
@@ -1184,6 +1188,17 @@ manage_configs() {
     echo "$PROJECTS_ARRAY_RAW" | jq -c '.[]' | while read -r project_json; do
         INDEX=$((INDEX + 1))
         local DOMAIN=$(echo "$project_json" | jq -r '.domain')
+
+        # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
+        local default_cert_file_display="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"
+        local default_key_file_display="$SSL_CERTS_BASE_DIR/$DOMAIN.key"
+        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_display" '.cert_file // $default_cert')
+        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_display" '.key_file // $default_key')
+        
+        # 额外检查，防止 jq 失败或输出 "null"
+        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_display"; fi
+        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_display"; fi
+
         local PROJECT_TYPE=$(echo "$project_json" | jq -r '.type')
         local PROJECT_NAME=$(echo "$project_json" | jq -r '.name')
         local RESOLVED_PORT=$(echo "$project_json" | jq -r '.resolved_port')
@@ -1191,16 +1206,6 @@ manage_configs() {
         local ACME_VALIDATION_METHOD=$(echo "$project_json" | jq -r '.acme_validation_method')
         local DNS_API_PROVIDER=$(echo "$project_json" | jq -r '.dns_api_provider')
         local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')
-        
-        # 修复 jq 引用问题: 使用 --arg 安全传递默认值
-        local default_cert_file_display="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"
-        local default_key_file_display="$SSL_CERTS_BASE_DIR/$DOMAIN.key"
-        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_display" '.cert_file // $default_cert')
-        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_display" '.key_file // $default_key')
-        
-        # 额外检查，防止 jq 失败时变量未被赋值
-        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_display"; fi
-        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_display"; fi
 
 
         local PROJECT_TYPE_DISPLAY="$PROJECT_TYPE"
@@ -1280,6 +1285,7 @@ manage_configs() {
         echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)"
         echo "5. 导入现有 Nginx 配置到本脚本管理"
         echo "0. 返回主菜单"
+        log_message INFO "=============================================="
         read -rp "请输入选项 [回车返回]: " MANAGE_CHOICE
         MANAGE_CHOICE=${MANAGE_CHOICE:-0}
         case "$MANAGE_CHOICE" in
@@ -1294,15 +1300,14 @@ manage_configs() {
                 local RENEW_USE_WILDCARD=$(echo "$RENEW_PROJECT_JSON" | jq -r '.use_wildcard')
                 local RENEW_CA_SERVER_URL=$(echo "$RENEW_PROJECT_JSON" | jq -r '.ca_server_url')
                 
-                # 修复 jq 引用问题: 使用 --arg 安全传递默认值
-                local default_cert_file_renew_manual="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.cer"
-                local default_key_file_renew_manual="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.key"
-                local RENEW_CERT_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_renew_manual" '.cert_file // $default_cert')
-                local RENEW_KEY_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_key "$default_key_file_renew_manual" '.key_file // $default_key')
-
-                if [[ -z "$RENEW_CERT_FILE" || "$RENEW_CERT_FILE" == "null" ]]; then RENEW_CERT_FILE="$default_cert_file_renew_manual"; fi
-                if [[ -z "$RENEW_KEY_FILE" || "$RENEW_KEY_FILE" == "null" ]]; then RENEW_KEY_FILE="$default_key_file_renew_manual"; fi
-
+                # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
+                local default_cert_file_renew="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.cer"
+                local default_key_file_renew="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.key"
+                local RENEW_CERT_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_renew" '.cert_file // $default_cert')
+                local RENEW_KEY_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_key "$default_key_file_renew" '.key_file // $default_key')
+                
+                if [[ -z "$RENEW_CERT_FILE" || "$RENEW_CERT_FILE" == "null" ]]; then RENEW_CERT_FILE="$default_cert_file_renew"; fi
+                if [[ -z "$RENEW_KEY_FILE" || "$RENEW_KEY_FILE" == "null" ]]; then RENEW_KEY_FILE="$default_key_file_renew"; fi
 
                 if [ "$RENEW_ACME_VALIDATION_METHOD" = "imported" ]; then 
                     log_message YELLOW "ℹ️ 域名 $DOMAIN_TO_RENEW 的证书是导入的，本脚本无法直接续期。请手动或通过 '编辑项目核心配置' 转换为 acme.sh 管理。"
@@ -1326,6 +1331,7 @@ manage_configs() {
                     if ! check_dns_env "$RENEW_DNS_API_PROVIDER"; then
                         log_message ERROR "DNS 环境变量检查失败，跳过域名 $DOMAIN_TO_RENEW 的续期。"
                         rm -f "$RENEW_CMD_LOG_OUTPUT"
+                        sleep 2
                         continue
                     fi
                 fi
@@ -1356,13 +1362,12 @@ manage_configs() {
                     log_message YELLOW "正在删除 ${DOMAIN_TO_DELETE}..."
                     
                     local CUSTOM_SNIPPET_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r '.custom_snippet')
-                    
-                    # 修复 jq 引用问题: 使用 --arg 安全传递默认值
+                    # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
                     local default_cert_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.cer"
                     local default_key_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.key"
                     local CERT_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_cert "$default_cert_file_delete" '.cert_file // $default_cert')
                     local KEY_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_key "$default_key_file_delete" '.key_file // $default_key')
-
+                    
                     if [[ -z "$CERT_FILE_TO_DELETE" || "$CERT_FILE_TO_DELETE" == "null" ]]; then CERT_FILE_TO_DELETE="$default_cert_file_delete"; fi
                     if [[ -z "$KEY_FILE_TO_DELETE" || "$KEY_FILE_TO_DELETE" == "null" ]]; then KEY_FILE_TO_DELETE="$default_key_file_delete"; fi
 
@@ -1404,7 +1409,9 @@ manage_configs() {
                         fi
                     fi
 
-                    if ! jq "del(.[] | select(.domain == \"$DOMAIN_TO_DELETE\"))" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                    if ! jq "del(.[] | select(.domain == \$domain_to_delete))" \
+                        --arg domain_to_delete "$DOMAIN_TO_DELETE" \
+                        "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
                         log_message ERROR "❌ 从元数据中移除项目失败！"
                     else
                         mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
@@ -1412,7 +1419,10 @@ manage_configs() {
                     fi
 
                     log_message GREEN "✅ 已删除域名 ${DOMAIN_TO_DELETE} 的相关配置和证书文件。"
-                    control_nginx reload 2>/dev/null || true # 忽略重载失败，因为可能没有其他Nginx配置了
+                    # 如果 Nginx 重载失败，记录警告但不中断删除流程，因为可能已无 Nginx 配置
+                    if ! control_nginx reload; then
+                        log_message WARN "Nginx 重载失败，可能因为所有配置文件已被删除。请手动检查Nginx状态。"
+                    fi
                 else
                     log_message YELLOW "已取消删除操作。"
                 fi
@@ -1434,7 +1444,7 @@ manage_configs() {
                 local EDIT_CA_SERVER_NAME=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.ca_server_name')
                 local EDIT_CUSTOM_SNIPPET_ORIGINAL=$(echo "$CURRENT_PROJECT_JSON" | jq -r '.custom_snippet')
                 
-                # 修复 jq 引用问题: 使用 --arg 安全传递默认值
+                # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
                 local default_cert_file_edit="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_EDIT.cer"
                 local default_key_file_edit="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_EDIT.key"
                 local EDIT_CERT_FILE=$(echo "$CURRENT_PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_edit" '.cert_file // $default_cert')
@@ -1442,7 +1452,6 @@ manage_configs() {
                 
                 if [[ -z "$EDIT_CERT_FILE" || "$EDIT_CERT_FILE" == "null" ]]; then EDIT_CERT_FILE="$default_cert_file_edit"; fi
                 if [[ -z "$EDIT_KEY_FILE" || "$EDIT_KEY_FILE" == "null" ]]; then EDIT_KEY_FILE="$default_key_file_edit"; fi
-
 
                 log_message BLUE "\n--- 编辑域名: $DOMAIN_TO_EDIT ---"
                 log_message INFO "当前配置:"
@@ -1478,7 +1487,7 @@ manage_configs() {
                     if [ "$DOCKER_INSTALLED" = true ] && docker ps --format '{{.Names}}' | grep -wq "$NEW_TARGET_INPUT"; then
                         NEW_NAME="$NEW_TARGET_INPUT"
                         NEW_TYPE="docker"
-                        HOST_MAPPED_PORT=$(docker inspect "$NEW_TARGET_INPUT" --format \
+                        local HOST_MAPPED_PORT=$(docker inspect "$NEW_TARGET_INPUT" --format \
                             '{{ range $p, $conf := .NetworkSettings.Ports }}{{ if $conf }}{{ (index $conf 0).HostPort }}{{ end }}{{ end }}' 2>/dev/null | \
                             sed 's|/tcp||g' | awk '{print $1}' | head -n1)
                         if [[ -n "$HOST_MAPPED_PORT" ]]; then
@@ -1486,7 +1495,7 @@ manage_configs() {
                             FINAL_PROXY_TARGET_URL="http://127.0.0.1:$NEW_RESOLVED_PORT"
                             log_message GREEN "✅ 新目标是 Docker 容器 $NEW_NAME，映射端口: $NEW_RESOLVED_PORT。"
                         else
-                            INTERNAL_EXPOSED_PORTS_ARRAY=()
+                            local INTERNAL_EXPOSED_PORTS_ARRAY=()
                             while IFS= read -r port_entry; do
                                 INTERNAL_EXPOSED_PORTS_ARRAY+=("$port_entry")
                             done < <(docker inspect "$NEW_TARGET_INPUT" --format '{{ range $p, $conf := .Config.ExposedPorts }}{{ $p }}{{ end }}' 2>/dev/null | sed 's|/tcp||g' | xargs -n1)
@@ -1497,7 +1506,7 @@ manage_configs() {
                                 for p in "${INTERNAL_EXPOSED_PORTS_ARRAY[@]}"; do
                                     port_idx=$((port_idx + 1))
                                     echo -e "   ${YELLOW}${port_idx})${RESET} ${p}"
-                                end
+                                done
                                 while true; do
                                     read -rp "请选择一个内部端口序号，或直接输入端口号: " PORT_SELECTION
                                     if [[ "$PORT_SELECTION" =~ ^[0-9]+$ ]]; then
@@ -1622,7 +1631,7 @@ manage_configs() {
                                 [[ -z "$NEW_ZERO_SSL_ACCOUNT_EMAIL" ]] && break
                             done
                             if [[ -z "$NEW_ZERO_SSL_ACCOUNT_EMAIL" ]]; then
-                                log_message RED "❌ 未输入邮箱地址，ZeroSSL 账户注册失败。请重新操作。"
+                                log_message RED "❌ 未提供邮箱，无法注册 ZeroSSL 账户。操作已取消。"
                                 sleep 2
                                 return 1
                             fi
@@ -1655,7 +1664,10 @@ manage_configs() {
                     --arg key_file "$NEW_KEY_FILE" \
                     '{domain: $domain, type: $type, name: $name, resolved_port: $resolved_port, custom_snippet: $custom_snippet, acme_validation_method: $acme_method, dns_api_provider: $dns_provider, use_wildcard: $wildcard, ca_server_url: $ca_url, ca_server_name: $ca_name, cert_file: $cert_file, key_file: $key_file}')
 
-                if ! jq "(.[] | select(.domain == \"$DOMAIN_TO_EDIT\")) |= $UPDATED_PROJECT_JSON" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                if ! jq "(.[] | select(.domain == \$domain_to_edit)) = \$updated_project_json" \
+                    --arg domain_to_edit "$DOMAIN_TO_EDIT" \
+                    --argjson updated_project_json "$UPDATED_PROJECT_JSON" \
+                    "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
                     log_message ERROR "❌ 更新项目元数据失败！"
                 else
                     mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
@@ -1688,7 +1700,7 @@ manage_configs() {
 
                         log_message YELLOW "正在为 $DOMAIN_TO_EDIT 申请证书 (CA: $NEW_CA_SERVER_NAME, 验证方式: $NEW_ACME_VALIDATION_METHOD)..."
                         local ACME_REISSUE_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
-                        ACME_REISSUE_COMMAND="$ACME_BIN --issue --force -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$NEW_CA_SERVER_URL\""
+                        local ACME_REISSUE_COMMAND="$ACME_BIN --issue --force -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$NEW_CA_SERVER_URL\""
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
                             ACME_REISSUE_COMMAND+=" -d \"*.$DOMAIN_TO_EDIT\""
                         fi
@@ -1716,23 +1728,27 @@ manage_configs() {
                             --arg cert_file "$NEW_CERT_FILE" \
                             --arg key_file "$NEW_KEY_FILE" \
                             '{domain: $domain, cert_file: $cert_file, key_file: $key_file}')
-                        jq "(.[] | select(.domain == \"$DOMAIN_TO_EDIT\")) |= . + $LATEST_ACME_CERT_JSON" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && \
-                        mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
-                        log_message GREEN "✅ 证书已成功重新签发，路径已更新至脚本默认管理路径。"
+                        
+                        if ! jq "(.[] | select(.domain == \$domain_to_edit)) |= . + \$latest_acme_cert_json" \
+                            --arg domain_to_edit "$DOMAIN_TO_EDIT" \
+                            --argjson latest_acme_cert_json "$LATEST_ACME_CERT_JSON" \
+                            "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                            log_message ERROR "❌ 更新证书文件路径到元数据失败！"
+                        else
+                            mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                            log_message GREEN "✅ 证书已成功重新签发，路径已更新至脚本默认管理路径。"
+                        fi
                         sleep 1
                         
-                        INSTALL_CERT_DOMAINS="-d \"$DOMAIN_TO_EDIT\""
+                        local INSTALL_CERT_DOMAINS="-d \"$DOMAIN_TO_EDIT\""
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
                             INSTALL_CERT_DOMAINS+=" -d \"*.$DOMAIN_TO_EDIT\""
                         fi
-                        if ! "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
+                        # acme.sh 会自动执行 --reloadcmd
+                        "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
                             --key-file "$NEW_KEY_FILE" \
                             --fullchain-file "$NEW_CERT_FILE" \
-                            --reloadcmd "systemctl reload nginx"; then
-                            log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"
-                            sleep 2
-                            return 1
-                        fi
+                            --reloadcmd "systemctl reload nginx" || { log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; sleep 2; return 1; }
 
                         log_message YELLOW "生成 $DOMAIN_TO_EDIT 的最终 Nginx 配置..."
                         _NGINX_FINAL_TEMPLATE "$DOMAIN_TO_EDIT" "$FINAL_PROXY_TARGET_URL" "$NEW_CERT_FILE" "$NEW_KEY_FILE" "$EDIT_CUSTOM_SNIPPET_ORIGINAL" > "$NGINX_SITES_AVAILABLE_DIR/$DOMAIN_TO_EDIT.conf"
@@ -1763,15 +1779,14 @@ manage_configs() {
                 local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.name')
                 local RESOLVED_PORT_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.resolved_port')
                 
-                # 修复 jq 引用问题: 使用 --arg 安全传递默认值
+                # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
                 local default_cert_file_snippet="$SSL_CERTS_BASE_DIR/$DOMAIN_FOR_SNIPPET.cer"
                 local default_key_file_snippet="$SSL_CERTS_BASE_DIR/$DOMAIN_FOR_SNIPPET.key"
                 local CERT_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_snippet" '.cert_file // $default_cert')
                 local KEY_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r --arg default_key "$default_key_file_snippet" '.key_file // $default_key')
-
+                
                 if [[ -z "$CERT_FILE_SNIPPET" || "$CERT_FILE_SNIPPET" == "null" ]]; then CERT_FILE_SNIPPET="$default_cert_file_snippet"; fi
                 if [[ -z "$KEY_FILE_SNIPPET" || "$KEY_FILE_SNIPPET" == "null" ]]; then KEY_FILE_SNIPPET="$default_key_file_snippet"; fi
-
 
                 log_message BLUE "\n--- 管理域名 $DOMAIN_FOR_SNIPPET 的 Nginx 配置片段 ---"
                 if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" ]]; then log_message YELLOW "当前自定义片段文件: $CURRENT_SNIPPET_PATH"; else log_message INFO "当前未设置自定义片段文件。"; fi
@@ -1797,7 +1812,10 @@ manage_configs() {
                 sleep 1
 
                 local UPDATED_SNIPPET_JSON_OBJ=$(jq -n --arg custom_snippet "$CHOSEN_SNIPPET_PATH" '{custom_snippet: $custom_snippet}')
-                if ! jq "(.[] | select(.domain == \"$DOMAIN_FOR_SNIPPET\")) |= . + $UPDATED_SNIPPET_JSON_OBJ" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                if ! jq "(.[] | select(.domain == \$domain_for_snippet)) |= . + \$updated_snippet_json_obj" \
+                    --arg domain_for_snippet "$DOMAIN_FOR_SNIPPET" \
+                    --argjson updated_snippet_json_obj "$UPDATED_SNIPPET_JSON_OBJ" \
+                    "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
                     log_message ERROR "❌ 更新项目元数据失败！"
                     sleep 2
                     continue
@@ -1861,8 +1879,8 @@ check_and_auto_renew_certs() {
         return 0
     fi
 
-    local temp_renew_count_file=$(mktemp acme_renew_count.XXXXXX)
-    local temp_fail_count_file=$(mktemp acme_fail_count.XXXXXX)
+    local temp_renew_count_file=$(mktemp acme_cmd_log.XXXXXX)
+    local temp_fail_count_file=$(mktemp acme_cmd_log.XXXXXX)
     echo "0" > "$temp_renew_count_file"
     echo "0" > "$temp_fail_count_file"
 
@@ -1873,18 +1891,18 @@ check_and_auto_renew_certs() {
         local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')
         local CA_SERVER_URL=$(echo "$project_json" | jq -r '.ca_server_url')
         
-        # 修复 jq 引用问题: 使用 --arg 安全传递默认值
-        local default_cert_file_auto_renew="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"
-        local default_key_file_auto_renew="$SSL_CERTS_BASE_DIR/$DOMAIN.key"
-        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_auto_renew" '.cert_file // $default_cert')
-        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_auto_renew" '.key_file // $default_key')
+        # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
+        local default_cert_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"
+        local default_key_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.key"
+        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_auto" '.cert_file // $default_cert')
+        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_auto" '.key_file // $default_key')   
 
-        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_auto_renew"; fi
-        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_auto_renew"; fi
-
+        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_auto"; fi
+        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_auto"; fi
 
         if [[ ! -f "$CERT_FILE" ]]; then
             log_message YELLOW "⚠️ 域名 $DOMAIN 证书文件 $CERT_FILE 不存在，跳过续期。"
+            echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 计入失败
             continue
         fi
 
@@ -1993,7 +2011,7 @@ manage_acme_accounts() {
                     [[ -z "$NEW_ACCOUNT_EMAIL" ]] && break
                 done
                 if [[ -z "$NEW_ACCOUNT_EMAIL" ]]; then
-                    log_message RED "❌ 未输入邮箱地址，账户注册失败。"
+                    log_message RED "❌ 未提供邮箱，注册账户操作已取消。"
                     sleep 1
                     continue
                 fi
@@ -2105,11 +2123,9 @@ main_menu() {
 }
 
 # --- 脚本入口 ---
-# 如果脚本作为cronjob直接运行，并且参数为续期选项，则直接执行续期功能
 if [[ "${1:-}" == "3" ]]; then
     check_and_auto_renew_certs
     exit 0
 fi
 
 main_menu
-```
