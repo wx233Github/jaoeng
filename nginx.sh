@@ -449,6 +449,13 @@ configure_nginx_projects() {
         
         echo -e "\n--- 处理域名: ${BLUE}$MAIN_DOMAIN${RESET} ---"
 
+# --- 新增：检查用户是否输入了任何项目 ---
+        if [ ${#PROJECTS[@]} -eq 0 ]; then
+            echo -e "\n${YELLOW}⚠️ 您没有输入任何项目，操作已取消。${RESET}"
+            return 1 # 返回并中止当前操作
+        fi
+    # --- 新增结束 ---
+
         # 检查是否已存在相同域名的配置，避免重复添加
         if jq -e ".[] | select(.domain == \"$MAIN_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
             echo -e "${YELLOW}⚠️ 域名 $MAIN_DOMAIN 已存在配置。请在 '查看与管理' 菜单中编辑或删除。${RESET}"
