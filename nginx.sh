@@ -87,26 +87,41 @@ get_vps_ip() {
 }
 
 # -----------------------------
+# -----------------------------
 # 自动安装依赖（跳过已是最新版的），适用于 Debian/Ubuntu
 install_dependencies() {
     echo -e "${GREEN}🔍 检查并安装依赖 (适用于 Debian/Ubuntu)...${RESET}"
     apt update -y || { echo -e "${RED}❌ apt update 失败，请检查网络或源配置。${RESET}"; exit 1; }
 
-    DEPS=(nginx curl socat openssl jq idn2 dnsutils) # JQ for JSON, idn2 for acme.sh IDN support, dnsutils for dig command
-    for dep in "${DEPS[@]}"; do
-        if command -v "$dep" &>/dev/null; then
-            INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$dep" 2>/dev/null || echo "not-found")
-            AVAILABLE_VER=$(apt-cache policy "$dep" | grep Candidate | awk '{print $2}' || echo "not-found")
+    # 使用关联数组映射命令到包名，解决 dnsutils 等问题
+    declare -A DEPS_MAP
+    DEPS_MAP=(
+        ["nginx"]="nginx"
+        ["curl"]="curl"
+        ["socat"]="socat"
+        ["openssl"]="openssl"
+        ["jq"]="jq"
+        ["idn2"]="idn2"
+        ["dig"]="dnsutils" # 检查 'dig' 命令，如果缺少则安装 'dnsutils' 包
+    )
+
+    for cmd in "${!DEPS_MAP[@]}"; do
+        local pkg="${DEPS_MAP[$cmd]}"
+        if command -v "$cmd" &>/dev/null; then
+            # 检查版本是否最新 (可选，但更好)
+            INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || echo "not-found")
+            AVAILABLE_VER=$(apt-cache policy "$pkg" | grep Candidate | awk '{print $2}' || echo "not-found")
+            
             if [ "$INSTALLED_VER" != "not-found" ] && [ "$INSTALLED_VER" = "$AVAILABLE_VER" ]; then
-                echo -e "${GREEN}✅ $dep 已安装且为最新版 ($INSTALLED_VER)，跳过${RESET}"
-                continue
+                echo -e "${GREEN}✅ 命令 '$cmd' (由包 '$pkg') 已安装且为最新版，跳过${RESET}"
             else
-                echo -e "${YELLOW}⚠️ $dep 版本过旧或可升级 ($INSTALLED_VER → $AVAILABLE_VER)，正在安装/更新...${RESET}"
+                echo -e "${YELLOW}⚠️ 缺少或需更新命令 '$cmd' (由包 '$pkg' 提供)，正在安装...${RESET}"
+                apt install -y "$pkg"
             fi
         else
-            echo -e "${YELLOW}⚠️ 缺少 $dep，正在安装...${RESET}"
+            echo -e "${YELLOW}⚠️ 缺少命令 '$cmd' (由包 '$pkg' 提供)，正在安装...${RESET}"
+            apt install -y "$pkg"
         fi
-        apt install -y "$dep"
     done
 }
 
