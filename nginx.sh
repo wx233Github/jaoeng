@@ -140,8 +140,7 @@ check_root() {
 # -----------------------------
 # 获取 VPS 公网 IPv4 和 IPv6 地址
 get_vps_ip() {
-    # VPS_IP 局部变量
-    local VPS_IP
+    # VPS_IP 全局变量，不使用 local
     VPS_IP=$(curl -s https://api.ipify.org)
     log_message INFO "🌐 VPS 公网 IP (IPv4): $VPS_IP"
 
@@ -306,7 +305,7 @@ check_domain_ip() {
     if [[ -n "$VPS_IPV6" ]]; then
         local domain_ip_v6=$(dig +short "$domain" AAAA | grep -E '^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$' | head -n1 2>/dev/null || echo "")
         if [ -z "$domain_ip_v6" ]; then
-            log_message YELLOW "⚠️ 域名 ${domain} 未配置 AAAA 记录，但您的 VPS 具有 IPv6 地址。"
+            log_message YELLOW "⚠️ 域名 ${domain} 未配置 AAAA 记录，但您的 VPS 具 有 IPv6 地 址。"
             read -rp "这表示该域名可能无法通过 IPv6 访问。是否继续？[y/N]: " PROCEED_ANYWAY_AAAA_MISSING
             PROCEED_ANYWAY_AAAA_MISSING=${PROCEED_ANYWAY_AAAA_MISSING:-y} # 默认改为 y
             if [[ ! "$PROCEED_ANYWAY_AAAA_MISSING" =~ ^[Yy]$ ]]; then
@@ -521,6 +520,98 @@ check_dns_env() {
 }
 
 # -----------------------------
+# 辅助函数：仅删除 Nginx 配置
+delete_project_nginx_config() {
+    local domain="$1"
+    log_message YELLOW "正在删除域名 ${domain} 的 Nginx 配置..."
+    rm -f "$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
+    rm -f "$NGINX_SITES_ENABLED_DIR/$domain.conf"
+    log_message GREEN "✅ 已删除域名 ${domain} 的 Nginx 配置。"
+    if ! control_nginx reload; then
+        log_message WARN "Nginx 重载失败，请手动检查。"
+    fi
+}
+
+# -----------------------------
+# 辅助函数：仅删除证书
+delete_project_certs() {
+    local domain="$1"
+    log_message YELLOW "正在删除域名 ${domain} 的证书..."
+    
+    local PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$domain\")" "$PROJECTS_METADATA_FILE")
+    local default_cert_file_delete="$SSL_CERTS_BASE_DIR/$domain.cer"
+    local default_key_file_delete="$SSL_CERTS_BASE_DIR/$domain.key"
+    local CERT_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_delete" '.cert_file // $default_cert')
+    local KEY_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r --arg default_key "$default_key_file_delete" '.key_file // $default_key')
+    
+    if [[ -z "$CERT_FILE_TO_DELETE" || "$CERT_FILE_TO_DELETE" == "null" ]]; then CERT_FILE_TO_DELETE="$default_cert_file_delete"; fi
+    if [[ -z "$KEY_FILE_TO_DELETE" || "$KEY_FILE_TO_DELETE" == "null" ]]; then KEY_FILE_TO_DELETE="$default_key_file_delete"; fi
+
+    "$ACME_BIN" --remove -d "$domain" --ecc 2>/dev/null || true
+    
+    # 统一删除 acme.sh 默认安装的证书文件
+    if [ -f "$SSL_CERTS_BASE_DIR/$domain.cer" ]; then rm -f "$SSL_CERTS_BASE_DIR/$domain.cer"; fi
+    if [ -f "$SSL_CERTS_BASE_DIR/$domain.key" ]; then rm -f "$SSL_CERTS_BASE_DIR/$domain.key"; fi
+    if [ -d "$SSL_CERTS_BASE_DIR/$domain" ]; then
+        if [ -z "$(ls -A "$SSL_CERTS_BASE_DIR/$domain")" ]; then
+            rmdir "$SSL_CERTS_BASE_DIR/$domain"
+            log_message GREEN "✅ 已删除默认证书目录 $SSL_CERTS_BASE_DIR/$domain"
+        else
+            log_message YELLOW "⚠️ 证书目录 $SSL_CERTS_BASE_DIR/$domain 不为空，未删除。"
+        fi
+    fi
+
+    # 如果是自定义路径的证书，也删除
+    if [[ "$CERT_FILE_TO_DELETE" != "$default_cert_file_delete" && -f "$CERT_FILE_TO_DELETE" ]]; then
+        rm -f "$CERT_FILE_TO_DELETE"
+        log_message GREEN "✅ 已删除自定义证书文件: $CERT_FILE_TO_DELETE"
+    fi
+    if [[ "$KEY_FILE_TO_DELETE" != "$default_key_file_delete" && -f "$KEY_FILE_TO_DELETE" ]]; then
+        rm -f "$KEY_FILE_TO_DELETE"
+        log_message GREEN "✅ 已删除自定义私钥文件: $KEY_FILE_TO_DELETE"
+    fi
+    
+    log_message GREEN "✅ 已删除域名 ${domain} 的证书。"
+}
+
+# -----------------------------
+# 辅助函数：彻底删除项目
+delete_project_completely() {
+    local domain="$1"
+    log_message YELLOW "正在彻底删除域名 ${domain} 的所有相关内容..."
+    
+    delete_project_nginx_config "$domain"
+    delete_project_certs "$domain"
+    
+    local PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$domain\")" "$PROJECTS_METADATA_FILE" || echo "")
+    local CUSTOM_SNIPPET_FILE_TO_DELETE=""
+    if [[ -n "$PROJECT_JSON" ]]; then
+        CUSTOM_SNIPPET_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r '.custom_snippet' || echo "")
+    fi
+    
+    if [[ -n "$CUSTOM_SNIPPET_FILE_TO_DELETE" && "$CUSTOM_SNIPPET_FILE_TO_DELETE" != "null" && -f "$CUSTOM_SNIPPET_FILE_TO_DELETE" ]]; then
+        read -rp "检测到自定义 Nginx 配置片段文件 '$CUSTOM_SNIPPET_FILE_TO_DELETE'，是否一并删除？[y/N]: " DELETE_SNIPPET_CONFIRM
+        DELETE_SNIPPET_CONFIRM=${DELETE_SNIPPET_CONFIRM:-y}
+        if [[ "$DELETE_SNIPPET_CONFIRM" =~ ^[Yy]$ ]]; then
+            rm -f "$CUSTOM_SNIPPET_FILE_TO_DELETE"
+            log_message GREEN "✅ 已删除自定义 Nginx 片段文件: $CUSTOM_SNIPPET_FILE_TO_DELETE"
+        else
+            log_message YELLOW "ℹ️ 已保留自定义 Nginx 片段文件: $CUSTOM_SNIPPET_FILE_TO_DELETE"
+        fi
+    fi
+    
+    if ! jq "del(.[] | select(.domain == \$domain_to_delete))" \
+        --arg domain_to_delete "$domain" \
+        "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+        log_message ERROR "❌ 从元数据中移除项目失败！"
+    else
+        mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+        log_message GREEN "✅ 已从元数据中移除项目 $domain。"
+    fi
+    log_message GREEN "✅ 已彻底删除域名 ${domain} 的所有相关内容。"
+}
+
+# -----------------------------
 # 配置 Nginx 和申请 HTTPS 证书的主函数
 configure_nginx_projects() {
     check_root
@@ -541,7 +632,7 @@ configure_nginx_projects() {
     mkdir -p "$NGINX_CUSTOM_SNIPPETS_DIR" # 创建自定义片段的默认父目录
     mkdir -p "$SSL_CERTS_BASE_DIR" # 确保证书基目录存在
 
-    local VPS_IP
+    # VPS_IP 和 VPS_IPV6 是全局变量，在 get_vps_ip 中被赋值
     get_vps_ip
 
     # 检查并移除旧版 projects.conf 以避免冲突
@@ -950,7 +1041,7 @@ configure_nginx_projects() {
 
             # acme.sh 会自动执行 --reloadcmd
             "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
-                --key-file "$INSTALLED_CRT_FILE" \
+                --key-file "$INSTALLED_KEY_FILE" \
                 --fullchain-file "$INSTALLED_CRT_FILE" \
                 --reloadcmd "systemctl reload nginx" || { log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; continue; }
         else
@@ -1348,6 +1439,15 @@ manage_configs() {
                 local RENEW_USE_WILDCARD=$(echo "$RENEW_PROJECT_JSON" | jq -r '.use_wildcard')
                 local RENEW_CA_SERVER_URL=$(echo "$RENEW_PROJECT_JSON" | jq -r '.ca_server_url')
                 
+                # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq
+                local default_cert_file_renew="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.cer"
+                local default_key_file_renew="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_RENEW.key"
+                local RENEW_CERT_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_renew" '.cert_file // $default_cert')
+                local RENEW_KEY_FILE=$(echo "$RENEW_PROJECT_JSON" | jq -r --arg default_key "$default_key_file_renew" '.key_file // $default_key')
+                
+                if [[ -z "$RENEW_CERT_FILE" || "$RENEW_CERT_FILE" == "null" ]]; then RENEW_CERT_FILE="$default_cert_file_renew"; fi
+                if [[ -z "$RENEW_KEY_FILE" || "$RENEW_KEY_FILE" == "null" ]]; then RENEW_KEY_FILE="$default_key_file_renew"; fi
+
                 if [ "$RENEW_ACME_VALIDATION_METHOD" = "imported" ]; then 
                     log_message YELLOW "ℹ️ 域名 $DOMAIN_TO_RENEW 的证书是导入的，本脚本无法直接续期。请手动或通过 '编辑项目核心配置' 转换为 acme.sh 管理。"
                     sleep 2
@@ -1411,137 +1511,6 @@ manage_configs() {
                 ;;
         esac
     done
-}
-
-# -----------------------------
-# 删除项目（子菜单）
-delete_project_menu() {
-    read -rp "请输入要删除的域名: " DOMAIN_TO_DELETE
-    if [[ -z "$DOMAIN_TO_DELETE" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; return 1; fi
-    local PROJECT_TO_DELETE_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_TO_DELETE\")" "$PROJECTS_METADATA_FILE")
-    if [ -z "$PROJECT_TO_DELETE_JSON" ]; then log_message RED "❌ 域名 $DOMAIN_TO_DELETE 未找到在已配置列表中。"; sleep 1; return 1; fi
-
-    log_message BLUE "\n请选择要对域名 ${DOMAIN_TO_DELETE} 执行的删除操作："
-    echo "1) 仅删除 Nginx 配置 (保留证书和元数据)"
-    echo "2) 仅删除证书 (保留 Nginx 配置和元数据)"
-    echo "3) 彻底删除项目 (删除所有相关内容)"
-    echo "0) 取消"
-    read -rp "请输入选项 [0]: " DELETE_CHOICE
-    DELETE_CHOICE=${DELETE_CHOICE:-0}
-    
-    case "$DELETE_CHOICE" in
-        1)
-            delete_project_nginx_config "$DOMAIN_TO_DELETE"
-            ;;
-        2)
-            delete_project_certs "$DOMAIN_TO_DELETE"
-            ;;
-        3)
-            read -rp "⚠️ 确认彻底删除域名 ${DOMAIN_TO_DELETE} 的所有 Nginx 配置、证书和元数据？此操作不可恢复！[y/N]: " CONFIRM_DELETE
-            CONFIRM_DELETE=${CONFIRM_DELETE:-n}
-            if [[ "$CONFIRM_DELETE" =~ ^[Yy]$ ]]; then
-                delete_project_completely "$DOMAIN_TO_DELETE"
-            else
-                log_message YELLOW "已取消彻底删除操作。"
-            fi
-            ;;
-        0)
-            log_message YELLOW "已取消删除操作。"
-            ;;
-        *)
-            log_message RED "❌ 无效选项，已取消删除操作。"
-            ;;
-    esac
-    sleep 2
-}
-
-# -----------------------------
-# 辅助函数：仅删除 Nginx 配置
-delete_project_nginx_config() {
-    local domain="$1"
-    log_message YELLOW "正在删除域名 ${domain} 的 Nginx 配置..."
-    rm -f "$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
-    rm -f "$NGINX_SITES_ENABLED_DIR/$domain.conf"
-    log_message GREEN "✅ 已删除域名 ${domain} 的 Nginx 配置。"
-    if ! control_nginx reload; then
-        log_message WARN "Nginx 重载失败，请手动检查。"
-    fi
-}
-
-# -----------------------------
-# 辅助函数：仅删除证书
-delete_project_certs() {
-    local domain="$1"
-    log_message YELLOW "正在删除域名 ${domain} 的证书..."
-    
-    local PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$domain\")" "$PROJECTS_METADATA_FILE")
-    local default_cert_file_delete="$SSL_CERTS_BASE_DIR/$domain.cer"
-    local default_key_file_delete="$SSL_CERTS_BASE_DIR/$domain.key"
-    local CERT_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r --arg default_cert "$default_cert_file_delete" '.cert_file // $default_cert')
-    local KEY_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r --arg default_key "$default_key_file_delete" '.key_file // $default_key')
-    
-    if [[ -z "$CERT_FILE_TO_DELETE" || "$CERT_FILE_TO_DELETE" == "null" ]]; then CERT_FILE_TO_DELETE="$default_cert_file_delete"; fi
-    if [[ -z "$KEY_FILE_TO_DELETE" || "$KEY_FILE_TO_DELETE" == "null" ]]; then KEY_FILE_TO_DELETE="$default_key_file_delete"; fi
-
-    "$ACME_BIN" --remove -d "$domain" --ecc 2>/dev/null || true
-    
-    # 统一删除 acme.sh 默认安装的证书文件
-    if [ -f "$SSL_CERTS_BASE_DIR/$domain.cer" ]; then rm -f "$SSL_CERTS_BASE_DIR/$domain.cer"; fi
-    if [ -f "$SSL_CERTS_BASE_DIR/$domain.key" ]; then rm -f "$SSL_CERTS_BASE_DIR/$domain.key"; fi
-    if [ -d "$SSL_CERTS_BASE_DIR/$domain" ]; then
-        if [ -z "$(ls -A "$SSL_CERTS_BASE_DIR/$domain")" ]; then
-            rmdir "$SSL_CERTS_BASE_DIR/$domain"
-            log_message GREEN "✅ 已删除默认证书目录 $SSL_CERTS_BASE_DIR/$domain"
-        else
-            log_message YELLOW "⚠️ 证书目录 $SSL_CERTS_BASE_DIR/$domain 不为空，未删除。"
-        fi
-    fi
-
-    # 如果是自定义路径的证书，也删除
-    if [[ "$CERT_FILE_TO_DELETE" != "$default_cert_file_delete" && -f "$CERT_FILE_TO_DELETE" ]]; then
-        rm -f "$CERT_FILE_TO_DELETE"
-        log_message GREEN "✅ 已删除自定义证书文件: $CERT_FILE_TO_DELETE"
-    fi
-    if [[ "$KEY_FILE_TO_DELETE" != "$default_key_file_delete" && -f "$KEY_FILE_TO_DELETE" ]]; then
-        rm -f "$KEY_FILE_TO_DELETE"
-        log_message GREEN "✅ 已删除自定义私钥文件: $KEY_FILE_TO_DELETE"
-    fi
-    
-    log_message GREEN "✅ 已删除域名 ${domain} 的证书。"
-}
-
-# -----------------------------
-# 辅助函数：彻底删除项目
-delete_project_completely() {
-    local domain="$1"
-    log_message YELLOW "正在彻底删除域名 ${domain} 的所有相关内容..."
-    
-    delete_project_nginx_config "$domain"
-    delete_project_certs "$domain"
-    
-    local PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$domain\")" "$PROJECTS_METADATA_FILE")
-    local CUSTOM_SNIPPET_FILE_TO_DELETE=$(echo "$PROJECT_JSON" | jq -r '.custom_snippet')
-
-    if [[ -n "$CUSTOM_SNIPPET_FILE_TO_DELETE" && "$CUSTOM_SNIPPET_FILE_TO_DELETE" != "null" && -f "$CUSTOM_SNIPPET_FILE_TO_DELETE" ]]; then
-        read -rp "检测到自定义 Nginx 配置片段文件 '$CUSTOM_SNIPPET_FILE_TO_DELETE'，是否一并删除？[y/N]: " DELETE_SNIPPET_CONFIRM
-        DELETE_SNIPPET_CONFIRM=${DELETE_SNIPPET_CONFIRM:-y}
-        if [[ "$DELETE_SNIPPET_CONFIRM" =~ ^[Yy]$ ]]; then
-            rm -f "$CUSTOM_SNIPPET_FILE_TO_DELETE"
-            log_message GREEN "✅ 已删除自定义 Nginx 片段文件: $CUSTOM_SNIPPET_FILE_TO_DELETE"
-        else
-            log_message YELLOW "ℹ️ 已保留自定义 Nginx 片段文件: $CUSTOM_SNIPPET_FILE_TO_DELETE"
-        fi
-    fi
-    
-    if ! jq "del(.[] | select(.domain == \$domain_to_delete))" \
-        --arg domain_to_delete "$domain" \
-        "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
-        log_message ERROR "❌ 从元数据中移除项目失败！"
-    else
-        mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
-        log_message GREEN "✅ 已从元数据中移除项目 $domain。"
-    fi
-    log_message GREEN "✅ 已彻底删除域名 ${domain} 的所有相关内容。"
 }
 
 # -----------------------------
