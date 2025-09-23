@@ -5,7 +5,7 @@
 # 功能概览：
 # - **自动化配置**: 一键式自动配置 Nginx 反向代理和 HTTPS 证书。
 # - **后端支持**: 支持代理到 Docker 容器或本地指定端口。
-# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn, idn2, dnsutils）。
+# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn, dnsutils）。
 # - **acme.sh 集成**:
 #   - 自动安装 acme.sh，并管理 Let's Encrypt 或 ZeroSSL 证书的申请、安装和自动续期。
 #   - 支持选择 `http-01` 或 `dns-01` 验证方式。
@@ -169,15 +169,8 @@ install_dependencies() {
         ["socat"]="socat"
         ["openssl"]="openssl"
         ["jq"]="jq"
-        # ==============================================================================
-        # >>>>>>>>>> MODIFICATION START: 解决 IDN 错误 <<<<<<<<<<
-        # ==============================================================================
-        ["idn"]="idn" # 新增 idn 包，解决 acme.sh 的 IDN 域名处理依赖
-        ["idn2"]="idn2"
-        # ==============================================================================
-        # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
-        # ==============================================================================
-        ["dig"]="dnsutils" # 检查 'dig' 命令，如果缺少则安装 'dnsutils' 包
+        ["idn"]="idn"         # Add 'idn' command for IDN domains
+        ["dig"]="dnsutils" 
     )
 
     for cmd in "${!DEPS_MAP[@]}"; do
@@ -293,31 +286,19 @@ check_domain_ip() {
     if [[ -n "$VPS_IPV6" ]]; then
         local domain_ip_v6=$(dig +short "$domain" AAAA | grep -E '^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$' | head -n1 2>/dev/null || echo "")
         if [ -z "$domain_ip_v6" ]; then
-            log_message YELLOW "⚠️ 域名 ${domain} 未配置 AAAA 记录，但您的 VPS 具有 IPv6 地址。"
-            # ==============================================================================
-            # >>>>>>>>>> MODIFICATION START: 修改 IPv6 警告的默认行为 <<<<<<<<<<
-            # ==============================================================================
+            log_message YELLOW "⚠️ 域名 ${domain} 未配置 AAAA 记录，但您的 VPS 具 有 IPv6 地 址 。"
             read -rp "这表示该域名可能无法通过 IPv6 访问。是否继续？[Y/n]: " PROCEED_ANYWAY_AAAA_MISSING
-            PROCEED_ANYWAY_AAAA_MISSING=${PROCEED_ANYWAY_AAAA_MISSING:-y} # 默认改为 y
+            PROCEED_ANYWAY_AAAA_MISSING=${PROCEED_ANYWAY_AAAA_MISSING:-y} # 默认改为 y (继续)
             if [[ ! "$PROCEED_ANYWAY_AAAA_MISSING" =~ ^[Yy]$ ]]; then
-            # ==============================================================================
-            # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
-            # ==============================================================================
                 log_message RED "❌ 已取消当前域名的操作。"
                 return 1 # 硬性失败
             fi
             log_message YELLOW "⚠️ 已选择继续申请 (AAAA 记录缺失)。"
         elif [ "$domain_ip_v6" != "$VPS_IPV6" ]; then
             log_message RED "⚠️ 域名 ${domain} 的 IPv6 解析 ($domain_ip_v6) 与本机 IPv6 ($VPS_IPV6) 不符。"
-            # ==============================================================================
-            # >>>>>>>>>> MODIFICATION START: 修改 IPv6 警告的默认行为 <<<<<<<<<<
-            # ==============================================================================
-            read -rp "这可能导致证书申请失败或域名无法通过 IPv6 访问。是否继续？[Y/n]: " PROCEED_ANYWAY_AAAA_MISMATCH
-            PROCEED_ANYWAY_AAAA_MISMATCH=${PROCEED_ANYWAY_AAAA_MISMATCH:-y} # 默认改为 y
+            read -rp "这可能导致证书申请失败或域名无法通过 IPv6 访问。是否继续？[y/N]: " PROCEED_ANYWAY_AAAA_MISMATCH
+            PROCEED_ANYWAY_AAAA_MISMATCH=${PROCEED_ANYWAY_AAAA_MISMATCH:-n} # 默认改为 n
             if [[ ! "$PROCEED_ANYWAY_AAAA_MISMATCH" =~ ^[Yy]$ ]]; then
-            # ==============================================================================
-            # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
-            # ==============================================================================
                 log_message RED "❌ 已取消当前域名的操作。"
                 return 1 # 硬性失败
             fi
@@ -451,9 +432,9 @@ analyze_acme_error() {
     elif echo "$error_output" | grep -q "Domain key exists"; then
         log_message ERROR "   可能原因：上次申请失败后残留了域名私钥文件。"
         log_message YELLOW "   建议：脚本已在初次申请或重试时添加 --force 参数处理此问题。如果仍然失败，请尝试在管理菜单中删除该项目后重试。"
-    elif echo "$error_output" | grep -q "is an IDN"; then
-        log_message ERROR "   可能原因：域名被识别为国际化域名(IDN)，但缺少 'idn' 工具。"
-        log_message YELLOW "   建议：脚本已尝试自动安装 'idn' 包。如果问题仍然存在，请手动执行 'apt install idn' (Debian/Ubuntu) 或相应系统的命令。"
+    elif echo "$error_output" | grep -q "not a cert name" || echo "$error_output" | grep -q "Cannot find path"; then
+        log_message ERROR "   可能原因：acme.sh 无法识别证书名称或路径，通常是由于传递的域名格式不正确导致。"
+        log_message YELLOW "   建议：请检查 acme.sh 命令中 -d 参数的域名是否包含多余的引号或特殊字符，或者证书目录是否存在。"
     else
         log_message ERROR "   未识别的错误类型。"
         log_message YELLOW "   建议：请仔细检查上述 acme.sh 完整错误日志，并查阅 acme.sh 官方文档或社区寻求帮助。"
@@ -591,7 +572,7 @@ configure_nginx_projects() {
     log_message INFO "请选择证书颁发机构 (CA):"
     echo "1) Let's Encrypt (默认)"
     echo "2) ZeroSSL"
-    read -rp "请输入序号 [1]: " CA_CHOICE
+    read -rp "请输入序号: " CA_CHOICE
     CA_CHOICE=${CA_CHOICE:-1}
     case $CA_CHOICE in
         1) ACME_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"; ACME_CA_SERVER_NAME="letsencrypt";;
@@ -676,15 +657,9 @@ configure_nginx_projects() {
         local USE_WILDCARD="n"
         
         log_message INFO "请选择验证方式:"
-        echo "1) http-01 (通过 80 端口，推荐用于单域名)"
+        echo "1) http-01 (通过 80 端口，推荐用于单域名) [默认: 1]"
         echo "2) dns-01 (通过 DNS API，推荐用于泛域名或 80 端口不可用时)"
-        # ==============================================================================
-        # >>>>>>>>>> MODIFICATION START: 明确验证方式的默认选项 <<<<<<<<<<
-        # ==============================================================================
-        read -rp "请输入序号 [默认: 1]: " VALIDATION_CHOICE
-        # ==============================================================================
-        # >>>>>>>>>> MODIFICATION END <<<<<<<<<<
-        # ==============================================================================
+        read -rp "请输入序号: " VALIDATION_CHOICE
         VALIDATION_CHOICE=${VALIDATION_CHOICE:-1}
         case $VALIDATION_CHOICE in
             1) ACME_VALIDATION_METHOD="http-01";;
@@ -832,6 +807,7 @@ configure_nginx_projects() {
                     log_message YELLOW "ℹ️ 请确保文件 '$CUSTOM_NGINX_SNIPPET_FILE' 包含有效的 Nginx 配置片段。"
                     log_message GREEN "✅ 将使用自定义 Nginx 配置片段文件: $CUSTOM_NGINX_SNIPPET_FILE"
                     break
+                层
                 fi
             done
         fi
@@ -904,6 +880,7 @@ configure_nginx_projects() {
                     mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
                 fi
                 continue
+            层
             fi
         fi
 
@@ -912,6 +889,7 @@ configure_nginx_projects() {
             local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
 
             # 添加 --force 参数
+            # Issue command uses eval, so escaped quotes are handled.
             local ACME_ISSUE_COMMAND="$ACME_BIN --issue --force -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
             if [ "$USE_WILDCARD" = "y" ]; then
                 ACME_ISSUE_COMMAND+=" -d \"*.$MAIN_DOMAIN\""
@@ -948,9 +926,10 @@ configure_nginx_projects() {
             
             log_message GREEN "✅ 证书已成功签发，正在安装并更新 Nginx 配置..."
 
-            local INSTALL_CERT_DOMAINS="-d \"$MAIN_DOMAIN\""
+            # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS
+            local INSTALL_CERT_DOMAINS="-d $MAIN_DOMAIN"
             if [ "$USE_WILDCARD" = "y" ]; then
-                INSTALL_CERT_DOMAINS+=" -d \"*.$MAIN_DOMAIN\""
+                INSTALL_CERT_DOMAINS+=" -d *.$MAIN_DOMAIN" # Wildcard should be literal `*.domain`
             fi
 
             # acme.sh 会自动执行 --reloadcmd
@@ -1371,6 +1350,7 @@ manage_configs() {
                 log_message GREEN "🚀 正在为 $DOMAIN_TO_RENEW 续期证书 (验证方式: ${RENEW_ACME_VALIDATION_METHOD})..."
                 local RENEW_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
 
+                # Renew command uses eval, so escaped quotes are handled.
                 local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN_TO_RENEW\" --ecc --server \"$RENEW_CA_SERVER_URL\"" # 自动续期不强制 --force
                 if [ "$RENEW_USE_WILDCARD" = "y" ]; then
                     RENEW_COMMAND+=" -d \"*.$DOMAIN_TO_RENEW\""
@@ -1433,85 +1413,86 @@ manage_configs() {
                     2) CONFIRM_TEXT="删除 Nginx 配置和证书";;
                     3) CONFIRM_TEXT="全部删除";;
                     *) log_message RED "❌ 无效选项。"; sleep 1; continue;;
+                esme
                 esac
 
                 read -rp "⚠️ 确认对 ${DOMAIN_TO_DELETE} 执行 '${CONFIRM_TEXT}' 操作？此操作可能不可恢复！[y/N]: " CONFIRM_DELETE
                 CONFIRM_DELETE=${CONFIRM_DELETE:-n}
-                if [[ ! "$CONFIRM_DELETE" =~ ^[Yy]$ ]]; then
-                    log_message YELLOW "已取消删除操作。"
-                    sleep 1
-                    continue
-                fi
+                if [[ "$CONFIRM_DELETE" =~ ^[Yy]$ ]]; then
+                    log_message YELLOW "正在执行删除操作 for ${DOMAIN_TO_DELETE}..."
 
-                local delete_config=false
-                local delete_certs=false
-                local delete_metadata=false
+                    local delete_config=false
+                    local delete_certs=false
+                    local delete_metadata=false
 
-                case "$DELETE_LEVEL_CHOICE" in
-                    1) delete_config=true ;;
-                    2) delete_config=true; delete_certs=true ;;
-                    3) delete_config=true; delete_certs=true; delete_metadata=true ;;
-                esac
-                
-                log_message YELLOW "正在执行删除操作 for ${DOMAIN_TO_DELETE}..."
-
-                # 获取相关文件路径
-                local CUSTOM_SNIPPET_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r '.custom_snippet')
-                local default_cert_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.cer"
-                local default_key_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.key"
-                local CERT_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_cert "$default_cert_file_delete" '.cert_file // $default_cert')
-                local KEY_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_key "$default_key_file_delete" '.key_file // $default_key')
-                if [[ -z "$CERT_FILE_TO_DELETE" || "$CERT_FILE_TO_DELETE" == "null" ]]; then CERT_FILE_TO_DELETE="$default_cert_file_delete"; fi
-                if [[ -z "$KEY_FILE_TO_DELETE" || "$KEY_FILE_TO_DELETE" == "null" ]]; then KEY_FILE_TO_DELETE="$default_key_file_delete"; fi
-
-                if [ "$delete_config" = true ]; then
-                    rm -f "$NGINX_SITES_AVAILABLE_DIR/$DOMAIN_TO_DELETE.conf"
-                    rm -f "$NGINX_SITES_ENABLED_DIR/$DOMAIN_TO_DELETE.conf"
-                    log_message GREEN "✅ 已删除 Nginx 配置文件。"
-                fi
-
-                if [ "$delete_certs" = true ]; then
-                    "$ACME_BIN" --remove -d "$DOMAIN_TO_DELETE" --ecc 2>/dev/null || true
-                    log_message GREEN "✅ 已从 acme.sh 移除证书记录。"
+                    case "$DELETE_LEVEL_CHOICE" in
+                        1) delete_config=true ;;
+                        2) delete_config=true; delete_certs=true ;;
+                        3) delete_config=true; delete_certs=true; delete_metadata=true ;;
+                    esac
                     
-                    if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; fi
-                    if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; fi
-                    log_message GREEN "✅ 已删除证书和私钥文件。"
+                    # 获取相关文件路径
+                    local CUSTOM_SNIPPET_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r '.custom_snippet')
+                    local default_cert_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.cer"
+                    local default_key_file_delete="$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE.key"
+                    local CERT_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_cert "$default_cert_file_delete" '.cert_file // $default_cert')
+                    local KEY_FILE_TO_DELETE=$(echo "$PROJECT_TO_DELETE_JSON" | jq -r --arg default_key "$default_key_file_delete" '.key_file // $default_key')
+                    if [[ -z "$CERT_FILE_TO_DELETE" || "$CERT_FILE_TO_DELETE" == "null" ]]; then CERT_FILE_TO_DELETE="$default_cert_file_delete"; fi
+                    if [[ -z "$KEY_FILE_TO_DELETE" || "$KEY_FILE_TO_DELETE" == "null" ]]; then KEY_FILE_TO_DELETE="$default_key_file_delete"; fi
 
-                    if [ -d "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE" ] && [ -z "$(ls -A "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE" 2>/dev/null)" ]; then
-                        rmdir "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE"
-                        log_message GREEN "✅ 已删除空的默认证书目录。"
+                    if [ "$delete_config" = true ]; then
+                        rm -f "$NGINX_SITES_AVAILABLE_DIR/$DOMAIN_TO_DELETE.conf"
+                        rm -f "$NGINX_SITES_ENABLED_DIR/$DOMAIN_TO_DELETE.conf"
+                        log_message GREEN "✅ 已删除 Nginx 配置文件。"
                     fi
 
-                    if [[ -n "$CUSTOM_SNIPPET_FILE_TO_DELETE" && "$CUSTOM_SNIPPET_FILE_TO_DELETE" != "null" && -f "$CUSTOM_SNIPPET_FILE_TO_DELETE" ]]; then
-                        read -rp "检测到自定义 Nginx 配置片段文件 '$CUSTOM_SNIPPET_FILE_TO_DELETE'，是否一并删除？[y/N]: " DELETE_SNIPPET_CONFIRM
-                        DELETE_SNIPPET_CONFIRM=${DELETE_SNIPPET_CONFIRM:-y}
-                        if [[ "$DELETE_SNIPPET_CONFIRM" =~ ^[Yy]$ ]]; then
-                            rm -f "$CUSTOM_SNIPPET_FILE_TO_DELETE"
-                            log_message GREEN "✅ 已删除自定义 Nginx 片段文件。"
-                        else
-                            log_message YELLOW "ℹ️ 已保留自定义 Nginx 片段文件。"
+                    if [ "$delete_certs" = true ]; then
+                        # acme.sh --remove 不会删除实际文件，只会删除它的内部记录
+                        "$ACME_BIN" --remove -d "$DOMAIN_TO_DELETE" --ecc 2>/dev/null || true
+                        log_message GREEN "✅ 已从 acme.sh 移除证书记录。"
+                        
+                        # 删除实际的证书文件
+                        if [ -f "$CERT_FILE_TO_DELETE" ]; then rm -f "$CERT_FILE_TO_DELETE"; log_message GREEN "✅ 已删除证书文件: $CERT_FILE_TO_DELETE"; fi
+                        if [ -f "$KEY_FILE_TO_DELETE" ]; then rm -f "$KEY_FILE_TO_DELETE"; log_message GREEN "✅ 已删除私钥文件: $KEY_FILE_TO_DELETE"; fi
+                        
+                        # 尝试删除 acme.sh 默认的证书目录，如果为空
+                        if [ -d "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE" ] && [ -z "$(ls -A "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE" 2>/dev/null)" ]; then
+                            rmdir "$SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE"
+                            log_message GREEN "✅ 已删除空的默认证书目录 $SSL_CERTS_BASE_DIR/$DOMAIN_TO_DELETE。"
+                        fi
+
+                        if [[ -n "$CUSTOM_SNIPPET_FILE_TO_DELETE" && "$CUSTOM_SNIPPET_FILE_TO_DELETE" != "null" && -f "$CUSTOM_SNIPPET_FILE_TO_DELETE" ]]; then
+                            read -rp "检测到自定义 Nginx 配置片段文件 '$CUSTOM_SNIPPET_FILE_TO_DELETE'，是否一并删除？[y/N]: " DELETE_SNIPPET_CONFIRM
+                            DELETE_SNIPPET_CONFIRM=${DELETE_SNIPPET_CONFIRM:-y}
+                            if [[ "$DELETE_SNIPPET_CONFIRM" =~ ^[Yy]$ ]]; then
+                                rm -f "$CUSTOM_SNIPPET_FILE_TO_DELETE"
+                                log_message GREEN "✅ 已删除自定义 Nginx 片段文件。"
+                            else
+                                log_message YELLOW "ℹ️ 已保留自定义 Nginx 片段文件。"
+                            fi
                         fi
                     fi
-                fi
 
-                if [ "$delete_metadata" = true ]; then
-                    if ! jq "del(.[] | select(.domain == \$domain_to_delete))" \
-                        --arg domain_to_delete "$DOMAIN_TO_DELETE" \
-                        "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
-                        log_message ERROR "❌ 从元数据中移除项目失败！"
-                    else
-                        mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
-                        log_message GREEN "✅ 已从元数据中移除项目。"
+                    if [ "$delete_metadata" = true ]; then
+                        if ! jq "del(.[] | select(.domain == \$domain_to_delete))" \
+                            --arg domain_to_delete "$DOMAIN_TO_DELETE" \
+                            "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp"; then
+                            log_message ERROR "❌ 从元数据中移除项目失败！"
+                        else
+                            mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                            log_message GREEN "✅ 已从元数据中移除项目。"
+                        fi
                     fi
-                fi
-                
-                log_message GREEN "✅ 删除操作完成。"
-                
-                if [ "$delete_config" = true ]; then
-                    if ! control_nginx reload; then
-                        log_message WARN "Nginx 重载失败。如果已无任何站点，此为正常现象。请手动检查Nginx状态。"
+                    
+                    log_message GREEN "✅ 删除操作完成。"
+                    
+                    if [ "$delete_config" = true ]; then
+                        if ! control_nginx reload; then
+                            log_message WARN "Nginx 重载失败。如果已无任何站点，此为正常现象。请手动检查Nginx状态。"
+                        fi
                     fi
+                else
+                    log_message YELLOW "已取消删除操作。"
                 fi
                 sleep 2
                 ;;
@@ -1790,6 +1771,7 @@ manage_configs() {
 
                         log_message YELLOW "正在为 $DOMAIN_TO_EDIT 申请证书 (CA: $NEW_CA_SERVER_NAME, 验证方式: $NEW_ACME_VALIDATION_METHOD)..."
                         local ACME_REISSUE_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
+                        # Reissue command uses eval, so escaped quotes are handled.
                         local ACME_REISSUE_COMMAND="$ACME_BIN --issue --force -d \"$DOMAIN_TO_EDIT\" --ecc --server \"$NEW_CA_SERVER_URL\""
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
                             ACME_REISSUE_COMMAND+=" -d \"*.$DOMAIN_TO_EDIT\""
@@ -1830,9 +1812,10 @@ manage_configs() {
                         fi
                         sleep 1
                         
-                        local INSTALL_CERT_DOMAINS="-d \"$DOMAIN_TO_EDIT\""
+                        # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS
+                        local INSTALL_CERT_DOMAINS="-d $DOMAIN_TO_EDIT"
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
-                            INSTALL_CERT_DOMAINS+=" -d \"*.$DOMAIN_TO_EDIT\""
+                            INSTALL_CERT_DOMAINS+=" -d *.$DOMAIN_TO_EDIT" # Wildcard should be literal `*.domain`
                         fi
                         # acme.sh 会自动执行 --reloadcmd
                         "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
@@ -2020,6 +2003,7 @@ check_and_auto_renew_certs() {
             log_message YELLOW "⚠️ 域名 $DOMAIN 证书即将到期 (${LEFT_DAYS}天剩余)，尝试自动续期 (验证方式: $ACME_VALIDATION_METHOD)..."
             local RENEW_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
 
+            # Renew command uses eval, so escaped quotes are handled.
             local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN\" --ecc --server \"$CA_SERVER_URL\"" # 自动续期不强制 --force
             if [ "$USE_WILDCARD" = "y" ]; then
                 RENEW_COMMAND+=" -d \"*.$DOMAIN\""
