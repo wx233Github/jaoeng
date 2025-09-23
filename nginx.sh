@@ -496,6 +496,7 @@ check_dns_env() {
         CONFIRM_ENV=${CONFIRM_ENV:-n}
         if [[ ! "$CONFIRM_ENV" =~ ^[Yy]$ ]]; then
             return 1 # 用户选择不继续
+        层
         fi
     else
         log_message INFO "✅ 必要的 DNS API 环境变量已设置。"
@@ -549,6 +550,7 @@ configure_nginx_projects() {
             echo "[]" > "$PROJECTS_METADATA_FILE"
             log_message INFO "✅ 项目元数据文件 $PROJECTS_METADATA_FILE 已重新创建。"
         fi
+    层
     fi
     sleep 1
 
@@ -763,6 +765,7 @@ configure_nginx_projects() {
                             break
                         else
                             log_message RED "❌ 输入的端口无效。请重新输入一个有效的端口号 (1-65535)。"
+                        层
                         fi
                     done
                 fi
@@ -804,10 +807,9 @@ configure_nginx_projects() {
                     log_message RED "❌ 无法创建目录 $(dirname "$CHOSEN_SNIPPET_PATH")。请检查权限或路径是否有效。"
                 else
                     CUSTOM_NGINX_SNIPPET_FILE="$CHOSEN_SNIPPET_PATH"
-                    log_message YELLOW "ℹ️ 请确保文件 '$CUSTOM_NGINX_SNIPPET_FILE' 包含有效的 Nginx 配置片段。"
                     log_message GREEN "✅ 将使用自定义 Nginx 配置片段文件: $CUSTOM_NGINX_SNIPPET_FILE"
+                    log_message YELLOW "ℹ️ 请确保文件 '$CUSTOM_NGINX_SNIPPET_FILE' 包含有效的 Nginx 配置片段。"
                     break
-                层
                 fi
             done
         fi
@@ -880,7 +882,6 @@ configure_nginx_projects() {
                     mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
                 fi
                 continue
-            层
             fi
         fi
 
@@ -888,7 +889,6 @@ configure_nginx_projects() {
             log_message YELLOW "正在为 $MAIN_DOMAIN 申请证书 (CA: $ACME_CA_SERVER_NAME, 验证方式: $ACME_VALIDATION_METHOD)..."
             local ACME_ISSUE_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)
 
-            # 添加 --force 参数
             # Issue command uses eval, so escaped quotes are handled.
             local ACME_ISSUE_COMMAND="$ACME_BIN --issue --force -d \"$MAIN_DOMAIN\" --ecc --server \"$ACME_CA_SERVER_URL\" --debug 2"
             if [ "$USE_WILDCARD" = "y" ]; then
@@ -926,17 +926,34 @@ configure_nginx_projects() {
             
             log_message GREEN "✅ 证书已成功签发，正在安装并更新 Nginx 配置..."
 
-            # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS
-            local INSTALL_CERT_DOMAINS="-d $MAIN_DOMAIN"
+            # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS construction
+            local INSTALL_CERT_DOMAINS=""
+            INSTALL_CERT_DOMAINS+="-d $MAIN_DOMAIN"
             if [ "$USE_WILDCARD" = "y" ]; then
                 INSTALL_CERT_DOMAINS+=" -d *.$MAIN_DOMAIN" # Wildcard should be literal `*.domain`
             fi
 
             # acme.sh 会自动执行 --reloadcmd
-            "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
+            # FIX: Execute install-cert command directly without eval, passing arguments correctly
+            if ! "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
                 --key-file "$INSTALLED_KEY_FILE" \
                 --fullchain-file "$INSTALLED_CRT_FILE" \
-                --reloadcmd "systemctl reload nginx" || { log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; continue; }
+                --reloadcmd "systemctl reload nginx"; then
+                log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"
+                # If install failed, remove partially created files and metadata for this domain
+                rm -f "$DOMAIN_CONF"
+                rm -f "$NGINX_SITES_ENABLED_DIR/$MAIN_DOMAIN.conf"
+                if [ -f "$INSTALLED_CRT_FILE" ]; then rm -f "$INSTALLED_CRT_FILE"; fi
+                if [ -f "$INSTALLED_KEY_FILE" ]; then rm -f "$INSTALLED_KEY_FILE"; fi
+                if [ -d "$SSL_CERTS_BASE_DIR/$MAIN_DOMAIN" ]; then rm -rf "$SSL_CERTS_BASE_DIR/$MAIN_DOMAIN"; fi
+                if [[ -n "$CUSTOM_NGINX_SNIPPET_FILE" && "$CUSTOM_NGINX_SNIPPET_FILE" != "null" && -f "$CUSTOM_NGINX_SNIPPET_FILE" ]]; then rm -f "$CUSTOM_NGINX_SNIPPET_FILE"; fi
+                if jq -e ".[] | select(.domain == \"$MAIN_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
+                    log_message YELLOW "⚠️ 从元数据中移除失败的项目 $MAIN_DOMAIN。"
+                    jq "del(.[] | select(.domain == \"$MAIN_DOMAIN\"))" "$PROJECTS_METADATA_FILE" > "${PROJECTS_METADATA_FILE}.tmp" && \
+                    mv "${PROJECTS_METADATA_FILE}.tmp" "$PROJECTS_METADATA_FILE"
+                fi
+                continue
+            fi
         else
             log_message YELLOW "ℹ️ 未进行证书申请或续期，将使用现有证书。"
         fi
@@ -955,7 +972,7 @@ configure_nginx_projects() {
         return 1
     fi
 
-    log_message GREEN "🚀 所有域名配置完成！现在可以通过 HTTPS 访问您的服务。"
+    log_message GREEN "🚀 所有域名配置完成！现在可以通过 HTTPS 访 问 您 的 服 务 。"
     sleep 2
     return 0
 }
@@ -1088,6 +1105,7 @@ import_existing_project() {
                             log_message RED "❌ 输入的端口无效。请重新输入一个有效的端口号 (1-65535)。${RESET}"
                         fi
                     done
+                层
                 fi
             fi
         elif [[ "$USER_TARGET_INPUT" =~ ^[0-9]+$ ]]; then
@@ -1413,8 +1431,7 @@ manage_configs() {
                     2) CONFIRM_TEXT="删除 Nginx 配置和证书";;
                     3) CONFIRM_TEXT="全部删除";;
                     *) log_message RED "❌ 无效选项。"; sleep 1; continue;;
-                esme
-                esac
+                esac # FIX: Changed 'esme' to 'esac'
 
                 read -rp "⚠️ 确认对 ${DOMAIN_TO_DELETE} 执行 '${CONFIRM_TEXT}' 操作？此操作可能不可恢复！[y/N]: " CONFIRM_DELETE
                 CONFIRM_DELETE=${CONFIRM_DELETE:-n}
@@ -1812,23 +1829,27 @@ manage_configs() {
                         fi
                         sleep 1
                         
-                        # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS
-                        local INSTALL_CERT_DOMAINS="-d $DOMAIN_TO_EDIT"
+                        # FIX: Remove extra quotes from INSTALL_CERT_DOMAINS construction
+                        local INSTALL_CERT_DOMAINS=""
+                        INSTALL_CERT_DOMAINS+="-d $DOMAIN_TO_EDIT"
                         if [ "$NEW_USE_WILDCARD" = "y" ]; then
                             INSTALL_CERT_DOMAINS+=" -d *.$DOMAIN_TO_EDIT" # Wildcard should be literal `*.domain`
                         fi
                         # acme.sh 会自动执行 --reloadcmd
-                        "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
+                        # FIX: Execute install-cert command directly without eval, passing arguments correctly
+                        if ! "$ACME_BIN" --install-cert $INSTALL_CERT_DOMAINS --ecc \
                             --key-file "$NEW_KEY_FILE" \
                             --fullchain-file "$NEW_CERT_FILE" \
-                            --reloadcmd "systemctl reload nginx" || { log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; sleep 2; return 1; }
+                            --reloadcmd "systemctl reload nginx"; then
+                            log_message ERROR "❌ acme.sh 证书安装或Nginx重载失败。"; sleep 2; return 1;
+                        fi
 
                         log_message YELLOW "生成 $DOMAIN_TO_EDIT 的最终 Nginx 配置..."
                         _NGINX_FINAL_TEMPLATE "$DOMAIN_TO_EDIT" "$FINAL_PROXY_TARGET_URL" "$NEW_CERT_FILE" "$NEW_KEY_FILE" "$EDIT_CUSTOM_SNIPPET_ORIGINAL" > "$NGINX_SITES_AVAILABLE_DIR/$DOMAIN_TO_EDIT.conf"
                         log_message GREEN "✅ 域名 $DOMAIN_TO_EDIT 的 Nginx 配置已更新。"
                         sleep 1
                         if ! control_nginx reload; then
-                            log_message ERROR "❌ 最终 Nginx 配置重载失败，请手动检查 Nginx 服务状态！"
+                            log_message ERROR "❌ 最 终  Nginx 配 置 重 载 失 败 ， 请 手 动 检 查  Nginx 服 务 状 态 ！"
                             sleep 2
                             return 1
                         fi
@@ -2062,7 +2083,7 @@ manage_acme_accounts() {
     while true; do
         log_message INFO "=============================================="
         log_message INFO "👤 acme.sh 账户管理"
-        log_message INFO "=============================================="
+        log_message INFO "================================================="
         echo "1. 查看已注册账户"
         echo "2. 注册新账户"
         echo "3. 设置默认账户"
