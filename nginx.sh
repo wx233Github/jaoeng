@@ -368,8 +368,7 @@ $(generate_nginx_listen_directives 80 "")
         return 200 'ACME Challenge Ready';    
     }    
 }    
-EOF_HTTP  
-}    
+
     
 # -----------------------------    
 # Nginx 配置模板 (最终 HTTPS 代理)    
