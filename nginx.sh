@@ -83,11 +83,11 @@ log_message() {
         *) color_code="${RESET}";; # Fallback for unknown levels  
     esac  
   
-    # 输出到终端（带颜色），仅当在交互模式下，并去除时间戳  
-    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+    # 输出到终端（带颜色），仅当在交互模式下，且不为DEBUG级别时才显示
+    if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "$level" != "DEBUG" ]; then
         echo -e "${color_code}[${level}] ${message}${RESET}"  
     fi
-    # 写入日志文件（纯文本，保留时间戳）  
+    # 写入日志文件（纯文本，保留时间戳和所有级别）  
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"  
 }  
   
@@ -188,7 +188,7 @@ install_dependencies() {
         ["nano"]="nano"       # Add nano for file editing
     )  
   
-    echo -n "正在检查依赖：" # 开始输出进度点
+    echo -n "正在检查依赖：" # 开始输出进度点，不使用 log_message
     for cmd in "${!DEPS_MAP[@]}"; do  
         local pkg="${DEPS_MAP[$cmd]}"  
         if command -v "$cmd" &>/dev/null; then  
@@ -197,20 +197,20 @@ install_dependencies() {
               
             if [ "$INSTALLED_VER" != "not-found" ] && [ "$INSTALLED_VER" = "$AVAILABLE_VER" ]; then  
                 echo -n "${GREEN}.${RESET}" # 已安装且最新，显示一个绿点
-                log_message DEBUG "命令 '$cmd' (由包 '$pkg') 已安装且为最新版 ($INSTALLED_VER)，跳过。"
+                log_message DEBUG "命令 '$cmd' (由包 '$pkg') 已安装且为最新版 ($INSTALLED_VER)，跳过。" # 仅记录日志
             else  
                 echo -n "${YELLOW}u${RESET}" # 需要更新，显示一个黄色的'u'
-                log_message WARN "命令 '$cmd' (由包 '$pkg') 正在安装或更新至最新版 ($INSTALLED_VER -> $AVAILABLE_VER)..."
+                log_message WARN "命令 '$cmd' (由包 '$pkg') 正在安装或更新至最新版 ($INSTALLED_VER -> $AVAILABLE_VER)..." # 记录日志并终端输出(WARN级别)
                 # 将安装过程的输出重定向到日志文件
                 apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "❌ 安装/更新包 '$pkg' 失败。"; exit 1; }  
-                log_message INFO "✅ 命令 '$cmd' 已安装/更新。"
+                log_message INFO "✅ 命令 '$cmd' 已安装/更新。" # 记录日志并终端输出(INFO级别)
             fi  
         else  
             echo -n "${BLUE}i${RESET}" # 缺少并安装，显示一个蓝色的'i'
-            log_message WARN "缺少命令 '$cmd' (由包 '$pkg' 提供)，正在安装..."
+            log_message WARN "缺少命令 '$cmd' (由包 '$pkg' 提供)，正在安装..." # 记录日志并终端输出(WARN级别)
             # 将安装过程的输出重定向到日志文件
             apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "❌ 安装包 '$pkg' 失败。"; exit 1; }  
-            log_message INFO "✅ 命令 '$cmd' 已安装。"
+            log_message INFO "✅ 命令 '$cmd' 已安装。" # 记录日志并终端输出(INFO级别)
         fi  
     done  
     echo -e "\n${GREEN}✅ 所有依赖检查完毕。${RESET}" # 完成依赖检查后新起一行
@@ -978,9 +978,7 @@ configure_nginx_projects() {
 # 导入现有 Nginx 配置到本脚本管理  
 import_existing_project() {  
     check_root  
-    log_message INFO "=============================================="  
-    log_message INFO "📥 导入现有 Nginx 配置到本脚本管理"  
-    log_message INFO "=============================================="  
+    log_message INFO "--- 📥 导入现有 Nginx 配置到本脚本管理 ---"  
   
     read -rp "请输入要导入的主域名 (例如 example.com): " IMPORT_DOMAIN  
     [[ -z "$IMPORT_DOMAIN" ]] && { log_message RED "❌ 域名不能为空！"; return 1; }  
@@ -1198,7 +1196,7 @@ import_existing_project() {
     log_message YELLOW "ℹ️ 注意：导入的项目，其证书签发机构和验证方式被标记为 'imported'/'unknown'。"  
     log_message YELLOW "   如果您希望由本脚本的 acme.sh 自动续期，请手动选择 '编辑项目核心配置'，并设置正确的验证方式，然后重新申请证书。"  
   
-    log_message INFO "=============================================="  
+    log_message INFO "--- 导入完成 ---"  
     sleep 2  
     return 0  
 }  
@@ -1207,13 +1205,11 @@ import_existing_project() {
 # 查看和管理已配置项目的函数  
 manage_configs() {  
     check_root  
-    log_message INFO "=============================================="  
-    log_message INFO "📜 已配置项目列表及证书状态"  
-    log_message INFO "=============================================="  
+    log_message INFO "--- 📜 已配置项目列表及证书状态 ---"  
   
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || [ "$(jq 'length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)" -eq 0 ]; then  
         log_message YELLOW "未找到任何已配置的项目。"  
-        log_message INFO "=============================================="  
+        log_message INFO "---"  
         read -rp "没有找到已配置项目。是否立即导入一个现有 Nginx 配置？[y/N]: " IMPORT_NOW  
         IMPORT_NOW=${IMPORT_NOW:-n}  
         if [[ "$IMPORT_NOW" =~ ^[Yy]$ ]]; then  
@@ -1323,7 +1319,7 @@ manage_configs() {
             "$INDEX" "$DOMAIN" "$PROJECT_TYPE_DISPLAY" "$PROJECT_DETAIL_DISPLAY" "$CUSTOM_SNIPPET_FILE_DISPLAY" "$ACME_METHOD_DISPLAY" "$WILDCARD_DISPLAY" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE"  
     done  
   
-    log_message INFO "=============================================="  
+    log_message INFO "--- 列表结束 ---"  
   
     while true; do  
         log_message BLUE "\n请选择管理操作："  
@@ -1333,7 +1329,7 @@ manage_configs() {
         echo "4. 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)"  
         echo "5. 导入现有 Nginx 配置到本脚本管理"  
         echo "0. 返回主菜单"  
-        log_message INFO "=============================================="  
+        log_message INFO "---"  
         read -rp "请输入选项 [回车返回]: " MANAGE_CHOICE  
         MANAGE_CHOICE=${MANAGE_CHOICE:-0} # Fix: Use MANAGE_CHOICE if it's the intended variable for loop control  
         case "$MANAGE_CHOICE" in  
@@ -2027,18 +2023,224 @@ manage_configs() {
     done  
 }  
   
+# --- 检查并自动续期所有证书的函数  
+check_and_auto_renew_certs() {  
+    check_root  
+    log_message INFO "--- 🔄 检查并自动续期所有证书 ---"  
+  
+    if [ ! -f "$PROJECTS_METADATA_FILE" ] || [ "$(jq 'length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)" -eq 0 ]; then  
+        log_message YELLOW "未找到任何已配置的项目，无需续期。"  
+        return 0  
+    fi  
+  
+    local temp_renew_count_file=$(mktemp acme_cmd_log.XXXXXX)  
+    local temp_fail_count_file=$(mktemp acme_cmd_log.XXXXXX)  
+    echo "0" > "$temp_renew_count_file"  
+    echo "0" > "$temp_fail_count_file"  
+  
+    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r project_json; do  
+        local DOMAIN=$(echo "$project_json" | jq -r '.domain')  
+        local ACME_VALIDATION_METHOD=$(echo "$project_json" | jq -r '.acme_validation_method')  
+        local DNS_API_PROVIDER=$(echo "$project_json" | jq -r '.dns_api_provider')  
+        local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')  
+        local CA_SERVER_URL=$(echo "$project_json" | jq -r '.ca_server_url')  
+          
+        # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq  
+        local default_cert_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"  
+        local default_key_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.key"  
+        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_auto" '.cert_file // $default_cert')  
+        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_auto" '.key_file // $default_key')     
+  
+        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_auto"; fi  
+        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_auto"; fi  
+  
+        if [[ ! -f "$CERT_FILE" ]]; then  
+            log_message YELLOW "⚠️ 域名 $DOMAIN 证书文件 $CERT_FILE 不存在，跳过续期。"  
+            echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 计入失败  
+            continue  
+        fi  
+  
+        if [ "$ACME_VALIDATION_METHOD" = "imported" ]; then  
+            log_message YELLOW "ℹ️ 域名 $DOMAIN 证书是导入的，本脚本无法自动续期。请手动或通过 '编辑项目核心配置' 转换为 acme.sh 管理。"  
+            continue  
+        fi  
+  
+        local END_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)  
+        local END_TS=0  
+        if date --version >/dev/null 2>&1; then # GNU date  
+            END_TS=$(date -d "$END_DATE" +%s 2>/dev/null)  
+        else # BSD date (macOS)  
+            END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s" 2>/dev/null)  
+            if [[ -z "$END_TS" ]]; then  
+                END_TS=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%s" 2>/dev/null)  
+            fi  
+        fi  
+        END_TS=${END_TS:-0}  
+  
+        local NOW_TS=$(date +%s)  
+        local LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))  
+  
+        if (( LEFT_DAYS <= RENEW_THRESHOLD_DAYS )); then  
+            log_message YELLOW "⚠️ 域名 $DOMAIN 证书即将到期 (${LEFT_DAYS}天剩余)，尝试自动续期 (验证方式: $ACME_VALIDATION_METHOD)..."  
+            local RENEW_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)  
+  
+            # Renew command uses eval, so escaped quotes are handled.  
+            local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN\" --ecc --server \"$CA_SERVER_URL\"" # 自动续期不强制 --force  
+            if [ "$USE_WILDCARD" = "y" ]; then  
+                RENEW_COMMAND+=" -d \"*.$DOMAIN\""  
+            fi  
+  
+            if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then  
+                RENEW_COMMAND+=" -w $NGINX_WEBROOT_DIR"  
+            elif [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then  
+                RENEW_COMMAND+=" --dns $DNS_API_PROVIDER"  
+                log_message YELLOW "ℹ️ 续期 DNS 验证证书需要设置相应的 DNS API 环境变量。"  
+                if ! check_dns_env "$DNS_API_PROVIDER"; then  
+                    log_message ERROR "DNS 环境变量检查失败，跳过域名 $DOMAIN 的续期。"  
+                    rm -f "$RENEW_CMD_LOG_OUTPUT"  
+                    echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 更新失败计数  
+                    continue  
+                fi  
+            fi  
+  
+            if eval "$RENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then  
+                log_message GREEN "✅ 域名 $DOMAIN 证书续期成功。"  
+                echo $(( $(cat "$temp_renew_count_file") + 1 )) > "$temp_renew_count_file" # 更新成功计数  
+            else  
+                log_message ERROR "❌ 域名 $DOMAIN 证书续期失败！"  
+                cat "$RENEW_CMD_LOG_OUTPUT"  
+                analyze_acme_error "$(cat "$RENEW_CMD_LOG_OUTPUT")"  
+                echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 更新失败计数  
+            fi  
+            rm -f "$RENEW_CMD_LOG_OUTPUT"  
+            sleep 1  
+        else  
+            log_message INFO "✅ 域名 $DOMAIN 证书有效 (${LEFT_DAYS}天剩余)，无需续期。"  
+        fi  
+    done  
+  
+    local RENEWED_COUNT=$(cat "$temp_renew_count_file")  
+    local FAILED_COUNT=$(cat "$temp_fail_count_file")  
+    rm -f "$temp_renew_count_file" "$temp_fail_count_file"  
+  
+    log_message BLUE "\n--- 续期结果 ---"  
+    log_message GREEN "成功续期: $RENEWED_COUNT 个证书。"  
+    log_message RED "失败续期: $FAILED_COUNT 个证书。"  
+    log_message BLUE "--------------------------"  
+      
+    log_message YELLOW "ℹ️ 建议设置一个 Cron 任务来定期自动执行此功能。"  
+    log_message YELLOW "   例如，每周执行一次（请将 '/path/to/your/script.sh' 替换为脚本的${RED}绝对路径${RESET}${YELLOW}）："  
+    log_message MAGENTA "   0 3 * * 0 /path/to/your/script.sh 3 >/dev/null 2>&1"  
+    log_message YELLOW "   (这里的 '${MAGENTA}3${RESET}${YELLOW}' 是主菜单中 '检查并自动续期所有证书' 的${MAGENTA}选项号${RESET}${YELLOW})${RESET}"  
+    log_message INFO "--- 自动续期完成 ---"  
+    sleep 2  
+}  
+  
+# -----------------------------  
+# 管理 acme.sh 账户的函数  
+manage_acme_accounts() {  
+    check_root  
+    while true; do  
+        log_message INFO "--- 👤 acme.sh 账户管理 ---"  
+        echo "1. 查看已注册账户"  
+        echo "2. 注册新账户"  
+        echo "3. 设置默认账户"  
+        echo "0. 返回主菜单"  
+        log_message INFO "---"  
+        read -rp "请输入选项 [回车返回]: " ACCOUNT_CHOICE  
+        ACCOUNT_CHOICE=${ACCOUNT_CHOICE:-0}  
+        case "$ACCOUNT_CHOICE" in  
+            1)  
+                log_message BLUE "🔍 已注册 acme.sh 账户列表:"  
+                "$ACME_BIN" --list-account  
+                sleep 2  
+                ;;  
+            2)  
+                log_message BLUE "➡️ 注册新 acme.sh 账户:"  
+                read -rp "请输入新账户的邮箱地址: " NEW_ACCOUNT_EMAIL  
+                while [[ ! "$NEW_ACCOUNT_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; do  
+                    log_message RED "❌ 邮箱格式不正确。请重新输入。"  
+                    read -rp "请输入新账户的邮箱地址: " NEW_ACCOUNT_EMAIL  
+                    [[ -z "$NEW_ACCOUNT_EMAIL" ]] && break  
+                done  
+                if [[ -z "$NEW_ACCOUNT_EMAIL" ]]; then  
+                    log_message RED "❌ 未提供邮箱，注册账户操作已取消。"  
+                    sleep 1  
+                    continue  
+                fi  
+                  
+                local REGISTER_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"  
+                local REGISTER_CA_SERVER_NAME="letsencrypt"  
+                log_message INFO "\n请选择证书颁发机构 (CA):"  
+                echo "1) Let's Encrypt (默认)"  
+                echo "2) ZeroSSL"  
+                echo "3) 自定义 ACME 服务器 URL"  
+                read -rp "请输入序号: " REGISTER_CA_CHOICE  
+                REGISTER_CA_CHOICE=${REGISTER_CA_CHOICE:-1}  
+                case $REGISTER_CA_CHOICE in  
+                    1) REGISTER_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"; REGISTER_CA_SERVER_NAME="letsencrypt";;  
+                    2) REGISTER_CA_SERVER_URL="https://acme.zerossl.com/v2/DV90"; REGISTER_CA_SERVER_NAME="zerossl";;  
+                    3)  
+                        read -rp "请输入自定义 ACME 服务器 URL: " CUSTOM_ACME_URL  
+                        if [[ -n "$CUSTOM_ACME_URL" ]]; then  
+                            REGISTER_CA_SERVER_URL="$CUSTOM_ACME_URL"  
+                            REGISTER_CA_SERVER_NAME="Custom"  
+                            log_message INFO "⚠️ 正在使用自定义 ACME 服务器 URL。请确保其有效。"  
+                        else  
+                            log_message YELLOW "未输入自定义 URL，将使用默认 Let's Encrypt。"  
+                        fi  
+                        ;;  
+                    *) log_message YELLOW "⚠️ 无效选择，将使用默认 Let's Encrypt。";;  
+                esac  
+                log_message BLUE "➡️ 选定 CA: $REGISTER_CA_SERVER_NAME"  
+  
+                log_message GREEN "🚀 正在注册账户 $NEW_ACCOUNT_EMAIL (CA: $REGISTER_CA_SERVER_NAME)..."  
+                if "$ACME_BIN" --register-account -m "$NEW_ACCOUNT_EMAIL" --server "$REGISTER_CA_SERVER_URL"; then  
+                    log_message GREEN "✅ 账户注册成功。"  
+                else  
+                    log_message RED "❌ 账户注册失败！请检查邮箱地址或网络。"  
+                fi  
+                sleep 2  
+                ;;  
+            3)  
+                log_message BLUE "➡️ 设置默认 acme.sh 账户:"  
+                "$ACME_BIN" --list-account # 列出账户，让用户选择  
+                read -rp "请输入要设置为默认的账户邮箱地址: " DEFAULT_ACCOUNT_EMAIL  
+                if [[ -z "$DEFAULT_ACCOUNT_EMAIL" ]]; then  
+                    log_message RED "❌ 邮箱不能为空。"  
+                    sleep 1  
+                    continue  
+                fi  
+                log_message GREEN "🚀 正在设置 $DEFAULT_ACCOUNT_EMAIL 为默认账户..."  
+                if "$ACME_BIN" --set-default-account -m "$DEFAULT_ACCOUNT_EMAIL"; then  
+                    log_message GREEN "✅ 默认账户设置成功。"  
+                else  
+                    log_message RED "❌ 设置默认账户失败！请检查邮箱地址是否已注册。"  
+                fi  
+                sleep 2  
+                ;;  
+            0)  
+                break  
+                ;;  
+            *)  
+                log_message RED "❌ 无效选项，请输入 0-3"  
+                sleep 1  
+                ;;  
+        esac  
+    done  
+}  
+  
+  
 # --- 主菜单 ---  
 main_menu() {  
     while true; do  
-        log_message INFO "=============================================="  
-        log_message INFO "🔐 Nginx/HTTPS 证书管理主菜单"  
-        log_message INFO "=============================================="  
+        log_message INFO "--- 🔐 Nginx/HTTPS 证书管理主菜单 ---"  
         echo "1. 配置新的 Nginx 反向代理和 HTTPS 证书"  
         echo "2. 查看与管理已配置项目 (域名、端口、证书)"  
         echo "3. 检查并自动续期所有证书"  
         echo "4. 管理 acme.sh 账户"  
         echo "0. 退出"  
-        log_message INFO "=============================================="  
+        log_message INFO "---"  
         read -rp "请输入选项 [回车退出]: " MAIN_CHOICE  
         MAIN_CHOICE=${MAIN_CHOICE:-0}  
         case "$MAIN_CHOICE" in  
