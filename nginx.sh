@@ -83,11 +83,11 @@ log_message() {
         *) color_code="${RESET}";; # Fallback for unknown levels  
     esac  
   
-    # 输出到终端（带颜色），仅当在交互模式下  
+    # 输出到终端（带颜色），仅当在交互模式下，并去除时间戳  
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        echo -e "${color_code}[${timestamp}] [${level}] ${message}${RESET}"  
+        echo -e "${color_code}[${level}] ${message}${RESET}"  
     fi
-    # 写入日志文件（纯文本）  
+    # 写入日志文件（纯文本，保留时间戳）  
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"  
 }  
   
@@ -342,7 +342,7 @@ generate_nginx_listen_directives() {
 _NGINX_HTTP_CHALLENGE_TEMPLATE() {  
     local DOMAIN="$1"  
       
-    cat <<EOF  
+    cat <<'EOF_HTTP'
 server {  
 $(generate_nginx_listen_directives 80 "")  
     server_name $DOMAIN;  
@@ -355,7 +355,7 @@ $(generate_nginx_listen_directives 80 "")
         return 200 'ACME Challenge Ready';  
     }  
 }  
-EOF  
+EOF_HTTP
 }  
   
 # -----------------------------  
@@ -367,7 +367,7 @@ _NGINX_FINAL_TEMPLATE() {
     local INSTALLED_KEY_FILE="$4"  
     local CUSTOM_SNIPPET_PATH="$5" # 新增参数：自定义片段文件路径  
   
-    cat <<EOF  
+    cat <<EOF_FINAL
 server {  
 $(generate_nginx_listen_directives 80 "")  
     server_name $DOMAIN;  
@@ -390,30 +390,30 @@ $(generate_nginx_listen_directives 443 "ssl http2")
     ssl_prefer_server_ciphers off;  
   
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;  
-EOF  
+EOF_FINAL
     # 注入自定义 Nginx 配置片段  
     if [[ -n "$CUSTOM_SNIPPET_PATH" && "$CUSTOM_SNIPPET_PATH" != "null" && -f "$CUSTOM_SNIPPET_PATH" ]]; then  
-        cat <<INNER_EOF  
+        cat <<INNER_SNIPPET_EOF
     # BEGIN Custom Nginx Snippet for $DOMAIN  
     include $CUSTOM_SNIPPET_PATH;  
     # END Custom Nginx Snippet for $DOMAIN  
-INNER_EOF  
+INNER_SNIPPET_EOF
     fi  
   
-    cat <<EOF  
+    cat <<'EOF_FINAL_PART2'
     location / {  
         proxy_pass $PROXY_TARGET_URL;  
-        proxy_set_header Host \$host;  
-        proxy_set_header X-Real-IP \$remote_addr;  
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;  
-        proxy_set_header X-Forwarded-Proto \$scheme;  
+        proxy_set_header Host $host;  
+        proxy_set_header X-Real-IP $remote_addr;  
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  
+        proxy_set_header X-Forwarded-Proto $scheme;  
         proxy_redirect off;  
         proxy_http_version 1.1;  
-        proxy_set_header Upgrade \$http_upgrade;  
+        proxy_set_header Upgrade $http_upgrade;  
         proxy_set_header Connection "upgrade";  
     }  
 }  
-EOF  
+EOF_FINAL_PART2
 }  
   
 # -----------------------------  
@@ -1388,7 +1388,7 @@ manage_configs() {
                 ;;  
             2) # 删除  
                 read -rp "请输入要删除的域名: " DOMAIN_TO_DELETE  
-                if [[ -z "$DOMAIN_TO_DELETE" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; continue; conflg; fi  
+                if [[ -z "$DOMAIN_TO_DELETE" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; continue; fi  
                 local PROJECT_TO_DELETE_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_TO_DELETE\")" "$PROJECTS_METADATA_FILE")  
                 if [ -z "$PROJECT_TO_DELETE_JSON" ]; then log_message RED "❌ 域名 $DOMAIN_TO_DELETE 未找到在已配置列表中。"; sleep 1; continue; fi  
   
@@ -1589,7 +1589,7 @@ manage_configs() {
                                             break  
                                         fi  
                                     fi  
-                                    log_message RED "❌ 输入无效。请重新选择或输入有效的端口号 (1-65535)。"  
+                                    log_message RED "❌ 输入无效。请重新选择或输入有效的端口号 (1-65536)。"  
                                 done  
                             else  
                                 log_message YELLOW "   未检测到容器 $NEW_TARGET_INPUT 内部暴露的端口。"  
@@ -1700,13 +1700,13 @@ manage_configs() {
                             if [[ -z "$NEW_ZERO_SSL_ACCOUNT_EMAIL" ]]; then  
                                 log_message RED "❌ 未提供邮箱，无法注册 ZeroSSL 账户。操作已取消。"  
                                 sleep 2  
-                                return 1  
+                                continue # 返回编辑菜单
                             fi  
                             log_message BLUE "➡️ 正在注册 ZeroSSL 账户: $NEW_ZERO_SSL_ACCOUNT_EMAIL..."  
                             "$ACME_BIN" --register-account -m "$NEW_ZERO_SSL_ACCOUNT_EMAIL" --server "$NEW_CA_SERVER_URL" || {  
                                 log_message ERROR "❌ ZeroSSL 账户注册失败！请检查邮箱地址或稍后重试。"  
                                 sleep 2  
-                                return 1  
+                                continue # 返回编辑菜单
                             }  
                             log_message GREEN "✅ ZeroSSL 账户注册成功。"  
                          else  
@@ -1920,7 +1920,7 @@ manage_configs() {
                                     fi
                                 else
                                     log_message RED "❌ 片段文件 '$CURRENT_SNIPPET_PATH' 不存在，无法编辑。请先设置或创建它。"
-                                end
+                                fi
                             else
                                 log_message YELLOW "⚠️ 未设置自定义片段文件，请先选择 '1. 设置新的片段文件路径'。"
                             fi
@@ -1948,7 +1948,7 @@ manage_configs() {
                             break 2 # 跳出两层循环，返回到 manage_configs 主循环
                             ;;
                         *)
-                            log_message RED "❌ 无效选项，请输入有效的数字。"
+                            log_message RED "❌ 无效选项，请重新输入。"
                             sleep 1
                             ;;
                     esac
@@ -2013,219 +2013,6 @@ manage_configs() {
         esac  
     done  
 }  
-  
-# -----------------------------  
-# 检查并自动续期所有证书的函数  
-check_and_auto_renew_certs() {  
-    check_root  
-    log_message INFO "=============================================="  
-    log_message INFO "🔄 检查并自动续期所有证书"  
-    log_message INFO "=============================================="  
-  
-    if [ ! -f "$PROJECTS_METADATA_FILE" ] || [ "$(jq 'length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)" -eq 0 ]; then  
-        log_message YELLOW "未找到任何已配置的项目，无需续期。"  
-        return 0  
-    fi  
-  
-    local temp_renew_count_file=$(mktemp acme_cmd_log.XXXXXX)  
-    local temp_fail_count_file=$(mktemp acme_cmd_log.XXXXXX)  
-    echo "0" > "$temp_renew_count_file"  
-    echo "0" > "$temp_fail_count_file"  
-  
-    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r project_json; do  
-        local DOMAIN=$(echo "$project_json" | jq -r '.domain')  
-        local ACME_VALIDATION_METHOD=$(echo "$project_json" | jq -r '.acme_validation_method')  
-        local DNS_API_PROVIDER=$(echo "$project_json" | jq -r '.dns_api_provider')  
-        local USE_WILDCARD=$(echo "$project_json" | jq -r '.use_wildcard')  
-        local CA_SERVER_URL=$(echo "$project_json" | jq -r '.ca_server_url')  
-          
-        # 修复：使用 --arg 参数将 shell 变量安全地传递给 jq  
-        local default_cert_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.cer"  
-        local default_key_file_auto="$SSL_CERTS_BASE_DIR/$DOMAIN.key"  
-        local CERT_FILE=$(echo "$project_json" | jq -r --arg default_cert "$default_cert_file_auto" '.cert_file // $default_cert')  
-        local KEY_FILE=$(echo "$project_json" | jq -r --arg default_key "$default_key_file_auto" '.key_file // $default_key')     
-  
-        if [[ -z "$CERT_FILE" || "$CERT_FILE" == "null" ]]; then CERT_FILE="$default_cert_file_auto"; fi  
-        if [[ -z "$KEY_FILE" || "$KEY_FILE" == "null" ]]; then KEY_FILE="$default_key_file_auto"; fi  
-  
-        if [[ ! -f "$CERT_FILE" ]]; then  
-            log_message YELLOW "⚠️ 域名 $DOMAIN 证书文件 $CERT_FILE 不存在，跳过续期。"  
-            echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 计入失败  
-            continue  
-        fi  
-  
-        if [ "$ACME_VALIDATION_METHOD" = "imported" ]; then  
-            log_message YELLOW "ℹ️ 域名 $DOMAIN 证书是导入的，本脚本无法自动续期。请手动或通过 '编辑项目核心配置' 转换为 acme.sh 管理。"  
-            continue  
-        fi  
-  
-        local END_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)  
-        local END_TS=0  
-        if date --version >/dev/null 2>&1; then # GNU date  
-            END_TS=$(date -d "$END_DATE" +%s 2>/dev/null)  
-        else # BSD date (macOS)  
-            END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s" 2>/dev/null)  
-            if [[ -z "$END_TS" ]]; then  
-                END_TS=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%s" 2>/dev/null)  
-            fi  
-        fi  
-        END_TS=${END_TS:-0}  
-  
-        local NOW_TS=$(date +%s)  
-        local LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))  
-  
-        if (( LEFT_DAYS <= RENEW_THRESHOLD_DAYS )); then  
-            log_message YELLOW "⚠️ 域名 $DOMAIN 证书即将到期 (${LEFT_DAYS}天剩余)，尝试自动续期 (验证方式: $ACME_VALIDATION_METHOD)..."  
-            local RENEW_CMD_LOG_OUTPUT=$(mktemp acme_cmd_log.XXXXXX)  
-  
-            # Renew command uses eval, so escaped quotes are handled.  
-            local RENEW_COMMAND="$ACME_BIN --renew -d \"$DOMAIN\" --ecc --server \"$CA_SERVER_URL\"" # 自动续期不强制 --force  
-            if [ "$USE_WILDCARD" = "y" ]; then  
-                RENEW_COMMAND+=" -d \"*.$DOMAIN\""  
-            fi  
-  
-            if [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then  
-                RENEW_COMMAND+=" -w $NGINX_WEBROOT_DIR"  
-            elif [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then  
-                RENEW_COMMAND+=" --dns $DNS_API_PROVIDER"  
-                log_message YELLOW "ℹ️ 续期 DNS 验证证书需要设置相应的 DNS API 环境变量。"  
-                if ! check_dns_env "$DNS_API_PROVIDER"; then  
-                    log_message ERROR "DNS 环境变量检查失败，跳过域名 $DOMAIN 的续期。"  
-                    rm -f "$RENEW_CMD_LOG_OUTPUT"  
-                    echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 更新失败计数  
-                    continue  
-                fi  
-            fi  
-  
-            if eval "$RENEW_COMMAND" > "$RENEW_CMD_LOG_OUTPUT" 2>&1; then  
-                log_message GREEN "✅ 域名 $DOMAIN 证书续期成功。"  
-                echo $(( $(cat "$temp_renew_count_file") + 1 )) > "$temp_renew_count_file" # 更新成功计数  
-            else  
-                log_message ERROR "❌ 域名 $DOMAIN 证书续期失败！"  
-                cat "$RENEW_CMD_LOG_OUTPUT"  
-                analyze_acme_error "$(cat "$RENEW_CMD_LOG_OUTPUT")"  
-                echo $(( $(cat "$temp_fail_count_file") + 1 )) > "$temp_fail_count_file" # 更新失败计数  
-            fi  
-            rm -f "$RENEW_CMD_LOG_OUTPUT"  
-            sleep 1  
-        else  
-            log_message INFO "✅ 域名 $DOMAIN 证书有效 (${LEFT_DAYS}天剩余)，无需续期。"  
-        fi  
-    done  
-  
-    local RENEWED_COUNT=$(cat "$temp_renew_count_file")  
-    local FAILED_COUNT=$(cat "$temp_fail_count_file")  
-    rm -f "$temp_renew_count_file" "$temp_fail_count_file"  
-  
-    log_message BLUE "\n--- 续期结果 ---"  
-    log_message GREEN "成功续期: $RENEWED_COUNT 个证书。"  
-    log_message RED "失败续期: $FAILED_COUNT 个证书。"  
-    log_message BLUE "--------------------------"  
-      
-    log_message YELLOW "ℹ️ 建议设置一个 Cron 任务来定期自动执行此功能。"  
-    log_message YELLOW "   例如，每周执行一次（请将 '/path/to/your/script.sh' 替换为脚本的${RED}绝对路径${RESET}${YELLOW}）："  
-    log_message MAGENTA "   0 3 * * 0 /path/to/your/script.sh 3 >/dev/null 2>&1"  
-    log_message YELLOW "   (这里的 '${MAGENTA}3${RESET}${YELLOW}' 是主菜单中 '检查并自动续期所有证书' 的${MAGENTA}选项号${RESET}${YELLOW})${RESET}"  
-    log_message INFO "=============================================="  
-    sleep 2  
-}  
-  
-# -----------------------------  
-# 管理 acme.sh 账户的函数  
-manage_acme_accounts() {  
-    check_root  
-    while true; do  
-        log_message INFO "=============================================="  
-        log_message INFO "👤 acme.sh 账户管理"  
-        log_message INFO "=============================================="  
-        echo "1. 查看已注册账户"  
-        echo "2. 注册新账户"  
-        echo "3. 设置默认账户"  
-        echo "0. 返回主菜单"  
-        log_message INFO "=============================================="  
-        read -rp "请输入选项 [回车返回]: " ACCOUNT_CHOICE  
-        ACCOUNT_CHOICE=${ACCOUNT_CHOICE:-0}  
-        case "$ACCOUNT_CHOICE" in  
-            1)  
-                log_message BLUE "🔍 已注册 acme.sh 账户列表:"  
-                "$ACME_BIN" --list-account  
-                sleep 2  
-                ;;  
-            2)  
-                log_message BLUE "➡️ 注册新 acme.sh 账户:"  
-                read -rp "请输入新账户的邮箱地址: " NEW_ACCOUNT_EMAIL  
-                while [[ ! "$NEW_ACCOUNT_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; do  
-                    log_message RED "❌ 邮箱格式不正确。请重新输入。"  
-                    read -rp "请输入新账户的邮箱地址: " NEW_ACCOUNT_EMAIL  
-                    [[ -z "$NEW_ACCOUNT_EMAIL" ]] && break  
-                done  
-                if [[ -z "$NEW_ACCOUNT_EMAIL" ]]; then  
-                    log_message RED "❌ 未提供邮箱，注册账户操作已取消。"  
-                    sleep 1  
-                    continue  
-                fi  
-                  
-                local REGISTER_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"  
-                local REGISTER_CA_SERVER_NAME="letsencrypt"  
-                log_message INFO "\n请选择证书颁发机构 (CA):"  
-                echo "1) Let's Encrypt (默认)"  
-                echo "2) ZeroSSL"  
-                echo "3) 自定义 ACME 服务器 URL"  
-                read -rp "请输入序号: " REGISTER_CA_CHOICE  
-                REGISTER_CA_CHOICE=${REGISTER_CA_CHOICE:-1}  
-                case $REGISTER_CA_CHOICE in  
-                    1) REGISTER_CA_SERVER_URL="https://acme-v02.api.letsencrypt.org/directory"; REGISTER_CA_SERVER_NAME="letsencrypt";;  
-                    2) REGISTER_CA_SERVER_URL="https://acme.zerossl.com/v2/DV90"; REGISTER_CA_SERVER_NAME="zerossl";;  
-                    3)  
-                        read -rp "请输入自定义 ACME 服务器 URL: " CUSTOM_ACME_URL  
-                        if [[ -n "$CUSTOM_ACME_URL" ]]; then  
-                            REGISTER_CA_SERVER_URL="$CUSTOM_ACME_URL"  
-                            REGISTER_CA_SERVER_NAME="Custom"  
-                            log_message INFO "⚠️ 正在使用自定义 ACME 服务器 URL。请确保其有效。"  
-                        else  
-                            log_message YELLOW "未输入自定义 URL，将使用默认 Let's Encrypt。"  
-                        fi  
-                        ;;  
-                    *) log_message YELLOW "⚠️ 无效选择，将使用默认 Let's Encrypt。";;  
-                esac  
-                log_message BLUE "➡️ 选定 CA: $REGISTER_CA_SERVER_NAME"  
-  
-                log_message GREEN "🚀 正在注册账户 $NEW_ACCOUNT_EMAIL (CA: $REGISTER_CA_SERVER_NAME)..."  
-                if "$ACME_BIN" --register-account -m "$NEW_ACCOUNT_EMAIL" --server "$REGISTER_CA_SERVER_URL"; then  
-                    log_message GREEN "✅ 账户注册成功。"  
-                else  
-                    log_message RED "❌ 账户注册失败！请检查邮箱地址或网络。"  
-                fi  
-                sleep 2  
-                ;;  
-            3)  
-                log_message BLUE "➡️ 设置默认 acme.sh 账户:"  
-                "$ACME_BIN" --list-account # 列出账户，让用户选择  
-                read -rp "请输入要设置为默认的账户邮箱地址: " DEFAULT_ACCOUNT_EMAIL  
-                if [[ -z "$DEFAULT_ACCOUNT_EMAIL" ]]; then  
-                    log_message RED "❌ 邮箱不能为空。"  
-                    sleep 1  
-                    continue  
-                fi  
-                log_message GREEN "🚀 正在设置 $DEFAULT_ACCOUNT_EMAIL 为默认账户..."  
-                if "$ACME_BIN" --set-default-account -m "$DEFAULT_ACCOUNT_EMAIL"; then  
-                    log_message GREEN "✅ 默认账户设置成功。"  
-                else  
-                    log_message RED "❌ 设置默认账户失败！请检查邮箱地址是否已注册。"  
-                fi  
-                sleep 2  
-                ;;  
-            0)  
-                break  
-                ;;  
-            *)  
-                log_message RED "❌ 无效选项，请输入 0-3"  
-                sleep 1  
-                ;;  
-        esac  
-    done  
-}  
-  
   
 # --- 主菜单 ---  
 main_menu() {  
