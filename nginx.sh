@@ -355,20 +355,21 @@ generate_nginx_listen_directives() {
 _NGINX_HTTP_CHALLENGE_TEMPLATE() {    
     local DOMAIN="$1"    
         
-    cat <<'EOF_HTTP'  
+    cat <<'EOF_HTTP'
 server {    
 $(generate_nginx_listen_directives 80 "")    
     server_name $DOMAIN;    
     
     location /.well-known/acme-challenge/ {    
-        root $NGINX_WEBROOT_DIR;    
+        root /var/www/html; # acme.sh webroot 验证目录的绝对路径，这里使用硬编码，因为带单引号的here-document不展开变量。
     }    
     
     location / {    
         return 200 'ACME Challenge Ready';    
     }    
 }    
-
+EOF_HTTP
+}    
     
 # -----------------------------    
 # Nginx 配置模板 (最终 HTTPS 代理)    
@@ -379,7 +380,7 @@ _NGINX_FINAL_TEMPLATE() {
     local INSTALLED_KEY_FILE="$4"    
     local CUSTOM_SNIPPET_PATH="$5" # 新增参数：自定义片段文件路径    
     
-    cat <<EOF_FINAL  
+    cat <<EOF_FINAL
 server {    
 $(generate_nginx_listen_directives 80 "")    
     server_name $DOMAIN;    
@@ -402,17 +403,17 @@ $(generate_nginx_listen_directives 443 "ssl http2")
     ssl_prefer_server_ciphers off;    
     
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;    
-EOF_FINAL  
+EOF_FINAL
     # 注入自定义 Nginx 配置片段    
     if [[ -n "$CUSTOM_SNIPPET_PATH" && "$CUSTOM_SNIPPET_PATH" != "null" && -f "$CUSTOM_SNIPPET_PATH" ]]; then    
-        cat <<INNER_SNIPPET_EOF  
+        cat <<INNER_SNIPPET_EOF
     # BEGIN Custom Nginx Snippet for $DOMAIN    
     include $CUSTOM_SNIPPET_PATH;    
     # END Custom Nginx Snippet for $DOMAIN    
-INNER_SNIPPET_EOF  
+INNER_SNIPPET_EOF
     fi    
     
-    cat <<'EOF_FINAL_PART2'  
+    cat <<'EOF_FINAL_PART2'
     location / {    
         proxy_pass $PROXY_TARGET_URL;    
         proxy_set_header Host $host;    
@@ -425,7 +426,7 @@ INNER_SNIPPET_EOF
         proxy_set_header Connection "upgrade";    
     }    
 }    
-EOF_FINAL_PART2  
+EOF_FINAL_PART2
 }    
     
 # -----------------------------    
@@ -877,6 +878,7 @@ configure_nginx_projects() {
     
         if [ "$SHOULD_ISSUE_CERT" = "y" ] && [ "$ACME_VALIDATION_METHOD" = "http-01" ]; then    
             log_message YELLOW "生成 Nginx 临时 HTTP 配置以进行证书验证..."    
+            local DOMAIN_CONF="$NGINX_SITES_AVAILABLE_DIR/$MAIN_DOMAIN.conf"    
             _NGINX_HTTP_CHALLENGE_TEMPLATE "$MAIN_DOMAIN" > "$DOMAIN_CONF"    
                 
             if [ ! -L "$NGINX_SITES_ENABLED_DIR/$MAIN_DOMAIN.conf" ]; then    
@@ -1335,7 +1337,7 @@ manage_configs() {
         case "$MANAGE_CHOICE" in    
             1) # 手动续期    
                 read -rp "请输入要续期的域名: " DOMAIN_TO_RENEW    
-                if [[ -z "$DOMAIN_TO_RENEW" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; continue;渐入; fi    
+                if [[ -z "$DOMAIN_TO_RENEW" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; continue; fi    
                 local RENEW_PROJECT_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_TO_RENEW\")" "$PROJECTS_METADATA_FILE")    
                 if [ -z "$RENEW_PROJECT_JSON" ]; then log_message RED "❌ 域名 $DOMAIN_TO_RENEW 未找到在已配置列表中。"; sleep 1; continue; fi    
                     
