@@ -83,9 +83,14 @@ log_message() {
         *) color_code="${RESET}";; # Fallback for unknown levels    
     esac    
     
-    # 输出到终端（带颜色），仅当在交互模式下，且不为DEBUG级别时才显示  
-    if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "$level" != "DEBUG" ]; then  
-        echo -e "${color_code}[${level}] ${message}${RESET}"    
+    # 输出到终端（带颜色），仅当在交互模式下才显示，不显示级别前缀
+    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then  
+        # 对于DEBUG级别，通常不直接输出到终端，但这里为了调试可以保留
+        if [ "$level" = "DEBUG" ]; then
+            echo -e "${color_code}[${level}] ${message}${RESET}"
+        else
+            echo -e "${color_code}${message}${RESET}" # 只显示消息，不带级别前缀
+        fi
     fi  
     # 写入日志文件（纯文本，保留时间戳和所有级别）    
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"    
@@ -819,8 +824,8 @@ configure_nginx_projects() {
                     log_message RED "❌ 无法创建目录 $(dirname "$CHOSEN_SNIPPET_PATH")。请检查权限或路径是否有效。"    
                 else    
                     CUSTOM_NGINX_SNIPPET_FILE="$CHOSEN_SNIPPET_PATH"    
-                    log_message YELLOW "ℹ️ 请确保文件 '$CUSTOM_NGINX_SNIPPET_FILE' 包含有效的 Nginx 配置片段。"    
                     log_message GREEN "✅ 将使用自定义 Nginx 配置片段文件: $CUSTOM_NGINX_SNIPPET_FILE"    
+                    log_message YELLOW "ℹ️ 请确保文件 '$CUSTOM_NGINX_SNIPPET_FILE' 包含有效的 Nginx 配置片段。"    
                     break    
                 fi    
             done    
@@ -1095,10 +1100,10 @@ import_existing_project() {
                         if [[ "$USER_INTERNAL_PORT_IMPORT" =~ ^[0-9]+$ ]] && (( USER_INTERNAL_PORT_IMPORT > 0 && USER_INTERNAL_PORT_IMPORT < 65536 )); then    
                             FINAL_RESOLVED_PORT="$USER_INTERNAL_PORT_IMPORT"    
                             FINAL_PROXY_TARGET_URL="http://127.0.0.1:$FINAL_RESOLVED_PORT"    
-                            log_message GREEN "✅ 将代理到容器 $FINAL_PROJECT_NAME 的内部端口: $FINAL_RESOLVED_PORT。${RESET}"    
+                            log_message GREEN "✅ 将代理到容器 $FINAL_PROJECT_NAME 的内部端口: $FINAL_RESOLVED_PORT。"    
                             break    
                         else    
-                            log_message RED "❌ 输入的端口无效。请重新输入一个有效的端口号 (1-65535)。${RESET}"    
+                            log_message RED "❌ 输入的端口无效。请重新输入一个有效的端口号 (1-65535)。"    
                         fi    
                     done    
                 fi    
@@ -1226,7 +1231,7 @@ manage_configs() {
     local PROJECTS_ARRAY_RAW=$(jq -c . "$PROJECTS_METADATA_FILE")    
     local INDEX=0    
         
-    # 修复了 printf 命令，使用 'command printf' 确保正确执行，并修正了编码问题  
+    # 表头部分已修正
     command printf "${BLUE}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | %-5s | %3s天 | %s${RESET}\n" \
         "ID" "域名" "类型" "目标" "片段" "验证" "泛域" "状态" "剩余" "到期时间"
     log_message BLUE "----------------------------------------------------------------------------------------------------------------------------------------"    
@@ -1317,7 +1322,8 @@ manage_configs() {
             fi    
         fi    
     
-        printf "${MAGENTA}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \    
+        # 修正了这一行的行尾连接符和可能的隐藏字符问题
+        printf "${MAGENTA}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \
             "$INDEX" "$DOMAIN" "$PROJECT_TYPE_DISPLAY" "$PROJECT_DETAIL_DISPLAY" "$CUSTOM_SNIPPET_FILE_DISPLAY" "$ACME_METHOD_DISPLAY" "$WILDCARD_DISPLAY" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE"    
     done    
     
