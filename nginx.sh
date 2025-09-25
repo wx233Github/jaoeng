@@ -5,7 +5,7 @@
 # 功能概览：  
 # - **自动化配置**: 一键式自动配置 Nginx 反向代理和 HTTPS 证书。  
 # - **后端支持**: 支持代理到 Docker 容器或本地指定端口。  
-# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn, dnsutils）。  
+# - **依赖管理**: 自动检查并安装/更新必要的系统依赖（Nginx, Curl, Socat, OpenSSL, JQ, idn, dnsutils, nano）。  
 # - **acme.sh 集成**:  
 #   - 自动安装 acme.sh，并管理 Let's Encrypt 或 ZeroSSL 证书的申请、安装和自动续期。  
 #   - 支持选择 `http-01` 或 `dns-01` 验证方式。  
@@ -20,7 +20,7 @@
 #   - **核心改进**: 项目配置集中存储在 `/etc/nginx/projects.json` 中。  
 #   - 提供菜单，方便查看所有已配置项目的详情（域名、类型、目标、证书状态、到期时间等）。  
 #   - **新增**: 提供“编辑项目”功能，可修改后端目标、验证方式等。  
-#   - **新增**: 提供“管理自定义 Nginx 配置片段”功能。  
+#   - **新增**: 提供“管理自定义 Nginx 配置片段”功能 (支持修改路径、编辑内容、清除)。  
 #   - **新增**: 提供“导入现有 Nginx 配置到本脚本管理”功能。  
 # - **证书续期**:  
 #   - 支持手动续期指定域名的 HTTPS 证书。  
@@ -167,10 +167,14 @@ get_vps_ip() {
 # 自动安装依赖（跳过已是最新版的），适用于 Debian/Ubuntu  
 install_dependencies() {  
     log_message INFO "🔍 检查并安装依赖 (适用于 Debian/Ubuntu)..."  
-    if ! apt update -y; then  
-        log_message ERROR "❌ apt update 失败，请检查网络或源配置。脚本将退出。"  
-        exit 1  
-    fi  
+    
+    # 尝试更新包列表，将stdout和stderr重定向到日志文件，如果失败则输出错误到终端
+    log_message DEBUG "正在执行 apt update..."
+    if ! apt update -y >/dev/null 2>&1; then
+        log_message ERROR "❌ apt update 失败，请检查网络或源配置。脚本将退出。"
+        exit 1
+    fi
+    log_message INFO "📦 包列表已更新。"
   
     declare -A DEPS_MAP  
     DEPS_MAP=(  
@@ -184,6 +188,7 @@ install_dependencies() {
         ["nano"]="nano"       # Add nano for file editing
     )  
   
+    echo -n "正在检查依赖：" # 开始输出进度点
     for cmd in "${!DEPS_MAP[@]}"; do  
         local pkg="${DEPS_MAP[$cmd]}"  
         if command -v "$cmd" &>/dev/null; then  
@@ -191,16 +196,24 @@ install_dependencies() {
             AVAILABLE_VER=$(apt-cache policy "$pkg" | grep Candidate | awk '{print $2}' || echo "not-found")  
               
             if [ "$INSTALLED_VER" != "not-found" ] && [ "$INSTALLED_VER" = "$AVAILABLE_VER" ]; then  
-                log_message INFO "✅ 命令 '$cmd' (由包 '$pkg') 已安装且为最新版 ($INSTALLED_VER)，跳过"  
+                echo -n "${GREEN}.${RESET}" # 已安装且最新，显示一个绿点
+                log_message DEBUG "命令 '$cmd' (由包 '$pkg') 已安装且为最新版 ($INSTALLED_VER)，跳过。"
             else  
-                log_message WARN "⚠️ 命令 '$cmd' (由包 '$pkg') 正在安装或更新至最新版 ($INSTALLED_VER -> $AVAILABLE_VER)..."  
-                apt install -y "$pkg" || { log_message ERROR "❌ 安装/更新包 '$pkg' 失败。"; exit 1; }  
+                echo -n "${YELLOW}u${RESET}" # 需要更新，显示一个黄色的'u'
+                log_message WARN "命令 '$cmd' (由包 '$pkg') 正在安装或更新至最新版 ($INSTALLED_VER -> $AVAILABLE_VER)..."
+                # 将安装过程的输出重定向到日志文件
+                apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "❌ 安装/更新包 '$pkg' 失败。"; exit 1; }  
+                log_message INFO "✅ 命令 '$cmd' 已安装/更新。"
             fi  
         else  
-            log_message WARN "⚠️ 缺少命令 '$cmd' (由包 '$pkg' 提供)，正在安装..."  
-            apt install -y "$pkg" || { log_message ERROR "❌ 安装包 '$pkg' 失败。"; exit 1; }  
+            echo -n "${BLUE}i${RESET}" # 缺少并安装，显示一个蓝色的'i'
+            log_message WARN "缺少命令 '$cmd' (由包 '$pkg' 提供)，正在安装..."
+            # 将安装过程的输出重定向到日志文件
+            apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "❌ 安装包 '$pkg' 失败。"; exit 1; }  
+            log_message INFO "✅ 命令 '$cmd' 已安装。"
         fi  
     done  
+    echo -e "\n${GREEN}✅ 所有依赖检查完毕。${RESET}" # 完成依赖检查后新起一行
     sleep 1  
 }  
   
