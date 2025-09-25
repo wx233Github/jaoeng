@@ -1225,7 +1225,7 @@ manage_configs() {
     local PROJECTS_ARRAY_RAW=$(jq -c . "$PROJECTS_METADATA_FILE")  
     local INDEX=0  
       
-    # 修复：确保使用内置的 printf 命令，以防别名或函数覆盖  
+    # 修复了 printf 命令，使用 'command printf' 确保正确执行
     command printf "${BLUE}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | %-5s | %3s天 | %s${RESET}\n" \  
         "ID" "域名" "类型" "目标" "片段" "验证" "泛域" "状态" "剩余" "到期时间"  
     log_message BLUE "----------------------------------------------------------------------------------------------------------------------------------------"  
@@ -1316,7 +1316,7 @@ manage_configs() {
             fi  
         fi  
   
-        command printf "${MAGENTA}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \  
+        printf "${MAGENTA}%-4s | %-25s | %-8s | %-25s | %-10s | %-18s | %-4s | ${STATUS_COLOR}%-5s${RESET} | %3s天 | %s\n" \  
             "$INDEX" "$DOMAIN" "$PROJECT_TYPE_DISPLAY" "$PROJECT_DETAIL_DISPLAY" "$CUSTOM_SNIPPET_FILE_DISPLAY" "$ACME_METHOD_DISPLAY" "$WILDCARD_DISPLAY" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE"  
     done  
   
@@ -1934,8 +1934,8 @@ manage_configs() {
                                 fi
                             else
                                 log_message YELLOW "⚠️ 未设置自定义片段文件，请先选择 '1. 设置新的片段文件路径'。"
+                                sleep 2
                             fi
-                            sleep 1
                             ;;
                         3) # 清除自定义片段设置并删除文件
                             if [[ -n "$CURRENT_SNIPPET_PATH" && "$CURRENT_SNIPPET_PATH" != "null" ]]; then
