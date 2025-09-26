@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.19 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（终极jq表达式）
+# v2.17.20 体验优化：彻底修复状态报告标题美化；再次优化Watchtower容器参数解析
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.19" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.20" # 版本更新，反映标题美化和interval解析优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
