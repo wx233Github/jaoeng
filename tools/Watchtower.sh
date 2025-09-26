@@ -609,10 +609,11 @@ show_status() {
     # 居中标题
     local title_text="📊 当前自动化更新状态报告"
     local line_length=113 # 匹配分隔线长度
-    local text_len=$(echo -n "$title_text" | wc -c) # 计算标题的字符长度，-n避免末尾换行符
-    local padding_width=$((line_length - text_len))
+    # 使用 awk/wc -c 混合计算，确保中文字符串长度计算正确（Bash内置 wc -c 可能会错，但这里用于填充宽度，使用等号数量即可）
+    local text_len=13 # "📊 当前自动化更新状态报告" 约等于 13 个字符宽 (ASCII)
+    local padding_width=$((line_length - text_len - 2)) # 减去标题长度和两边的空格
     local padding_left=$(( padding_width / 2 ))
-    local padding_right=$(( line_length - text_len - padding_left ))
+    local padding_right=$(( line_length - text_len - 2 - padding_left ))
     local full_line=$(printf '=%.0s' $(seq 1 $line_length)) # 生成等号横线
 
     printf "\n"
@@ -652,29 +653,26 @@ show_status() {
 
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
+        local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
 
-        # 只有当 raw_logs_content_for_status 确实包含 "Session done" 时才尝试解析 Watchtower 的实际运行参数和计算倒计时
-        if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
-            local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
-            
-            # --- 解析 container_actual_interval ---
-            # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
-            local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
-            container_actual_interval="${interval_value:-N/A}"
-            
-            # 解析 --label-enable 后的值
-            local label_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--label-enable") | .[$i+1] // empty)' 2>/dev/null || true)
-            container_actual_labels="${label_value:-无}"
+        # 1. --- 核心修复: 无论是否有 Session done，都解析容器实际运行参数 ---
+        
+        # 解析 container_actual_interval
+        local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+        container_actual_interval="${interval_value:-N/A}"
+        
+        # 解析 --label-enable 后的值
+        local label_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--label-enable") | .[$i+1] // empty)' 2>/dev/null || true)
+        container_actual_labels="${label_value:-无}"
 
-            local raw_cmd_array_str=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "") # 将JSON数组转为字符串，以便循环
-            local temp_extra_args=""
-            local skip_next=0
-            # 使用更安全的循环方式，直接遍历数组
-            local current_jq_index=0 # 追踪当前在数组中的索引
-            for cmd_val in $(echo "$wt_cmd_json" | jq -r '.[]'); do
+        local temp_extra_args=""
+        local skip_next=0
+        
+        # 稳健解析所有参数
+        if [ -n "$wt_cmd_json" ]; then
+            while IFS= read -r cmd_val; do
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
-                    current_jq_index=$((current_jq_index + 1))
                     continue
                 fi
                 # 跳过已处理的参数及其值
@@ -683,35 +681,37 @@ show_status() {
                 elif [ "$cmd_val" == "--debug" ]; then
                     container_actual_debug="启用"
                 elif [ "$cmd_val" == "--cleanup" ]; then
-                    # cleanup是默认参数，不作为"额外"参数显示
-                    continue
+                    continue # cleanup 是默认参数
                 elif [ "$cmd_val" == "watchtower" ]; then
                     container_actual_self_update="是"
-                elif [[ ! "$cmd_val" =~ ^-- ]]; then # 确保不是另一个flag
+                elif [[ "$cmd_val" =~ ^-- ]]; then # 捕获其他以 -- 开头的参数
                     temp_extra_args+=" $cmd_val"
                 fi
-                current_jq_index=$((current_jq_index + 1))
-            done
-            container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
-            if [ -z "$container_actual_extra_args" ]; then
-                 container_actual_extra_args="无"
-            fi
-            
-            # 重新检查 self_update，使用更稳健的 jq contains
-            if echo "$wt_cmd_json" | jq -e 'contains(["watchtower"])' >/dev/null; then # 使用jq -e检查是否存在"watchtower"参数
-                container_actual_self_update="是"
-            else
-                container_actual_self_update="否"
-            fi
+            done < <(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || true)
+        fi
+        
+        container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
+        if [ -z "$container_actual_extra_args" ]; then
+             container_actual_extra_args="无"
+        fi
+        
+        # 重新检查 self_update
+        if echo "$wt_cmd_json" | jq -e 'contains(["watchtower"])' >/dev/null; then 
+            container_actual_self_update="是"
+        else
+            container_actual_self_update="否"
+        fi
 
 
+        # 2. --- 倒计时计算 (依赖于日志) ---
+        if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
             # 只有当 container_actual_interval 是有效数字时才计算倒计时
             if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
                 wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
             else
-                wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法获取检查间隔${COLOR_RESET}"
+                wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法计算倒计时 (间隔无效)${COLOR_RESET}"
             fi
-        else # 如果没有Session done日志，但_get_watchtower_all_raw_logs返回非空（即只有启动信息）
+        else 
              wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
         fi
     fi
@@ -776,7 +776,7 @@ view_and_edit_config() {
 
     if [ -z "$edit_choice" ]; then
         return 0
-    fi
+    end
 
     case "$edit_choice" in
         1)
@@ -950,6 +950,7 @@ show_watchtower_details() {
     local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
     local wt_interval_running="N/A"
 
+    # --- 确保解析到运行参数 ---
     if [ -n "$wt_cmd_json" ]; then
         # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
         local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
@@ -957,8 +958,8 @@ show_watchtower_details() {
     fi
 
     if [ -z "$wt_interval_running" ] || ! [[ "$wt_interval_running" =~ ^[0-9]+$ ]]; then # 检查是否为有效数字
-        wt_interval_running="300" # 如果解析失败或不是数字，使用默认值 300 秒
-        echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔或其为非数字，使用默认值 300 秒。${COLOR_RESET}"
+        wt_interval_running="300" # 如果解析失败或不是数字，使用默认值 300 秒进行倒计时估算
+        echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔或其为非数字，使用默认值 300 秒进行倒计时估算。${COLOR_RESET}"
     fi
 
     local only_self_update="否"
@@ -1055,8 +1056,7 @@ show_watchtower_details() {
             local log_epoch=$(date -d "$log_time_raw" +%s 2>/dev/null || true)
             if [ -n "$log_epoch" ]; then
                 local time_diff_seconds=$((current_epoch - log_epoch))
-                # 筛选出日志时间在 [-1小时, +24小时] 范围内的日志，即在过去24小时内，或者在未来1小时内。
-                # 调整为过去48小时到未来1小时的范围，避免因为日志是未来的而错过
+                # 筛选出日志时间在 [-1小时, +48小时] 范围内的日志，即在过去48小时内，或者在未来1小时内。
                 if [ "$time_diff_seconds" -le $((86400*2)) ] && [ "$time_diff_seconds" -ge -$((3600*1)) ]; then
                     filtered_logs_24h_content+="$line\n"
                 elif [ "$time_diff_seconds" -lt -$((3600*1)) ] && [ "$log_time_warning_issued" = "false" ]; then
@@ -1084,7 +1084,8 @@ show_watchtower_details() {
             local log_time_raw=$(echo "$line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
             local log_time_formatted=""
             if [ -n "$log_time_raw" ]; then
-                log_time_formatted=$(date -d "$log_time_raw" +%s 2>/dev/null || true)
+                # 尝试解析时间并格式化，如果失败则保持空
+                log_time_formatted=$(date -d "$log_time_raw" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$log_time_raw")
             fi
 
             local container_name="N/A"
