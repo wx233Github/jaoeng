@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.18 体验优化：彻底修复所有已知语法错误和逻辑问题，确保脚本稳定运行
+# v2.17.19 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（终极jq表达式）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.18" # 版本更新，反映所有语法错误和逻辑修复
+VERSION="2.17.19" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -653,12 +653,12 @@ show_status() {
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
 
-        # 只有当 raw_logs_content_for_status 确实包含 "Session done" 或有日志内容时才尝试解析实际参数
-        if [ -n "$raw_logs_content_for_status" ]; then 
+        # 只有当 raw_logs_content_for_status 确实包含 "Session done" 时才尝试解析 Watchtower 的实际运行参数和计算倒计时
+        if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 找到 "--interval" 的索引，然后获取下一个索引的值 (终极 jq 方式)
+            # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
             local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
             container_actual_interval="${interval_value:-N/A}"
             
@@ -704,17 +704,12 @@ show_status() {
 
             # 只有当 container_actual_interval 是有效数字时才计算倒计时
             if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
-                # 如果有 Session done 日志，则计算倒计时
-                if echo "$raw_logs_content_for_status" | grep -q "Session done"; then
-                    wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
-                else
-                    wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
-                fi
+                wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
             else
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法获取检查间隔${COLOR_RESET}"
             fi
-        else # 如果没有获取到任何原始日志（包括启动信息）
-             wt_remaining_time_display="${COLOR_YELLOW}⚠️ 容器未生成日志或时间不同步${COLOR_RESET}"
+        else # 如果没有Session done日志，但_get_watchtower_all_raw_logs返回非空（即只有启动信息）
+             wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
         fi
     fi
 
@@ -754,7 +749,6 @@ show_status() {
     else
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
     fi
-    echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
     return 0
 }
@@ -954,7 +948,7 @@ show_watchtower_details() {
     local wt_interval_running="N/A"
 
     if [ -n "$wt_cmd_json" ]; then
-        # 使用 jq 来精确提取 --interval 后的值
+        # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
         local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
         wt_interval_running="${interval_value:-N/A}"
     fi
