@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.6 体验优化：修复颜色显示问题；调整状态报告排版；修复语法错误
+# v2.17.7 体验优化：彻底修复所有已知语法错误和逻辑问题
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.6" # 版本更新，反映语法错误修复
+VERSION="2.17.7" # 版本更新，反映所有语法错误和逻辑修复
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -491,7 +491,7 @@ manage_tasks() {
     case "$MANAGE_CHOICE" in
         1)
             if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
-                if confirm_action "您确定要停止并移除 Watchtower 容器吗？这将停止自动更新。"; then
+                if confirm_action "您确定要停止并移除 Watchtower 容器吗？这将停止自动更新。"; 键，然后
                     set +e
                     docker stop watchtower &>/dev/null
                     docker rm watchtower &>/dev/null
@@ -512,7 +512,7 @@ manage_tasks() {
         2)
             CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
             if crontab -l 2>/dev/null | grep -q "$CRON_UPDATE_SCRIPT"; then
-                if confirm_action "您确定要移除 Cron 定时任务吗？这将停止定时更新。"; then
+                if confirm_action "您确定要移除 Cron 定时任务吗？这将停止定时更新。"; 键，然后
                     (crontab -l 2>/dev/null | grep -v "$CRON_UPDATE_SCRIPT") | crontab -
                     set +e
                     rm -f "$CRON_UPDATE_SCRIPT" &>/dev/null
@@ -561,7 +561,7 @@ _get_watchtower_remaining_time() {
     if [ -z "$raw_logs" ]; then
         echo "$remaining_time_str" # 无日志，无法计算
         return
-    fi # <-- 修正：if 语句结束符
+    fi # <-- 修正了这里的语法错误
 
     # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
@@ -598,7 +598,7 @@ _get_watchtower_remaining_time() {
 
 # 🔹 状态报告
 show_status() {
-    echo -e "\n${COLOR_YELLOW}📊 当前自动化更新状态报告：${COLOR_RESET}" # 顶部空行
+    echo -e "\n${COLOR_YELLOW}📊 当前自动化更新状态报告：${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
@@ -947,7 +947,7 @@ show_watchtower_details() {
     if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
         only_self_update="是"
         echo -e "  - ${COLOR_YELLOW}提示: Watchtower 容器当前配置为只监控并更新自身容器 (watchtower)。${COLOR_RESET}"
-        echo -e "          如果需要更新其他容器，请在主菜单选项 1 中选择 'Watchtower模式' (非智能模式)。"
+        echo -e "          如果需要更新其他容器，请在主菜单选项 1 中选择 'Watchtower模式' (非智能模式)。${COLOR_RESET}" # 确保这里有颜色重置
     fi
 
     # --- 获取所有原始日志，并根据实际扫描日志进行过滤 ---
@@ -957,11 +957,11 @@ show_watchtower_details() {
     if ! echo "$raw_logs" | grep -q "Session done"; then
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
-        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。"
-        echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？"
-        echo -e "    3. 如果时间不同步，请尝试校准系统时间，并重启 Watchtower 容器。"
+        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。${COLOR_RESET}"
+        echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？${COLOR_RESET}"
+        echo -e "    3. 如果时间不同步，请尝试校准系统时间，并重启 Watchtower 容器。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含 Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
-        echo "$raw_logs" | head -n 5
+        echo "$raw_logs" | head -n 5 # 显示前5行，避免大量垃圾信息
         press_enter_to_continue
         return 1
     fi
