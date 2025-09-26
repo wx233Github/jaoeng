@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.13 体验优化：精确解析Watchtower容器实际运行参数；美化状态报告标题
+# v2.17.14 体验优化：顶部标题区域增加╔═包裹边框；美化状态报告标题
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.13" # 版本更新，反映JSON解析和排版优化
+VERSION="2.17.14" # 版本更新，反映顶部标题包裹优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -609,15 +609,16 @@ show_status() {
     # 居中标题
     local title_text="📊 当前自动化更新状态报告"
     local line_length=113 # 匹配分隔线长度
-    local padding_width=$((line_length - $(echo -e "$title_text" | wc -c))) # wc -c 计算字符数，-e是为了正确处理颜色
-    local padding_left=$(( padding_width / 2 ))
-    local padding_right=$(( padding_width - padding_left ))
+    local text_len=$(echo -e "$title_text" | wc -c) # 计算标题的字符长度
+    local padding_left=$(( (line_length - text_len) / 2 ))
+    local padding_right=$(( line_length - text_len - padding_left ))
     
     printf "\n"
-    printf "${COLOR_YELLOW}%.0s" $(seq 1 $line_length) # 打印line_length个黄色空格
-    printf "\n${COLOR_YELLOW}%*s%s%*s${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
-    printf "${COLOR_YELLOW}%.0s" $(seq 1 $line_length) # 打印line_length个黄色空格
-    printf "${COLOR_RESET}\n" # 确保颜色重置和换行
+    printf "${COLOR_YELLOW}╔%.0s" $(seq 1 $line_length) # 打印左上角和顶部横线
+    printf "╗\n"
+    printf "${COLOR_YELLOW}║%*s%s%*s║${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
+    printf "${COLOR_YELLOW}╚%.0s" $(seq 1 $line_length) # 打印左下角和底部横线
+    printf "╝${COLOR_RESET}\n"
     echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
@@ -658,27 +659,34 @@ show_status() {
             
             # --- 解析 container_actual_interval ---
             # 使用 jq 来精确提取 --interval 后的值
-            container_actual_interval=$(echo "$wt_cmd_json" | jq -r '."[]" | to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null | xargs -r -I{} echo "$wt_cmd_json" | jq -r '.[{}]' 2>/dev/null || true)
-            # 如果 jq 解析失败，则回退到 N/A
+            # 找到 "--interval" 的索引，然后获取下一个索引的值
+            local interval_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
+            if [ -n "$interval_value_index" ]; then
+                container_actual_interval=$(echo "$wt_cmd_json" | jq -r ".[$interval_value_index]" 2>/dev/null || true)
+            fi
             container_actual_interval="${container_actual_interval:-N/A}"
             
             # 解析 --label-enable 后的值
-            container_actual_labels=$(echo "$wt_cmd_json" | jq -r '."[]" | to_entries | .[] | select(.value == "--label-enable") | .key | . + 1' 2>/dev/null | xargs -r -I{} echo "$wt_cmd_json" | jq -r '.[{}]' 2>/dev/null || true)
+            local label_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--label-enable") | .key | . + 1' 2>/dev/null || true)
+            if [ -n "$label_value_index" ]; then
+                container_actual_labels=$(echo "$wt_cmd_json" | jq -r ".[$label_value_index]" 2>/dev/null || true)
+            fi
             container_actual_labels="${container_actual_labels:-无}"
 
-            local raw_cmd_array=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "")
+            local raw_cmd_array_str=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "") # 将JSON数组转为字符串，以便循环
             local temp_extra_args=""
             local skip_next=0
-            for cmd_arg in $raw_cmd_array; do
+            for cmd_arg in $raw_cmd_array_str; do # 循环每个参数
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
                     continue
                 fi
                 if [[ "$cmd_arg" == "--interval" || "$cmd_arg" == "--label-enable" ]]; then
-                    skip_next=1
+                    skip_next=1 # 跳过下一个参数（值）
                 elif [[ "$cmd_arg" == "--debug" ]]; then
                     container_actual_debug="启用"
                 elif [[ "$cmd_arg" == "--cleanup" ]]; then
+                    # cleanup是默认参数，不作为"额外"参数显示
                     continue
                 elif [[ "$cmd_arg" == "watchtower" ]]; then
                     container_actual_self_update="是"
@@ -945,9 +953,10 @@ show_watchtower_details() {
 
     if [ -n "$wt_cmd_json" ]; then
         # 使用 jq 来精确提取 --interval 后的值
-        local interval_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
-        if [ -n "$interval_index" ]; then
-            wt_interval_running=$(echo "$wt_cmd_json" | jq -r '.[(env.interval_index | tonumber)]' 2>/dev/null || true)
+        # 找到 "--interval" 的索引，然后获取下一个索引的值
+        local interval_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
+        if [ -n "$interval_value_index" ]; then
+            wt_interval_running=$(echo "$wt_cmd_json" | jq -r ".[$interval_value_index]" 2>/dev/null || true)
         fi
     fi
 
