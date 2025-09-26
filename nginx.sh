@@ -744,7 +744,7 @@ configure_nginx_projects() {
                 fi
                 ;;
             *) log_message YELLOW "⚠️ 无效选择，将使用默认 http-01 验证方式。";;
-        esac
+        esme
         log_message BLUE "➡️ 选定验证方式: $ACME_VALIDATION_METHOD"
         if [ "$ACME_VALIDATION_METHOD" = "dns-01" ]; then
             log_message BLUE "➡️ 选定 DNS API 服务商: $DNS_API_PROVIDER"
@@ -1386,7 +1386,7 @@ manage_configs() {
         echo -e "${GREEN}1) 手动续期指定域名证书${RESET}"
         echo -e "${GREEN}2) 删除指定域名配置及证书${RESET}"
         echo -e "${GREEN}3) 编辑项目核心配置 (后端目标 / 验证方式等)${RESET}"
-        echo -e "${GREEN}4) 管理自定义 Nginx 配置片段 (添加 / 修改 / / 清除)${RESET}"
+        echo -e "${GREEN}4) 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)${RESET}"
         echo -e "${GREEN}5) 导入现有 Nginx 配置到本脚本管理${RESET}"
         echo -e "${YELLOW}0) 返回主菜单${RESET}"
         log_message INFO "${BLUE}------------------------------------${RESET}"
@@ -1929,7 +1929,7 @@ manage_configs() {
 
                 local CURRENT_SNIPPET_PATH=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.custom_snippet // "null"')
                 local PROJECT_TYPE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.type // "unknown"')
-                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_JSON" | jq -r '.name // "unknown"') # 修复：将 PROJECT_NAME_SNIPPET 的 JSON 变量从 $SNIPPET_PROJECT_JSON 切换为 $SNIPPET_JSON
+                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.name // "unknown"') # 修复：使用 SNIPPET_PROJECT_JSON
                 local RESOLVED_PORT_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.resolved_port // "unknown"')
                 local CERT_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.cert_file // ""')
                 local KEY_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.key_file // ""')
@@ -1954,7 +1954,7 @@ manage_configs() {
                         echo "${RED}3) 清除自定义片段设置并删除文件${RESET}"
                     else
                         echo "${GREEN}1) 设置新的片段文件路径${RESET}"
-                    f
+                    fi  # 修复：将 'f' 改为 'fi'
                     echo "${YELLOW}0) 返回上级菜单${RESET}"
                     echo -e "${CYAN}请输入选项: ${RESET}"
                     read -rp "> " SNIPPET_MANAGEMENT_ACTION
