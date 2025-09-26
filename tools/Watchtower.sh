@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.11 体验优化：增加Watchtower首次扫描等待提示；移除选项8
+# v2.17.10 体验优化：彻底修复Watchtower日志获取和显示问题（区分Docker logs自身输出与实际日志）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示，优化排版，新增Watchtower倒计时)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示，增加首次扫描等待)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.11" # 版本更新，反映首次扫描等待提示和选项8移除
+VERSION="2.17.10" # 版本更新，反映最终日志获取修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -550,7 +550,12 @@ _get_watchtower_all_raw_logs() {
     docker logs watchtower --tail 500 --no-trunc 2>&1 | grep -E "^time=" > "$temp_log_file" || true
     raw_logs_output=$(cat "$temp_log_file")
 
-    # 返回所有捕获到的内容，后续函数再进行具体过滤
+    # 进一步过滤：如果 raw_logs_output 不包含 "Session done"，则认为没有有效日志
+    if ! echo "$raw_logs_output" | grep -q "Session done"; then
+        echo "" # 没有找到有效的 Watchtower 扫描日志
+        return
+    fi
+
     echo "$raw_logs_output"
 }
 
@@ -560,12 +565,12 @@ _get_watchtower_remaining_time() {
     local raw_logs="$2" # 传入已获取的日志内容
     local remaining_time_str="N/A"
 
-    if [ -z "$raw_logs" ]; then
-        echo "$remaining_time_str" # 无日志，无法计算
+    if [ -z "$raw_logs" ]; then # raw_logs 已经通过 _get_watchtower_all_raw_logs 过滤，确保含有 Session done
+        echo "${COLOR_YELLOW}⚠️ 无有效扫描日志${COLOR_RESET}" # 更明确的提示
         return
-    fi # <-- 修复了这里的语法错误：将 '}' 改为 'fi'
+    fi 
 
-    # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
+    # 查找 Watchtower 容器的实际扫描完成日志
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
 
     local last_check_timestamp_str=""
@@ -950,7 +955,7 @@ show_watchtower_details() {
         only_self_update="是"
         echo -e "  - ${COLOR_YELLOW}提示: Watchtower 容器当前配置为只监控并更新自身容器 (watchtower)。${COLOR_RESET}"
         echo -e "          如果需要更新其他容器，请在主菜单选项 1 中选择 'Watchtower模式' (非智能模式)。${COLOR_RESET}"
-    fi # <--- 修复：添加缺失的 'fi'
+    fi 
 
     # --- 获取所有原始日志，并根据实际扫描日志进行过滤 ---
     local raw_logs=$(_get_watchtower_all_raw_logs)
@@ -960,8 +965,9 @@ show_watchtower_details() {
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
         echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。${COLOR_RESET}"
-        echo -e "       (如果您之前看到 'exec: date: executable file not found' 错误，表明容器内没有date命令，这并不影响Watchtower本身的功能，但您需要自行确认宿主机时间是否正确。)${COLOR_RESET}" # 针对无date命令的提示
+        echo -e "       (如果您之前看到 'exec: date: executable file not found' 错误，表明容器内没有date命令，这并不影响Watchtower本身的功能，但您需要自行确认宿主机时间是否正确。)${COLOR_RESET}"
         echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？${COLOR_RESET}"
+        echo -e "       首次扫描计划在: $(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1)${COLOR_RESET}" # 增加首次扫描计划时间
         echo -e "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含 Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 # 显示前5行，避免大量垃圾信息
