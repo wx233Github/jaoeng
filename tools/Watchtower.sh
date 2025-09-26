@@ -604,16 +604,26 @@ _get_watchtower_remaining_time() {
 }
 
 
-# 🔹 状态报告
+# 🔹 状态报告 (已调整宽度为 43)
 show_status() {
     # 居中标题
     local title_text="📊 当前自动化更新状态报告"
-    local line_length=113 # 匹配分隔线长度
-    # 使用 awk/wc -c 混合计算，确保中文字符串长度计算正确（Bash内置 wc -c 可能会错，但这里用于填充宽度，使用等号数量即可）
-    local text_len=13 # "📊 当前自动化更新状态报告" 约等于 13 个字符宽 (ASCII)
-    local padding_width=$((line_length - text_len - 2)) # 减去标题长度和两边的空格
-    local padding_left=$(( padding_width / 2 ))
-    local padding_right=$(( line_length - text_len - 2 - padding_left ))
+    local line_length=43 # 与脚本启动标题宽度保持一致
+    
+    # 估算标题的显示宽度 (中文/Emoji通常占2个ASCII字符宽度)
+    local estimated_text_len=25 
+    
+    local padding_width=$((line_length - estimated_text_len - 2)) # 减去标题长度和两边的空格
+    
+    # 防止宽度不足导致负数或错误计算，如果宽度太窄，则强制左对齐
+    if [ "$padding_width" -lt 0 ]; then
+        local padding_left=1
+        local padding_right=1
+    else
+        local padding_left=$(( padding_width / 2 ))
+        local padding_right=$(( line_length - estimated_text_len - 2 - padding_left ))
+    fi
+
     local full_line=$(printf '=%.0s' $(seq 1 $line_length)) # 生成等号横线
 
     printf "\n"
@@ -716,7 +726,7 @@ show_status() {
         fi
     fi
 
-    # 横向对比 Watchtower 配置
+    # 横向对比 Watchtower 配置 (注意：由于宽度只有 43，表格可能会溢出，但为了信息完整性保持原列宽)
     printf "  %-20s %-20s %-20s\n" "参数" "脚本配置" "容器实际运行"
     printf "  %-20s %-20s %-20s\n" "--------------------" "--------------------" "--------------------"
     printf "  %-20s %-20s %-20s\n" "检查间隔 (秒)" "$script_config_interval" "$container_actual_interval"
@@ -776,7 +786,7 @@ view_and_edit_config() {
 
     if [ -z "$edit_choice" ]; then
         return 0
-    end
+    fi
 
     case "$edit_choice" in
         1)
