@@ -604,18 +604,18 @@ _get_watchtower_remaining_time() {
 }
 
 
-# 🔹 状态报告 (已调整宽度为 43)
+# 🔹 状态报告 (已调整宽度为 43，并精简标题和表格列宽)
 show_status() {
     # 居中标题
-    local title_text="📊 当前自动化更新状态报告"
+    local title_text="【 自动化更新状态 】" # 精简标题，约 16 字符宽
     local line_length=43 # 与脚本启动标题宽度保持一致
     
-    # 估算标题的显示宽度 (中文/Emoji通常占2个ASCII字符宽度)
-    local estimated_text_len=25 
+    # 估算标题的显示宽度 
+    local estimated_text_len=16 
     
     local padding_width=$((line_length - estimated_text_len - 2)) # 减去标题长度和两边的空格
     
-    # 防止宽度不足导致负数或错误计算，如果宽度太窄，则强制左对齐
+    # 防止宽度不足导致负数或错误计算
     if [ "$padding_width" -lt 0 ]; then
         local padding_left=1
         local padding_right=1
@@ -665,7 +665,7 @@ show_status() {
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
         local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
 
-        # 1. --- 核心修复: 无论是否有 Session done，都解析容器实际运行参数 ---
+        # 1. 解析容器实际运行参数
         
         # 解析 container_actual_interval
         local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
@@ -713,7 +713,7 @@ show_status() {
         fi
 
 
-        # 2. --- 倒计时计算 (依赖于日志) ---
+        # 2. 倒计时计算 (依赖于日志)
         if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
             # 只有当 container_actual_interval 是有效数字时才计算倒计时
             if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
@@ -726,15 +726,16 @@ show_status() {
         fi
     fi
 
-    # 横向对比 Watchtower 配置 (注意：由于宽度只有 43，表格可能会溢出，但为了信息完整性保持原列宽)
-    printf "  %-20s %-20s %-20s\n" "参数" "脚本配置" "容器实际运行"
-    printf "  %-20s %-20s %-20s\n" "--------------------" "--------------------" "--------------------"
-    printf "  %-20s %-20s %-20s\n" "检查间隔 (秒)" "$script_config_interval" "$container_actual_interval"
-    printf "  %-20s %-20s %-20s\n" "标签筛选" "$script_config_labels" "$container_actual_labels"
-    printf "  %-20s %-20s %-20s\n" "额外参数" "$script_config_extra_args" "$container_actual_extra_args"
-    printf "  %-20s %-20s %-20s\n" "调试模式" "$script_config_debug" "$container_actual_debug"
-    printf "  %-20s %-20s %-20s\n" "更新自身" "$( [ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否" )" "$container_actual_self_update"
-    printf "  %-20s %b\n" "下次检查倒计时:" "$wt_remaining_time_display"
+    # 横向对比 Watchtower 配置 (列宽压缩至 15, 12, 12 以适应 43 字符宽度)
+    printf "  %-15s %-12s %-12s\n" "参数" "脚本配置" "容器运行"
+    printf "  %-15s %-12s %-12s\n" "---------------" "------------" "------------"
+    
+    printf "  %-15s %-12s %-12s\n" "检查间隔 (秒)" "$script_config_interval" "$container_actual_interval"
+    printf "  %-15s %-12s %-12s\n" "标签筛选" "$script_config_labels" "$container_actual_labels"
+    printf "  %-15s %-12s %-12s\n" "额外参数" "$script_config_extra_args" "$container_actual_extra_args"
+    printf "  %-15s %-12s %-12s\n" "调试模式" "$script_config_debug" "$container_actual_debug"
+    printf "  %-15s %-12s %-12s\n" "更新自身" "$( [ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否" )" "$container_actual_self_update"
+    printf "  %-15s %b\n" "下次检查倒计时:" "$wt_remaining_time_display"
     
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$' && echo "$raw_logs_content_for_status" | grep -q "unauthorized: authentication required"; then
         echo -e "  ${COLOR_RED}🚨 警告: Watchtower 日志中发现认证失败 ('unauthorized') 错误！${COLOR_RESET}"
