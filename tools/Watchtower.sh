@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.16 体验优化：彻底修复状态报告标题美化（使用等号）；再次优化Watchtower容器参数解析
+# v2.17.17 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（最终优化）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.16" # 版本更新，反映标题包裹和interval解析优化
+VERSION="2.17.17" # 版本更新，反映最终标题美化和interval解析优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -615,9 +615,11 @@ show_status() {
     local full_line=$(printf '═%.0s' $(seq 1 $line_length)) # 生成等号横线
 
     printf "\n"
-    printf "${COLOR_YELLOW}╔%s╗\n" "$full_line" # 上方边框
+    printf "${COLOR_YELLOW}%s%s%s\n" "╔" "$full_line" "╗" # 上方边框
     printf "${COLOR_YELLOW}║%*s%s%*s║${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
     printf "${COLOR_YELLOW}╚%s╝${COLOR_RESET}\n" "$full_line" # 下方边框
+    # 移除这条冗余的横线
+    # echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
@@ -657,8 +659,7 @@ show_status() {
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 更稳健的 jq 表达式：直接查找 "--interval" 后面的那个值
-            # 找到 "--interval" 的索引，然后获取下一个索引的值
+            # 更稳健的 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
             local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'map(.) | to_entries | .[] | select(.value == "--interval") | .key' 2>/dev/null || true)
             if [ -n "$interval_arg_index" ]; then
                 local interval_value_index=$((interval_arg_index + 1))
@@ -678,13 +679,15 @@ show_status() {
             local temp_extra_args=""
             local skip_next=0
             # 使用更安全的循环方式，直接遍历数组
+            local current_jq_index=0
             for cmd_val in $(echo "$wt_cmd_json" | jq -r '.[]'); do
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
+                    current_jq_index=$((current_jq_index + 1))
                     continue
                 fi
                 # 跳过已处理的参数及其值
-                if [[ "$cmd_val" == "--interval" || "$cmd_val" == "--label-enable" ]]; then
+                if [ "$cmd_val" == "--interval" ] || [ "$cmd_val" == "--label-enable" ]; then
                     skip_next=1 # 跳过下一个参数（值）
                 elif [ "$cmd_val" == "--debug" ]; then
                     container_actual_debug="启用"
@@ -696,6 +699,7 @@ show_status() {
                 elif [[ ! "$cmd_val" =~ ^-- ]]; then # 确保不是另一个flag
                     temp_extra_args+=" $cmd_val"
                 fi
+                current_jq_index=$((current_jq_index + 1))
             done
             container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
             if [ -z "$container_actual_extra_args" ]; then
