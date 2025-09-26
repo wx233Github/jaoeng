@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.12 体验优化：美化状态报告标题包裹；进一步修复N/A问题追踪
+# v2.17.13 体验优化：精确解析Watchtower容器实际运行参数；美化状态报告标题
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.12" # 版本更新，反映标题美化和N/A追踪
+VERSION="2.17.13" # 版本更新，反映JSON解析和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -47,6 +47,12 @@ set -euo pipefail # 任何命令失败都立即退出脚本
 # 检查 Docker
 if ! command -v docker &>/dev/null; then
     echo -e "${COLOR_RED}❌ 未检测到 Docker，请先安装。${COLOR_RESET}"
+    exit 1
+fi
+
+# 检查 jq
+if ! command -v jq &>/dev/null; then
+    echo -e "${COLOR_RED}❌ 未检测到 'jq' 工具，它用于解析JSON数据。请先安装：sudo apt install jq 或 sudo yum install jq${COLOR_RESET}"
     exit 1
 fi
 
@@ -565,7 +571,7 @@ _get_watchtower_remaining_time() {
         return
     fi 
 
-    # 查找 Watchtower 容器的实际扫描完成日志
+    # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
 
     local last_check_timestamp_str=""
@@ -602,12 +608,16 @@ _get_watchtower_remaining_time() {
 show_status() {
     # 居中标题
     local title_text="📊 当前自动化更新状态报告"
-    local width=113 # 匹配分隔线长度
-    local padding_left=$(( (width - ${#title_text}) / 2 ))
-    local padding_right=$(( width - ${#title_text} - padding_left ))
+    local line_length=113 # 匹配分隔线长度
+    local padding_width=$((line_length - $(echo -e "$title_text" | wc -c))) # wc -c 计算字符数，-e是为了正确处理颜色
+    local padding_left=$(( padding_width / 2 ))
+    local padding_right=$(( padding_width - padding_left ))
     
-    printf "\n%${padding_left}s${COLOR_YELLOW}%s%${padding_right}s${COLOR_RESET}\n" "" "$title_text" ""
-    echo "-------------------------------------------------------------------------------------------------------------------"
+    printf "\n"
+    printf "${COLOR_YELLOW}%.0s" $(seq 1 $line_length) # 打印line_length个黄色空格
+    printf "\n${COLOR_YELLOW}%*s%s%*s${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
+    printf "${COLOR_YELLOW}%.0s" $(seq 1 $line_length) # 打印line_length个黄色空格
+    printf "${COLOR_RESET}\n" # 确保颜色重置和换行
     echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
@@ -636,32 +646,24 @@ show_status() {
     local container_actual_debug="禁用"
     local container_actual_self_update="否"
 
-    local wt_remaining_time_display="N/A" # 初始化倒计时显示
+    local wt_remaining_time_display="${COLOR_YELLOW}N/A${COLOR_RESET}" # 初始化倒计时显示，带颜色
     local raw_logs_content_for_status="" # 用于存储 Watchtower 原始日志
 
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
 
-        # 只有当 _get_watchtower_all_raw_logs 返回了包含 Session done 的有效日志时，才尝试解析
+        # 只有当 raw_logs_content_for_status 确实包含 "Session done" 时才尝试解析 Watchtower 的实际运行参数和计算倒计时
         if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
-            container_actual_interval=$(echo "$wt_cmd_json" | awk -F', *' '{
-                for (i=1; i<=NF; i++) {
-                    if ($i ~ /"--interval"/) {
-                        val = $(i+1); gsub(/"|,/, "", val); print val; exit;
-                    }
-                }
-            }' | head -n 1)
+            # --- 解析 container_actual_interval ---
+            # 使用 jq 来精确提取 --interval 后的值
+            container_actual_interval=$(echo "$wt_cmd_json" | jq -r '."[]" | to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null | xargs -r -I{} echo "$wt_cmd_json" | jq -r '.[{}]' 2>/dev/null || true)
+            # 如果 jq 解析失败，则回退到 N/A
             container_actual_interval="${container_actual_interval:-N/A}"
-
-            container_actual_labels=$(echo "$wt_cmd_json" | awk -F', *' '{
-                for (i=1; i<=NF; i++) {
-                    if ($i ~ /"--label-enable"/) {
-                        val = $(i+1); gsub(/"|,/, "", val); print val; exit;
-                    }
-                }
-            }' | head -n 1)
+            
+            # 解析 --label-enable 后的值
+            container_actual_labels=$(echo "$wt_cmd_json" | jq -r '."[]" | to_entries | .[] | select(.value == "--label-enable") | .key | . + 1' 2>/dev/null | xargs -r -I{} echo "$wt_cmd_json" | jq -r '.[{}]' 2>/dev/null || true)
             container_actual_labels="${container_actual_labels:-无}"
 
             local raw_cmd_array=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "")
@@ -684,7 +686,7 @@ show_status() {
                     temp_extra_args+=" $cmd_arg"
                 fi
             done
-            container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
             if [ -z "$container_actual_extra_args" ]; then
                  container_actual_extra_args="无"
             fi
@@ -695,8 +697,13 @@ show_status() {
                 container_actual_self_update="否"
             fi
 
-            wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
-        else # 如果没有Session done，但_get_watchtower_all_raw_logs返回非空，说明只有启动信息，而不是扫描日志
+            # 只有当 container_actual_interval 是有效数字时才计算倒计时
+            if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
+                wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
+            else
+                wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法获取检查间隔${COLOR_RESET}"
+            fi
+        else # 如果没有Session done日志，但_get_watchtower_all_raw_logs返回非空（即只有启动信息）
              wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
         fi
     fi
@@ -937,23 +944,18 @@ show_watchtower_details() {
     local wt_interval_running="N/A"
 
     if [ -n "$wt_cmd_json" ]; then
-        wt_interval_running=$(echo "$wt_cmd_json" | awk -F', *' '{
-            for (i=1; i<=NF; i++) {
-                if ($i ~ /"--interval"/) {
-                    val = $(i+1); gsub(/"|,/, "", val); print val; exit;
-                }
-            }
-        }' | head -n 1)
+        # 使用 jq 来精确提取 --interval 后的值
+        local interval_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
+        if [ -n "$interval_index" ]; then
+            wt_interval_running=$(echo "$wt_cmd_json" | jq -r '.[(env.interval_index | tonumber)]' 2>/dev/null || true)
+        fi
     fi
 
-    if [ -z "$wt_interval_running" ]; then
-        wt_interval_running="300" # 如果解析失败，使用默认值 300 秒
-        echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔，使用默认值 300 秒。${COLOR_RESET}"
+    if [ -z "$wt_interval_running" ] || ! [[ "$wt_interval_running" =~ ^[0-9]+$ ]]; then # 检查是否为有效数字
+        wt_interval_running="300" # 如果解析失败或不是数字，使用默认值 300 秒
+        echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔或其为非数字，使用默认值 300 秒。${COLOR_RESET}"
     fi
 
-    # 移除 `]` 字符
-    wt_interval_running="${wt_interval_running%]}" 
-    
     local only_self_update="否"
     if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
         only_self_update="是"
@@ -1167,7 +1169,7 @@ main_menu() {
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
-        read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice
+        read -p "请输入选择 [1-8] (按 Enter 直接退出/返 回 ): " choice
 
         if [ -z "$choice" ]; then
             choice=8
