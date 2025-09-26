@@ -245,7 +245,7 @@ install_acme_sh() {
         local ACME_EMAIL=""
         if [[ -n "$ACME_EMAIL_INPUT" ]]; then
             while [[ ! "$ACME_EMAIL_INPUT" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}$ ]]; do
-                log_message ERROR "❌ 邮箱格式不正确。请重新输入，或回车不指定。"
+                log_message RED "❌ 邮箱格式不正确。请重新输入，或回车不指定。"
                 echo -e "${CYAN}请输入用于注册 Let's Encrypt/ZeroSSL 的邮箱地址: ${RESET}"
                 read -rp "> " ACME_EMAIL_INPUT
                 [[ -z "$ACME_EMAIL_INPUT" ]] && break
@@ -1042,7 +1042,9 @@ import_existing_project() {
     log_message GREEN "✅ 找到域名 $IMPORT_DOMAIN 的 Nginx 配置文件: $EXISTING_NGINX_CONF_PATH"
     sleep 1
 
-    if jq -e ".[] | select(.domain == \"$IMPORT_DOMAIN\")" "$PROJECTS_METADATA_FILE" > /dev/null; then
+    local EXISTING_JSON_ENTRY=$(jq -c ".[] | select(.domain == \"$IMPORT_DOMAIN\")" "$PROJECTS_METADATA_FILE" || echo "") # 定义 EXISTING_JSON_ENTRY
+
+    if [[ -n "$EXISTING_JSON_ENTRY" ]]; then # 使用定义的变量
         log_message YELLOW "⚠️ 域名 $IMPORT_DOMAIN 已存在于本脚本的管理列表中。"
         echo -e "${CYAN}是否要覆盖现有项目元数据？[y/N]: ${RESET}"
         read -rp "> " OVERWRITE_CONFIRM
@@ -1230,9 +1232,6 @@ import_existing_project() {
         --arg key_file "$USER_KEY_PATH" \
         '{domain: $domain, type: $type, name: $name, resolved_port: $resolved_port, custom_snippet: $custom_snippet, acme_validation_method: $acme_method, dns_api_provider: $dns_provider, use_wildcard: $wildcard, ca_server_url: $ca_url, ca_server_name: $ca_name, cert_file: $cert_file, key_file: $key_file}')
 
-    # Check if entry already exists for potential overwrite
-    local EXISTING_JSON_ENTRY=$(jq -c ".[] | select(.domain == \"$IMPORT_DOMAIN\")" "$PROJECTS_METADATA_FILE" || echo "")
-
     if [[ -n "$EXISTING_JSON_ENTRY" ]]; then
         if ! jq "(.[] | select(.domain == \$domain)) = \$new_project_json" \
             --arg domain "$IMPORT_DOMAIN" \
@@ -1354,7 +1353,7 @@ manage_configs() {
                 fi
             fi
             local NOW_TS=$(date +%s)
-            LEFT_DAYS=$(( (END_TS_TEMP - NOW_TS) / 86400 ))
+            local LEFT_DAYS=$(( (END_TS_TEMP - NOW_TS) / 86400 ))
 
             if (( END_TS_TEMP == 0 )); then # Date parsing failed completely
                 STATUS_COLOR="$YELLOW"
@@ -1457,7 +1456,11 @@ manage_configs() {
                 read -rp "> " DOMAIN_TO_DELETE
                 if [[ -z "$DOMAIN_TO_DELETE" ]]; then log_message RED "❌ 域名不能为空！"; sleep 1; continue; fi
                 local PROJECT_TO_DELETE_JSON=$(jq -c ".[] | select(.domain == \"$DOMAIN_TO_DELETE\")" "$PROJECTS_METADATA_FILE")
-                if [ -z "$PROJECT_TO_DELETE_JSON" ]; then log_message RED "❌ 域名 $DOMAIN_TO_DELETE 未找到在已配置列表中。"; sleep 1; continue; }
+                if [ -z "$PROJECT_TO_DELETE_JSON" ]; then
+                    log_message RED "❌ 域名 $DOMAIN_TO_DELETE 未找到在已配置列表中。"
+                    sleep 1
+                    continue
+                fi # 修复: 将 '}' 替换为 'fi'
 
                 log_message YELLOW "\n${CYAN}--- 请选择删除级别 for $DOMAIN_TO_DELETE ---${RESET}"
                 echo "${GREEN}1) 仅删除 Nginx 配置文件 (保留证书和元数据，用于临时禁用)${RESET}"
