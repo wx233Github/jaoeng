@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.1 体验优化：修复Watchtower详情日志重复显示；状态报告增加倒计时
+# v2.17.2 体验优化：彻底修复Watchtower日志获取和显示问题（识别Docker logs自身输出）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.1" # 版本更新，反映所有修复和新功能
+VERSION="2.17.2" # 版本更新，反映所有修复和新功能
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -548,9 +548,10 @@ _get_watchtower_remaining_time() {
         return
     fi
 
+    # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1)
-    local last_check_timestamp_str=""
 
+    local last_check_timestamp_str=""
     if [ -n "$last_check_log" ]; then
         last_check_timestamp_str=$(echo "$last_check_log" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
     fi
@@ -609,6 +610,11 @@ show_status() {
 
     local wt_remaining_time_display="N/A" # 初始化倒计时显示
 
+    # 获取 Watchtower 容器的实际运行参数和日志
+    local temp_log_file="/tmp/watchtower_status_logs_$$.log"
+    trap "rm -f \"$temp_log_file\"" EXIT
+    local raw_logs_for_status=""
+
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
         
@@ -661,17 +667,13 @@ show_status() {
             container_actual_self_update="否"
         fi
 
-        # --- 获取 Watchtower 日志以计算倒计时 ---
-        local temp_log_file="/tmp/watchtower_status_logs_$$.log"
-        trap "rm -f \"$temp_log_file\"" EXIT
+        # 获取 Watchtower 容器的实际扫描日志（而非docker logs的提示信息）
         docker logs watchtower --since "48h" 2>&1 > "$temp_log_file" || true # 尝试获取最近48小时日志
-        local raw_logs_for_countdown=$(cat "$temp_log_file")
+        raw_logs_for_status=$(cat "$temp_log_file")
         
-        if [ -n "$raw_logs_for_countdown" ]; then
-            wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_for_countdown")
+        if [ -n "$raw_logs_for_status" ]; then # 只有有日志内容时才计算倒计时
+            wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_for_status")
         fi
-        rm -f "$temp_log_file" # 及时清理
-
     fi
 
     # 横向对比 Watchtower 配置
@@ -682,7 +684,7 @@ show_status() {
     printf "  %-20s %-20s %-20s\n" "额外参数" "$script_config_extra_args" "$container_actual_extra_args"
     printf "  %-20s %-20s %-20s\n" "调试模式" "$script_config_debug" "$container_actual_debug"
     printf "  %-20s %-20s %-20s\n" "更新自身" "$( [ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否" )" "$container_actual_self_update"
-    printf "  %-20s %-20s\n" "下次检查倒计时:" "$wt_remaining_time_display" # 新增倒计时行
+    printf "  %-20s %b\n" "下次检查倒计时:" "$wt_remaining_time_display" # 新增倒计时行
     
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         docker logs watchtower --since "24h" 2>&1 | grep -q "unauthorized: authentication required" && local wt_log_check="unauthorized" || local wt_log_check=""
@@ -729,12 +731,14 @@ view_and_edit_config() {
     echo "5) Watchtower 额外参数: ${WATCHTOWER_EXTRA_ARGS:-无}"
     echo "6) Watchtower 调试模式: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "启用" || echo "禁用")"
     echo "7) Watchtower 配置间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"
-    echo "8) Watchtower 脚本配置启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"
-    echo "9) Cron 更新小时:      ${CRON_HOUR:-未设置}"
-    echo "10) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
-    echo "11) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"
+    # 智能模式已移除，此选项不再显示
+    # echo "8) Watchtower 智能模式: $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")"
+    echo "8) Watchtower 脚本配置启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")" # 选项编号调整
+    echo "9) Cron 更新小时:      ${CRON_HOUR:-未设置}" # 选项编号调整
+    echo "10) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}" # 选项编号调整
+    echo "11) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")" # 选项编号调整
     echo "-------------------------------------------------------------------------------------------------------------------"
-    read -p "请输入要编辑的选项编号 (1-11) 或按 Enter 返回主菜单: " edit_choice
+    read -p "请输入要编辑的选项编号 (1-11) 或按 Enter 返回主菜单: " edit_choice # 选项范围调整
 
     if [ -z "$edit_choice" ]; then
         return 0
@@ -931,7 +935,7 @@ show_watchtower_details() {
 
     # 移除 `]` 字符，因为你的输出中显示它被错误地包含在内
     wt_interval_running="${wt_interval_running%]}" 
-    echo "  - 配置的检查间隔: ${wt_interval_running} 秒"
+    printf "  - 配置的检查间隔: %s 秒\n" "$wt_interval_running" # 使用printf输出，确保不带额外换行或输出问题
     
     local only_self_update="否"
     if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
@@ -947,25 +951,25 @@ show_watchtower_details() {
     docker logs watchtower --since "24h" 2>&1 > "$temp_log_file" || true
     raw_logs=$(cat "$temp_log_file")
     
-    # 检查 raw_logs 是否有内容
-    if [ -z "$raw_logs" ]; then
-        echo -e "${COLOR_YELLOW}⚠️ 过去24小时内 Watchtower 没有日志输出。${COLOR_RESET}"
+    # 检查 raw_logs 是否有 Watchtower 的 Session done 日志，这才是真正的扫描完成日志
+    if ! echo "$raw_logs" | grep -q "Session done"; then
+        echo -e "${COLOR_YELLOW}⚠️ 过去24小时内 Watchtower 没有扫描完成日志 (Session done)。这可能是因为日志时间不匹配或扫描未完成。${COLOR_RESET}"
 
         # 2. 如果24小时内没有，尝试获取最近48小时日志
         echo -e "${COLOR_YELLOW}    尝试获取过去48小时日志...${COLOR_RESET}"
         docker logs watchtower --since "48h" 2>&1 > "$temp_log_file" || true
         raw_logs=$(cat "$temp_log_file")
 
-        if [ -z "$raw_logs" ]; then
-            echo -e "${COLOR_YELLOW}⚠️ 过去48小时内 Watchtower 也没有日志输出。${COLOR_RESET}"
+        if ! echo "$raw_logs" | grep -q "Session done"; then
+            echo -e "${COLOR_YELLOW}⚠️ 过去48小时内 Watchtower 也没有扫描完成日志。${COLOR_RESET}"
 
             # 3. 如果48小时内没有，尝试获取所有日志 (限制最近500行)
             echo -e "${COLOR_YELLOW}    尝试获取 Watchtower 所有历史日志 (限制最近500行，这可能需要一些时间)...${COLOR_RESET}"
             docker logs watchtower --tail 500 2>&1 > "$temp_log_file" || true
             raw_logs=$(cat "$temp_log_file")
 
-            if [ -z "$raw_logs" ]; then
-                echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何日志。请检查容器状态和日志配置。${COLOR_RESET}"
+            if ! echo "$raw_logs" | grep -q "Session done"; then
+                echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
                 press_enter_to_continue
                 return 1
             fi
