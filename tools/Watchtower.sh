@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.14 体验优化：顶部标题区域增加╔═包裹边框；美化状态报告标题
+# v2.17.15 体验优化：修复顶部标题包裹字符；再次优化Watchtower容器参数解析
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.14" # 版本更新，反映顶部标题包裹优化
+VERSION="2.17.15" # 版本更新，反映包裹字符和interval解析优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -609,15 +609,17 @@ show_status() {
     # 居中标题
     local title_text="📊 当前自动化更新状态报告"
     local line_length=113 # 匹配分隔线长度
-    local text_len=$(echo -e "$title_text" | wc -c) # 计算标题的字符长度
+    local text_len=$(echo -n "$title_text" | wc -c) # 计算标题的字符长度，-n避免末尾换行符
     local padding_left=$(( (line_length - text_len) / 2 ))
     local padding_right=$(( line_length - text_len - padding_left ))
     
     printf "\n"
-    printf "${COLOR_YELLOW}╔%.0s" $(seq 1 $line_length) # 打印左上角和顶部横线
+    printf "${COLOR_YELLOW}╔" # 左上角
+    printf '═%.0s' $(seq 1 $line_length) # 打印顶部横线
     printf "╗\n"
     printf "${COLOR_YELLOW}║%*s%s%*s║${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
-    printf "${COLOR_YELLOW}╚%.0s" $(seq 1 $line_length) # 打印左下角和底部横线
+    printf "${COLOR_YELLOW}╚" # 左下角
+    printf '═%.0s' $(seq 1 $line_length) # 打印底部横线
     printf "╝${COLOR_RESET}\n"
     echo "" # 增加空行
 
@@ -658,17 +660,18 @@ show_status() {
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 使用 jq 来精确提取 --interval 后的值
             # 找到 "--interval" 的索引，然后获取下一个索引的值
-            local interval_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
-            if [ -n "$interval_value_index" ]; then
+            local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key' 2>/dev/null || true)
+            if [ -n "$interval_arg_index" ]; then
+                local interval_value_index=$((interval_arg_index + 1))
                 container_actual_interval=$(echo "$wt_cmd_json" | jq -r ".[$interval_value_index]" 2>/dev/null || true)
             fi
             container_actual_interval="${container_actual_interval:-N/A}"
             
             # 解析 --label-enable 后的值
-            local label_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--label-enable") | .key | . + 1' 2>/dev/null || true)
-            if [ -n "$label_value_index" ]; then
+            local label_arg_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--label-enable") | .key' 2>/dev/null || true)
+            if [ -n "$label_arg_index" ]; then
+                local label_value_index=$((label_arg_index + 1))
                 container_actual_labels=$(echo "$wt_cmd_json" | jq -r ".[$label_value_index]" 2>/dev/null || true)
             fi
             container_actual_labels="${container_actual_labels:-无}"
@@ -681,6 +684,7 @@ show_status() {
                     skip_next=0
                     continue
                 fi
+                # 跳过已处理的参数及其值
                 if [[ "$cmd_arg" == "--interval" || "$cmd_arg" == "--label-enable" ]]; then
                     skip_next=1 # 跳过下一个参数（值）
                 elif [[ "$cmd_arg" == "--debug" ]]; then
@@ -691,7 +695,10 @@ show_status() {
                 elif [[ "$cmd_arg" == "watchtower" ]]; then
                     container_actual_self_update="是"
                 else
-                    temp_extra_args+=" $cmd_arg"
+                    # 其他未知的非flag参数被认为是额外参数
+                    if [[ ! "$cmd_arg" =~ ^-- ]]; then # 确保不是另一个flag
+                        temp_extra_args+=" $cmd_arg"
+                    fi
                 fi
             done
             container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
@@ -954,8 +961,9 @@ show_watchtower_details() {
     if [ -n "$wt_cmd_json" ]; then
         # 使用 jq 来精确提取 --interval 后的值
         # 找到 "--interval" 的索引，然后获取下一个索引的值
-        local interval_value_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key | . + 1' 2>/dev/null || true)
-        if [ -n "$interval_value_index" ]; then
+        local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key' 2>/dev/null || true)
+        if [ -n "$interval_arg_index" ]; then
+            local interval_value_index=$((interval_arg_index + 1))
             wt_interval_running=$(echo "$wt_cmd_json" | jq -r ".[$interval_value_index]" 2>/dev/null || true)
         fi
     fi
