@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.15 体验优化：修复顶部标题包裹字符；再次优化Watchtower容器参数解析
+# v2.17.15 体验优化：彻底修复状态报告标题包裹（正确绘制边框）；精确解析Watchtower容器参数
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.15" # 版本更新，反映包裹字符和interval解析优化
+VERSION="2.17.15" # 版本更新，反映最终的排版和interval解析优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -616,7 +616,7 @@ show_status() {
     printf "\n"
     printf "${COLOR_YELLOW}╔" # 左上角
     printf '═%.0s' $(seq 1 $line_length) # 打印顶部横线
-    printf "╗\n"
+    printf "╗${COLOR_RESET}\n" # 加上COLOR_RESET
     printf "${COLOR_YELLOW}║%*s%s%*s║${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
     printf "${COLOR_YELLOW}╚" # 左下角
     printf '═%.0s' $(seq 1 $line_length) # 打印底部横线
@@ -660,7 +660,7 @@ show_status() {
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 找到 "--interval" 的索引，然后获取下一个索引的值
+            # 更稳健的 jq 表达式：找到 "--interval" 所在的元素，然后取下一个元素的值
             local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'to_entries | .[] | select(.value == "--interval") | .key' 2>/dev/null || true)
             if [ -n "$interval_arg_index" ]; then
                 local interval_value_index=$((interval_arg_index + 1))
@@ -679,38 +679,39 @@ show_status() {
             local raw_cmd_array_str=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "") # 将JSON数组转为字符串，以便循环
             local temp_extra_args=""
             local skip_next=0
-            for cmd_arg in $raw_cmd_array_str; do # 循环每个参数
+            local current_index=0
+            # 使用更安全的循环方式，直接遍历数组
+            for cmd_val in $(echo "$wt_cmd_json" | jq -r '.[]'); do
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
+                    current_index=$((current_index + 1))
                     continue
                 fi
-                # 跳过已处理的参数及其值
-                if [[ "$cmd_arg" == "--interval" || "$cmd_arg" == "--label-enable" ]]; then
+                if [ "$cmd_val" == "--interval" ] || [ "$cmd_val" == "--label-enable" ]; then
                     skip_next=1 # 跳过下一个参数（值）
-                elif [[ "$cmd_arg" == "--debug" ]]; then
+                elif [ "$cmd_val" == "--debug" ]; then
                     container_actual_debug="启用"
-                elif [[ "$cmd_arg" == "--cleanup" ]]; then
-                    # cleanup是默认参数，不作为"额外"参数显示
+                elif [ "$cmd_val" == "--cleanup" ]; then
                     continue
-                elif [[ "$cmd_arg" == "watchtower" ]]; then
+                elif [ "$cmd_val" == "watchtower" ]; then
                     container_actual_self_update="是"
-                else
-                    # 其他未知的非flag参数被认为是额外参数
-                    if [[ ! "$cmd_arg" =~ ^-- ]]; then # 确保不是另一个flag
-                        temp_extra_args+=" $cmd_arg"
-                    fi
+                elif [[ ! "$cmd_val" =~ ^-- ]]; then # 确保不是另一个flag
+                    temp_extra_args+=" $cmd_val"
                 fi
+                current_index=$((current_index + 1))
             done
             container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
             if [ -z "$container_actual_extra_args" ]; then
                  container_actual_extra_args="无"
             fi
             
-            if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
+            # 重新检查 self_update，因为上面循环可能已经设置，但这里是最终判断
+            if echo "$wt_cmd_json" | jq -e 'map(.) | contains(["watchtower"])' >/dev/null; then # 使用jq -e检查是否存在"watchtower"参数
                 container_actual_self_update="是"
             else
                 container_actual_self_update="否"
             fi
+
 
             # 只有当 container_actual_interval 是有效数字时才计算倒计时
             if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
@@ -1053,7 +1054,7 @@ show_watchtower_details() {
         echo -e "  - ${COLOR_YELLOW}⚠️ 未找到 Watchtower 的最近扫描完成日志。${COLOR_RESET}"
     fi
 
-    echo -e "\n${COLOR_BLUE}--- 过去 24 小时容器更新状况 ---${COLOR_RESET}"
+    echo -e "\n${COLOR_BLUE}--- 24 小时内容器更新状况 ---${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
     local update_logs_filtered_content=""
     
