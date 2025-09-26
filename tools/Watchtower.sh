@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.3 体验优化：彻底修复Watchtower日志获取和显示（区分Docker logs自身输出与实际日志）
+# v2.17.4 体验优化：精简Watchtower详情页显示，去除重复和冗余日志获取提示
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.3" # 版本更新，反映最终日志获取修复
+VERSION="2.17.4" # 版本更新，反映详情页精简
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -544,17 +544,11 @@ _get_watchtower_all_raw_logs() {
 
     local raw_logs_output=""
 
-    # 尝试获取最近500行日志
+    # 获取所有日志，限制最近500行，并把所有输出重定向到文件
     docker logs watchtower --tail 500 2>&1 > "$temp_log_file" || true
     raw_logs_output=$(cat "$temp_log_file")
 
-    # 如果 raw_logs_output 中没有 Watchtower 的实际日志，可能是 docker logs 自己的提示
-    # 我们认为包含 "Session done" 才是有效的 Watchtower 扫描日志
-    if ! echo "$raw_logs_output" | grep -q "Session done"; then
-        echo "" # 没有找到有效的 Watchtower 扫描日志
-        return
-    fi
-
+    # 返回所有捕获到的内容，后续函数再进行具体过滤
     echo "$raw_logs_output"
 }
 
@@ -570,7 +564,7 @@ _get_watchtower_remaining_time() {
     fi
 
     # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
-    local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true) # || true 避免 grep 没找到时终止脚本
+    local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
 
     local last_check_timestamp_str=""
     if [ -n "$last_check_log" ]; then
@@ -578,7 +572,7 @@ _get_watchtower_remaining_time() {
     fi
 
     if [ -n "$last_check_timestamp_str" ]; then
-        local last_check_epoch=$(date -d "$last_check_timestamp_str" +%s 2>/dev/null || true) # || true 避免date解析失败时终止脚本
+        local last_check_epoch=$(date -d "$last_check_timestamp_str" +%s 2>/dev/null || true)
         if [ -n "$last_check_epoch" ]; then
             local current_epoch=$(date +%s)
             local time_since_last_check=$((current_epoch - last_check_epoch))
@@ -593,7 +587,7 @@ _get_watchtower_remaining_time() {
                 remaining_time_str="${COLOR_GREEN}即将进行或已超时${COLOR_RESET}"
             fi
         else
-            remaining_time_str="${COLOR_YELLOW}⚠️ 日志时间解析失败，请检查系统时钟同步${COLOR_RESET}"
+            remaining_time_str="${COLOR_YELLOW}⚠️ 日志时间解析失败${COLOR_RESET}"
         fi
     else
         remaining_time_str="${COLOR_YELLOW}⚠️ 未找到最近扫描日志${COLOR_RESET}"
@@ -634,11 +628,12 @@ show_status() {
     local container_actual_self_update="否"
 
     local wt_remaining_time_display="N/A" # 初始化倒计时显示
-    local raw_logs_for_status="" # 用于存储 Watchtower 原始日志
+    local raw_logs_content_for_status="" # 用于存储 Watchtower 原始日志
 
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-        raw_logs_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
-        if [ -n "$raw_logs_for_status" ]; then
+        raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
+
+        if [ -n "$raw_logs_content_for_status" ]; then
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             container_actual_interval=$(echo "$wt_cmd_json" | awk -F', *' '{
@@ -690,7 +685,7 @@ show_status() {
                 container_actual_self_update="否"
             fi
 
-            wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_for_status")
+            wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
         fi
     fi
 
@@ -704,7 +699,7 @@ show_status() {
     printf "  %-20s %-20s %-20s\n" "更新自身" "$( [ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否" )" "$container_actual_self_update"
     printf "  %-20s %b\n" "下次检查倒计时:" "$wt_remaining_time_display"
     
-    if docker ps --format '{{.Names}}' | grep -q '^watchtower$' && echo "$raw_logs_for_status" | grep -q "unauthorized: authentication required"; then
+    if docker ps --format '{{.Names}}' | grep -q '^watchtower$' && echo "$raw_logs_content_for_status" | grep -q "unauthorized: authentication required"; then
         echo -e "  ${COLOR_RED}🚨 警告: Watchtower 日志中发现认证失败 ('unauthorized') 错误！${COLOR_RESET}"
         echo -e "         这通常意味着 Watchtower 无法拉取镜像，包括其自身。请检查 Docker Hub 认证或私有仓库配置。"
         echo -e "         如果你遇到频繁的 Docker Hub 镜像拉取失败，可能是达到了免费用户的限速，请考虑付费套餐或使用其他镜像源。"
@@ -944,7 +939,6 @@ show_watchtower_details() {
 
     # 移除 `]` 字符，因为你的输出中显示它被错误地包含在内
     wt_interval_running="${wt_interval_running%]}" 
-    printf "  - 配置的检查间隔: %s 秒\n" "$wt_interval_running"
     
     local only_self_update="否"
     if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
@@ -959,7 +953,11 @@ show_watchtower_details() {
     # 检查获取到的 raw_logs 是否包含有效的 Watchtower 扫描日志（Session done）
     if ! echo "$raw_logs" | grep -q "Session done"; then
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
-        echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
+        echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
+        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间（您之前看到的2025年）同步？请执行 'date' 命令检查。"
+        echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？"
+        echo -e "    3. 如果时间不同步，请尝试校准系统时间，并重启 Watchtower 容器。"
+        echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含 Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5
         press_enter_to_continue
         return 1
@@ -1033,52 +1031,44 @@ show_watchtower_details() {
         fi
     done
     
-    update_logs_filtered_content=$(echo -e "$filtered_logs_24h_content" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request" || true) # || true 避免 grep 没找到时终止脚本
+    update_logs_filtered_content=$(echo -e "$filtered_logs_24h_content" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request" || true)
 
     if [ -z "$update_logs_filtered_content" ]; then
         echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相关操作。${COLOR_RESET}"
     else
         echo "最近24小时的 Watchtower 日志摘要 (按时间顺序):"
         echo "$update_logs_filtered_content" | while IFS= read -r line; do # 使用IFS= read -r 防止空格截断
-            local log_time_raw=""
-            local container_name="N/A"
-            local action_desc="未知操作"
-
-            # 提取时间戳
-            log_time_raw=$(echo "$line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
+            local log_time_raw=$(echo "$line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
             local log_time_formatted=""
             if [ -n "$log_time_raw" ]; then
                 log_time_formatted=$(date -d "$log_time_raw" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)
             fi
 
-            # 提取容器名称 - 改进：更通用地匹配 container="name" 或 container=/name
+            local container_name="N/A"
             if [[ "$line" =~ container=\"?/?([^\"]+)\"?[[:space:]] ]]; then
                 container_name="${BASH_REMATCH[1]}"
-                # 移除容器名前导的斜杠，例如 /watchtower -> watchtower
                 container_name="${container_name#/}"
-            elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then # Fallback for 'container 'name''
+            elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then
                 container_name="${BASH_REMATCH[1]}"
             fi
-            # 如果容器名仍然是 "N/A" 且日志中提到容器，尝试从其他模式提取
             if [ "$container_name" = "N/A" ]; then
-                if [[ "$line" =~ "No new images found for container" ]]; then # 特殊处理无新镜像的日志
+                if [[ "$line" =~ "No new images found for container" ]]; then
                     container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
-                elif [[ "$line" =~ "Found new image for container" ]]; then # 匹配 "Found new image for container name"
+                elif [[ "$line" =~ "Found new image for container" ]]; then
                      container_name=$(echo "$line" | sed -n 's/.*Found new image for container \([^\ ]*\).*/\1/p' | head -n 1)
                 fi
             fi
 
-
-            # 判断动作
+            local action_desc="未知操作"
             if [[ "$line" =~ "Session done" ]]; then
                 local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
                 local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
                 local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
                 action_desc="${COLOR_GREEN}扫描完成${COLOR_RESET} (扫描: ${scanned}, 更新: ${updated}, 失败: ${failed})"
                 if [ "$failed" -gt 0 ]; then
-                    action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}" # 失败突出红色
+                    action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}"
                 elif [ "$updated" -gt 0 ]; then
-                    action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}" # 更新突出黄色
+                    action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}"
                 fi
             elif [[ "$line" =~ "Found new image for container" ]]; then
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
@@ -1096,7 +1086,6 @@ show_watchtower_details() {
             elif [[ "$line" =~ "skipped because of an error" ]]; then
                 action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
             elif [[ "$line" =~ "Unable to update container" ]]; then
-                # 提取错误消息部分
                 local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
                 action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
             elif [[ "$line" =~ "Could not do a head request" ]]; then
@@ -1106,11 +1095,9 @@ show_watchtower_details() {
                 action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
             fi
 
-            # 仅在能成功提取信息时才打印
             if [ -n "$log_time_formatted" ] && [ "$container_name" != "N/A" ] && [ "$action_desc" != "未知操作" ]; then
                 printf "  %-20s %-25s %s\n" "$log_time_formatted" "$container_name" "$action_desc"
             else
-                # 如果解析失败，打印原始日志行，便于调试
                 echo "  ${COLOR_YELLOW}原始日志 (部分解析或无法解析):${COLOR_RESET} $line"
             fi
         done
@@ -1142,7 +1129,7 @@ main_menu() {
         fi
         echo -e "-------------------------------------------"
 
-        while read -r -t 0; do read -r; done # 清空缓冲区，防止之前的Enter键残留
+        while read -r -t 0; do read -r; done
         read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice
 
         if [ -z "$choice" ]; then
@@ -1182,7 +1169,7 @@ main_menu() {
                 ;;
             *)
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
-                press_enter_to_continue # 仅在无效输入时暂停
+                press_enter_to_continue
                 ;;
         esac
     done
