@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.15.1 体验优化：增强 Watchtower 日志解析，兼容更多日志短语
+# v2.15.2 体验优化：精确 Watchtower 日志解析，解决日志未找到问题
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示 - 优化：Watchtower配置和运行状态分离)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化：增强日志解析)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化：精准日志解析与错误提示)
 
-VERSION="2.15.1" # 版本更新，反映日志解析增强
+VERSION="2.15.2" # 版本更新，反映日志解析优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -613,6 +613,14 @@ show_status() {
         echo "  - 实际智能模式 (运行): $is_self_updating_running"
         echo "  - 实际标签筛选 (运行): ${wt_labels_running:-无}"
         echo "  - 实际调试模式 (运行): ${debug_mode_running:-禁用}"
+
+        # 添加认证失败警告
+        if docker logs watchtower --since "24h" 2>/dev/null | grep -q "unauthorized: authentication required"; then
+            echo -e "  ${COLOR_RED}🚨 警告: Watchtower 日志中发现认证失败 ('unauthorized') 错误！${COLOR_RESET}"
+            echo -e "         这通常意味着 Watchtower 无法拉取镜像，包括其自身。请检查 Docker Hub 认证或私有仓库配置。"
+            echo -e "         如果你遇到频繁的 Docker Hub 镜像拉取失败，可能是达到了免费用户的限速，请考虑付费套餐或使用其他镜像源。"
+        fi
+
     elif docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_YELLOW}⚠️ Watchtower 容器已存在但未运行。${COLOR_RESET}"
     else
@@ -622,7 +630,7 @@ show_status() {
     echo -e "${COLOR_BLUE}--- Cron 定时任务脚本配置状态 ---${COLOR_RESET}"
     echo "  - 启用状态: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "${COLOR_GREEN}已启用${COLOR_RESET}" || echo "${COLOR_RED}已禁用${COLOR_RESET}")"
     echo "  - 配置的每天更新时间: ${CRON_HOUR:-未设置} 点"
-    echo "  - 配置的 Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+    echo "  - 配置的 Docker Compose 项 目 目 录 : ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
 
     echo -e "${COLOR_BLUE}--- Cron 定时任务实际运行状态 ---${COLOR_RESET}"
     local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
@@ -630,8 +638,8 @@ show_status() {
         echo -e "${COLOR_GREEN}✅ Cron 定时任务已配置并激活。${COLOR_RESET}"
         local cron_entry
         cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT")
-        echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
-        echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
+        echo "  - 实 际 定 时 表 达 式  (运 行 ): $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
+        echo "  - 日 志 文 件 : /var/log/docker-auto-update-cron.log"
     else
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
     fi
@@ -862,10 +870,10 @@ show_watchtower_details() {
     echo "  - 配置的检查间隔: ${wt_interval_running} 秒"
 
     # 查找最近一次检查更新的日志
-    # 扩展匹配模式，以捕捉更多表示 Watchtower 完成一次扫描的日志信息
+    # 根据用户日志，使用 "Session done" 作为扫描完成的标志
     local last_check_log
     set +e # 临时关闭errexit，因为docker logs可能没有输出
-    last_check_log=$(docker logs watchtower --since "48h" 2>/dev/null | grep -E "Finished a scan|No new images found|Checking for new images|Found [0-9]+ new images for container" | tail -n 1)
+    last_check_log=$(docker logs watchtower --since "48h" 2>/dev/null | grep -E "Session done" | tail -n 1)
     set -e
 
     local last_check_timestamp_str=""
@@ -907,8 +915,8 @@ show_watchtower_details() {
     echo "-------------------------------------------------------------------------------------------------------------------"
     local update_logs=""
     set +e # 临时关闭errexit
-    # 扩展更新相关的匹配模式
-    update_logs=$(docker logs watchtower --since "24h" 2>/dev/null | grep -E "Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container")
+    # 扩展更新相关的匹配模式，包含用户提供的日志模式
+    update_logs=$(docker logs watchtower --since "24h" 2>/dev/null | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request")
     set -e
 
     if [ -z "$update_logs" ]; then
@@ -927,21 +935,36 @@ show_watchtower_details() {
                 log_time_formatted=$(date -d "$log_time_raw" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
             fi
 
-            # 提取容器名称
-            if [[ "$line" =~ container\ \'([^\']+)\' ]]; then # 匹配 'container 'name''
+            # 提取容器名称 - 改进：更通用地匹配 container="name" 或 container=/name
+            if [[ "$line" =~ container=\"?/?([^\"]+)\"?[[:space:]] ]]; then
                 container_name="${BASH_REMATCH[1]}"
-            elif [[ "$line" =~ "No new images found for container" ]]; then # 特殊处理无新镜像的日志
-                container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
-            elif [[ "$line" =~ "Found new image for container" ]]; then # 匹配 "Found new image for container name"
-                 container_name=$(echo "$line" | sed -n 's/.*Found new image for container \([^\ ]*\).*/\1/p' | head -n 1)
-            elif [[ "$line" =~ "Removing old container" ]]; then # 匹配 "Removing old container 'name'"
-                 container_name=$(echo "$line" | sed -n 's/.*Removing old container \'\([^\']*\)'.*/\1/p' | head -n 1)
-            elif [[ "$line" =~ "Creating new container" ]]; then # 匹配 "Creating new container 'name'"
-                 container_name=$(echo "$line" | sed -n 's/.*Creating new container \'\([^\']*\)'.*/\1/p' | head -n 1)
+                # 移除容器名前导的斜杠，例如 /watchtower -> watchtower
+                container_name="${container_name#/}"
+            elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then # Fallback for 'container 'name''
+                container_name="${BASH_REMATCH[1]}"
+            fi
+            # 如果容器名仍然是 "N/A" 且日志中提到容器，尝试从其他模式提取
+            if [ "$container_name" = "N/A" ]; then
+                if [[ "$line" =~ "No new images found for container" ]]; then # 特殊处理无新镜像的日志
+                    container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
+                elif [[ "$line" =~ "Found new image for container" ]]; then # 匹配 "Found new image for container name"
+                     container_name=$(echo "$line" | sed -n 's/.*Found new image for container \([^\ ]*\).*/\1/p' | head -n 1)
+                fi
             fi
 
+
             # 判断动作
-            if [[ "$line" =~ "Found new image for container" ]]; then
+            if [[ "$line" =~ "Session done" ]]; then
+                local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+                local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+                local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+                action_desc="${COLOR_GREEN}扫描完成${COLOR_RESET} (扫描: ${scanned}, 更新: ${updated}, 失败: ${failed})"
+                if [ "$failed" -gt 0 ]; then
+                    action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}" # 失败突出红色
+                elif [ "$updated" -gt 0 ]; then
+                    action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}" # 更新突出黄色
+                fi
+            elif [[ "$line" =~ "Found new image for container" ]]; then
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                 action_desc="${COLOR_YELLOW}发现新版本: $image_info${COLOR_RESET}"
             elif [[ "$line" =~ "Pulling image" ]] || [[ "$line" =~ "will pull" ]]; then
@@ -956,6 +979,13 @@ show_watchtower_details() {
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
             elif [[ "$line" =~ "skipped because of an error" ]]; then
                 action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
+            elif [[ "$line" =~ "Unable to update container" ]]; then
+                # 提取错误消息部分
+                local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
+                action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
+            elif [[ "$line" =~ "Could not do a head request" ]]; then
+                local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
+                action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
             elif [[ "$line" =~ "No new images found for container" ]]; then
                 action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
             fi
