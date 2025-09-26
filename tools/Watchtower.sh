@@ -65,7 +65,7 @@ else
     TG_CHAT_ID=""
     EMAIL_TO=""
     WATCHTOWER_LABELS="" # Watchtower 标签配置
-    WATCHTOWER_EXTRA_ARGS="" # Watchtower 额外参数
+    WATCHTOWER_EXTRA_ARGS="" # WatchTOWER 额外参数
     WATCHTOWER_DEBUG_ENABLED="false" # Watchtower 调试模式是否启用
     WATCHTOWER_CONFIG_INTERVAL="" # 脚本配置的Watchtower检查间隔 (秒)
     WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false" # 智能模式已移除，默认强制为 false
@@ -565,37 +565,42 @@ _get_watchtower_remaining_time() {
     local raw_logs="$2" # 传入已获取的日志内容
     local remaining_time_str="N/A"
 
-    # 如果 raw_logs 中没有 'Session done'，则返回无有效日志
+    # 1. 检查是否存在扫描完成日志
     if ! echo "$raw_logs" | grep -q "Session done"; then 
-        echo "${COLOR_YELLOW}⚠️ 无有效扫描日志${COLOR_RESET}" 
+        echo "${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}" # 统一首次扫描等待提示
         return
     fi 
 
-    # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
+    # 2. 查找最新的 Session done 日志
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
-
     local last_check_timestamp_str=""
+
     if [ -n "$last_check_log" ]; then
+        # 从日志行中精确提取 time="XXX" 的值
         last_check_timestamp_str=$(echo "$last_check_log" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
     fi
 
     if [ -n "$last_check_timestamp_str" ]; then
-        local last_check_epoch=$(date -d "$last_check_timestamp_str" +%s 2>/dev/null || true)
+        # 尝试将时间字符串转换为 Epoch 时间。
+        local last_check_epoch
+        last_check_epoch=$(date -d "$last_check_timestamp_str" +%s 2>/dev/null || true)
+        
         if [ -n "$last_check_epoch" ]; then
             local current_epoch=$(date +%s)
             local time_since_last_check=$((current_epoch - last_check_epoch))
             local remaining_time=$((wt_interval_running - time_since_last_check))
 
             if [ "$remaining_time" -gt 0 ]; then
+                # 计算时分秒
                 local hours=$((remaining_time / 3600))
                 local minutes=$(( (remaining_time % 3600) / 60 ))
                 local seconds=$(( remaining_time % 60 ))
                 remaining_time_str="${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
             else
-                remaining_time_str="${COLOR_GREEN}即将进行或已超时${COLOR_RESET}"
+                remaining_time_str="${COLOR_GREEN}即将进行或已超时 (${COLOR_YELLOW}${remaining_time}s)${COLOR_RESET}"
             fi
         else
-            remaining_time_str="${COLOR_YELLOW}⚠️ 日志时间解析失败${COLOR_RESET}"
+            remaining_time_str="${COLOR_RED}❌ 日志时间解析失败 (检查系统date命令)${COLOR_RESET}"
         fi
     else
         remaining_time_str="${COLOR_YELLOW}⚠️ 未找到最近扫描日志${COLOR_RESET}"
@@ -1034,7 +1039,7 @@ show_watchtower_details() {
             local time_since_last_check=$((current_epoch - last_check_epoch))
             local remaining_time=$((wt_interval_running - time_since_last_check))
 
-            echo "  - 上次检查时间: $(date -d "$last_check_timestamp_str" '+%Y-%m-%d %H:%M:%S')"
+            echo "  - 上次检查时间 (UTC): $(date -d "$last_check_timestamp_str" '+%Y-%m-%d %H:%M:%S')"
 
             if [ "$remaining_time" -gt 0 ]; then
                 local hours=$((remaining_time / 3600))
@@ -1067,7 +1072,7 @@ show_watchtower_details() {
             local log_epoch=$(date -d "$log_time_raw" +%s 2>/dev/null || true)
             if [ -n "$log_epoch" ]; then
                 local time_diff_seconds=$((current_epoch - log_epoch))
-                # 筛选出日志时间在 [-1小时, +48小时] 范围内的日志，即在过去48小时内，或者在未来1小时内。
+                # 筛选出日志时间在过去48小时到未来1小时的范围
                 if [ "$time_diff_seconds" -le $((86400*2)) ] && [ "$time_diff_seconds" -ge -$((3600*1)) ]; then
                     filtered_logs_24h_content+="$line\n"
                 elif [ "$time_diff_seconds" -lt -$((3600*1)) ] && [ "$log_time_warning_issued" = "false" ]; then
