@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.17 体验优化：彻底修复状态报告标题美化（使用等号，单行包裹）；精确解析Watchtower容器参数（sed+awk终极方案）
+# v2.17.17 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（终极jq表达式）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.171" # 版本更新，反映最终标题美化和interval解析优化
+VERSION="2.17.17" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -50,11 +50,10 @@ if ! command -v docker &>/dev/null; then
     exit 1
 fi
 
-# 检查 jq (虽然我们尝试用sed+awk，但其他地方可能仍用jq，所以保留检查)
+# 检查 jq
 if ! command -v jq &>/dev/null; then
     echo -e "${COLOR_RED}❌ 未检测到 'jq' 工具，它用于解析JSON数据。请先安装：sudo apt install jq 或 sudo yum install jq${COLOR_RESET}"
-    # 如果没有jq，有些功能可能受影响，但脚本不直接退出，只影响jq相关解析
-    # exit 1
+    exit 1
 fi
 
 # 🔹 加载配置
@@ -611,14 +610,15 @@ show_status() {
     local title_text="📊 当前自动化更新状态报告"
     local line_length=113 # 匹配分隔线长度
     local text_len=$(echo -n "$title_text" | wc -c) # 计算标题的字符长度，-n避免末尾换行符
-    local padding_left=$(( (line_length - text_len) / 2 ))
+    local padding_width=$((line_length - text_len))
+    local padding_left=$(( padding_width / 2 ))
     local padding_right=$(( line_length - text_len - padding_left ))
     local full_line=$(printf '=%.0s' $(seq 1 $line_length)) # 生成等号横线
 
     printf "\n"
     printf "${COLOR_YELLOW}%s\n" "$full_line" # 上方横线
     printf "%*s%s%*s\n" $padding_left "" "${COLOR_YELLOW}$title_text${COLOR_RESET}" $padding_right "" # 居中带颜色标题
-    printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "$full_line" # 下方横线，并确保颜色重置
+    printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "$full_line" # 下方横线
     echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
@@ -658,32 +658,19 @@ show_status() {
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 终极 jq 方式：找到 "--interval" 所在的元素，然后取下一个元素的值
-            local interval_value=$(echo "$wt_cmd_json" | jq -r '
-                first(
-                    range(length) as $i |
-                    select(.[$i] == "--interval") |
-                    if ($i + 1) < length then .[$i+1] else empty end
-                ) // "N/A"
-            ' 2>/dev/null || true)
-            container_actual_interval="${interval_value}"
+            # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
+            local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+            container_actual_interval="${interval_value:-N/A}"
             
             # 解析 --label-enable 后的值
-            local label_value=$(echo "$wt_cmd_json" | jq -r '
-                first(
-                    range(length) as $i |
-                    select(.[$i] == "--label-enable") |
-                    if ($i + 1) < length then .[$i+1] else empty end
-                ) // "无"
-            ' 2>/dev/null || true)
-            container_actual_labels="${label_value}"
+            local label_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--label-enable") | .[$i+1] // empty)' 2>/dev/null || true)
+            container_actual_labels="${label_value:-无}"
 
-            local raw_cmd_array=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "") # 将JSON数组转为字符串，以便循环
+            local raw_cmd_array_str=$(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || echo "") # 将JSON数组转为字符串，以便循环
             local temp_extra_args=""
             local skip_next=0
             # 使用更安全的循环方式，直接遍历数组
-            # 注意：这里 cmd_arg 是字符串，而不是索引。 jq 已经处理了获取参数值，这里只做额外参数拼接和 debug/self_update 检查
-            for cmd_val in $raw_cmd_array; do
+            for cmd_val in $(echo "$wt_cmd_json" | jq -r '.[]'); do
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
                     continue
@@ -762,7 +749,8 @@ show_status() {
     else
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
     fi
-    echo "-------------------------------------------------------------------------------------------------------------------"
+    # 移除 Cron 任务下的冗余横线
+    # echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
     return 0
 }
@@ -962,9 +950,9 @@ show_watchtower_details() {
     local wt_interval_running="N/A"
 
     if [ -n "$wt_cmd_json" ]; then
-        # 使用 jq 来精确提取 --interval 后的值
-        # 终极 jq 方式：找到 "--interval" 后面的那个值
-        wt_interval_running=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+        # 终极 jq 表达式：找到 "--interval" 的索引，然后获取下一个索引的值
+        local interval_value=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+        wt_interval_running="${interval_value:-N/A}"
     fi
 
     if [ -z "$wt_interval_running" ] || ! [[ "$wt_interval_running" =~ ^[0-9]+$ ]]; then # 检查是否为有效数字
@@ -1185,7 +1173,7 @@ main_menu() {
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
-        read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice # 修正中文错别字
+        read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice
 
         if [ -z "$choice" ]; then
             choice=8
@@ -1226,7 +1214,7 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        esac
+        在esac
     done
 }
 
