@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.10 体验优化：修复Watchtower容器无date命令问题；优化日志获取和提示
+# v2.17.11 体验优化：增加Watchtower首次扫描等待提示；移除选项8
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示，优化排版，新增Watchtower倒计时)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化日志获取和提示)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示，增加首次扫描等待)
 
-VERSION="2.17.10" # 版本更新，反映日期命令和日志提示优化
+VERSION="2.17.11" # 版本更新，反映首次扫描等待提示和选项8移除
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -546,6 +546,7 @@ _get_watchtower_all_raw_logs() {
 
     # 获取所有日志，限制最近500行，并把所有输出重定向到文件
     # 使用 --no-trunc 确保完整日志行，排除 docker logs 自身的头部信息
+    # 增加 grep -E "^time=" 过滤，确保只捕获格式为 time=... 的日志行，排除 docker logs 自身的其他提示
     docker logs watchtower --tail 500 --no-trunc 2>&1 | grep -E "^time=" > "$temp_log_file" || true
     raw_logs_output=$(cat "$temp_log_file")
 
@@ -635,7 +636,7 @@ show_status() {
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
 
-        if [ -n "$raw_logs_content_for_status" ]; then
+        if [ -n "$raw_logs_content_for_status" ]; then # 只有当_get_watchtower_all_raw_logs返回非空且有效日志时才继续解析
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             container_actual_interval=$(echo "$wt_cmd_json" | awk -F', *' '{
@@ -959,7 +960,7 @@ show_watchtower_details() {
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
         echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。${COLOR_RESET}"
-        echo -e "       (如果您之前看到 'exec: "date": executable file not found' 错误，表明容器内没有date命令，这并不影响Watchtower本身的功能，但您需要自行确认宿主机时间是否正确。)" # 针对无date命令的提示
+        echo -e "       (如果您之前看到 'exec: date: executable file not found' 错误，表明容器内没有date命令，这并不影响Watchtower本身的功能，但您需要自行确认宿主机时间是否正确。)${COLOR_RESET}" # 针对无date命令的提示
         echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？${COLOR_RESET}"
         echo -e "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含 Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
