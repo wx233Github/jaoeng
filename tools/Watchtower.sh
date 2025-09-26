@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.4 体验优化：精简Watchtower详情页显示，去除重复和冗余日志获取提示
+# v2.17.5 体验优化：修复颜色显示问题；调整状态报告排版
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.4" # 版本更新，反映详情页精简
+VERSION="2.17.5" # 版本更新，反映颜色和排版修复
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -21,7 +21,7 @@ CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权�
 IS_NESTED_CALL="${IS_NESTED_CALL:-false}" # 默认值为 false，如果父脚本设置了，则会被覆盖为 true
 
 # --- 颜色定义 ---
-if [ tty -s ]; then # 检查标准输出是否是终端
+if [ -t 1 ]; then # 检查标准输出是否是终端 (恢复使用此更常用方式)
     COLOR_GREEN="\033[0;32m"
     COLOR_RED="\033[0;31m"
     COLOR_YELLOW="\033[0;33m"
@@ -561,7 +561,7 @@ _get_watchtower_remaining_time() {
     if [ -z "$raw_logs" ]; then
         echo "$remaining_time_str" # 无日志，无法计算
         return
-    fi
+    }
 
     # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
@@ -598,8 +598,9 @@ _get_watchtower_remaining_time() {
 
 # 🔹 状态报告
 show_status() {
-    echo -e "\n${COLOR_YELLOW}📊 当前自动化更新状态报告：${COLOR_RESET}"
+    echo -e "\n${COLOR_YELLOW}📊 当前自动化更新状态报告：${COLOR_RESET}" # 顶部空行
     echo "-------------------------------------------------------------------------------------------------------------------"
+    echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
     local wt_configured_mode_desc="Watchtower模式 (更新所有容器)" # 智能模式已移除
@@ -726,6 +727,7 @@ show_status() {
         echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
     fi
     echo "-------------------------------------------------------------------------------------------------------------------"
+    echo "" # 增加空行
     return 0
 }
 
@@ -740,12 +742,12 @@ view_and_edit_config() {
     echo "5) Watchtower 额外参数: ${WATCHTOWER_EXTRA_ARGS:-无}"
     echo "6) Watchtower 调试模式: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "启用" || echo "禁用")"
     echo "7) Watchtower 配置间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"
-    echo "8) Watchtower 脚本配置启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")" # 选项编号调整
-    echo "9) Cron 更新小时:      ${CRON_HOUR:-未设置}" # 选项编号调整
-    echo "10) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}" # 选项编号调整
-    echo "11) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")" # 选项编号调整
+    echo "8) Watchtower 脚本配置启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"
+    echo "9) Cron 更新小时:      ${CRON_HOUR:-未设置}"
+    echo "10) Cron Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
+    echo "11) Cron 脚本配置启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"
     echo "-------------------------------------------------------------------------------------------------------------------"
-    read -p "请输入要编辑的选项编号 (1-11) 或按 Enter 返回主菜单: " edit_choice # 选项范围调整
+    read -p "请输入要编辑的选项编号 (1-11) 或按 Enter 返回主菜单: " edit_choice
 
     if [ -z "$edit_choice" ]; then
         return 0
@@ -818,7 +820,7 @@ view_and_edit_config() {
             save_config
             echo -e "${COLOR_YELLOW}ℹ️ Watchtower 检查间隔已修改，您可能需要重新设置 Watchtower (主菜单选项 1) 以应用此更改。${COLOR_RESET}"
             ;;
-        8) # 选项8已调整
+        8)
             local wt_enabled_choice=""
             read -p "是否启用 Watchtower 脚本配置？(y/n) (当前: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")): " wt_enabled_choice
             if [[ "$wt_enabled_choice" == "y" || "$wt_enabled_choice" == "Y" ]]; then
@@ -829,7 +831,7 @@ view_and_edit_config() {
             save_config
             echo -e "${COLOR_YELLOW}ℹ️ Watchtower 脚本配置启用状态已修改。请注意，这仅是脚本的记录状态，您仍需通过主菜单选项 1 来启动或主菜单选项 4 -> 1 来停止实际的 Watchtower 容器。${COLOR_RESET}"
             ;;
-        9) # 选项9已调整
+        9)
             local CRON_HOUR_TEMP=""
             while true; do
                 read -p "请输入新的 Cron 更新小时 (0-23, 当前: ${CRON_HOUR:-未设置}, 空输入不修改): " CRON_HOUR_INPUT
@@ -847,7 +849,7 @@ view_and_edit_config() {
             save_config
             echo -e "${COLOR_YELLOW}ℹ️ Cron 更新小时已修改，您可能需要重新配置 Cron 定时任务 (主菜单选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
             ;;
-        10) # 选项10已调整
+        10)
             local DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
             while true; do
                 read -p "请输入新的 Cron Docker Compose 项目目录 (当前: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}, 空输入取消设置): " DOCKER_COMPOSE_PROJECT_DIR_INPUT
@@ -865,7 +867,7 @@ view_and_edit_config() {
             save_config
             echo -e "${COLOR_YELLOW}ℹ️ Cron Docker Compose 项目目录已修改，您可能需要重新配置 Cron 定时任务 (主菜单选项 1 -> 2) 以应用此更改。${COLOR_RESET}"
             ;;
-        11) # 选项11已调整
+        11)
             local cron_enabled_choice=""
             read -p "是否启用 Cron 脚本配置？(y/n) (当前: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")): " cron_enabled_choice
             if [[ "$cron_enabled_choice" == "y" || "$cron_enabled_choice" == "Y" ]]; then
@@ -911,6 +913,7 @@ run_watchtower_once() {
 show_watchtower_details() {
     echo -e "${COLOR_YELLOW}🔍 Watchtower 运行详情和更新记录：${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
+    echo "" # 增加空行
 
     if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_RED}❌ Watchtower 容器未运行。${COLOR_RESET}"
@@ -934,10 +937,10 @@ show_watchtower_details() {
 
     if [ -z "$wt_interval_running" ]; then
         wt_interval_running="300" # 如果解析失败，使用默认值 300 秒
-        echo -e "${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔，使用默认值 300 秒。${COLOR_RESET}"
+        echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔，使用默认值 300 秒。${COLOR_RESET}"
     fi
 
-    # 移除 `]` 字符，因为你的输出中显示它被错误地包含在内
+    # 移除 `]` 字符
     wt_interval_running="${wt_interval_running%]}" 
     
     local only_self_update="否"
@@ -954,7 +957,7 @@ show_watchtower_details() {
     if ! echo "$raw_logs" | grep -q "Session done"; then
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
-        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间（您之前看到的2025年）同步？请执行 'date' 命令检查。"
+        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。"
         echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？"
         echo -e "    3. 如果时间不同步，请尝试校准系统时间，并重启 Watchtower 容器。"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (可能包含 Docker logs自身信息，非容器实际扫描日志):${COLOR_RESET}"
@@ -1103,6 +1106,7 @@ show_watchtower_details() {
         done
     fi
     echo "-------------------------------------------------------------------------------------------------------------------"
+    echo "" # 增加空行
     press_enter_to_continue
     return 0
 }
@@ -1113,7 +1117,7 @@ main_menu() {
     while true; do
         # 每次循环开始时，显示状态报告
         show_status
-        echo -e "\n${COLOR_BLUE}==================== 主菜单 ====================${COLOR_RESET}"
+        echo -e "${COLOR_BLUE}==================== 主菜单 ====================${COLOR_RESET}" # 移除顶部空行，由show_status处理
         echo "1) 🚀 设置更新模式 (Watchtower / Cron)"
         echo "2) 📋 查看容器信息"
         echo "3) 🔔 配置通知 (Telegram / Email)"
@@ -1178,9 +1182,11 @@ main_menu() {
 
 # --- 主执行函数 ---
 main() {
+    echo "" # 脚本启动最顶部加一个空行
     echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
     echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
     echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+    echo "" # 脚本启动标题下方加一个空行
     
     main_menu
 }
