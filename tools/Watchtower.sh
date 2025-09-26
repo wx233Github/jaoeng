@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.11 体验优化：修复Watchtower容器参数N/A问题；精简日志获取逻辑；美化状态报告标题
+# v2.17.12 体验优化：美化状态报告标题包裹；进一步修复N/A问题追踪
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示，优化排版，新增Watchtower倒计时)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.11" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.12" # 版本更新，反映标题美化和N/A追踪
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -559,12 +559,13 @@ _get_watchtower_remaining_time() {
     local raw_logs="$2" # 传入已获取的日志内容
     local remaining_time_str="N/A"
 
-    if [ -z "$raw_logs" ]; then 
-        echo "${COLOR_YELLOW}⚠️ 无有效扫描日志${COLOR_RESET}" # 更明确的提示
+    # 如果 raw_logs 中没有 'Session done'，则返回无有效日志
+    if ! echo "$raw_logs" | grep -q "Session done"; then 
+        echo "${COLOR_YELLOW}⚠️ 无有效扫描日志${COLOR_RESET}" 
         return
     fi 
 
-    # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
+    # 查找 Watchtower 容器的实际扫描完成日志
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
 
     local last_check_timestamp_str=""
@@ -599,12 +600,13 @@ _get_watchtower_remaining_time() {
 
 # 🔹 状态报告
 show_status() {
-    # 使用printf进行居中标题
-    local title="📊 当前自动化更新状态报告"
-    local width=79 # 减去边框和换行
-    local padding_left=$(( (width - ${#title}) / 2 ))
-    local padding_right=$(( width - ${#title} - padding_left ))
-    printf "${COLOR_YELLOW}%${padding_left}s%s%${padding_right}s%s\n" "" "$title" "" "${COLOR_RESET}"
+    # 居中标题
+    local title_text="📊 当前自动化更新状态报告"
+    local width=113 # 匹配分隔线长度
+    local padding_left=$(( (width - ${#title_text}) / 2 ))
+    local padding_right=$(( width - ${#title_text} - padding_left ))
+    
+    printf "\n%${padding_left}s${COLOR_YELLOW}%s%${padding_right}s${COLOR_RESET}\n" "" "$title_text" ""
     echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
@@ -640,7 +642,7 @@ show_status() {
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         raw_logs_content_for_status=$(_get_watchtower_all_raw_logs) # 获取所有原始日志
 
-        # 仅当获取到有效日志时才尝试解析容器实际运行参数和计算倒计时
+        # 只有当 _get_watchtower_all_raw_logs 返回了包含 Session done 的有效日志时，才尝试解析
         if echo "$raw_logs_content_for_status" | grep -q "Session done"; then 
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
@@ -694,7 +696,7 @@ show_status() {
             fi
 
             wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
-        else # 如果没有Session done，但raw_logs_content_for_status不为空，说明只有启动信息
+        else # 如果没有Session done，但_get_watchtower_all_raw_logs返回非空，说明只有启动信息，而不是扫描日志
              wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
         fi
     fi
