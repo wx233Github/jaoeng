@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.20 体验优化：彻底修复状态报告标题美化；再次优化Watchtower容器参数解析
+# v2.17.21 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（终极jq表达式）
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.20" # 版本更新，反映标题美化和interval解析优化
+VERSION="2.17.21" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -670,9 +670,11 @@ show_status() {
             local temp_extra_args=""
             local skip_next=0
             # 使用更安全的循环方式，直接遍历数组
+            local current_jq_index=0 # 追踪当前在数组中的索引
             for cmd_val in $(echo "$wt_cmd_json" | jq -r '.[]'); do
                 if [ "$skip_next" -eq 1 ]; then
                     skip_next=0
+                    current_jq_index=$((current_jq_index + 1))
                     continue
                 fi
                 # 跳过已处理的参数及其值
@@ -688,6 +690,7 @@ show_status() {
                 elif [[ ! "$cmd_val" =~ ^-- ]]; then # 确保不是另一个flag
                     temp_extra_args+=" $cmd_val"
                 fi
+                current_jq_index=$((current_jq_index + 1))
             done
             container_actual_extra_args=$(echo "$temp_extra_args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/"//g') # 移除首尾空格和引号
             if [ -z "$container_actual_extra_args" ]; then
