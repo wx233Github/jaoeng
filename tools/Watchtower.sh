@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.15.3 体验优化：修复ANSI颜色显示问题，增强Watchtower日志获取逻辑
+# v2.15.4 体验优化：全面检查ANSI颜色显示，强化Watchtower日志获取与调试
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示 - 优化：Watchtower配置和运行状态分离)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化：精准日志解析，增强获取逻辑)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化：精准日志解析，增强获取逻辑与调试输出)
 
-VERSION="2.15.3" # 版本更新，反映ANSI修复和日志获取增强
+VERSION="2.15.4" # 版本更新，反映ANSI修复和日志获取强化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -565,7 +565,7 @@ show_status() {
     echo "-------------------------------------------------------------------------------------------------------------------"
 
     echo -e "${COLOR_BLUE}--- Watchtower 脚本配置状态 ---${COLOR_RESET}"
-    # 修复：添加 -e 选项以正确解析颜色代码
+    # 修复：确保所有引用颜色变量的echo都带-e
     echo -e "  - 启用状态: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "${COLOR_GREEN}已启用${COLOR_RESET}" || echo "${COLOR_RED}已禁用${COLOR_RESET}")"
     echo "  - 配置的检查间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"
     echo "  - 配置的智能模式 (更新自身): $([ "$WATCHTOWER_CONFIG_SELF_UPDATE_MODE" = "true" ] && echo "是" || echo "否")"
@@ -629,10 +629,11 @@ show_status() {
     fi
 
     echo -e "${COLOR_BLUE}--- Cron 定时任务脚本配置状态 ---${COLOR_RESET}"
-    # 修复：添加 -e 选项以正确解析颜色代码
+    # 修复：确保所有引用颜色变量的echo都带-e
     echo -e "  - 启用状态: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "${COLOR_GREEN}已启用${COLOR_RESET}" || echo "${COLOR_RED}已禁用${COLOR_RESET}")"
     echo "  - 配置的每天更新时间: ${CRON_HOUR:-未设置} 点"
-    echo "  - 配置的 Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}" # 此处原中文乱码可能是终端编码或字体问题，但变量本身没问题
+    # 修复：这里的中文乱码很可能是终端字符集问题，不是脚本输出问题，但已检查变量输出本身。
+    echo "  - 配置的 Docker Compose 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}" 
 
     echo -e "${COLOR_BLUE}--- Cron 定时任务实际运行状态 ---${COLOR_RESET}"
     local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
@@ -844,14 +845,19 @@ show_watchtower_details() {
     echo -e "${COLOR_YELLOW}🔍 Watchtower 运行详情和更新记录：${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
 
-    if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-        echo -e "${COLOR_RED}❌ Watchtower 容器未运行。${COLOR_RESET}"
+    # 1. 确认 Watchtower 容器是否存在且正在运行
+    local watchtower_running_name=""
+    watchtower_running_name=$(docker ps --format '{{.Names}}' | grep '^watchtower$' | head -n 1)
+
+    if [ -z "$watchtower_running_name" ]; then
+        echo -e "${COLOR_RED}❌ 未检测到名为 'watchtower' 的 Watchtower 容器正在运行。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}请确保 Watchtower 容器已启动，并且其名称为 'watchtower'。${COLOR_RESET}"
         press_enter_to_continue
         return 1
     fi
 
     echo -e "${COLOR_BLUE}--- Watchtower 运行状态 ---${COLOR_RESET}"
-    local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
+    local wt_cmd_json=$(docker inspect "$watchtower_running_name" --format "{{json .Config.Cmd}}" 2>/dev/null)
     local wt_interval_running=""
 
     if [ -n "$wt_cmd_json" ]; then
@@ -871,25 +877,30 @@ show_watchtower_details() {
 
     echo "  - 配置的检查间隔: ${wt_interval_running} 秒"
 
-    # 尝试获取最近48小时的日志，如果为空，则尝试获取所有日志
-    local raw_logs_potential=""
+    # 2. 尝试获取 Watchtower 容器的日志
+    local raw_logs_all=""
     set +e # 临时关闭errexit
-    raw_logs_potential=$(docker logs watchtower --since "48h" 2>/dev/null)
-    if [ -z "$raw_logs_potential" ]; then
-        echo -e "${COLOR_YELLOW}⚠️ 过去48小时内没有 Watchtower 日志。尝试获取所有日志 (这可能需要一些时间)...${COLOR_RESET}"
-        raw_logs_potential=$(docker logs watchtower 2>/dev/null)
-        if [ -z "$raw_logs_potential" ]; then
-            echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何日志。请检查容器状态和日志配置。${COLOR_RESET}"
-            press_enter_to_continue
-            return 1
-        fi
-    fi
+    echo -e "${COLOR_YELLOW}ℹ️ 尝试获取 Watchtower 容器所有日志...${COLOR_RESET}"
+    raw_logs_all=$(docker logs "$watchtower_running_name" 2>/dev/null)
+    local docker_logs_exit_code=$?
     set -e
 
+    if [ $docker_logs_exit_code -ne 0 ] || [ -z "$raw_logs_all" ]; then
+        echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何日志。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}请尝试手动运行 'sudo docker logs $watchtower_running_name' 查看是否有输出。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}也请确认 Docker 日志驱动配置正常，且容器确实有日志输出。${COLOR_RESET}"
+        press_enter_to_continue
+        return 1
+    fi
+
+    echo -e "${COLOR_GREEN}✅ 已获取 Watchtower 容器日志。以下是前5行日志预览：${COLOR_RESET}"
+    echo "---"
+    echo "$raw_logs_all" | head -n 5
+    echo "---"
+
     # 查找最近一次检查更新的日志
-    # 根据用户日志，使用 "Session done" 作为扫描完成的标志
     local last_check_log
-    last_check_log=$(echo "$raw_logs_potential" | grep -E "Session done" | tail -n 1)
+    last_check_log=$(echo "$raw_logs_all" | grep -E "Session done" | tail -n 1)
 
     local last_check_timestamp_str=""
     if [ -n "$last_check_log" ]; then
@@ -922,7 +933,7 @@ show_watchtower_details() {
         else
             echo -e "  - ${COLOR_YELLOW}⚠️ 无法解析 Watchtower 上次检查的日志时间。请检查系统日期和 Watchtower 日志日期是否一致。${COLOR_RESET}"
             echo -e "    当前系统日期: $(date '+%Y-%m-%d %H:%M:%S')"
-            echo -e "    Watchtower日志示例日期: $(echo "$last_check_timestamp_str" | cut -d'T' -f1)"
+            echo -e "    Watchtower日志示例日期: $(echo "$last_check_timestamp_str" | cut -d'T' -f1 || echo "N/A")"
         fi
     else
         echo -e "  - ${COLOR_YELLOW}⚠️ 未找到 Watchtower 的最近检查日志，或容器刚启动。${COLOR_RESET}"
@@ -930,29 +941,31 @@ show_watchtower_details() {
 
     echo -e "\n${COLOR_BLUE}--- 过去 24 小时容器更新状况 ---${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
-    local update_logs=""
+    local update_logs_24h_filtered=""
     
-    # 重新获取24小时内的日志，防止之前获取的是所有历史日志
+    # 尝试获取24小时内的日志进行筛选
     local raw_logs_24h=""
     set +e
-    raw_logs_24h=$(docker logs watchtower --since "24h" 2>/dev/null)
-    if [ -z "$raw_logs_24h" ]; then
-        echo -e "${COLOR_YELLOW}ℹ️ 过去24小时内没有 Watchtower 日志，可能因为日志时间与系统时间相差太大或容器刚启动。${COLOR_RESET}"
-        # 如果24小时日志为空，且之前所有日志也不为空，则使用所有日志进行匹配，但会警告
-        if [ -n "$raw_logs_potential" ]; then
-            echo -e "${COLOR_YELLOW}    正在尝试从所有历史日志中查找更新记录 (请注意时间可能不限于24小时)。${COLOR_RESET}"
-            update_logs=$(echo "$raw_logs_potential" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request")
-        fi
-    else
-        update_logs=$(echo "$raw_logs_24h" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request")
-    fi
+    raw_logs_24h=$(docker logs "$watchtower_running_name" --since "24h" 2>/dev/null)
     set -e
 
-    if [ -z "$update_logs" ]; then
+    if [ -z "$raw_logs_24h" ]; then
+        echo -e "${COLOR_YELLOW}ℹ️ 过去24小时内没有 Watchtower 日志，可能因为日志时间与系统时间相差太大或容器刚启动。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}    正在尝试从所有历史日志中查找更新记录 (请注意，这些记录可能不是最近24小时内的)。${COLOR_RESET}"
+        # 如果24小时日志为空，且之前所有日志不为空，则从所有日志中筛选
+        if [ -n "$raw_logs_all" ]; then
+            update_logs_24h_filtered=$(echo "$raw_logs_all" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request|level=warning msg=\"Reason: registry responded to head request with \\\"401 Unauthorized\\\"\"")
+        fi
+    else
+        # 从24小时内的日志中筛选
+        update_logs_24h_filtered=$(echo "$raw_logs_24h" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request|level=warning msg=\"Reason: registry responded to head request with \\\"401 Unauthorized\\\"\"")
+    fi
+
+    if [ -z "$update_logs_24h_filtered" ]; then
         echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相关操作。${COLOR_RESET}"
     else
         echo "最近24小时的 Watchtower 日志摘要 (按时间顺序):"
-        echo "$update_logs" | while read -r line; do
+        echo "$update_logs_24h_filtered" | while read -r line; do
             local log_time_raw=""
             local container_name="N/A"
             local action_desc="未知操作"
@@ -1012,9 +1025,9 @@ show_watchtower_details() {
                 # 提取错误消息部分
                 local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
                 action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
-            elif [[ "$line" =~ "Could not do a head request" ]]; then
+            elif [[ "$line" =~ "Could not do a head request" ]] || [[ "$line" =~ "registry responded to head request with \\\"401 Unauthorized\\\"" ]]; then
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
-                action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
+                action_desc="${COLOR_RED}拉取失败 (认证/限速): 镜像 ${image_info}${COLOR_RESET}"
             elif [[ "$line" =~ "No new images found for container" ]]; then
                 action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
             fi
