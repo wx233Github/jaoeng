@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.5 体验优化：修复颜色显示问题；调整状态报告排版
+# v2.17.6 体验优化：修复颜色显示问题；调整状态报告排版；修复语法错误
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 彻底解决获取和显示问题)
 
-VERSION="2.17.5" # 版本更新，反映颜色和排版修复
+VERSION="2.17.6" # 版本更新，反映语法错误修复
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -561,7 +561,7 @@ _get_watchtower_remaining_time() {
     if [ -z "$raw_logs" ]; then
         echo "$remaining_time_str" # 无日志，无法计算
         return
-    }
+    fi # <-- 修正：if 语句结束符
 
     # 查找 Watchtower 容器的实际扫描完成日志，排除 docker logs 工具本身的输出
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
@@ -1044,7 +1044,7 @@ show_watchtower_details() {
             local log_time_raw=$(echo "$line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
             local log_time_formatted=""
             if [ -n "$log_time_raw" ]; then
-                log_time_formatted=$(date -d "$log_time_raw" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)
+                log_time_formatted=$(date -d "$log_time_raw" +%s 2>/dev/null || true)
             fi
 
             local container_name="N/A"
