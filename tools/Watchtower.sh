@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.14.3 体验优化：移除清屏并修复输入缓冲区问题
+# v2.15.1 体验优化：增强 Watchtower 日志解析，兼容更多日志短语
 # 功能：
 # - Watchtower / Cron / 智能 Watchtower更新模式
 # - 支持秒/小时/天数输入
@@ -11,9 +11,9 @@
 # - 全面状态报告 (脚本启动时直接显示 - 优化：Watchtower配置和运行状态分离)
 # - 脚本配置查看与编辑
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
-# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录)
+# - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化：增强日志解析)
 
-VERSION="2.15.0" # 版本更新，反映新功能
+VERSION="2.15.1" # 版本更新，反映日志解析增强
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -227,7 +227,7 @@ show_container_info() {
                 CONTAINER_APP_EXECUTABLE=$(docker exec "$name" sh -c "find /app -maxdepth 1 -type f -executable -print -quit" 2>/dev/null || true)
                 if [ -n "$CONTAINER_APP_EXECUTABLE" ]; then
                     local RAW_VERSION
-                    RAW_VERSION=$(docker exec "$name" sh -c "$CONTAIN_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
+                    RAW_VERSION=$(docker exec "$name" sh -c "$CONTAINER_APP_EXECUTABLE --version 2>/dev/null || echo 'N/A'")
                     APP_VERSION=$(echo "$RAW_VERSION" | head -n 1 | cut -c 1-15 | tr -d '\n')
                 fi
             fi
@@ -862,10 +862,10 @@ show_watchtower_details() {
     echo "  - 配置的检查间隔: ${wt_interval_running} 秒"
 
     # 查找最近一次检查更新的日志
-    # 查找 "Checking for new images" 或 "No new images found" 表示一次完整的扫描
+    # 扩展匹配模式，以捕捉更多表示 Watchtower 完成一次扫描的日志信息
     local last_check_log
     set +e # 临时关闭errexit，因为docker logs可能没有输出
-    last_check_log=$(docker logs watchtower --since "48h" 2>/dev/null | grep -E "Checking for new images|No new images found" | tail -n 1)
+    last_check_log=$(docker logs watchtower --since "48h" 2>/dev/null | grep -E "Finished a scan|No new images found|Checking for new images|Found [0-9]+ new images for container" | tail -n 1)
     set -e
 
     local last_check_timestamp_str=""
@@ -907,7 +907,8 @@ show_watchtower_details() {
     echo "-------------------------------------------------------------------------------------------------------------------"
     local update_logs=""
     set +e # 临时关闭errexit
-    update_logs=$(docker logs watchtower --since "24h" 2>/dev/null | grep -E "Found new image|will pull|Updating container|container was updated|skipped because of an error|No new images found for container")
+    # 扩展更新相关的匹配模式
+    update_logs=$(docker logs watchtower --since "24h" 2>/dev/null | grep -E "Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container")
     set -e
 
     if [ -z "$update_logs" ]; then
@@ -927,20 +928,30 @@ show_watchtower_details() {
             fi
 
             # 提取容器名称
-            if [[ "$line" =~ container\ \'([^\']+)\' ]]; then
+            if [[ "$line" =~ container\ \'([^\']+)\' ]]; then # 匹配 'container 'name''
                 container_name="${BASH_REMATCH[1]}"
             elif [[ "$line" =~ "No new images found for container" ]]; then # 特殊处理无新镜像的日志
                 container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
+            elif [[ "$line" =~ "Found new image for container" ]]; then # 匹配 "Found new image for container name"
+                 container_name=$(echo "$line" | sed -n 's/.*Found new image for container \([^\ ]*\).*/\1/p' | head -n 1)
+            elif [[ "$line" =~ "Removing old container" ]]; then # 匹配 "Removing old container 'name'"
+                 container_name=$(echo "$line" | sed -n 's/.*Removing old container \'\([^\']*\)'.*/\1/p' | head -n 1)
+            elif [[ "$line" =~ "Creating new container" ]]; then # 匹配 "Creating new container 'name'"
+                 container_name=$(echo "$line" | sed -n 's/.*Creating new container \'\([^\']*\)'.*/\1/p' | head -n 1)
             fi
 
             # 判断动作
-            if [[ "$line" =~ "Found new image" ]]; then
+            if [[ "$line" =~ "Found new image for container" ]]; then
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                 action_desc="${COLOR_YELLOW}发现新版本: $image_info${COLOR_RESET}"
-            elif [[ "$line" =~ "will pull" ]]; then
+            elif [[ "$line" =~ "Pulling image" ]] || [[ "$line" =~ "will pull" ]]; then
                 action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
+            elif [[ "$line" =~ "Stopping container" ]]; then
+                action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
             elif [[ "$line" =~ "Updating container" ]]; then
                 action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
+            elif [[ "$line" =~ "Creating new container" ]] || [[ "$line" =~ "Starting container" ]]; then
+                action_desc="${COLOR_BLUE}正在创建/启动容器...${COLOR_RESET}"
             elif [[ "$line" =~ "container was updated" ]]; then
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
             elif [[ "$line" =~ "skipped because of an error" ]]; then
@@ -954,7 +965,7 @@ show_watchtower_details() {
                 printf "  %-20s %-25s %s\n" "$log_time_formatted" "$container_name" "$action_desc"
             else
                 # 如果解析失败，打印原始日志行，便于调试
-                echo "  ${COLOR_YELLOW}原始日志 (解析失败):${COLOR_RESET} $line"
+                echo "  ${COLOR_YELLOW}原始日志 (部分解析或无法解析):${COLOR_RESET} $line"
             fi
         done
     fi
