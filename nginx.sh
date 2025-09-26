@@ -1124,6 +1124,7 @@ import_existing_project() {
                         port_idx=$((port_idx + 1))
                         echo -e "   ${YELLOW}${port_idx})${RESET} ${p}"
                     done
+
                     while true; do
                         echo -e "${CYAN}请选择一个内部端口序号，或直接输入端口号 (例如 1 或 8080): ${RESET}"
                         read -rp "> " PORT_SELECTION
@@ -1382,12 +1383,12 @@ manage_configs() {
 
     while true; do
         log_message BLUE "\n${CYAN}请选择管理操作：${RESET}"
-        echo "${GREEN}1) 手动续期指定域名证书${RESET}"
-        echo "${GREEN}2) 删除指定域名配置及证书${RESET}"
-        echo "${GREEN}3) 编辑项目核心配置 (后端目标 / 验证方式等)${RESET}"
-        echo "${GREEN}4) 管理自定义 Nginx 配置片段 (添加 / 修改 / 清除)${RESET}"
-        echo "${GREEN}5) 导入现有 Nginx 配置到本脚本管理${RESET}"
-        echo "${YELLOW}0) 返回主菜单${RESET}"
+        echo -e "${GREEN}1) 手动续期指定域名证书${RESET}"
+        echo -e "${GREEN}2) 删除指定域名配置及证书${RESET}"
+        echo -e "${GREEN}3) 编辑项目核心配置 (后端目标 / 验证方式等)${RESET}"
+        echo -e "${GREEN}4) 管理自定义 Nginx 配置片段 (添加 / 修改 / / 清除)${RESET}"
+        echo -e "${GREEN}5) 导入现有 Nginx 配置到本脚本管理${RESET}"
+        echo -e "${YELLOW}0) 返回主菜单${RESET}"
         log_message INFO "${BLUE}------------------------------------${RESET}"
         echo -e "${CYAN}请输入选项 [回车返回]: ${RESET}"
         read -rp "> " MANAGE_CHOICE
@@ -1460,7 +1461,7 @@ manage_configs() {
                     log_message RED "❌ 域名 $DOMAIN_TO_DELETE 未找到在已配置列表中。"
                     sleep 1
                     continue
-                fi # 修复: 将 '}' 替换为 'fi'
+                fi
 
                 log_message YELLOW "\n${CYAN}--- 请选择删除级别 for $DOMAIN_TO_DELETE ---${RESET}"
                 echo "${GREEN}1) 仅删除 Nginx 配置文件 (保留证书和元数据，用于临时禁用)${RESET}"
@@ -1928,7 +1929,7 @@ manage_configs() {
 
                 local CURRENT_SNIPPET_PATH=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.custom_snippet // "null"')
                 local PROJECT_TYPE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.type // "unknown"')
-                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.name // "unknown"')
+                local PROJECT_NAME_SNIPPET=$(echo "$SNIPPET_JSON" | jq -r '.name // "unknown"') # 修复：将 PROJECT_NAME_SNIPPET 的 JSON 变量从 $SNIPPET_PROJECT_JSON 切换为 $SNIPPET_JSON
                 local RESOLVED_PORT_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.resolved_port // "unknown"')
                 local CERT_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.cert_file // ""')
                 local KEY_FILE_SNIPPET=$(echo "$SNIPPET_PROJECT_JSON" | jq -r '.key_file // ""')
@@ -1953,7 +1954,7 @@ manage_configs() {
                         echo "${RED}3) 清除自定义片段设置并删除文件${RESET}"
                     else
                         echo "${GREEN}1) 设置新的片段文件路径${RESET}"
-                    fi
+                    f
                     echo "${YELLOW}0) 返回上级菜单${RESET}"
                     echo -e "${CYAN}请输入选项: ${RESET}"
                     read -rp "> " SNIPPET_MANAGEMENT_ACTION
@@ -2219,11 +2220,11 @@ main_menu() {
         log_message INFO "${CYAN}║     🚀 Nginx/HTTPS 证书管理主菜单     ║${RESET}"
         log_message INFO "${CYAN}╚═══════════════════════════════════════╝${RESET}"
         log_message INFO "" # 添加空行美化
-        echo "${GREEN}1) 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
-        echo "${GREEN}2) 查看与管理已配置项目 (域名、端口、证书)${RESET}"
-        echo "${GREEN}3) 检查并自动续期所有证书${RESET}"
-        echo "${GREEN}4) 管理 acme.sh 账户${RESET}"
-        echo "${YELLOW}0) 退出${RESET}"
+        echo -e "${GREEN}1) 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
+        echo -e "${GREEN}2) 查看与管理已配置项目 (域名、端口、证书)${RESET}"
+        echo -e "${GREEN}3) 检查并自动续期所有证书${RESET}"
+        echo -e "${GREEN}4) 管理 acme.sh 账户${RESET}"
+        echo -e "${YELLOW}0) 退出${RESET}"
         log_message INFO "${CYAN}───────────────────────────────────────${RESET}"
         echo -e "${CYAN}➜ 请输入选项 [回车退出]: ${RESET}"
         read -rp "> " MAIN_CHOICE
