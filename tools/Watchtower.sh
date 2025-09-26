@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.18 体验优化：彻底修复Watchtower容器实际运行参数N/A问题（最终jq表达式）；顶部标题包裹已完美
+# v2.17.16 体验优化：彻底修复Watchtower容器实际运行参数N/A问题（最终jq表达式）；修复状态报告标题居中和颜色
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.18.1" # 版本更新，反映最终的interval解析优化
+VERSION="2.17.16" # 版本更新，反映所有已知问题修复
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -619,7 +619,6 @@ show_status() {
     printf "${COLOR_YELLOW}║%*s%s%*s║${COLOR_RESET}\n" $padding_left "" "$title_text" $padding_right "" # 居中带颜色标题
     printf "${COLOR_YELLOW}╚%s╝${COLOR_RESET}\n" "$full_line" # 下方边框
     # 移除这条冗余的横线
-    # echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
@@ -659,12 +658,14 @@ show_status() {
             local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
             
             # --- 解析 container_actual_interval ---
-            # 找到 "--interval" 的索引，然后获取下一个索引的值 (更稳健的 jq 方式)
-            local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'map(.) | to_entries[] | select(.value == "--interval") | .key' 2>/dev/null || true)
-            if [ -n "$interval_arg_index" ]; then
-                local interval_value_index=$((interval_arg_index + 1))
-                container_actual_interval=$(echo "$wt_cmd_json" | jq -r ".[$interval_value_index]" 2>/dev/null || true)
-            fi
+            # 查找 "--interval" 后的值 (更稳健的 jq 方式)
+            container_actual_interval=$(echo "$wt_cmd_json" | jq -r '
+                . as $cmd_array |
+                first(
+                    (range(0; $cmd_array | length) | select($cmd_array[.] == "--interval")) + 1
+                ) as $idx |
+                if ($idx | type) == "number" and ($cmd_array | length) > $idx then $cmd_array[$idx] else empty end
+            ' 2>/dev/null || true)
             container_actual_interval="${container_actual_interval:-N/A}"
             
             # 解析 --label-enable 后的值
@@ -962,7 +963,7 @@ show_watchtower_details() {
 
     if [ -n "$wt_cmd_json" ]; then
         # 使用 jq 来精确提取 --interval 后的值
-        # 找到 "--interval" 的索引，然后获取下一个索引的值
+        # 找到 "--interval" 所在的元素，然后获取下一个索引的值
         local interval_arg_index=$(echo "$wt_cmd_json" | jq -r 'map(.) | to_entries[] | select(.value == "--interval") | .key' 2>/dev/null || true)
         if [ -n "$interval_arg_index" ]; then
             local interval_value_index=$((interval_arg_index + 1))
@@ -976,7 +977,7 @@ show_watchtower_details() {
     fi
 
     local only_self_update="否"
-    if echo "$wt_cmd_json" | grep -q '"watchtower"\]$' || echo "$wt_cmd_json" | grep -q '"watchtower",'; then
+    if echo "$wt_cmd_json" | jq -e 'map(.) | contains(["watchtower"])' >/dev/null; then
         only_self_update="是"
         echo -e "  - ${COLOR_YELLOW}提示: Watchtower 容器当前配置为只监控并更新自身容器 (watchtower)。${COLOR_RESET}"
         echo -e "          如果需要更新其他容器，请在主菜单选项 1 中选择 'Watchtower模式' (非智能模式)。${COLOR_RESET}"
@@ -1188,7 +1189,7 @@ main_menu() {
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
-        read -p "请输入选择 [1-8] (按 Enter 直接退出/返 回 ): " choice
+        read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice # 修正中文错别字
 
         if [ -z "$choice" ]; then
             choice=8
