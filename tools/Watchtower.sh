@@ -1224,7 +1224,7 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        </dev/null
+        esac
     done
 }
 
