@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.21 体验优化：彻底修复状态报告标题美化（使用等号）；精确解析Watchtower容器参数（终极jq表达式）
+# v2.17.22 体验优化：彻底移除状态报告顶部标题栏（更简洁）；优化详情报告中文字符排版
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.21" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.22" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -549,6 +549,7 @@ _get_watchtower_all_raw_logs() {
 
     # 修复：移除 --no-trunc 选项，以支持旧版本 Docker；移除 grep 过滤器，直接捕获所有日志
     set +e
+    # 将标准输出和标准错误输出都重定向到文件
     docker logs watchtower --tail 500 --since 0s > "$temp_log_file" 2>&1 || true
     set -e
 
@@ -570,7 +571,6 @@ _get_watchtower_remaining_time() {
     fi 
 
     # 2. 查找最新的 Session done 日志
-    # 注意：这里我们使用 'grep -E' 依赖于日志内容本身包含 time="XXX"
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
     local last_check_timestamp_str=""
 
@@ -608,20 +608,10 @@ _get_watchtower_remaining_time() {
 }
 
 
-# 🔹 状态报告 (已调整宽度为 43，并精简标题和表格列宽，左对齐)
+# 🔹 状态报告 (移除顶部标题，改为左对齐)
 show_status() {
-    # 标题不再居中，改为左对齐
-    local title_text="【 自动化更新状态 】" # 精简标题，约 16 字符宽
-    local line_length=43 # 与脚本启动标题宽度保持一致
+    # 顶部标题已移除，仅保留内容部分
     
-    local full_line=$(printf '=%.0s' $(seq 1 $line_length)) # 生成等号横线
-
-    printf "\n"
-    printf "${COLOR_YELLOW}%s\n" "$full_line" # 上方横线
-    printf "${COLOR_YELLOW}%s %s${COLOR_RESET}\n" "" "$title_text" # 左对齐标题
-    printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "$full_line" # 下方横线
-    echo "" # 增加空行
-
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
     local wt_configured_mode_desc="Watchtower模式 (更新所有容器)" # 智能模式已移除
 
@@ -966,14 +956,14 @@ show_watchtower_details() {
              echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
-        # 优化长提示，避免颜色代码和中文排版错乱
+        # 优化长提示，避免中文排版错乱
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
-        printf "    1. 您 的 系 统 时 间 是 否 与 Watchtower 日 志 时 间 同 步 ？ 请 执 行 'date' 命 令 检 查 ，\n"
-        printf "       并 运 行 'sudo docker exec watchtower date' 对 比 。\n"
-        printf "       (如 果 看 到 'exec: date: executable file not found' 错 误 ， 表 明 容 器 内 无 date 命 令 ，\n"
-        printf "        这 不 影 响 功 能 ， 但 需 确 认 宿 主 机 时 间 正 确 。 )\n"
+        printf "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，\n"
+        printf "       并运行 'sudo docker exec watchtower date' 对比。\n"
+        printf "       (如果看到 'exec: date: executable file not found' 错误，表明容器内无 date 命令，\n"
+        printf "        这不影响功能，但需确认宿主机时间正确。)\n"
         
-        printf "    2. Watchtower 容 器 是 否 已 运 行 足 够 长 的 时 间 以 完 成 一 次 扫 描 ？\n"
+        printf "    2. Watchtower 容器是否已运行足够长的时间以完成一次扫描？\n"
         
         # 增加首次扫描计划时间，如果能解析到的话
         local first_run_scheduled=$(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1 || true)
@@ -996,7 +986,7 @@ show_watchtower_details() {
             echo -e "       未找到首次扫描计划时间。${COLOR_RESET}"
         fi
         
-        printf "    3. 如 果 时 间 不 同 步 ， 请 尝 试 校 准 宿 主 机 时 间 ， 并 重 启 Watchtower 容 器 。\n"
+        printf "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。\n"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
