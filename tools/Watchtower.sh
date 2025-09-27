@@ -958,12 +958,12 @@ show_watchtower_details() {
 
         # 优化长提示，避免中文排版错乱
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
-        printf "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，\n"
-        printf "       并运行 'sudo docker exec watchtower date' 对比。\n"
-        printf "       (如果看到 'exec: date: executable file not found' 错误，表明容器内无 date 命令，\n"
+        printf "    1. 您的系统时间是否与Watchtower日志时间同步？请执行'date'命令检查，\n"
+        printf "       并运行'sudo docker exec watchtower date'对比。\n"
+        printf "       (如果看到'exec: date: executable file not found'错误，表明容器内无date命令，\n"
         printf "        这不影响功能，但需确认宿主机时间正确。)\n"
         
-        printf "    2. Watchtower 容器是否已运行足够长的时间以完成一次扫描？\n"
+        printf "    2. Watchtower容器是否已运行足够长的时间以完成一次扫描？\n"
         
         # 增加首次扫描计划时间，如果能解析到的话
         local first_run_scheduled=$(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1 || true)
@@ -986,7 +986,7 @@ show_watchtower_details() {
             echo -e "       未找到首次扫描计划时间。${COLOR_RESET}"
         fi
         
-        printf "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。\n"
+        printf "    3. 如果时间不同步，请尝试校准宿主机时间，并重启Watchtower容器。\n"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
@@ -1015,7 +1015,7 @@ show_watchtower_details() {
                 local hours=$((remaining_time / 3600))
                 local minutes=$(( (remaining_time % 3600) / 60 ))
                 local seconds=$(( remaining_time % 60 ))
-                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}小时 ${minutes}分钟 ${seconds}秒${COLOR_RESET}"
+                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
             else
                 echo -e "  - ${COLOR_GREEN}下次检查即将进行或已经超时。${COLOR_RESET}"
             fi
@@ -1151,26 +1151,15 @@ main_menu() {
         echo "4) ⚙️ 任务管理 (停止/移除)"
         echo "5) 📝 查看/编辑脚本配置"
         echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
-        
-        # 统一将选项 7 用于查看详情，并处理退出逻辑
-        if [ "$IS_NESTED_CALL" = "true" ]; then
-            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 返回上级菜单"
-        else
-            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 退出脚本"
-        fi
+        echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 退出" # 选项 7 负责退出
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
+        # 选项 7 退出/返回逻辑
         read -p "请输入选择 [1-7] (按 Enter 直接退出/返回): " choice
 
         if [ -z "$choice" ]; then
-            # 如果是嵌套调用，Enter 键返回上级菜单
-            if [ "$IS_NESTED_CALL" = "true" ]; then
-                choice=7
-            else
-                # 否则，Enter 键退出脚本
-                choice=7
-            fi
+            choice=7
         fi
 
         case "$choice" in
@@ -1193,20 +1182,19 @@ main_menu() {
                 run_watchtower_once
                 ;;
             7)
+                # 选项 7 的退出/返回逻辑
                 if [ "$IS_NESTED_CALL" = "true" ]; then
                     show_watchtower_details
                     if [ $? -eq 0 ]; then
-                        # 如果详情查看成功并按了 Enter，继续循环
-                        continue
+                        continue # 详情查看成功，继续循环
                     fi
-                    # 如果用户选择返回上级菜单，则返回
                     echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
                     return 0 # 返回主菜单
                 else
-                    if [ -n "$choice" ]; then
+                    if [ -n "$choice" ] && [ "$choice" == "7" ]; then
                          show_watchtower_details
                          if [ $? -eq 0 ]; then
-                             continue
+                             continue # 详情查看成功，继续循环
                          fi
                     fi
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
