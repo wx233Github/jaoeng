@@ -976,7 +976,7 @@ show_watchtower_details() {
     if ! echo "$raw_logs" | grep -q "Session done"; then
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         
-        # DEBUG: 检查日志是否真的为空
+        # 打印致命错误提示，告知用户日志捕获失败
         if [ -z "$raw_logs" ]; then
              echo -e "    ${COLOR_RED}致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RED}${COLOR_RESET}"
         fi
