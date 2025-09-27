@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.22 体验优化：彻底移除状态报告顶部标题栏（更简洁）；优化详情报告中文字符排版
+# v2.17.22 体验优化：移除状态报告顶部标题栏（更简洁）；优化详情报告中文字符排版；移除菜单选项8
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -22,10 +22,10 @@ IS_NESTED_CALL="${IS_NESTED_CALL:-false}" # 默认值为 false，如果父脚本
 
 # --- 颜色定义 ---
 if [ -t 1 ]; then # 检查标准输出是否是终端
-    COLOR_GREEN="\033[0;32m"
-    COLOR_RED="\033[0;31m"
-    COLOR_YELLOW="\033[0;33m"
-    COLOR_BLUE="\033[0;34m"
+    COLOR_GREEN="\033[0m\033[0;32m"
+    COLOR_RED="\033[0m\033[0;31m"
+    COLOR_YELLOW="\033[0m\033[0;33m"
+    COLOR_BLUE="\033[0m\033[0;34m"
     COLOR_RESET="\033[0m"
 else
     # 如果不是终端，颜色变量为空
@@ -610,7 +610,7 @@ _get_watchtower_remaining_time() {
 
 # 🔹 状态报告 (移除顶部标题，改为左对齐)
 show_status() {
-    # 顶部标题已移除，仅保留内容部分
+    # 顶部标题已移除
     
     echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
     local wt_configured_mode_desc="Watchtower模式 (更新所有容器)" # 智能模式已移除
@@ -1151,20 +1151,26 @@ main_menu() {
         echo "4) ⚙️ 任务管理 (停止/移除)"
         echo "5) 📝 查看/编辑脚本配置"
         echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
-        echo "7) 🔍 查看 Watchtower 运行详情和更新记录"
-        echo -e "-------------------------------------------"
+        
+        # 统一将选项 7 用于查看详情，并处理退出逻辑
         if [ "$IS_NESTED_CALL" = "true" ]; then
-            echo "8) 返回上级菜单"
+            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 返回上级菜单"
         else
-            echo "8) 退出脚本"
+            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 退出脚本"
         fi
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
-        read -p "请输入选择 [1-8] (按 Enter 直接退出/返回): " choice
+        read -p "请输入选择 [1-7] (按 Enter 直接退出/返回): " choice
 
         if [ -z "$choice" ]; then
-            choice=8
+            # 如果是嵌套调用，Enter 键返回上级菜单
+            if [ "$IS_NESTED_CALL" = "true" ]; then
+                choice=7
+            else
+                # 否则，Enter 键退出脚本
+                choice=7
+            fi
         fi
 
         case "$choice" in
@@ -1187,19 +1193,28 @@ main_menu() {
                 run_watchtower_once
                 ;;
             7)
-                show_watchtower_details
-                ;;
-            8)
                 if [ "$IS_NESTED_CALL" = "true" ]; then
+                    show_watchtower_details
+                    if [ $? -eq 0 ]; then
+                        # 如果详情查看成功并按了 Enter，继续循环
+                        continue
+                    fi
+                    # 如果用户选择返回上级菜单，则返回
                     echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
-                    return 10
+                    return 0 # 返回主菜单
                 else
+                    if [ -n "$choice" ]; then
+                         show_watchtower_details
+                         if [ $? -eq 0 ]; then
+                             continue
+                         fi
+                    fi
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
                     exit 0
                 fi
                 ;;
             *)
-                echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
+                echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
         esac
