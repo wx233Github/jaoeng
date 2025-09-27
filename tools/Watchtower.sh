@@ -554,12 +554,8 @@ _get_watchtower_all_raw_logs() {
     set -e
 
     if [ -z "$container_id" ]; then
-        # 容器不存在或无法检查，回退到 docker logs 尝试捕获错误信息
-        set +e
-        timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 > "$temp_log_file" || true
-        set -e
-        raw_logs_output=$(cat "$temp_log_file")
-        echo "$raw_logs_output"
+        # 容器不存在或无法检查
+        echo ""
         return
     fi
 
@@ -577,7 +573,7 @@ _get_watchtower_all_raw_logs() {
         
         raw_logs_output=$(cat "$temp_log_file")
     else
-        # 4. 如果文件不存在，回退到 docker logs 命令作为备用
+        # 4. 如果文件不存在，回退到 docker logs 命令作为备用 (终极失败)
         set +e
         timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
         set -e
@@ -1071,10 +1067,10 @@ show_watchtower_details() {
             local log_epoch=$(date -d "$log_time_raw" +%s 2>/dev/null || true)
             if [ -n "$log_epoch" ]; then
                 local time_diff_seconds=$((current_epoch - log_epoch))
-                # 筛选出日志时间在过去48小时到未来1小时的范围
-                if [ "$time_diff_seconds" -le $((86400*2)) ] && [ "$time_diff_seconds" -ge -$((3600*1)) ]; then
+                # 筛选出日志时间在过去 24 小时内（0到 86400秒前）
+                if [ "$time_diff_seconds" -le 86400 ] && [ "$time_diff_seconds" -ge 0 ]; then
                     filtered_logs_24h_content+="$line\n"
-                elif [ "$time_diff_seconds" -lt -$((3600*1)) ] && [ "$log_time_warning_issued" = "false" ]; then
+                elif [ "$time_diff_seconds" -lt 0 ] && [ "$log_time_warning_issued" = "false" ]; then
                     echo -e "${COLOR_YELLOW}    注意: Watchtower 日志时间显著超前当前系统时间。以下显示的日志可能并非实际过去24小时内发生。${COLOR_RESET}"
                     log_time_warning_issued="true"
                     filtered_logs_24h_content+="$line\n" # 包含超前日志，但有警告
@@ -1089,10 +1085,11 @@ show_watchtower_details() {
         fi
     done
     
+    # 从过滤后的内容中提取关键事件
     update_logs_filtered_content=$(echo -e "$filtered_logs_24h_content" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request" || true)
 
     if [ -z "$update_logs_filtered_content" ]; then
-        echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相关操作。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相 关 操 作 。${COLOR_RESET}"
     else
         echo "最近24小时的 Watchtower 日志摘要 (按时间顺序):"
         echo "$update_logs_filtered_content" | while IFS= read -r line; do # 使用IFS= read -r 防止空格截断
