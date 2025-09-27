@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.24 体验优化：修复 Bash 语法错误 (if/fi 结构)；解决日志捕获问题。
+# v2.17.25 体验优化：修复 Bash 语法错误 (if/fi 结构)；修复更新详情日志解析逻辑。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.24" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.25" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -1232,7 +1232,7 @@ main_menu() {
                          if [ $? -eq 0 ]; then
                              continue # 详情查看成功，继续循环
                          fi
-                    fi
+                    fi # <-- 修复：闭合内部的 if 结构
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
                     exit 0
                 fi
