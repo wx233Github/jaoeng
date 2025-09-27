@@ -1,9 +1,10 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.29 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
+# v2.17.30 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
 #                    优化 Watchtower 日志获取和解析；增强通知重试机制；
 #                    提升状态报告和日志详情的用户体验；强制移除Watchtower自更新模式。
-#                    修复：'unexpected token (' 错误，通过强制脚本以 Bash 重新执行自身来确保兼容性。
+#                    修复：'unexpected token <' 错误，通过避免进程替换 <() 语法来增强兼容性。
+#                    新增：脚本启动时强制检查并使用 Bash 环境。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -16,7 +17,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.29" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.30" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -227,7 +228,8 @@ show_container_info() {
     printf "%-20s %-45s %-25s %-15s %-15s\n" "容器名称" "镜像" "创建时间" "状态" "应用版本"
     echo "-------------------------------------------------------------------------------------------------------------------"
 
-    while read -r name image created status; do # 使用 -r 防止 read 处理反斜杠
+    # 使用管道而不是进程替换，以提高兼容性
+    docker ps -a --format "{{.Names}} {{.Image}} {{.CreatedAt}} {{.Status}}" | while read -r name image created status; do
         local APP_VERSION="N/A"
         local IMAGE_NAME_FOR_LABELS
         IMAGE_NAME_FOR_LABELS=$(docker inspect "$name" --format '{{.Config.Image}}' 2>/dev/null || true)
@@ -256,7 +258,7 @@ show_container_info() {
             fi
         fi
         printf "%-20s %-45s %-25s %-15s %-15s\n" "$name" "$image" "$created" "$status" "$APP_VERSION"
-    done < <(docker ps -a --format "{{.Names}} {{.Image}} {{.CreatedAt}} {{.Status}}")
+    done
     press_enter_to_continue
     return 0 # 确保函数有返回码
 }
@@ -545,7 +547,7 @@ manage_tasks() {
                     CRON_HOUR=""
                     CRON_TASK_ENABLED="false"
                     save_config
-                    send_notify "🗑️ Cron 定时任务已移除。"
+                    send_notify "🗑️ Watchtower 任务已移除。"
                     echo -e "${COLOR_GREEN}✅ Cron 定时任务已移除。${COLOR_RESET}"
                 else
                     echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
@@ -693,7 +695,8 @@ show_status() {
         # Watchtower 自更新模式已在脚本层面强制禁用，这里只为显示兼容旧配置，实际不应该出现 'watchtower' 参数
         local filtered_args_array=()
         if [ -n "$wt_cmd_json" ] && [ "$wt_cmd_json" != "[]" ]; then
-            while IFS= read -r arg_item; do
+            # 使用管道而不是进程替换，以提高兼容性
+            echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null | while IFS= read -r arg_item; do
                 case "$arg_item" in
                     --cleanup|--interval|--label-enable|--debug)
                         # 这些是 Watchtower 的标准参数，我们已经在其他地方显示
@@ -718,8 +721,8 @@ show_status() {
                             fi
                         fi
                         ;;
-                </case>
-            done < <(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || true)
+                esac
+            done
         fi
         container_actual_extra_args=$(IFS=' '; echo "${filtered_args_array[*]:-}")
         if [ -z "$container_actual_extra_args" ]; then container_actual_extra_args="无"; fi
@@ -1025,7 +1028,7 @@ show_watchtower_details() {
             local first_run_epoch=$(date -d "$first_run_scheduled Z" +%s 2>/dev/null || true)
             if [ -n "$first_run_epoch" ]; then
                 local current_epoch=$(date +%s)
-                local time_to_first_run=$((current_epoch - first_run_epoch))
+                local time_to_first_run=$((first_run_epoch - current_epoch))
                 if [ "$time_to_first_run" -gt 0 ]; then
                     local hours=$((time_to_first_run / 3600))
                     local minutes=$(( (time_to_first_run % 3600) / 60 ))
@@ -1282,7 +1285,7 @@ main_menu() {
                     continue # 详情查看成功，继续循环
                 else
                     # 主脚本直接调用，行为是显示详情，然后退出
-                    show_watchtower_details # <--- 这就是 line 1139 (或附近)
+                    show_watchtower_details
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
                     exit 0
                 fi
