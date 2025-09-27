@@ -1108,14 +1108,16 @@ show_watchtower_details() {
             elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then
                 container_name="${BASH_REMATCH[1]}"
             # 修复：从 Found new image 消息中提取镜像名作为容器的替代名
-            elif [[ "$line" =~ Found new image for container\ ([^ ]+)\ \(([^ ]+)\) ]]; then
-                container_name="${BASH_REMATCH[1]}" # 提取镜像名
+            elif echo "$line" | grep -q "Found new image for container"; then # 使用 grep 替代 =~
+                if [[ "$line" =~ Found new image for container\ ([^ ]+)\ \(([^ ]+)\) ]]; then
+                    container_name="${BASH_REMATCH[1]}" # 提取镜像名
+                fi
             fi
             
             if [ "$container_name" = "N/A" ]; then
-                if [[ "$line" =~ "No new images found for container" ]]; then
+                if echo "$line" | grep -q "No new images found for container"; then
                     container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
-                elif [[ "$line" =~ "Found new image for container" ]]; then
+                elif echo "$line" | grep -q "Found new image for container"; then
                      # 最终尝试从 msg= 中提取容器/镜像名
                      container_name=$(echo "$line" | sed -n 's/.*msg="Found new image for container \([^ ]*\).*/\1/p' | head -n 1)
                 fi
@@ -1123,7 +1125,7 @@ show_watchtower_details() {
 
 
             local action_desc="未知操作"
-            if [[ "$line" =~ "Session done" ]]; then
+            if echo "$line" | grep -q "Session done"; then # 修正：使用 grep -q
                 local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
                 local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
                 local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
@@ -1133,26 +1135,26 @@ show_watchtower_details() {
                 elif [ "$updated" -gt 0 ]; then
                     action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}"
                 fi
-            elif [[ "$line" =~ "Found new image for container" ]]; then
+            elif echo "$line" | grep -q "Found new image for container"; then # 修正：使用 grep -q
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                 action_desc="${COLOR_YELLOW}发现新版本: $image_info${COLOR_RESET}"
-            elif [[ "$line" =~ "Pulling image" ]] || [[ "$line" =~ "will pull" ]]; then
+            elif echo "$line" | grep -q "Pulling image" || echo "$line" | grep -q "will pull"; then # 修正：使用 grep -q
                 action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
-            elif [[ "$line" =~ "Stopping container" ]]; then
+            elif echo "$line" | grep -q "Stopping container"; then # 修正：使用 grep -q
                 action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
-            elif [[ "$line" == *"Updating container"* ]]; then
+            elif echo "$line" | grep -q "Updating container"; then # 修正：使用 grep -q
                 action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
-            elif [[ "$line" == *"container was updated"* ]]; then # Line 1107 (Fixed)
+            elif echo "$line" | grep -q "container was updated"; then # 修正：使用 grep -q
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
-            elif [[ "$line" == *"skipped because of an error"* ]]; then
+            elif echo "$line" | grep -q "skipped because of an error"; then # 修正：使用 grep -q
                 action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
-            elif [[ "$line" == *"Unable to update container"* ]]; then # Line 1112 (Fixed)
+            elif echo "$line" | grep -q "Unable to update container"; then # 修正：使用 grep -q
                 local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
                 action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
-            elif [[ "$line" == *"Could not do a head request"* ]]; then # Line 1116 (Fixed)
+            elif echo "$line" | grep -q "Could not do a head request"; then # 修正：使用 grep -q
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                 action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
-            elif [[ "$line" == *"No new images found for container"* ]]; then # Line 1119 (Fixed)
+            elif echo "$line" | grep -q "No new images found for container"; then # 修正：使用 grep -q
                 action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
             fi
 
