@@ -701,7 +701,7 @@ show_status() {
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法计算倒计时 (间隔无效)${COLOR_RESET}"
             fi
         else 
-             # 修复：当Session done日志缺失时，根据日志内容判断是否为首次等待
+             # 当Session done日志缺失时，根据日志内容判断是否为首次等待
              if [ -n "$raw_logs_content_for_status" ]; then
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
              else
@@ -1224,8 +1224,8 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        esac
-    done
+        esac # <--- 修正后的 case 结束
+    done # <--- 修正后的 while 结束
 }
 
 
