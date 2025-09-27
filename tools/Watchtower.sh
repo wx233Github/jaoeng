@@ -543,15 +543,19 @@ manage_tasks() {
     return 0
 }
 
-# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志 (已修复 I/O 捕获问题)
+# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志
 _get_watchtower_all_raw_logs() {
+    local temp_log_file="/tmp/watchtower_raw_logs_$$.log"
+    trap "rm -f \"$temp_log_file\"" RETURN # 函数退出时清理临时文件
+
     local raw_logs_output=""
-    
-    # 禁用 set -e 以免管道中的 grep 失败导致脚本退出 (当没有匹配项时)
+
+    # 修复：移除 grep 过滤器，直接捕获所有日志，以应对 grep 在某些环境下失效的问题
     set +e
-    # 直接捕获日志，过滤出以 time=" 开头的结构化日志行
-    raw_logs_output=$(docker logs watchtower --tail 500 --no-trunc --since 0s 2>&1 | grep -E "^time=" || true)
+    docker logs watchtower --tail 500 --no-trunc --since 0s > "$temp_log_file" 2>&1 || true
     set -e
+
+    raw_logs_output=$(cat "$temp_log_file")
 
     echo "$raw_logs_output"
 }
@@ -701,7 +705,7 @@ show_status() {
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法计算倒计时 (间隔无效)${COLOR_RESET}"
             fi
         else 
-             # 当Session done日志缺失时，根据日志内容判断是否为首次等待
+             # 修复：当Session done日志缺失时，根据日志内容判断是否为首次等待
              if [ -n "$raw_logs_content_for_status" ]; then
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
              else
@@ -975,17 +979,17 @@ show_watchtower_details() {
         
         # 致命错误提示
         if [ -z "$raw_logs" ]; then
-             printf "${COLOR_RED}    致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}\n"
+             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
         # 优化长提示，避免颜色代码和中文排版错乱
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
-        printf "    1. 您 的 系 统 时 间 是 否 与 Watchtower 日 志 时 间 同 步 ？ 请 执 行 'date' 命 令 检 查 ，\n"
-        printf "       并 运 行 'sudo docker exec watchtower date' 对 比 。\n"
-        printf "       (如 果 您 之 前 看 到 'exec: date: executable file not found' 错 误 ， 表 明\n"
-        printf "        容 器 内 没 有 date 命 令 ， 这 并 不 影 响 Watchtower 本 身 的 功 能 ， 但 您 需 要 自 行 确 认 宿 主 机 时 间 是 否 正 确 。 )\n"
+        printf "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，\n"
+        printf "       并运行 'sudo docker exec watchtower date' 对比。\n"
+        printf "       (如果看到 'exec: date: executable file not found' 错误，表明容器内无 date 命令，\n"
+        printf "        这不影响功能，但需确认宿主机时间正确。)\n"
         
-        printf "    2. Watchtower 容 器 是 否 已 经 运 行 了 足 够 长 的 时 间 ， 并 至 少 完 成 了 一 次 完 整 的 扫 描 （ Session done） ？\n"
+        printf "    2. Watchtower 容器是否已运行足够长的时间以完成一次扫描？\n"
         
         # 增加首次扫描计划时间，如果能解析到的话
         local first_run_scheduled=$(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1 || true)
@@ -1008,8 +1012,8 @@ show_watchtower_details() {
             echo -e "       未找到首次扫描计划时间。${COLOR_RESET}"
         fi
         
-        printf "    3. 如 果 时 间 不 同 步 ， 请 尝 试 校 准 宿 主 机 时 间 ， 并 重 启 Watchtower 容 器 。\n"
-        printf "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}\n"
+        printf "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。\n"
+        echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
         return 1
@@ -1224,8 +1228,8 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        esac # <--- 修正后的 case 结束
-    done # <--- 修正后的 while 结束
+        esac
+    done
 }
 
 
