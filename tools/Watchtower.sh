@@ -1,8 +1,10 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.27 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
+# v2.17.28 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
 #                    优化 Watchtower 日志获取和解析；增强通知重试机制；
 #                    提升状态报告和日志详情的用户体验；强制移除Watchtower自更新模式。
+#                    修复：'unexpected token (' 错误，将 'if [ $? -ne 0 ]' 替换为 'if ! function_call'。
+#                    新增：脚本启动时强制检查是否为 Bash 环境。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -15,7 +17,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.27" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.28" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -41,6 +43,12 @@ fi
 # 确保脚本以 root 权限运行，因为需要操作 Docker 和修改 crontab
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${COLOR_RED}❌ 脚本需要 Root 权限才能运行。请使用 'sudo ./$SCRIPT_NAME' 执行。${COLOR_RESET}"
+    exit 1
+fi
+
+# 确保脚本使用 Bash 运行
+if [ -z "$BASH_VERSION" ]; then
+    echo -e "${COLOR_RED}❌ 脚本必须使用 Bash shell 运行。请确保使用 'bash ./$SCRIPT_NAME' 或 'sudo bash ./$SCRIPT_NAME' 执行。${COLOR_RESET}"
     exit 1
 fi
 
@@ -977,9 +985,9 @@ show_watchtower_details() {
         echo -e "  ${COLOR_YELLOW}⚠️ 无法从 Watchtower 容器命令中解析出检查间隔或其为非数字，使用默认值 300 秒进行倒计时估算。${COLOR_RESET}"
     fi
 
-    local only_self_update="否"
-    if echo "$wt_cmd_json" | jq -e 'contains(["watchtower"])' >/dev/null; then # 使用jq -e检查是否存在"watchtower"参数
-        only_self_update="是"
+    local only_self_update="否" # Watchtower 的自更新模式已在脚本层面强制禁用，此变量仅用于兼容显示
+    if echo "$wt_cmd_json" | jq -e 'any(. == "watchtower")' >/dev/null; then
+        only_self_update="${COLOR_YELLOW}是 (不推荐)${COLOR_RESET}"
         echo -e "  - ${COLOR_YELLOW}提示: Watchtower 容器当前配置为只监控并更新自身容器 (watchtower)。${COLOR_RESET}"
         echo -e "          如果需要更新其他容器，请在主菜单选项 1 中选择 'Watchtower模式'。${COLOR_RESET}"
     fi
@@ -1077,8 +1085,8 @@ show_watchtower_details() {
     local current_epoch=$(date +%s)
     local log_time_warning_issued="false"
 
-    local temp_filtered_log="/tmp/wt_filtered_logs_$$.log"
-    trap "rm -f \"$temp_filtered_log\"" RETURN # 确保清理
+    local temp_filtered_log="/tmp/watchtower_filtered_24h_$$"
+    trap "rm -f \"$temp_filtered_log\"" RETURN # 确保函数退出时清理
 
     echo "$raw_logs" | while IFS= read -r line; do
         local log_time_raw=$(echo "$line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
@@ -1105,7 +1113,7 @@ show_watchtower_details() {
     done
 
     # 从过滤后的内容中提取关键事件
-    update_logs_filtered_content=$(grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request|Scheduling first run" "$temp_filtered_log" || true)
+    update_logs_filtered_content=$(grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request" "$temp_filtered_log" || true)
 
     if [ -z "$update_logs_filtered_content" ]; then
         echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相关操作。${COLOR_RESET}"
@@ -1262,15 +1270,16 @@ main_menu() {
                 ;;
             7)
                 # 选项 7 的退出/返回逻辑
-                show_watchtower_details # 总是显示详情
                 if [ "$IS_NESTED_CALL" = "true" ]; then
-                    if [ $? -ne 0 ]; then # 如果 show_watchtower_details 失败，则返回上级菜单
+                    # 总是显示详情，并检查其退出状态
+                    if ! show_watchtower_details; then # <--- 优化点: 替换了 'if [ $? -ne 0 ]; then'
                          echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
                          return 0
                     fi
                     continue # 详情查看成功，继续循环
                 else
-                    # 主脚本直接调用，显示详情后退出
+                    # 主脚本直接调用，行为是显示详情，然后退出
+                    show_watchtower_details # <--- 优化点: 移除了多余的 if 检查，直接调用
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
                     exit 0
                 fi
