@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.23 体验优化：修复详情报告中“24小时更新状况”的精确时间范围过滤问题。
+# v2.17.23 体验优化：修复详情报告中“24小时更新状况”的精确时间范围过滤问题；修复日志解析问题。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -1089,7 +1089,7 @@ show_watchtower_details() {
     update_logs_filtered_content=$(echo -e "$filtered_logs_24h_content" | grep -E "Session done|Found new image for container|will pull|Updating container|container was updated|skipped because of an error|No new images found for container|Stopping container|Starting container|Pulling image|Removing old container|Creating new container|Unable to update container|Could not do a head request" || true)
 
     if [ -z "$update_logs_filtered_content" ]; then
-        echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相 关 操 作 。${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}ℹ️ 过去 24 小时内未检测到容器更新或相关操作。${COLOR_RESET}"
     else
         echo "最近24小时的 Watchtower 日志摘要 (按时间顺序):"
         echo "$update_logs_filtered_content" | while IFS= read -r line; do # 使用IFS= read -r 防止空格截断
@@ -1106,14 +1106,20 @@ show_watchtower_details() {
                 container_name="${container_name#/}"
             elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then
                 container_name="${BASH_REMATCH[1]}"
+            # 修复：从 Found new image 消息中提取镜像名作为容器的替代名
+            elif [[ "$line" =~ Found new image for container\ ([^ ]+)\ \(([^ ]+)\) ]]; then
+                container_name="${BASH_REMATCH[1]}" # 提取镜像名
             fi
+            
             if [ "$container_name" = "N/A" ]; then
                 if [[ "$line" =~ "No new images found for container" ]]; then
                     container_name=$(echo "$line" | sed -n 's/.*No new images found for container \/\([^ ]*\).*/\1/p' | head -n 1)
                 elif [[ "$line" =~ "Found new image for container" ]]; then
-                     container_name=$(echo "$line" | sed -n 's/.*Found new image for container \([^\ ]*\).*/\1/p' | head -n 1)
+                     # 最终尝试从 msg= 中提取容器/镜像名
+                     container_name=$(echo "$line" | sed -n 's/.*msg="Found new image for container \([^ ]*\).*/\1/p' | head -n 1)
                 fi
             fi
+
 
             local action_desc="未知操作"
             if [[ "$line" =~ "Session done" ]]; then
@@ -1135,8 +1141,6 @@ show_watchtower_details() {
                 action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
             elif [[ "$line" =~ "Updating container" ]]; then
                 action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
-            elif [[ "$line" =~ "Creating new container" ]] || [[ "$line" =~ "Starting container" ]]; then
-                action_desc="${COLOR_BLUE}正在创建/启动容器...${COLOR_RESET}"
             elif [[ "$line" =~ "container was updated" ]]; then
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
             elif [[ "$line" =~ "skipped because of an error" ]]; then
@@ -1188,7 +1192,7 @@ main_menu() {
 
         while read -r -t 0; do read -r; done
         # 选项 7 退出/返回逻辑
-        read -p "请输入选择 [1-7] (按 Enter 直接退出/返回): " choice
+        read -p "请输入选择 [1-7] (按 Enter 直接退出/返 回): " choice
 
         if [ -z "$choice" ]; then
             choice=7
