@@ -1,6 +1,6 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.22 体验优化：移除状态报告顶部标题栏（更简洁）；优化详情报告中文字符排版；移除菜单选项8
+# v2.17.23 体验优化：修复详情报告中“24小时更新状况”的精确时间范围过滤问题。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -13,7 +13,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.22" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.23" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -554,8 +554,12 @@ _get_watchtower_all_raw_logs() {
     set -e
 
     if [ -z "$container_id" ]; then
-        # 容器不存在或无法检查
-        echo ""
+        # 容器不存在或无法检查，回退到 docker logs 尝试捕获错误信息
+        set +e
+        timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 > "$temp_log_file" || true
+        set -e
+        raw_logs_output=$(cat "$temp_log_file")
+        echo "$raw_logs_output"
         return
     fi
 
@@ -573,7 +577,7 @@ _get_watchtower_all_raw_logs() {
         
         raw_logs_output=$(cat "$temp_log_file")
     else
-        # 4. 如果文件不存在，回退到 docker logs 命令作为备用 (终极失败)
+        # 4. 如果文件不存在，回退到 docker logs 命令作为备用
         set +e
         timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
         set -e
@@ -1040,7 +1044,7 @@ show_watchtower_details() {
                 local hours=$((remaining_time / 3600))
                 local minutes=$(( (remaining_time % 3600) / 60 ))
                 local seconds=$(( remaining_time % 60 ))
-                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}小时 ${minutes}分钟 ${seconds}秒${COLOR_RESET}"
+                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
             else
                 echo -e "  - ${COLOR_GREEN}下次检查即将进行或已经超时。${COLOR_RESET}"
             fi
