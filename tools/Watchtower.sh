@@ -547,10 +547,11 @@ _get_watchtower_all_raw_logs() {
 
     local raw_logs_output=""
 
-    # 修复：移除 --no-trunc 选项，以支持旧版本 Docker；直接捕获所有日志
+    # 终极修复：使用 'timeout' 确保命令不会阻塞，并恢复 'grep' 过滤结构化日志
     set +e
-    # 将标准输出和标准错误输出都重定向到文件
-    docker logs watchtower --tail 500 --since 0s > "$temp_log_file" 2>&1 || true
+    # 尝试运行 docker logs 10秒，然后用 grep 过滤出 time= 的行
+    # 注意：我们保留了 2>&1，因为 Watchtower 的结构化日志可能输出到 stderr
+    timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
     set -e
 
     raw_logs_output=$(cat "$temp_log_file")
@@ -909,7 +910,7 @@ run_watchtower_once() {
 
 # 🆕 新增：查看 Watchtower 运行详情和更新记录
 show_watchtower_details() {
-    echo -e "${COLOR_YELLOW}🔍 Watchtower 运行详情和更新记录：${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}🔍 Watchtower 运行详情和更新记 录：${COLOR_RESET}"
     echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
@@ -919,7 +920,7 @@ show_watchtower_details() {
         return 1
     fi
 
-    echo -e "${COLOR_BLUE}--- Watchtower 运行详情 ---${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}--- Watchtower 运 行 详 情 ---${COLOR_RESET}"
     local wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null)
     local wt_interval_running="N/A"
 
@@ -956,7 +957,7 @@ show_watchtower_details() {
              echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
-        # 优化长提示，消除多余空格
+        # 修复：优化长提示，消除多余空格
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
         printf "    1. 您的系统时间是否与Watchtower日志时间同步？请执行'date'命令检查，\n"
         printf "       并运行'sudo docker exec watchtower date'对比。\n"
