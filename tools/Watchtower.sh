@@ -1,10 +1,9 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.28 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
+# v2.17.29 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
 #                    优化 Watchtower 日志获取和解析；增强通知重试机制；
 #                    提升状态报告和日志详情的用户体验；强制移除Watchtower自更新模式。
-#                    修复：'unexpected token (' 错误，将 'if [ $? -ne 0 ]' 替换为 'if ! function_call'。
-#                    新增：脚本启动时强制检查是否为 Bash 环境。
+#                    修复：'unexpected token (' 错误，通过强制脚本以 Bash 重新执行自身来确保兼容性。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -17,7 +16,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.28" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.29" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -46,12 +45,19 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# 确保脚本使用 Bash 运行
+# --- 强制脚本使用 Bash 执行 ---
+# 如果当前 shell 不是 Bash，则用 Bash 重新执行自身。
+# 这解决了用户可能使用 'sh script.sh' 运行，导致 Bash 特有语法报错的问题。
 if [ -z "$BASH_VERSION" ]; then
-    echo -e "${COLOR_RED}❌ 脚本必须使用 Bash shell 运行。请确保使用 'bash ./$SCRIPT_NAME' 或 'sudo bash ./$SCRIPT_NAME' 执行。${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}ℹ️ 检测到非 Bash 环境。正在使用 Bash 重新启动脚本...${COLOR_RESET}" >&2 # 输出到 stderr
+    exec bash "$0" "$@"
+    # exec 成功后，当前进程会被替换为新的 bash 进程，不会执行下面的代码
+    # 如果 exec 失败（例如没有找到 bash），则会继续执行并报错
+    echo -e "${COLOR_RED}❌ 无法找到 Bash shell 或重新执行失败。请确保系统安装了 Bash。${COLOR_RESET}" >&2
     exit 1
 fi
 
+# 现在可以安全地使用 Bash 特有功能
 set -euo pipefail # 任何命令失败都立即退出脚本
 
 # 检查 Docker
@@ -692,9 +698,6 @@ show_status() {
                     --cleanup|--interval|--label-enable|--debug)
                         # 这些是 Watchtower 的标准参数，我们已经在其他地方显示
                         ;;
-                    # watchtower)
-                    #     container_actual_self_update="是" # 已经强制禁用，此行实际不会被执行
-                    #     ;;
                     --*)
                         # 收集其他自定义的额外参数
                         if ! echo "$arg_item" | grep -qE "^--interval|^--label-enable|^--debug|^--cleanup$"; then # 再次确认排除
@@ -715,7 +718,7 @@ show_status() {
                             fi
                         fi
                         ;;
-                esac
+                </case>
             done < <(echo "$wt_cmd_json" | jq -r '.[]' 2>/dev/null || true)
         fi
         container_actual_extra_args=$(IFS=' '; echo "${filtered_args_array[*]:-}")
@@ -1022,7 +1025,7 @@ show_watchtower_details() {
             local first_run_epoch=$(date -d "$first_run_scheduled Z" +%s 2>/dev/null || true)
             if [ -n "$first_run_epoch" ]; then
                 local current_epoch=$(date +%s)
-                local time_to_first_run=$((first_run_epoch - current_epoch))
+                local time_to_first_run=$((current_epoch - first_run_epoch))
                 if [ "$time_to_first_run" -gt 0 ]; then
                     local hours=$((time_to_first_run / 3600))
                     local minutes=$(( (time_to_first_run % 3600) / 60 ))
@@ -1272,14 +1275,14 @@ main_menu() {
                 # 选项 7 的退出/返回逻辑
                 if [ "$IS_NESTED_CALL" = "true" ]; then
                     # 总是显示详情，并检查其退出状态
-                    if ! show_watchtower_details; then # <--- 优化点: 替换了 'if [ $? -ne 0 ]; then'
+                    if ! show_watchtower_details; then
                          echo -e "${COLOR_YELLOW}↩️ 返回上级菜单...${COLOR_RESET}"
-                         return 0
+                         return 0 # 如果 show_watchtower_details 失败，则返回上级菜单
                     fi
                     continue # 详情查看成功，继续循环
                 else
                     # 主脚本直接调用，行为是显示详情，然后退出
-                    show_watchtower_details # <--- 优化点: 移除了多余的 if 检查，直接调用
+                    show_watchtower_details # <--- 这就是 line 1139 (或附近)
                     echo -e "${COLOR_GREEN}👋 感谢使用，脚本已退出。${COLOR_RESET}"
                     exit 0
                 fi
