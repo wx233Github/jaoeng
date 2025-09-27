@@ -547,7 +547,7 @@ _get_watchtower_all_raw_logs() {
 
     local raw_logs_output=""
 
-    # 修复：移除 --no-trunc 选项，以支持旧版本 Docker；移除 grep 过滤器，直接捕获所有日志
+    # 修复：移除 --no-trunc 选项，以支持旧版本 Docker；直接捕获所有日志
     set +e
     # 将标准输出和标准错误输出都重定向到文件
     docker logs watchtower --tail 500 --since 0s > "$temp_log_file" 2>&1 || true
@@ -571,13 +571,11 @@ _get_watchtower_remaining_time() {
     fi 
 
     # 2. 查找最新的 Session done 日志
-    # 注意：这里我们使用 'grep -E' 依赖于日志内容本身包含 time="XXX"
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
     local last_check_timestamp_str=""
 
     if [ -n "$last_check_log" ]; then
         # 从日志行中精确提取 time="XXX" 的值
-        # 修复：只保留 time="..." 的部分，并确保 sed 能够处理
         last_check_timestamp_str=$(echo "$last_check_log" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
     fi
 
@@ -958,7 +956,7 @@ show_watchtower_details() {
              echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
-        # 优化长提示，避免中文排版错乱
+        # 优化长提示，消除多余空格
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
         printf "    1. 您的系统时间是否与Watchtower日志时间同步？请执行'date'命令检查，\n"
         printf "       并运行'sudo docker exec watchtower date'对比。\n"
