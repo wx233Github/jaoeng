@@ -571,11 +571,13 @@ _get_watchtower_remaining_time() {
     fi 
 
     # 2. 查找最新的 Session done 日志
+    # 注意：这里我们使用 'grep -E' 依赖于日志内容本身包含 time="XXX"
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
     local last_check_timestamp_str=""
 
     if [ -n "$last_check_log" ]; then
         # 从日志行中精确提取 time="XXX" 的值
+        # 修复：只保留 time="..." 的部分，并确保 sed 能够处理
         last_check_timestamp_str=$(echo "$last_check_log" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n 1)
     fi
 
@@ -1151,7 +1153,13 @@ main_menu() {
         echo "4) ⚙️ 任务管理 (停止/移除)"
         echo "5) 📝 查看/编辑脚本配置"
         echo "6) 🆕 运行一次 Watchtower (立即检查更新)"
-        echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 退出" # 选项 7 负责退出
+        
+        # 统一将选项 7 用于查看详情，并处理退出逻辑
+        if [ "$IS_NESTED_CALL" = "true" ]; then
+            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 返回上级菜单"
+        else
+            echo "7) 🔍 查看 Watchtower 运行详情和更新记录 / 退出脚本"
+        fi
         echo -e "-------------------------------------------"
 
         while read -r -t 0; do read -r; done
