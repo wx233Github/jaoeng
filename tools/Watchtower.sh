@@ -957,7 +957,7 @@ show_watchtower_details() {
              echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
-        # 修复：优化长提示，消除多余空格
+        # 优化长提示，消除多余空格
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
         printf "    1. 您的系统时间是否与Watchtower日志时间同步？请执行'date'命令检查，\n"
         printf "       并运行'sudo docker exec watchtower date'对比。\n"
@@ -978,7 +978,7 @@ show_watchtower_details() {
                     local hours=$((time_to_first_run / 3600))
                     local minutes=$(( (time_to_first_run % 3600) / 60 ))
                     local seconds=$(( time_to_first_run % 60 ))
-                    echo -e "       预计距离首次扫描还有: ${COLOR_GREEN}${hours}小时 ${minutes}分钟 ${seconds}秒${COLOR_RESET}"
+                    echo -e "       预计距离首次扫描还有: ${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
                 else
                     echo -e "       首次扫描应已完成或即将进行。${COLOR_RESET}"
                 fi
