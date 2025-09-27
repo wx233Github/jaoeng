@@ -318,10 +318,7 @@ _start_watchtower_container_logic() {
 
 # 🔹 Watchtower 模式配置
 configure_watchtower() {
-    local MODE_NAME="$1" # "Watchtower模式"
-    local ENABLE_SELF_UPDATE_PARAM="$2" # 始终为 "false"
-
-    echo -e "${COLOR_YELLOW}🚀 $MODE_NAME ${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}🚀 Watchtower模式 ${COLOR_RESET}"
 
     local INTERVAL_INPUT=""
     local WT_INTERVAL=300 # 默认值
@@ -360,8 +357,8 @@ configure_watchtower() {
     docker rm -f watchtower &>/dev/null || true
     set -e # 重新启用错误检查
         
-    if ! _start_watchtower_container_logic "$WT_INTERVAL" "false" "$MODE_NAME"; then # 始终传递 false 给 self_update
-        echo -e "${COLOR_RED}❌ $MODE_NAME 启动失败，请检查配置和日志。${COLOR_RESET}"
+    if ! _start_watchtower_container_logic "$WT_INTERVAL" "false" "Watchtower模式"; then # 始终传递 false 给 self_update
+        echo -e "${COLOR_RED}❌ Watchtower模式 启动失败，请检查配置和日志。${COLOR_RESET}"
         return 1 # 启动失败，返回非零值
     fi
     echo "您可以使用选项2查看 Docker 容器信息。"
@@ -471,7 +468,7 @@ update_menu() {
 
     case "$MODE_CHOICE" in
     1)
-        configure_watchtower "Watchtower模式" "false" # 智能模式已移除，直接传递false
+        configure_watchtower
         ;;
     2)
         configure_cron_task
@@ -550,9 +547,9 @@ _get_watchtower_all_raw_logs() {
 
     local raw_logs_output=""
 
-    # 修复：移除 grep 过滤器，直接捕获所有日志，以应对 grep 在某些环境下失效的问题
+    # 修复：移除 --no-trunc 选项，以支持旧版本 Docker；移除 grep 过滤器，直接捕获所有日志
     set +e
-    docker logs watchtower --tail 500 --no-trunc --since 0s > "$temp_log_file" 2>&1 || true
+    docker logs watchtower --tail 500 --since 0s > "$temp_log_file" 2>&1 || true
     set -e
 
     raw_logs_output=$(cat "$temp_log_file")
@@ -573,6 +570,7 @@ _get_watchtower_remaining_time() {
     fi 
 
     # 2. 查找最新的 Session done 日志
+    # 注意：这里我们使用 'grep -E' 依赖于日志内容本身包含 time="XXX"
     local last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
     local last_check_timestamp_str=""
 
@@ -610,31 +608,17 @@ _get_watchtower_remaining_time() {
 }
 
 
-# 🔹 状态报告 (已调整宽度为 43，并精简标题和表格列宽)
+# 🔹 状态报告 (已调整宽度为 43，并精简标题和表格列宽，左对齐)
 show_status() {
-    # 居中标题
+    # 标题不再居中，改为左对齐
     local title_text="【 自动化更新状态 】" # 精简标题，约 16 字符宽
     local line_length=43 # 与脚本启动标题宽度保持一致
     
-    # 估算标题的显示宽度 
-    local estimated_text_len=16 
-    
-    local padding_width=$((line_length - estimated_text_len - 2)) # 减去标题长度和两边的空格
-    
-    # 防止宽度不足导致负数或错误计算
-    if [ "$padding_width" -lt 0 ]; then
-        local padding_left=1
-        local padding_right=1
-    else
-        local padding_left=$(( padding_width / 2 ))
-        local padding_right=$(( line_length - estimated_text_len - 2 - padding_left ))
-    fi
-
     local full_line=$(printf '=%.0s' $(seq 1 $line_length)) # 生成等号横线
 
     printf "\n"
     printf "${COLOR_YELLOW}%s\n" "$full_line" # 上方横线
-    printf "%*s%s%*s\n" $padding_left "" "${COLOR_YELLOW}$title_text${COLOR_RESET}" $padding_right "" # 居中带颜色标题
+    printf "${COLOR_YELLOW}%s %s${COLOR_RESET}\n" "" "$title_text" # 左对齐标题
     printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "$full_line" # 下方横线
     echo "" # 增加空行
 
@@ -749,7 +733,7 @@ show_status() {
         echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | cut -d ' ' -f 1-5)"
         echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
     else
-        echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
+        echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任 务。${COLOR_RESET}"
     fi
     echo "" # 增加空行
     return 0
@@ -984,12 +968,12 @@ show_watchtower_details() {
 
         # 优化长提示，避免颜色代码和中文排版错乱
         printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
-        printf "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，\n"
-        printf "       并运行 'sudo docker exec watchtower date' 对比。\n"
-        printf "       (如果看到 'exec: date: executable file not found' 错误，表明容器内无 date 命令，\n"
-        printf "        这不影响功能，但需确认宿主机时间正确。)\n"
+        printf "    1. 您 的 系 统 时 间 是 否 与 Watchtower 日 志 时 间 同 步 ？ 请 执 行 'date' 命 令 检 查 ，\n"
+        printf "       并 运 行 'sudo docker exec watchtower date' 对 比 。\n"
+        printf "       (如 果 看 到 'exec: date: executable file not found' 错 误 ， 表 明 容 器 内 无 date 命 令 ，\n"
+        printf "        这 不 影 响 功 能 ， 但 需 确 认 宿 主 机 时 间 正 确 。 )\n"
         
-        printf "    2. Watchtower 容器是否已运行足够长的时间以完成一次扫描？\n"
+        printf "    2. Watchtower 容 器 是 否 已 运 行 足 够 长 的 时 间 以 完 成 一 次 扫 描 ？\n"
         
         # 增加首次扫描计划时间，如果能解析到的话
         local first_run_scheduled=$(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1 || true)
@@ -1012,7 +996,7 @@ show_watchtower_details() {
             echo -e "       未找到首次扫描计划时间。${COLOR_RESET}"
         fi
         
-        printf "    3. 如果时间不同步，请尝试校准宿主机时间，并重启 Watchtower 容器。\n"
+        printf "    3. 如 果 时 间 不 同 步 ， 请 尝 试 校 准 宿 主 机 时 间 ， 并 重 启 Watchtower 容 器 。\n"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
