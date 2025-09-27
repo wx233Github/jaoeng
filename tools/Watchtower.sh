@@ -543,20 +543,15 @@ manage_tasks() {
     return 0
 }
 
-# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志
+# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志 (已修复 I/O 捕获问题)
 _get_watchtower_all_raw_logs() {
-    local temp_log_file="/tmp/watchtower_raw_logs_$$.log"
-    trap "rm -f \"$temp_log_file\"" RETURN # 函数退出时清理临时文件
-
     local raw_logs_output=""
-
-    # 使用 'docker logs' 加上 --since 确保能获取到历史日志，即使它们已经很旧
-    # 使用 'grep -E "^time=" ' 过滤以确保只获取结构化日志
+    
+    # 禁用 set -e 以免管道中的 grep 失败导致脚本退出 (当没有匹配项时)
     set +e
-    docker logs watchtower --tail 500 --no-trunc --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
+    # 直接捕获日志，过滤出以 time=" 开头的结构化日志行
+    raw_logs_output=$(docker logs watchtower --tail 500 --no-trunc --since 0s 2>&1 | grep -E "^time=" || true)
     set -e
-
-    raw_logs_output=$(cat "$temp_log_file")
 
     echo "$raw_logs_output"
 }
@@ -980,7 +975,7 @@ show_watchtower_details() {
         
         # 致命错误提示
         if [ -z "$raw_logs" ]; then
-             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
+             printf "${COLOR_RED}    致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}\n"
         fi
 
         # 优化长提示，避免颜色代码和中文排版错乱
@@ -1014,7 +1009,7 @@ show_watchtower_details() {
         fi
         
         printf "    3. 如 果 时 间 不 同 步 ， 请 尝 试 校 准 宿 主 机 时 间 ， 并 重 启 Watchtower 容 器 。\n"
-        echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
+        printf "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}\n"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
         return 1
@@ -1229,7 +1224,7 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-8 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        esac
+        </dev/null
     done
 }
 
