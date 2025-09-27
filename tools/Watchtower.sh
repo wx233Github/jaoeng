@@ -1140,19 +1140,19 @@ show_watchtower_details() {
                 action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
             elif [[ "$line" =~ "Stopping container" ]]; then
                 action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
-            elif [[ "$line" =~ "Updating container" ]]; then
+            elif [[ "$line" == *"Updating container"* ]]; then
                 action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
-            elif [[ "$line" =~ "container was updated" ]]; then
+            elif [[ "$line" == *"container was updated"* ]]; then # Line 1107 (Fixed)
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
             elif [[ "$line" == *"skipped because of an error"* ]]; then
                 action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
-            elif [[ "$line" =~ "Unable to update container" ]]; then
+            elif [[ "$line" == *"Unable to update container"* ]]; then # Line 1112 (Fixed)
                 local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
                 action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
-            elif [[ "$line" =~ "Could not do a head request" ]]; then
+            elif [[ "$line" == *"Could not do a head request"* ]]; then # Line 1116 (Fixed)
                 local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                 action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
-            elif [[ "$line" =~ "No new images found for container" ]]; then
+            elif [[ "$line" == *"No new images found for container"* ]]; then # Line 1119 (Fixed)
                 action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
             fi
 
