@@ -554,12 +554,8 @@ _get_watchtower_all_raw_logs() {
     set -e
 
     if [ -z "$container_id" ]; then
-        # 容器不存在或无法检查，回退到 docker logs 尝试捕获错误信息
-        set +e
-        timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 > "$temp_log_file" || true
-        set -e
-        raw_logs_output=$(cat "$temp_log_file")
-        echo "$raw_logs_output"
+        # 容器不存在或无法检查
+        echo ""
         return
     fi
 
@@ -569,15 +565,15 @@ _get_watchtower_all_raw_logs() {
     if [ -f "$log_file_path" ]; then
         # 3. 直接读取 JSON 文件，提取 log 字段，并过滤出 time= 的行
         set +e
-        # 使用 tail -n 限制行数，并用 jq 解构 JSON，然后用 grep 过滤 time= 的行
+        # 使用 tail -n 限制行数，并用 jq 解构 JSON，然后用 sed 移除尾部的 \n 转义符
         tail -n 500 "$log_file_path" | \
         jq -r 'select(.log | startswith("time=")) | .log' 2>/dev/null | \
-        sed 's/\\n$//' > "$temp_log_file" || true # 使用 sed 移除尾部的 \n 转义符
+        sed 's/\\n$//' > "$temp_log_file" || true
         set -e
         
         raw_logs_output=$(cat "$temp_log_file")
     else
-        # 4. 如果文件不存在，回退到 docker logs 命令作为备用
+        # 4. 如果文件不存在，回退到 docker logs 命令作为备用 (终极失败)
         set +e
         timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
         set -e
@@ -1044,7 +1040,7 @@ show_watchtower_details() {
                 local hours=$((remaining_time / 3600))
                 local minutes=$(( (remaining_time % 3600) / 60 ))
                 local seconds=$(( remaining_time % 60 ))
-                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
+                echo -e "  - 距离下次检查还有: ${COLOR_GREEN}${hours}小时 ${minutes}分钟 ${seconds}秒${COLOR_RESET}"
             else
                 echo -e "  - ${COLOR_GREEN}下次检查即将进行或已经超时。${COLOR_RESET}"
             fi
@@ -1240,8 +1236,7 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        </dev/null
-    esac
+        esac
     done
 }
 
