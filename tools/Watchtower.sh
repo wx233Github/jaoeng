@@ -540,21 +540,48 @@ manage_tasks() {
     return 0
 }
 
-# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志
+# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志 (直接读取 JSON 文件)
 _get_watchtower_all_raw_logs() {
     local temp_log_file="/tmp/watchtower_raw_logs_$$.log"
     trap "rm -f \"$temp_log_file\"" RETURN # 函数退出时清理临时文件
 
     local raw_logs_output=""
+    local container_id
+    
+    # 1. 获取容器的完整 ID
+    container_id=$(docker inspect watchtower --format '{{.Id}}' 2>/dev/null || true)
 
-    # 终极修复：使用 'timeout' 确保命令不会阻塞，并恢复 'grep' 过滤结构化日志
-    set +e
-    # 尝试运行 docker logs 10秒，然后用 grep 过滤出 time= 的行
-    # 注意：我们保留了 2>&1，因为 Watchtower 的结构化日志可能输出到 stderr
-    timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
-    set -e
+    if [ -z "$container_id" ]; then
+        # 容器不存在或无法检查，返回空
+        echo ""
+        return
+    fi
 
-    raw_logs_output=$(cat "$temp_log_file")
+    # 2. 构造 JSON 日志文件的路径 (json-file 驱动的标准路径)
+    local log_file_path="/var/lib/docker/containers/$container_id/$container_id-json.log"
+
+    if [ -f "$log_file_path" ]; then
+        # 3. 直接读取 JSON 文件，提取 log 字段，并过滤出 time= 的行
+        # 使用 tail -n 500 限制行数，并用 jq 解构 JSON，然后用 grep 过滤 time= 的行
+        set +e
+        tail -n 500 "$log_file_path" | \
+        jq -r 'select(.log | startswith("time=")) | .log' 2>/dev/null > "$temp_log_file" || true
+        set -e
+        
+        raw_logs_output=$(cat "$temp_log_file")
+    else
+        # 4. 如果文件不存在，则回退到原始的 docker logs 命令作为备用
+        set +e
+        timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
+        set -e
+        raw_logs_output=$(cat "$temp_log_file")
+        
+        # 如果回退仍然失败，检查是否是 Docker 本身的错误信息
+        if [ -z "$raw_logs_output" ] && docker logs watchtower --tail 500 2>&1 | grep -q "time="; then
+             # 如果原始 logs 有 time= 但我们没抓到，可能是管道问题，但我们已经尽力了
+             echo "⚠️ Log file read failed; docker logs also failed to pipe output correctly." >&2
+        fi
+    fi
 
     echo "$raw_logs_output"
 }
@@ -978,7 +1005,7 @@ show_watchtower_details() {
                     local hours=$((time_to_first_run / 3600))
                     local minutes=$(( (time_to_first_run % 3600) / 60 ))
                     local seconds=$(( time_to_first_run % 60 ))
-                    echo -e "       预计距离首次扫描还有: ${COLOR_GREEN}${hours}时 ${minutes}分 ${seconds}秒${COLOR_RESET}"
+                    echo -e "       预计距离首次扫描还有: ${COLOR_GREEN}${hours}小时 ${minutes}分钟 ${seconds}秒${COLOR_RESET}"
                 else
                     echo -e "       首次扫描应已完成或即将进行。${COLOR_RESET}"
                 fi
