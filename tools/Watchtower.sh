@@ -537,7 +537,7 @@ manage_tasks() {
         *)
             echo -e "${COLOR_RED}❌ 输入无效，请选择 1-2 之间的数字。${COLOR_RESET}"
             ;;
-    esac
+    </case>
     return 0
 }
 
@@ -1108,7 +1108,7 @@ show_watchtower_details() {
             elif [[ "$line" =~ container\ \'([^\']+)\' ]]; then
                 container_name="${BASH_REMATCH[1]}"
             # 修复：从 Found new image 消息中提取镜像名作为容器的替代名
-            elif echo "$line" | grep -q "Found new image for container"; then # 使用 grep 替代 =~
+            elif echo "$line" | grep -q "Found new image for container"; then 
                 if [[ "$line" =~ Found new image for container\ ([^ ]+)\ \(([^ ]+)\) ]]; then
                     container_name="${BASH_REMATCH[1]}" # 提取镜像名
                 fi
@@ -1125,38 +1125,51 @@ show_watchtower_details() {
 
 
             local action_desc="未知操作"
-            if echo "$line" | grep -q "Session done"; then # 修正：使用 grep -q
-                local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
-                local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
-                local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
-                action_desc="${COLOR_GREEN}扫描完成${COLOR_RESET} (扫描: ${scanned}, 更新: ${updated}, 失败: ${failed})"
-                if [ "$failed" -gt 0 ]; then
-                    action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}"
-                elif [ "$updated" -gt 0 ]; then
-                    action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}"
-                fi
-            elif echo "$line" | grep -q "Found new image for container"; then # 修正：使用 grep -q
-                local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
-                action_desc="${COLOR_YELLOW}发现新版本: $image_info${COLOR_RESET}"
-            elif echo "$line" | grep -q "Pulling image" || echo "$line" | grep -q "will pull"; then # 修正：使用 grep -q
-                action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
-            elif echo "$line" | grep -q "Stopping container"; then # 修正：使用 grep -q
-                action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
-            elif echo "$line" | grep -q "Updating container"; then # 修正：使用 grep -q
-                action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
-            elif echo "$line" | grep -q "container was updated"; then # 修正：使用 grep -q
-                action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
-            elif echo "$line" | grep -q "skipped because of an error"; then # 修正：使用 grep -q
-                action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
-            elif echo "$line" | grep -q "Unable to update container"; then # 修正：使用 grep -q
-                local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
-                action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
-            elif echo "$line" | grep -q "Could not do a head request"; then # 修正：使用 grep -q
-                local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
-                action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
-            elif echo "$line" | grep -q "No new images found for container"; then # 修正：使用 grep -q
-                action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
-            fi
+
+            # 使用 case 结构解决条件表达式兼容性问题
+            case "$line" in
+                *Session\ done*)
+                    local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+                    local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+                    local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+                    action_desc="${COLOR_GREEN}扫描完成${COLOR_RESET} (扫描: ${scanned}, 更新: ${updated}, 失败: ${failed})"
+                    if [ "$failed" -gt 0 ]; then
+                        action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}"
+                    elif [ "$updated" -gt 0 ]; then
+                        action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}"
+                    fi
+                    ;;
+                *Found\ new\ image\ for\ container*)
+                    local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
+                    action_desc="${COLOR_YELLOW}发现新版本: $image_info${COLOR_RESET}"
+                    ;;
+                *Pulling\ image*|*will\ pull*)
+                    action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
+                    ;;
+                *Stopping\ container*)
+                    action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
+                    ;;
+                *Updating\ container*)
+                    action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
+                    ;;
+                *container\ was\ updated*)
+                    action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
+                    ;;
+                *skipped\ because\ of\ an\ error*)
+                    action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
+                    ;;
+                *Unable\ to\ update\ container*)
+                    local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
+                    action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg}${COLOR_RESET}"
+                    ;;
+                *Could\ not\ do\ a\ head\ request*)
+                    local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
+                    action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info}${COLOR_RESET}"
+                    ;;
+                *No\ new\ images\ found\ for\ container*)
+                    action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
+                    ;;
+            esac
 
             if [ -n "$log_time_formatted" ] && [ "$container_name" != "N/A" ] && [ "$action_desc" != "未知操作" ]; then
                 printf "  %-20s %-25s %s\n" "$log_time_formatted" "$container_name" "$action_desc"
