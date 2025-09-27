@@ -425,7 +425,8 @@ if command -v docker compose &>/dev/null; then
 elif command -v docker-compose &>/dev/null; then
     DOCKER_COMPOSE_CMD="docker-compose"
 else
-    DOCKER_COMPOSE_CMD=""
+    echo "\$(date '+%Y-%m-%d %H:%M:%S') - 错误：未找到 'docker compose' 或 'docker-compose' 命令。" >> "\$LOG_FILE" 2>&1
+    exit 1
 fi
 
 if [ -n "\$DOCKER_COMPOSE_CMD" ]; then
@@ -1143,7 +1144,7 @@ show_watchtower_details() {
                 action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
             elif [[ "$line" =~ "container was updated" ]]; then
                 action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
-            elif [[ "$line" =~ "skipped because of an error" ]]; then
+            elif [[ "$line" == *"skipped because of an error"* ]]; then
                 action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
             elif [[ "$line" =~ "Unable to update container" ]]; then
                 local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/watchtower: \(.*\)"/\1/p')
