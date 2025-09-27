@@ -540,7 +540,7 @@ manage_tasks() {
     return 0
 }
 
-# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志 (直接读取 JSON 文件)
+# 辅助函数：以最健壮的方式获取 Watchtower 的所有原始日志
 _get_watchtower_all_raw_logs() {
     local temp_log_file="/tmp/watchtower_raw_logs_$$.log"
     trap "rm -f \"$temp_log_file\"" RETURN # 函数退出时清理临时文件
@@ -549,11 +549,17 @@ _get_watchtower_all_raw_logs() {
     local container_id
     
     # 1. 获取容器的完整 ID
-    container_id=$(docker inspect watchtower --format '{{.Id}}' 2>/dev/null || true)
+    set +e
+    container_id=$(docker inspect watchtower --format '{{.Id}}' 2>/dev/null)
+    set -e
 
     if [ -z "$container_id" ]; then
-        # 容器不存在或无法检查，返回空
-        echo ""
+        # 容器不存在或无法检查，回退到 docker logs 尝试捕获错误信息
+        set +e
+        timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 > "$temp_log_file" || true
+        set -e
+        raw_logs_output=$(cat "$temp_log_file")
+        echo "$raw_logs_output"
         return
     fi
 
@@ -562,25 +568,20 @@ _get_watchtower_all_raw_logs() {
 
     if [ -f "$log_file_path" ]; then
         # 3. 直接读取 JSON 文件，提取 log 字段，并过滤出 time= 的行
-        # 使用 tail -n 500 限制行数，并用 jq 解构 JSON，然后用 grep 过滤 time= 的行
         set +e
+        # 使用 tail -n 限制行数，并用 jq 解构 JSON，然后用 grep 过滤 time= 的行
         tail -n 500 "$log_file_path" | \
-        jq -r 'select(.log | startswith("time=")) | .log' 2>/dev/null > "$temp_log_file" || true
+        jq -r 'select(.log | startswith("time=")) | .log' 2>/dev/null | \
+        sed 's/\\n$//' > "$temp_log_file" || true # 使用 sed 移除尾部的 \n 转义符
         set -e
         
         raw_logs_output=$(cat "$temp_log_file")
     else
-        # 4. 如果文件不存在，则回退到原始的 docker logs 命令作为备用
+        # 4. 如果文件不存在，回退到 docker logs 命令作为备用
         set +e
         timeout 10s docker logs watchtower --tail 500 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
         set -e
         raw_logs_output=$(cat "$temp_log_file")
-        
-        # 如果回退仍然失败，检查是否是 Docker 本身的错误信息
-        if [ -z "$raw_logs_output" ] && docker logs watchtower --tail 500 2>&1 | grep -q "time="; then
-             # 如果原始 logs 有 time= 但我们没抓到，可能是管道问题，但我们已经尽力了
-             echo "⚠️ Log file read failed; docker logs also failed to pipe output correctly." >&2
-        fi
     fi
 
     echo "$raw_logs_output"
@@ -1239,7 +1240,8 @@ main_menu() {
                 echo -e "${COLOR_RED}❌ 输入无效，请选择 1-7 之间的数字。${COLOR_RESET}"
                 press_enter_to_continue
                 ;;
-        esac
+        </dev/null
+    esac
     done
 }
 
