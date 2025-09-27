@@ -551,7 +551,7 @@ _get_watchtower_all_raw_logs() {
     local raw_logs_output=""
 
     # 使用 'docker logs' 加上 --since 确保能获取到历史日志，即使它们已经很旧
-    # 使用 'grep -E "^time="' 过滤以确保只获取结构化日志
+    # 使用 'grep -E "^time=" ' 过滤以确保只获取结构化日志
     set +e
     docker logs watchtower --tail 500 --no-trunc --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
     set -e
@@ -974,17 +974,23 @@ show_watchtower_details() {
 
     # 检查获取到的 raw_logs 是否包含有效的 Watchtower 扫描日志（Session done）
     if ! echo "$raw_logs" | grep -q "Session done"; then
+        
+        # 打印错误标题
         echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
         
-        # 打印致命错误提示，告知用户日志捕获失败
+        # 致命错误提示
         if [ -z "$raw_logs" ]; then
-             echo -e "    ${COLOR_RED}致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RED}${COLOR_RESET}"
+             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何结构化日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
-        echo -e "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}"
-        echo -e "    1. 您的系统时间是否与 Watchtower 日志时间同步？请执行 'date' 命令检查，并运行 'sudo docker exec watchtower date' 对比。${COLOR_RESET}"
-        echo -e "       (如果您之前看到 'exec: date: executable file not found' 错误，表明容器内没有date命令，这并不影响Watchtower本身的功能，但您需要自行确认宿主机时间是否正确。)${COLOR_RESET}"
-        echo -e "    2. Watchtower 容器是否已经运行了足够长的时间，并至少完成了一次完整的扫描（Session done）？${COLOR_RESET}"
+        # 优化长提示，避免颜色代码和中文排版错乱
+        printf "    ${COLOR_YELLOW}请确认以下几点：${COLOR_RESET}\n"
+        printf "    1. 您 的 系 统 时 间 是 否 与 Watchtower 日 志 时 间 同 步 ？ 请 执 行 'date' 命 令 检 查 ，\n"
+        printf "       并 运 行 'sudo docker exec watchtower date' 对 比 。\n"
+        printf "       (如 果 您 之 前 看 到 'exec: date: executable file not found' 错 误 ， 表 明\n"
+        printf "        容 器 内 没 有 date 命 令 ， 这 并 不 影 响 Watchtower 本 身 的 功 能 ， 但 您 需 要 自 行 确 认 宿 主 机 时 间 是 否 正 确 。 )\n"
+        
+        printf "    2. Watchtower 容 器 是 否 已 经 运 行 了 足 够 长 的 时 间 ， 并 至 少 完 成 了 一 次 完 整 的 扫 描 （ Session done） ？\n"
         
         # 增加首次扫描计划时间，如果能解析到的话
         local first_run_scheduled=$(echo "$raw_logs" | grep -E "Scheduling first run" | sed -n 's/.*Scheduling first run: \([^ ]* [^ ]*\).*/\1/p' | head -n 1 || true)
@@ -1007,7 +1013,7 @@ show_watchtower_details() {
             echo -e "       未找到首次扫描计划时间。${COLOR_RESET}"
         fi
         
-        echo -e "    3. 如果时间不同步，请尝试校准宿主机时 间，并重启 Watchtower 容器。${COLOR_RESET}"
+        printf "    3. 如 果 时 间 不 同 步 ， 请 尝 试 校 准 宿 主 机 时 间 ， 并 重 启 Watchtower 容 器 。\n"
         echo -e "    ${COLOR_YELLOW}原始日志输出 (前5行):${COLOR_RESET}"
         echo "$raw_logs" | head -n 5 
         press_enter_to_continue
