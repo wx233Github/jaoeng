@@ -971,6 +971,8 @@ show_watchtower_details() {
     echo "-------------------------------------------------------------------------------------------------------------------"
     echo "" # 增加空行
 
+    set -x # <<< 在这里添加这一行
+
     if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo -e "${COLOR_RED}❌ Watchtower 容器未运行。${COLOR_RESET}"
         press_enter_to_continue
