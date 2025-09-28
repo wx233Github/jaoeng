@@ -1,12 +1,12 @@
 #!/bin/bash
 # 🚀 Docker 自动更新助手
-# v2.17.34 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
+# v2.17.30 体验优化：修复 Bash 语法错误 (if/fi/continue 结构)；修复日志捕获问题；
 #                    优化 Watchtower 日志获取和解析；增强通知重试机制；
 #                    提升状态报告和日志详情的用户体验；强制移除Watchtower自更新模式。
 #                    修复：'unexpected token <' 错误，通过避免进程替换 <() 语法来增强兼容性。
 #                    新增：脚本启动时强制检查并使用 Bash 环境。
 #                    重要修复：解决 "syntax error in conditional expression: unexpected token '('" 问题，
-#                              通过更健壮的Watchtower日志数值提取方式（显式强制转换为整数）。
+#                              通过回归 POSIX 兼容的 [ -gt ] 语法并结合强制整数转换，实现最大兼容性。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -19,7 +19,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.34" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.35" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -105,7 +105,7 @@ confirm_action() {
     esac
 }
 
-# 优化的"按回车继续"提示：在读取用户输入前清空缓冲区，全局解决自动跳过问题。
+# 优化的“按回车继续”提示：在读取用户输入前清空缓冲区，全局解决自动跳过问题。
 press_enter_to_continue() {
     echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
     # --- 清空输入缓冲区，防止残留的换行符导致自动跳过 ---
@@ -1006,11 +1006,11 @@ show_watchtower_details() {
     if ! echo "$raw_logs" | grep -q "Session done"; then
 
         # 打印错误标题
-        echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RED}"
+        echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
 
         # 致命错误提示
         if [ -z "$raw_logs" ]; then
-             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RED}"
+             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
         fi
 
         # 优化长提示，消除多余空格
@@ -1151,9 +1151,9 @@ show_watchtower_details() {
 
             local action_desc="未知操作"
 
-            # 修复：使用更安全的方式匹配模式，避免反斜杠转义空格问题
+            # 使用 case 结构解决条件表达式兼容性问题
             case "$line" in
-                *"Session done"*)
+                *Session\ done*)
                     # 强化：分步提取并强制清理非数字字符
                     local failed_str=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
                     local scanned_str=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
@@ -1174,45 +1174,46 @@ show_watchtower_details() {
                     printf -v scanned_val %d "${cleaned_scanned:-0}" 2>/dev/null || scanned_val=0
                     printf -v updated_val %d "${cleaned_updated:-0}" 2>/dev/null || updated_val=0
                     
-                    if (( failed_val > 0 )); then
+                    # 终极修复：使用 POSIX 兼容的 [ -gt ] 进行比较
+                    if [ "${failed_val}" -gt 0 ]; then
                         action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
-                    elif (( updated_val > 0 )); then
+                    elif [ "${updated_val}" -gt 0 ]; then
                         action_desc="${COLOR_YELLOW}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
                     else
                         action_desc="${COLOR_GREEN}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
                     fi
                     ;;
-                *"Found new image for container"*)
+                *Found\ new\ image\ for\ container*)
                     local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                     action_desc="${COLOR_YELLOW}发现新版本: ${image_info:-N/A}${COLOR_RESET}"
                     ;;
-                *"Pulling image"*|*"will pull"*)
+                *Pulling\ image*|*will\ pull*)
                     action_desc="${COLOR_BLUE}正在拉取镜像...${COLOR_RESET}"
                     ;;
-                *"Stopping container"*)
+                *Stopping\ container*)
                     action_desc="${COLOR_BLUE}正在停止容器...${COLOR_RESET}"
                     ;;
-                *"Updating container"*)
+                *Updating\ container*)
                     action_desc="${COLOR_BLUE}正在更新容器...${COLOR_RESET}"
                     ;;
-                *"container was updated"*)
+                *container\ was\ updated*)
                     action_desc="${COLOR_GREEN}容器已更新${COLOR_RESET}"
                     ;;
-                *"skipped because of an error"*)
+                *skipped\ because\ of\ an\ error*)
                     action_desc="${COLOR_RED}更新失败 (错误)${COLOR_RESET}"
                     ;;
-                *"Unable to update container"*)
+                *Unable\ to\ update\ container*)
                     local error_msg=$(echo "$line" | sed -n 's/.*msg="Unable to update container \/[^:]*: \(.*\)"/\1/p') # 更通用的匹配
                     action_desc="${COLOR_RED}更新失败 (无法更新): ${error_msg:-未知错误}${COLOR_RESET}"
                     ;;
-                *"Could not do a head request"*)
+                *Could\ not\ do\ a\ head\ request*)
                     local image_info=$(echo "$line" | sed -n 's/.*image="\([^"]*\)".*/\1/p' | head -n 1)
                     action_desc="${COLOR_RED}拉取失败 (head请求): 镜像 ${image_info:-N/A}${COLOR_RESET}"
                     ;;
-                *"No new images found for container"*)
+                *No\ new\ images\ found\ for\ container*)
                     action_desc="${COLOR_GREEN}未找到新镜像${COLOR_RESET}"
                     ;;
-                *"Scheduling first run"*)
+                *Scheduling\ first\ run*)
                     action_desc="${COLOR_YELLOW}首次扫描已安排${COLOR_RESET}"
                     ;;
                 *)
