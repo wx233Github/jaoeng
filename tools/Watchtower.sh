@@ -136,7 +136,7 @@ save_config() {
     # 智能模式已移除，强制为 false  
     WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"  
   
-    cat > "$CONFIG_FILE" <<EOF  
+    cat > "$CONFIG_FILE" <<EOF # 这里是 here-document 的开始标记
 TG_BOT_TOKEN="$TG_BOT_TOKEN"  
 TG_CHAT_ID="$TG_CHAT_ID"  
 EMAIL_TO="$EMAIL_TO"  
@@ -149,7 +149,7 @@ WATCHTOWER_ENABLED="$WATCHTOWER_ENABLED"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="$DOCKER_COMPOSE_PROJECT_DIR_CRON"  
 CRON_HOUR="$CRON_HOUR"  
 CRON_TASK_ENABLED="$CRON_TASK_ENABLED"  
-EOF  
+EOF  # <<<<<<<<<<<<<<<< 请确保这一行是文件中最左边的 "EOF"，前面没有任何空格或制表符
     echo -e "${COLOR_GREEN}✅ 配置已保存到 $CONFIG_FILE${COLOR_RESET}"  
 }  
   
@@ -431,7 +431,7 @@ configure_cron_task() {
     CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"  
     LOG_FILE="/var/log/docker-auto-update-cron.log"  
   
-    cat > "$CRON_UPDATE_SCRIPT" <<EOF_INNER_SCRIPT  
+    cat > "$CRON_UPDATE_SCRIPT" <<EOF_INNER_SCRIPT # 这里是 here-document 的开始标记
 #!/bin/bash  
 # 设置时区，确保 cron 任务中的时间戳正确  
 export TZ=Asia/Shanghai  
@@ -472,7 +472,7 @@ echo "\$(date '+%Y-%m-%d %H:%M:%S') - 清理无用 Docker 镜像。" >> "\$LOG_F
 docker image prune -f >> "\$LOG_FILE" 2>&1  
   
 echo "\$(date '+%Y-%m-%d %H:%M:%S') - Docker Compose 更新完成。" >> "\$LOG_FILE" 2>&1  
-EOF_INNER_SCRIPT  
+EOF_INNER_SCRIPT  # <<<<<<<<<<<<<<<< 请确保这一行是文件中最左边的 "EOF_INNER_SCRIPT"，前面没有任何空格或制表符
   
     chmod +x "$CRON_UPDATE_SCRIPT"  
   
@@ -976,7 +976,7 @@ show_watchtower_details() {
     echo "-------------------------------------------------------------------------------------------------------------------"  
     echo "" # 增加空行  
   
-    # set -x # <<< 已移除调试行  
+    # set -x # 已移除调试行  
   
     if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then  
         echo -e "${COLOR_RED}❌ Watchtower 容器未运行。${COLOR_RESET}"  
