@@ -5,6 +5,8 @@
 #                    提升状态报告和日志详情的用户体验；强制移除Watchtower自更新模式。
 #                    修复：'unexpected token <' 错误，通过避免进程替换 <() 语法来增强兼容性。
 #                    新增：脚本启动时强制检查并使用 Bash 环境。
+#                    重要修复：解决 "syntax error in conditional expression: unexpected token '('" 问题，
+#                              通过更健壮的Watchtower日志数值提取方式。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -17,7 +19,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.30" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.31" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -1151,17 +1153,34 @@ show_watchtower_details() {
             # 使用 case 结构解决条件表达式兼容性问题
             case "$line" in
                 *Session\ done*)
-                    local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
-                    local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
-                    local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+                    # 改进：更健壮地提取 Failed, Scanned, Updated 的数值
+                    local session_summary=$(echo "$line" | grep -oE "Failed=[0-9]*|Scanned=[0-9]*|Updated=[0-9]*" | xargs || true)
                     
-                    # 修复：使用算术表达式进行数字比较
-                    if (( ${failed:-0} > 0 )); then
-                        action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
-                    elif (( ${updated:-0} > 0 )); then
-                        action_desc="${COLOR_YELLOW}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
+                    local failed_val=0
+                    local scanned_val=0
+                    local updated_val=0
+
+                    if [[ "$session_summary" =~ Failed=([0-9]+) ]]; then
+                        failed_val="${BASH_REMATCH[1]}"
+                    fi
+                    if [[ "$session_summary" =~ Scanned=([0-9]+) ]]; then
+                        scanned_val="${BASH_REMATCH[1]}"
+                    fi
+                    if [[ "$session_summary" =~ Updated=([0-9]+) ]]; then
+                        updated_val="${BASH_REMATCH[1]}"
+                    fi
+
+                    # 确保变量是数字，默认为0
+                    failed_val=${failed_val:-0}
+                    scanned_val=${scanned_val:-0}
+                    updated_val=${updated_val:-0}
+                    
+                    if (( failed_val > 0 )); then
+                        action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
+                    elif (( updated_val > 0 )); then
+                        action_desc="${COLOR_YELLOW}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
                     else
-                        action_desc="${COLOR_GREEN}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
+                        action_desc="${COLOR_GREEN}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
                     fi
                     ;;
                 *Found\ new\ image\ for\ container*)
