@@ -19,7 +19,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.31" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.32" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -653,6 +653,7 @@ show_status() {
             wt_overall_status_line="${COLOR_GREEN}运行中 (${wt_configured_mode_desc})${COLOR_RESET}"
         else
             wt_overall_status_line="${COLOR_YELLOW}配置已启用，但容器未运行！(${wt_configured_mode_desc})${COLOR_RESET}"
+            echo -e "  ${COLOR_YELLOW}提示: 如果Watchtower应运行，请尝试在主菜单选项1中重新设置Watchtower模式。${COLOR_RESET}"
         fi
     else
         wt_overall_status_line="${COLOR_RED}已禁用 (未配置或已停止)${COLOR_RESET}"
@@ -1153,27 +1154,18 @@ show_watchtower_details() {
             # 使用 case 结构解决条件表达式兼容性问题
             case "$line" in
                 *Session\ done*)
-                    # 改进：更健壮地提取 Failed, Scanned, Updated 的数值
-                    local session_summary=$(echo "$line" | grep -oE "Failed=[0-9]*|Scanned=[0-9]*|Updated=[0-9]*" | xargs || true)
-                    
-                    local failed_val=0
-                    local scanned_val=0
-                    local updated_val=0
+                    # 强化：分步提取并强制清理非数字字符
+                    local failed_str=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+                    local scanned_str=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+                    local updated_str=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
 
-                    if [[ "$session_summary" =~ Failed=([0-9]+) ]]; then
-                        failed_val="${BASH_REMATCH[1]}"
-                    fi
-                    if [[ "$session_summary" =~ Scanned=([0-9]+) ]]; then
-                        scanned_val="${BASH_REMATCH[1]}"
-                    fi
-                    if [[ "$session_summary" =~ Updated=([0-9]+) ]]; then
-                        updated_val="${BASH_REMATCH[1]}"
-                    fi
-
-                    # 确保变量是数字，默认为0
-                    failed_val=${failed_val:-0}
-                    scanned_val=${scanned_val:-0}
-                    updated_val=${updated_val:-0}
+                    # 强制移除所有非数字字符，并确保如果为空则默认为0
+                    local failed_val="${failed_str//[^0-9]/}"
+                    failed_val="${failed_val:-0}"
+                    local scanned_val="${scanned_str//[^0-9]/}"
+                    scanned_val="${scanned_val:-0}"
+                    local updated_val="${updated_str//[^0-9]/}"
+                    updated_val="${updated_val:-0}"
                     
                     if (( failed_val > 0 )); then
                         action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
