@@ -569,9 +569,7 @@ _get_watchtower_all_raw_logs() {
     # 确保临时文件在函数退出时无论成功失败都会被清理
     trap "rm -f \"$temp_log_file\"" RETURN
 
-    local raw_logs_output=""
     local container_id
-
     set +e
     container_id=$(docker inspect watchtower --format '{{.Id}}' 2>/dev/null)
     set -e
@@ -584,12 +582,12 @@ _get_watchtower_all_raw_logs() {
     # 优先使用 docker logs 命令，它更通用且不依赖日志驱动配置
     # 限制 --tail 数量，避免日志量过大，但足够覆盖近期历史
     set +e
-    # 使用 timeout 防止 docker logs 卡住
-    timeout 15s docker logs watchtower --tail 5000 --since 0s 2>&1 | grep -E "^time=" > "$temp_log_file" || true
+    # 使用 timeout 防止 docker logs 卡住，并将 stderr 重定向到 /dev/null 防止命令本身失败输出大量错误
+    timeout 30s docker logs watchtower --tail 5000 --since 0s > "$temp_log_file" 2>/dev/null || true
     set -e
-    raw_logs_output=$(cat "$temp_log_file")
-
-    echo "$raw_logs_output"
+    
+    # 返回所有日志内容
+    cat "$temp_log_file"
 }
 
 # 辅助函数：获取 Watchtower 的下次检查倒计时
@@ -614,7 +612,7 @@ _get_watchtower_remaining_time() {
     fi
 
     if [ -n "$last_check_timestamp_str" ]; then
-        # 尝试将时间字符串转换为 Epoch 时间。
+        # 尝试将时间字符串转换为 Epoch 时间。Watchtower日志自带Z表示UTC
         local last_check_epoch
         last_check_epoch=$(date -d "$last_check_timestamp_str" +%s 2>/dev/null || true)
 
@@ -737,7 +735,7 @@ show_status() {
             fi
         else
              # 修复：当Session done日志缺失时，根据日志内容判断是否为首次等待
-             if [ -n "$raw_logs_content_for_status" ]; then
+             if [ -n "$raw_logs_content_for_status" ] && echo "$raw_logs_content_for_status" | grep -q "Scheduling first run"; then
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
              else
                 wt_remaining_time_display="${COLOR_YELLOW}⚠️ 无法获取日志，请检查权限/状态${COLOR_RESET}"
@@ -1156,11 +1154,14 @@ show_watchtower_details() {
                     local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
                     local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
                     local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
-                    action_desc="${COLOR_GREEN}扫描完成${COLOR_RESET} (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})"
-                    if [ "${failed:-0}" -gt 0 ]; then # 确保是数字比较
-                        action_desc="${COLOR_RED}${action_desc}${COLOR_RESET}"
-                    elif [ "${updated:-0}" -gt 0 ]; then
-                        action_desc="${COLOR_YELLOW}${action_desc}${COLOR_RESET}"
+                    
+                    # 修复：使用算术表达式进行数字比较
+                    if (( ${failed:-0} > 0 )); then
+                        action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
+                    elif (( ${updated:-0} > 0 )); then
+                        action_desc="${COLOR_YELLOW}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
+                    else
+                        action_desc="${COLOR_GREEN}扫描完成 (扫描: ${scanned:-0}, 更新: ${updated:-0}, 失败: ${failed:-0})${COLOR_RESET}"
                     fi
                     ;;
                 *Found\ new\ image\ for\ container*)
