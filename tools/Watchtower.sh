@@ -6,7 +6,7 @@
 #                    修复：'unexpected token <' 错误，通过避免进程替换 <() 语法来增强兼容性。
 #                    新增：脚本启动时强制检查并使用 Bash 环境。
 #                    重要修复：解决 "syntax error in conditional expression: unexpected token '('" 问题，
-#                              通过更健壮的Watchtower日志数值提取方式。
+#                              通过更健壮的Watchtower日志数值提取方式（显式强制转换为整数）。
 # 功能：
 # - Watchtower / Cron 更新模式
 # - 支持秒/小时/天数输入
@@ -19,7 +19,7 @@
 # - 运行一次 Watchtower (立即检查并更新 - 调试模式可配置)
 # - 新增: 查看 Watchtower 运行详情 (下次检查时间，24小时内更新记录 - 优化提示)
 
-VERSION="2.17.33" # 版本更新，反映所有已知问题修复和排版优化
+VERSION="2.17.34" # 版本更新，反映所有已知问题修复和排版优化
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf" # 配置文件路径，需要root权限才能写入和读取
 
@@ -1006,11 +1006,11 @@ show_watchtower_details() {
     if ! echo "$raw_logs" | grep -q "Session done"; then
 
         # 打印错误标题
-        echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RESET}"
+        echo -e "${COLOR_RED}❌ 无法获取 Watchtower 容器的任何扫描完成日志 (Session done)。请检查容器状态和日志配置。${COLOR_RED}"
 
         # 致命错误提示
         if [ -z "$raw_logs" ]; then
-             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RESET}"
+             echo -e "${COLOR_RED}    致命错误：无法从 Docker 获取到任何日志。请检查 Docker 日志驱动和权限。${COLOR_RED}"
         fi
 
         # 优化长提示，消除多余空格
@@ -1159,13 +1159,20 @@ show_watchtower_details() {
                     local scanned_str=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
                     local updated_str=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
 
-                    # 强制移除所有非数字字符，并确保如果为空则默认为0
-                    local failed_val="${failed_str//[^0-9]/}"
-                    failed_val="${failed_val:-0}"
-                    local scanned_val="${scanned_str//[^0-9]/}"
-                    scanned_val="${scanned_val:-0}"
-                    local updated_val="${updated_str//[^0-9]/}"
-                    updated_val="${updated_val:-0}"
+                    # 强制移除所有非数字字符
+                    local cleaned_failed="${failed_str//[^0-9]/}"
+                    local cleaned_scanned="${scanned_str//[^0-9]/}"
+                    local cleaned_updated="${updated_str//[^0-9]/}"
+
+                    # 显式转换为整数，如果为空或非数字则默认为0
+                    local failed_val=0
+                    local scanned_val=0
+                    local updated_val=0
+
+                    # 使用 printf -v 进行安全转换
+                    printf -v failed_val %d "${cleaned_failed:-0}" 2>/dev/null || failed_val=0
+                    printf -v scanned_val %d "${cleaned_scanned:-0}" 2>/dev/null || scanned_val=0
+                    printf -v updated_val %d "${cleaned_updated:-0}" 2>/dev/null || updated_val=0
                     
                     if (( failed_val > 0 )); then
                         action_desc="${COLOR_RED}扫描完成 (扫描: ${scanned_val}, 更新: ${updated_val}, 失败: ${failed_val})${COLOR_RESET}"
