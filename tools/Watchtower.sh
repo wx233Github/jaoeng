@@ -227,8 +227,41 @@ _start_watchtower_container_logic(){
     cmd+=("--label-enable" "${WATCHTOWER_LABELS}")
   fi
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
-    # 简单拆分：用户应避免传入复杂带空格的参数；若需要更复杂解析，可在后续实现
-    read -r -a extra_args_array <<<"$WATCHTOWER_EXTRA_ARGS"
+    # 更稳健的解析方式：提供三种策略供用户选择
+    extra_args_array=()
+    echo "检测到 WATCHTOWER_EXTRA_ARGS：$WATCHTOWER_EXTRA_ARGS"
+    echo "请选择解析方式："
+    echo " 1) 按空格拆分（兼容旧行为 — 如果参数本身含空格可能出问题）"
+    echo " 2) 逐项交互输入（推荐，用于包含空格或复杂值的参数）"
+    echo " 3) 将整个字符串作为单个参数传入（如果确实希望如此）"
+    # 使用 REPLY 而非 select 来避免对非交互环境的依赖
+    while true; do
+      read -r -p "输入 1/2/3 选择解析方式（默认 2）: " parse_choice
+      parse_choice=${parse_choice:-2}
+      case "$parse_choice" in
+        1)
+          # 兼容旧行为：按空格拆分（注意：会拆分包含空格的值）
+          read -r -a extra_args_array <<<"$WATCHTOWER_EXTRA_ARGS"
+          break
+          ;;
+        2)
+          echo "逐项输入额外参数，单次输入一项，输入空行结束："
+          while true; do
+            read -r -p "> " pa
+            [ -z "$pa" ] && break
+            extra_args_array+=("$pa")
+          done
+          break
+          ;;
+        3)
+          extra_args_array+=("$WATCHTOWER_EXTRA_ARGS")
+          break
+          ;;
+        *)
+          echo "无效选择，请输入 1、2 或 3。"
+          ;;
+      esac
+    done
     cmd+=("${extra_args_array[@]}")
   fi
 
@@ -486,7 +519,7 @@ manage_tasks(){
 }
 
 # -------------------------
-# Watchtower logs & helpers
+# _get_watchtower_all_raw_logs (增强稳定性)
 # -------------------------
 get_watchtower_all_raw_logs(){
   local temp_log_file
@@ -507,6 +540,9 @@ get_watchtower_all_raw_logs(){
   cat "$temp_log_file" || true
 }
 
+# -------------------------
+# _extract_interval_from_cmd
+# -------------------------
 _extract_interval_from_cmd(){
   local cmd_json="$1"
   local interval=""
@@ -528,6 +564,9 @@ _extract_interval_from_cmd(){
   [ -z "$interval" ] && echo "" || echo "$interval"
 }
 
+# -------------------------
+# _get_watchtower_remaining_time
+# -------------------------
 _get_watchtower_remaining_time(){
   local wt_interval_running="$1"
   local raw_logs="$2"
@@ -604,6 +643,7 @@ show_status(){
     raw_logs_content_for_status=$(get_watchtower_all_raw_logs || true)
     local wt_cmd_json
     wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null || echo "[]")
+    # extract interval and label-enable using jq if available
     if command -v jq &>/dev/null; then
       container_actual_interval=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
       container_actual_labels=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--label-enable") | .[$i+1] // empty)' 2>/dev/null || true)
@@ -611,13 +651,15 @@ show_status(){
     else
       container_actual_interval=$(_extract_interval_from_cmd "$wt_cmd_json" 2>/dev/null || true)
       if echo "$wt_cmd_json" | grep -q -- '--label-enable'; then
-        container_actual_labels=$(echo "$wt_cmd_json" | sed 's/[][]//g; s/,/ /g; s/"//g' | awk '{for(i=1;i<=NF;i++) if($i=="--label-enable") print $(i+1)}' | head -n1 || true)
+        container_actual_labels=$(echo "$wt_cmd_json" | sed 's/[][]//g; s/,/ /g; s/\"//g' | awk '{for(i=1;i<=NF;i++) if($i=="--label-enable") print $(i+1)}' | head -n1 || true)
       fi
       if echo "$wt_cmd_json" | grep -q -- '--debug'; then container_actual_debug="启用"; fi
     fi
     container_actual_interval="${container_actual_interval:-N/A}"
     container_actual_labels="${container_actual_labels:-无}"
+    if [ -z "$container_actual_extra_args" ]; then container_actual_extra_args="无"; fi
 
+    # calculate remaining time
     if echo "$raw_logs_content_for_status" | grep -q "Session done"; then
       if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
         wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
@@ -657,7 +699,7 @@ show_status(){
   if crontab -l 2>/dev/null | grep -q "$CRON_UPDATE_SCRIPT"; then
     local cron_entry
     cron_entry=$(crontab -l 2>/dev/null | grep "$CRON_UPDATE_SCRIPT" || true)
-    echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | awk '{print $1, $2, $3, $4, $5}')" 
+    echo "  - 实际定时表达式 (运行): $(echo "$cron_entry" | awk '{print $1, $2, $3, $4, $5}')"
     echo "  - 日志文件: /var/log/docker-auto-update-cron.log"
   else
     echo -e "${COLOR_RED}❌ 未检测到由本脚本配置的 Cron 定时任务。${COLOR_RESET}"
@@ -809,7 +851,7 @@ run_watchtower_once(){
 }
 
 # -------------------------
-# Option 7: show_watchtower_details (with inspect returning interval)
+# Option 7 Implementation: show_watchtower_details (完整实现)
 # -------------------------
 _safe_docker_logs(){
   local cname="$1"
@@ -823,13 +865,36 @@ _safe_docker_logs(){
   fi
 }
 
+_extract_interval_from_cmd(){
+  local cmd_json="$1"
+  local interval=""
+  if command -v jq >/dev/null 2>&1; then
+    interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+  else
+    local tokens
+    tokens=$(echo "$cmd_json" | sed 's/[][]//g; s/,/ /g; s/"//g')
+    local prev=""
+    for t in $tokens; do
+      if [ "$prev" = "--interval" ]; then
+        interval="$t"
+        break
+      fi
+      prev="$t"
+    done
+  fi
+  interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
+  [ -z "$interval" ] && echo "" || echo "$interval"
+}
+
 get_watchtower_inspect_summary(){
   if ! command -v docker &>/dev/null; then
-    echo ""  # no docker -> empty
+    echo "Watchtower: Docker 未安装或不可用"
+    echo ""
     return 1
   fi
   if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    echo ""  # not running
+    echo "Watchtower: 未检测到名为 'watchtower' 的容器"
+    echo ""
     return 2
   fi
   local cmd_json restart_policy
@@ -843,7 +908,6 @@ get_watchtower_inspect_summary(){
   interval=$(_extract_interval_from_cmd "$cmd_json")
   if [ -n "$interval" ]; then
     echo "检测到 --interval: ${interval}s"
-    # 返回 interval 作为 stdout（调用者可捕获）
     echo "$interval"
   else
     echo "未能解析到 --interval（将使用脚本配置或默认值）"
@@ -923,7 +987,6 @@ show_watchtower_details(){
 
   local interval_secs=""
   if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    # capture interval (if any) from inspect summary
     interval_secs=$(get_watchtower_inspect_summary | tail -n1)
   else
     echo "Watchtower 容器未运行。"
@@ -1007,8 +1070,9 @@ show_watchtower_details(){
 }
 
 # -------------------------
-# 主菜单 & 其它
+# 主菜单与主循环（保持已有结构，7-> show_watchtower_details）
 # -------------------------
+
 configure_notify(){
   echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
   read -r -p "是否启用 Telegram 通知？(y/N): " tchoice
