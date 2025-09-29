@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored-v2
+# Version: 2.17.35-fixed-option7-final-refactored-v3
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored-v2"
+VERSION="2.17.35-fixed-option7-final-refactored-v3" # 更新版本号以示区别
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -166,7 +166,7 @@ send_notify() {
     curl -s --retry 3 --retry-delay 5 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
       --data-urlencode "chat_id=${TG_CHAT_ID}" \
       --data-urlencode "text=$MSG" >/dev/null || log_warn "⚠️ Telegram 通知发送失败。"
-  F
+  fi # <--- 修复: 将 'F' 改为 'fi'
   if [ -n "$EMAIL_TO" ]; then
     if command -v mail &>/dev/null; then
       echo -e "$MSG" | mail -s "Docker 更新通知" "$EMAIL_TO" || log_warn "⚠️ Email 通知发送失败。"
@@ -183,7 +183,7 @@ get_docker_compose_command_main() {
     echo "docker-compose"
   else
     echo ""
-  fi # <--- 修复: 将 'F' 改为 'fi'
+  fi
 }
 
 # -------------------------
