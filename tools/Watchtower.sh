@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored-v5
+# Version: 2.17.35-fixed-option7-final-refactored-v6
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored-v5" # 更新版本号以示区别
+VERSION="2.17.35-fixed-option7-final-refactored-v6" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -521,14 +521,17 @@ get_watchtower_all_raw_logs(){
 
   set +e
   if command -v timeout >/dev/null 2>&1; then
-    timeout 20s docker logs --tail 5000 watchtower > "$temp_log_file" 2>/dev/null || true
+    # 关键修复：将 2>/dev/null 改为 2>&1，以捕获错误信息
+    timeout 20s docker logs --tail 5000 watchtower > "$temp_log_file" 2>&1 || true
   else
-    docker logs --tail 5000 watchtower > "$temp_log_file" 2>/dev/null || true
+    # 关键修复：将 2>/dev/null 改为 2>&1，以捕获错误信息
+    docker logs --tail 5000 watchtower > "$temp_log_file" 2>&1 || true
   fi
   set -e
 
-  if [ ! -s "$temp_log_file" ]; then # Check if the log file is empty
-    log_warn "⚠️ Watchtower 容器正在运行，但 'docker logs watchtower' 返回空或无有效日志。请检查容器状态或稍后重试。"
+  # 如果文件为空，仍然发出警告，因为这可能意味着容器刚启动
+  if [ ! -s "$temp_log_file" ]; then
+    log_warn "⚠️ Watchtower 容器正在运行，但 'docker logs watchtower' 未返回任何日志。请检查容器状态或稍后重试。"
     echo ""
     return 1
   fi
@@ -542,12 +545,9 @@ _extract_interval_from_cmd(){
   if command -v jq >/dev/null 2>&1; then
     interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
   else
-    # Fallback without jq: improved parsing but still limited compared to jq for complex args.
-    # We strip array brackets and quotes, then split tokens by common delimiters (", ", " ",).
     local tokens_str
-    # 使用 tr 删除引号和逗号，然后用 xargs 将多个空格压缩为单个空格
     tokens_str=$(echo "$cmd_json" | tr -d '[],"' | xargs)
-    local tokens=( $tokens_str ) # Bash will split this string by IFS (space, tab, newline)
+    local tokens=( $tokens_str )
     local prev=""
     for t in "${tokens[@]}"; do
       if [ "$prev" = "--interval" ]; then
@@ -556,7 +556,6 @@ _extract_interval_from_cmd(){
       prev="$t"
     done
   fi
-  # Clean up potential remaining non-numeric chars for interval
   interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
   [ -z "$interval" ] && echo "" || echo "$interval"
 }
@@ -642,6 +641,12 @@ get_last_session_time(){
   local last_log_line=""
   local timestamp_str=""
 
+  # 如果日志内容包含错误信息，直接显示错误
+  if echo "$raw_logs" | grep -qiE "permission denied|cannot connect to the docker daemon"; then
+    echo -e "${COLOR_RED}错误: 无法获取日志，权限不足或Docker守护进程问题。${COLOR_RESET}"
+    return 1
+  fi
+
   # 优先级 1: "Session done" (上次完成扫描)
   last_log_line=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
   if [ -n "$last_log_line" ]; then
@@ -655,13 +660,11 @@ get_last_session_time(){
   # 优先级 2: "Scheduling first run" (首次调度/启动时间)
   last_log_line=$(echo "$raw_logs" | grep -E "Scheduling first run" | tail -n 1 || true)
   if [ -n "$last_log_line" ]; then
-    # 尝试提取行首的ISO时间戳，表示容器启动时间
     timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
     if [ -n "$timestamp_str" ]; then
       echo "$timestamp_str (首次调度)"
       return 0
     fi
-    # 尝试提取行内的调度时间（如果格式特殊）
     timestamp_str=$(echo "$last_log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
     if [ -n "$timestamp_str" ]; then
       echo "$timestamp_str (首次调度)"
@@ -682,13 +685,12 @@ get_last_session_time(){
   # 最低优先级: 获取最后一条日志的原始文本 (可能不包含有效时间)
   last_log_line=$(echo "$raw_logs" | tail -n 1 || true)
   if [ -n "$last_log_line" ]; then
-    # 尝试从最后一行日志中解析时间戳
     timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
     if [ -n "$timestamp_str" ]; then
       echo "$timestamp_str (最近活动)"
       return 0
     else
-      echo "$last_log_line (原始日志)" # 如果无法解析时间戳，显示原始日志行
+      echo "$last_log_line (原始日志)"
       return 0
     fi
   fi
@@ -708,7 +710,6 @@ get_updates_last_24h(){
 
   local since_arg=""
   if [ "$DATE_D_CAPABLE" = "true" ]; then
-    # Use 'date -d' or 'gdate -d' to get the timestamp for '--since'
     if date -d "24 hours ago" +%s >/dev/null 2>&1; then
       since_arg=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
     elif command -v gdate >/dev/null 2>&1 && gdate -d "24 hours ago" +%s >/dev/null 2>&1; then
@@ -718,11 +719,11 @@ get_updates_last_24h(){
 
   local raw=""
   if [ -n "$since_arg" ]; then
-    raw=$(docker logs --since "$since_arg" watchtower 2>/dev/null || true)
+    raw=$(docker logs --since "$since_arg" watchtower 2>&1 || true) # 也捕获错误
   fi
 
-  if [ -z "$raw" ]; then # If --since failed or not available, fallback to --tail
-    raw=$(docker logs --tail 200 watchtower 2>/dev/null || true)
+  if [ -z "$raw" ]; then
+    raw=$(docker logs --tail 200 watchtower 2>&1 || true) # 也捕获错误
     log_warn "⚠️ 无法获取过去 24 小时完整日志，已回退到显示最近 200 行。"
   fi
 
@@ -732,7 +733,6 @@ get_updates_last_24h(){
   fi
 
   local filtered
-  # 增加了 "Starting Watchtower" 以捕获启动事件
   filtered=$(echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image|Starting Watchtower" || true)
 
   if [ -z "$filtered" ]; then
@@ -746,9 +746,9 @@ get_updates_last_24h(){
 
 _highlight_line(){
   local line="$1"
-  if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error|failed"; then
+  if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error|failed|permission denied|cannot connect"; then
     printf "%b%s%b\n" "$COLOR_RED" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container|Starting Watchtower|Session done|Scheduling first run"; then # 增加更多高亮关键词
+  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container|Starting Watchtower|Session done|Scheduling first run"; then
     printf "%b%s%b\n" "$COLOR_GREEN" "$line" "$COLOR_RESET"
   elif echo "$line" | grep -qi -E "No new images found for container"; then
     printf "%b%s%b\n" "$COLOR_CYAN" "$line" "$COLOR_RESET"
@@ -779,19 +779,14 @@ show_watchtower_details(){
 
   echo "----------------------------------------"
   local last_session_timestamp_display
-  local last_session_timestamp_epoch_raw="" # 用于计算倒计时，可能不带后缀
+  local last_session_timestamp_epoch_raw=""
   last_session_timestamp_display=$(get_last_session_time 2>/dev/null || true)
   
   if [ -n "$last_session_timestamp_display" ]; then
-    # 从显示字符串中提取纯时间戳用于 epoch 转换
     last_session_timestamp_epoch_raw=$(echo "$last_session_timestamp_display" | sed -E 's/ \((首次调度|最近活动|原始日志)\)//' || true)
     echo "上次扫描/活动: $last_session_timestamp_display"
   else
     echo "未检测到 Watchtower 任何有效日志记录。"
-    # 如果 Watchtower 正在运行但无日志，提示用户检查或尝试一次性运行
-    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-      log_warn "Watchtower 容器可能刚刚启动或存在内部问题，导致日志为空。请尝试手动运行一次 (选项 6) 或检查容器状态 'docker ps -f name=watchtower' 和日志 'docker logs watchtower'。"
-    fi
   fi
 
   if [ -n "$interval_secs" ] && [ -n "$last_session_timestamp_epoch_raw" ]; then
@@ -847,11 +842,11 @@ show_watchtower_details(){
         docker logs --tail 200 -f watchtower 2>/dev/null || true
         echo "已停止查看日志，返回 Watchtower 详情..."
         ;;
-      0) # Option 0 still acts as return
+      0)
         return
         ;;
       *)
-        echo "无效选择，请输入 1/0 或按回车返回。"
+        echo "无效选择，请输入 1 或按回车返回。"
         ;;
     esac
   done
