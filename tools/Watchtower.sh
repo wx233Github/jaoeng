@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored-v3
+# Version: 2.17.35-fixed-option7-final-refactored-v4
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored-v3" # 更新版本号以示区别
+VERSION="2.17.35-fixed-option7-final-refactored-v4" # 更新版本号以示区别
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -40,7 +40,7 @@ fi
 DATE_D_CAPABLE="false"
 if date -d "now" >/dev/null 2>&1; then
   DATE_D_CAPABLE="true"
-elif command -v gdate >/dev/null 2>&1 && gdate -d "now" +%s >/dev/null 2>&1; then # Added +%s for a more robust check on gdate
+elif command -v gdate >/dev/null 2>&1 && gdate -d "now" +%s >/dev/null 2>&1; then
   DATE_D_CAPABLE="true"
 fi
 if [ "$DATE_D_CAPABLE" = "false" ]; then
@@ -106,7 +106,7 @@ _date_to_epoch() {
   if [ "$DATE_D_CAPABLE" = "true" ]; then
     if date -d "$dt" +%s >/dev/null 2>&1; then
       date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析时间 '$dt' 失败。"; echo "")
-    elif command -v gdate >/dev/null 2>&1 && gdate -d "$dt" +%s >/dev/null 2>&1; then # Redundant if DATE_D_CAPABLE is true, but kept for clarity
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "$dt" +%s >/dev/null 2>&1; then
       gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析时间 '$dt' 失败。"; echo "")
     fi
   else
@@ -166,7 +166,7 @@ send_notify() {
     curl -s --retry 3 --retry-delay 5 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
       --data-urlencode "chat_id=${TG_CHAT_ID}" \
       --data-urlencode "text=$MSG" >/dev/null || log_warn "⚠️ Telegram 通知发送失败。"
-  fi # <--- 修复: 将 'F' 改为 'fi'
+  fi
   if [ -n "$EMAIL_TO" ]; then
     if command -v mail &>/dev/null; then
       echo -e "$MSG" | mail -s "Docker 更新通知" "$EMAIL_TO" || log_warn "⚠️ Email 通知发送失败。"
@@ -773,7 +773,8 @@ show_watchtower_details(){
 
   echo "----------------------------------------"
   local last_session_timestamp_display
-  local last_session_timestamp_epoch_raw # 用于计算倒计时，可能不带后缀
+  # 关键修复：初始化变量
+  local last_session_timestamp_epoch_raw="" # 用于计算倒计时，可能不带后缀
   last_session_timestamp_display=$(get_last_session_time 2>/dev/null || true)
   
   if [ -n "$last_session_timestamp_display" ]; then
