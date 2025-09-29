@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored-v4
+# Version: 2.17.35-fixed-option7-final-refactored-v5
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored-v4" # 更新版本号以示区别
+VERSION="2.17.35-fixed-option7-final-refactored-v5" # 更新版本号以示区别
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -527,6 +527,12 @@ get_watchtower_all_raw_logs(){
   fi
   set -e
 
+  if [ ! -s "$temp_log_file" ]; then # Check if the log file is empty
+    log_warn "⚠️ Watchtower 容器正在运行，但 'docker logs watchtower' 返回空或无有效日志。请检查容器状态或稍后重试。"
+    echo ""
+    return 1
+  fi
+
   cat "$temp_log_file" || true
 }
 
@@ -773,7 +779,6 @@ show_watchtower_details(){
 
   echo "----------------------------------------"
   local last_session_timestamp_display
-  # 关键修复：初始化变量
   local last_session_timestamp_epoch_raw="" # 用于计算倒计时，可能不带后缀
   last_session_timestamp_display=$(get_last_session_time 2>/dev/null || true)
   
@@ -783,6 +788,10 @@ show_watchtower_details(){
     echo "上次扫描/活动: $last_session_timestamp_display"
   else
     echo "未检测到 Watchtower 任何有效日志记录。"
+    # 如果 Watchtower 正在运行但无日志，提示用户检查或尝试一次性运行
+    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+      log_warn "Watchtower 容器可能刚刚启动或存在内部问题，导致日志为空。请尝试手动运行一次 (选项 6) 或检查容器状态 'docker ps -f name=watchtower' 和日志 'docker logs watchtower'。"
+    fi
   fi
 
   if [ -n "$interval_secs" ] && [ -n "$last_session_timestamp_epoch_raw" ]; then
@@ -825,7 +834,6 @@ show_watchtower_details(){
   while true; do
     echo "选项："
     echo " 1) 查看最近 200 行 Watchtower 日志 (实时 tail 模式)"
-    echo " 2) 导出过去 24 小时摘要到 /tmp/watchtower_updates_$(date +%s).log"
     echo " (按回车直接返回上一层)"
     read -r -p "请选择 (直接回车返回): " pick
 
@@ -839,26 +847,11 @@ show_watchtower_details(){
         docker logs --tail 200 -f watchtower 2>/dev/null || true
         echo "已停止查看日志，返回 Watchtower 详情..."
         ;;
-      2)
-        outfile="/tmp/watchtower_updates_$(date +%s).log"
-        echo "导出摘要到: $outfile"
-        if [ -n "$updates" ]; then
-          echo "$updates" > "$outfile"
-        else
-          # Fallback if updates variable was empty, try to get fresh logs
-          if [ "$DATE_D_CAPABLE" = "true" ]; then
-            docker logs --since "$(date -d '24 hours ago' '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)" watchtower 2>/dev/null > "$outfile" || docker logs --tail 200 watchtower 2>/dev/null > "$outfile" || true
-          else
-            docker logs --tail 200 watchtower 2>/dev/null > "$outfile" || true
-          fi
-        fi
-        echo "导出完成。"
-        ;;
-      0)
+      0) # Option 0 still acts as return
         return
         ;;
       *)
-        echo "无效选择，请输入 1/2/0 或按回车返回。"
+        echo "无效选择，请输入 1/0 或按回车返回。"
         ;;
     esac
   done
