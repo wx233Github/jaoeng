@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
 #
-# 🚀 Docker 自动更新助手（最终版）
+# Docker 自动更新助手（最终版 - 已按用户要求修改 show_watchtower_details 行为）
 # Version: 2.17.35-fixed-option7-final
-#
-# 主要修复与变动：
-# - 清理粘贴残留 / 语法错误 / 多余符号
-# - 删除未使用变量与未被调用的函数
-# - 将 TZ 传入 watchtower 容器：docker run -e TZ=Asia/Shanghai
-# - get_watchtower_inspect_summary 返回 interval（echo），不再使用全局 REPLY
-# - crontab 写入前备份现有 crontab
-# - 使用 mktemp + trap 管理临时日志文件
-# - 避免不安全 eval，使用数组构造 docker run
-# - 修复 sed 提取 time="..." 的正则
 #
 
 set -euo pipefail
@@ -36,13 +26,13 @@ else
   COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""
 fi
 
-# 检查 Docker 可用性（更灵活）
+# 检查 Docker 可用性
 if ! docker info >/dev/null 2>&1; then
   echo -e "${COLOR_RED}❌ 无法访问 Docker。请以 root 或 docker 组成员运行，并确保 Docker 正常运行。${COLOR_RESET}"
   exit 1
 fi
 
-# 工具依赖提示（可选）
+# Optional deps hint
 if ! command -v jq &>/dev/null; then
   echo -e "${COLOR_YELLOW}⚠️ 未检测到 'jq'，部分 JSON 解析会使用降级方法。建议安装：sudo apt install jq${COLOR_RESET}"
 fi
@@ -50,7 +40,7 @@ if ! command -v bc &>/dev/null; then
   echo -e "${COLOR_YELLOW}⚠️ 未检测到 'bc'，小数比较可能退化。建议安装：sudo apt install bc${COLOR_RESET}"
 fi
 
-# --- 默认配置（可被 CONFIG_FILE 覆盖） ---
+# --- 默认配置 ---
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 EMAIL_TO="${EMAIL_TO:-}"
@@ -69,7 +59,6 @@ log_info(){ printf "%b[INFO] %s%b\n" "$COLOR_BLUE" "$*" "$COLOR_RESET"; }
 log_warn(){ printf "%b[WARN] %s%b\n" "$COLOR_YELLOW" "$*" "$COLOR_RESET"; }
 log_err(){ printf "%b[ERROR] %s%b\n" "$COLOR_RED" "$*" "$COLOR_RESET"; }
 
-# date compatibility helper: returns epoch or empty
 _date_to_epoch() {
   local dt="$1"
   [ -z "$dt" ] && echo "" && return
@@ -82,7 +71,6 @@ _date_to_epoch() {
   fi
 }
 
-# load config file
 load_config(){
   if [ -f "$CONFIG_FILE" ]; then
     # shellcheck disable=SC1090
@@ -91,7 +79,6 @@ load_config(){
 }
 load_config
 
-# save config file (注意：变量中不要包含多行)
 save_config(){
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
   cat > "$CONFIG_FILE" <<EOF
@@ -122,7 +109,6 @@ confirm_action() {
 
 press_enter_to_continue() {
   echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
-  # 清空 stdin 缓冲
   while read -t 0 -r; do read -r; done || true
   read -r || true
 }
@@ -167,7 +153,6 @@ show_container_info() {
       if [ -z "$APP_VERSION" ]; then APP_VERSION="N/A"; fi
     fi
 
-    # fallback heuristic: try to exec --version only if container is running
     local is_running
     is_running=$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo "false")
     if [ "$APP_VERSION" = "N/A" ] && [ "$is_running" = "true" ]; then
@@ -201,7 +186,6 @@ _start_watchtower_container_logic(){
   docker pull containrrr/watchtower >/dev/null 2>&1 || true
   set -e
 
-  # 将 TZ 环境传入容器，保证容器日志时间与脚本预期一致
   local -a cmd
   cmd=(docker run -e TZ=Asia/Shanghai)
 
@@ -214,7 +198,6 @@ _start_watchtower_container_logic(){
   cmd+=("-v" "/var/run/docker.sock:/var/run/docker.sock")
   cmd+=("containrrr/watchtower")
 
-  # 基本参数
   if [ -n "$wt_interval" ]; then
     cmd+=("--cleanup" "--interval" "${wt_interval}")
   else
@@ -226,21 +209,19 @@ _start_watchtower_container_logic(){
   if [ -n "$WATCHTOWER_LABELS" ]; then
     cmd+=("--label-enable" "${WATCHTOWER_LABELS}")
   fi
+
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
-    # 更稳健的解析方式：提供三种策略供用户选择
     extra_args_array=()
     echo "检测到 WATCHTOWER_EXTRA_ARGS：$WATCHTOWER_EXTRA_ARGS"
     echo "请选择解析方式："
     echo " 1) 按空格拆分（兼容旧行为 — 如果参数本身含空格可能出问题）"
     echo " 2) 逐项交互输入（推荐，用于包含空格或复杂值的参数）"
-    echo " 3) 将整个字符串作为单个参数传入（如果确实希望如此）"
-    # 使用 REPLY 而非 select 来避免对非交互环境的依赖
+    echo " 3) 将整个字符串作为单个参数传入"
     while true; do
       read -r -p "输入 1/2/3 选择解析方式（默认 2）: " parse_choice
       parse_choice=${parse_choice:-2}
       case "$parse_choice" in
         1)
-          # 兼容旧行为：按空格拆分（注意：会拆分包含空格的值）
           read -r -a extra_args_array <<<"$WATCHTOWER_EXTRA_ARGS"
           break
           ;;
@@ -431,7 +412,6 @@ EOF_INNER_SCRIPT
   sed -i "s|{{LOG_FILE}}|$LOG_FILE|g" "$CRON_UPDATE_SCRIPT"
   chmod +x "$CRON_UPDATE_SCRIPT"
 
-  # 备份 crontab 以防意外覆盖
   crontab -l 2>/dev/null > /tmp/crontab.backup.$$ || true
   (crontab -l 2>/dev/null | grep -v "$CRON_UPDATE_SCRIPT" || true; echo "0 $CRON_HOUR * * * $CRON_UPDATE_SCRIPT >> \"$LOG_FILE\" 2>&1") | crontab -
   echo "crontab 已备份：/tmp/crontab.backup.$$"
@@ -444,7 +424,7 @@ EOF_INNER_SCRIPT
 }
 
 # -------------------------
-# update_menu
+# update_menu / manage_tasks / helpers
 # -------------------------
 update_menu(){
   echo -e "${COLOR_YELLOW}请选择更新模式：${COLOR_RESET}"
@@ -460,9 +440,6 @@ update_menu(){
   return 0
 }
 
-# -------------------------
-# manage_tasks
-# -------------------------
 manage_tasks(){
   echo -e "${COLOR_YELLOW}⚙️ 任务管理：${COLOR_RESET}"
   echo "1) 停止并移除 Watchtower 容器"
@@ -518,9 +495,6 @@ manage_tasks(){
   return 0
 }
 
-# -------------------------
-# _get_watchtower_all_raw_logs (增强稳定性)
-# -------------------------
 get_watchtower_all_raw_logs(){
   local temp_log_file
   temp_log_file=$(mktemp /tmp/watchtower_raw_logs.XXXXXX) || temp_log_file="/tmp/watchtower_raw_logs.$$"
@@ -540,9 +514,6 @@ get_watchtower_all_raw_logs(){
   cat "$temp_log_file" || true
 }
 
-# -------------------------
-# _extract_interval_from_cmd
-# -------------------------
 _extract_interval_from_cmd(){
   local cmd_json="$1"
   local interval=""
@@ -564,9 +535,6 @@ _extract_interval_from_cmd(){
   [ -z "$interval" ] && echo "" || echo "$interval"
 }
 
-# -------------------------
-# _get_watchtower_remaining_time
-# -------------------------
 _get_watchtower_remaining_time(){
   local wt_interval_running="$1"
   local raw_logs="$2"
@@ -607,8 +575,211 @@ _get_watchtower_remaining_time(){
 }
 
 # -------------------------
-# show_status
+# get_updates_last_24h (按用户要求：若无匹配摘要则返回空 -> 显示“未检测到日志”)
 # -------------------------
+get_updates_last_24h(){
+  if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+    echo ""
+    return 1
+  fi
+
+  local since_arg=""
+  if date -d "24 hours ago" >/dev/null 2>&1; then
+    since_arg=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
+  elif command -v gdate >/dev/null 2>&1; then
+    since_arg=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
+  fi
+
+  local raw=""
+  if [ -n "$since_arg" ]; then
+    raw=$(docker logs --since "$since_arg" watchtower 2>/dev/null || true)
+  fi
+
+  if [ -z "$raw" ]; then
+    raw=$(docker logs --tail 200 watchtower 2>/dev/null || true)
+  fi
+
+  if [ -z "$raw" ]; then
+    echo ""
+    return 1
+  fi
+
+  local filtered
+  filtered=$(echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image" || true)
+
+  if [ -z "$filtered" ]; then
+    # 按你要求：若没有匹配摘要，则返回空（由调用方显示“未检测到日志”）
+    echo ""
+    return 1
+  fi
+
+  echo "$filtered"
+  return 0
+}
+
+_highlight_line(){
+  local line="$1"
+  if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error"; then
+    printf "%b%s%b\n" "$COLOR_RED" "$line" "$COLOR_RESET"
+  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container"; then
+    printf "%b%s%b\n" "$COLOR_GREEN" "$line" "$COLOR_RESET"
+  elif echo "$line" | grep -qi -E "No new images found for container"; then
+    printf "%b%s%b\n" "$COLOR_CYAN" "$line" "$COLOR_RESET"
+  else
+    echo "$line"
+  fi
+}
+
+# -------------------------
+# show_watchtower_details (已修改：选项层按 Enter 返回上层；无匹配摘要 -> 显示“未检测到日志”)
+# -------------------------
+show_watchtower_details(){
+  clear
+  echo "=== Watchtower 运行详情与更新记录 ==="
+  if ! command -v docker &>/dev/null; then
+    echo "Docker 不可用，请先安装或以能访问 Docker 的用户运行本脚本。"
+    read -r -p "按回车返回主菜单..."
+    return
+  fi
+
+  local interval_secs=""
+  if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+    interval_secs=$(get_watchtower_inspect_summary | tail -n1)
+  else
+    echo "Watchtower 容器未运行。"
+    interval_secs=""
+  fi
+
+  echo "----------------------------------------"
+  local last_session
+  last_session=$(get_last_session_time || true)
+  if [ -n "$last_session" ]; then
+    echo "上次扫描: $last_session"
+  else
+    echo "未检测到上次扫描完成记录 (Session done)"
+  fi
+
+  if [ -n "$interval_secs" ] && [ -n "$last_session" ]; then
+    local last_time_token="$last_session"
+    if echo "$last_time_token" | grep -q 'time="'; then
+      last_time_token=$(echo "$last_time_token" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || true)
+    fi
+    local last_epoch
+    last_epoch=$(_date_to_epoch "$last_time_token")
+    if [ -n "$last_epoch" ]; then
+      local now_epoch
+      now_epoch=$(date +%s)
+      local remaining
+      remaining=$(( last_epoch + interval_secs - now_epoch ))
+      if [ "$remaining" -le 0 ]; then
+        echo "下次检查：即将进行或已超时 (${remaining}s)"
+      else
+        local hh=$(( remaining / 3600 ))
+        local mm=$(((remaining % 3600) / 60))
+        local ss=$(( remaining % 60 ))
+        printf "下次检查倒计时: %02d时 %02d分 %02d秒\n" "$hh" "$mm" "$ss"
+      fi
+    else
+      echo "无法将上次扫描时间解析为时间戳，无法计算倒计时。"
+    fi
+  else
+    echo "下次检查倒计时: 无法计算 (缺少上次扫描时间或 interval)"
+  fi
+
+  echo "----------------------------------------"
+  echo "过去 24 小时的更新摘要（高亮重要事件）："
+  echo
+  local updates
+  updates=$(get_updates_last_24h || true)
+  if [ -z "$updates" ]; then
+    # 按用户要求：若未匹配摘要 -> 显示“未检测到日志”
+    echo "未检测到日志。"
+  else
+    echo "$updates" | tail -n 200 | while IFS= read -r line; do
+      _highlight_line "$line"
+    done
+  fi
+
+  echo "----------------------------------------"
+  # 选项层：按回车（空输入）直接返回上一层
+  while true; do
+    echo "选项："
+    echo " 1) 查看最近 200 行 Watchtower 日志 (实时 tail 模式)"
+    echo " 2) 导出过去 24 小时摘要到 /tmp/watchtower_updates_$(date +%s).log"
+    echo " (按回车直接返回上一层)"
+    read -r -p "请选择 (直接回车返回): " pick
+
+    if [ -z "$pick" ]; then
+      return
+    fi
+
+    case "$pick" in
+      1)
+        echo "按 Ctrl+C 停止查看日志，随后回到详情页。"
+        docker logs --tail 200 -f watchtower 2>/dev/null || true
+        echo ""
+        echo "已停止查看日志，返回 Watchtower 详情..."
+        ;;
+      2)
+        outfile="/tmp/watchtower_updates_$(date +%s).log"
+        echo "导出摘要到: $outfile"
+        if [ -n "$updates" ]; then
+          echo "$updates" > "$outfile"
+        else
+          docker logs --since "$(date -d '24 hours ago' '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)" watchtower 2>/dev/null > "$outfile" || docker logs --tail 200 watchtower 2>/dev/null > "$outfile" || true
+        fi
+        echo "导出完成。"
+        ;;
+      0)
+        return
+        ;;
+      *)
+        echo "无效选择，请输入 1/2/0，或按回车返回上一层。"
+        ;;
+    esac
+  done
+}
+
+# -------------------------
+# 其余函数（view/edit/config, run once, main_menu, etc.）
+# -------------------------
+configure_notify(){
+  echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
+  read -r -p "是否启用 Telegram 通知？(y/N): " tchoice
+  if [[ "$tchoice" =~ ^[Yy]$ ]]; then
+    read -r -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
+    read -r -p "请输入 Telegram Chat ID: " TG_CHAT_ID
+  else
+    TG_BOT_TOKEN=""; TG_CHAT_ID=""
+  fi
+  read -r -p "是否启用 Email 通知？(y/N): " echoice
+  if [[ "$echoice" =~ ^[Yy]$ ]]; then
+    read -r -p "请输入接收通知的邮箱地址: " EMAIL_TO
+  else
+    EMAIL_TO=""
+  fi
+  save_config
+  echo -e "${COLOR_GREEN}通知配置已保存。${COLOR_RESET}"
+}
+
+run_watchtower_once(){
+  echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
+  if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
+    echo -e "${COLOR_YELLOW}⚠️ 注意：Watchtower 容器已在后台运行。${COLOR_RESET}"
+    if ! confirm_action "是否继续运行一次性 Watchtower更新？"; then
+      echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
+      press_enter_to_continue
+      return 0
+    fi
+  fi
+  if ! _start_watchtower_container_logic "" "false" "一次性更新"; then
+    press_enter_to_continue
+    return 1
+  fi
+  press_enter_to_continue
+  return 0
+}
+
 show_status(){
   echo -e "${COLOR_BLUE}--- Watchtower 状态 ---${COLOR_RESET}"
   local wt_configured_mode_desc="Watchtower模式 (更新所有容器)"
@@ -643,7 +814,6 @@ show_status(){
     raw_logs_content_for_status=$(get_watchtower_all_raw_logs || true)
     local wt_cmd_json
     wt_cmd_json=$(docker inspect watchtower --format "{{json .Config.Cmd}}" 2>/dev/null || echo "[]")
-    # extract interval and label-enable using jq if available
     if command -v jq &>/dev/null; then
       container_actual_interval=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
       container_actual_labels=$(echo "$wt_cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--label-enable") | .[$i+1] // empty)' 2>/dev/null || true)
@@ -659,7 +829,6 @@ show_status(){
     container_actual_labels="${container_actual_labels:-无}"
     if [ -z "$container_actual_extra_args" ]; then container_actual_extra_args="无"; fi
 
-    # calculate remaining time
     if echo "$raw_logs_content_for_status" | grep -q "Session done"; then
       if [[ "$container_actual_interval" =~ ^[0-9]+$ ]]; then
         wt_remaining_time_display=$(_get_watchtower_remaining_time "$container_actual_interval" "$raw_logs_content_for_status")
@@ -827,269 +996,6 @@ view_and_edit_config(){
       ;;
   esac
   return 0
-}
-
-# -------------------------
-# run_watchtower_once
-# -------------------------
-run_watchtower_once(){
-  echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
-  if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    echo -e "${COLOR_YELLOW}⚠️ 注意：Watchtower 容器已在后台运行。${COLOR_RESET}"
-    if ! confirm_action "是否继续运行一次性 Watchtower更新？"; then
-      echo -e "${COLOR_YELLOW}ℹ️ 操作已取消。${COLOR_RESET}"
-      press_enter_to_continue
-      return 0
-    fi
-  fi
-  if ! _start_watchtower_container_logic "" "false" "一次性更新"; then
-    press_enter_to_continue
-    return 1
-  fi
-  press_enter_to_continue
-  return 0
-}
-
-# -------------------------
-# Option 7 Implementation: show_watchtower_details (完整实现)
-# -------------------------
-_safe_docker_logs(){
-  local cname="$1"
-  shift
-  local extra_args=("$@")
-  local max_lines=5000
-  if command -v timeout >/dev/null 2>&1; then
-    timeout 20s docker logs "${extra_args[@]}" "$cname" 2>/dev/null || true
-  else
-    docker logs --tail "${max_lines}" "${extra_args[@]}" "$cname" 2>/dev/null || true
-  fi
-}
-
-_extract_interval_from_cmd(){
-  local cmd_json="$1"
-  local interval=""
-  if command -v jq >/dev/null 2>&1; then
-    interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
-  else
-    local tokens
-    tokens=$(echo "$cmd_json" | sed 's/[][]//g; s/,/ /g; s/"//g')
-    local prev=""
-    for t in $tokens; do
-      if [ "$prev" = "--interval" ]; then
-        interval="$t"
-        break
-      fi
-      prev="$t"
-    done
-  fi
-  interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
-  [ -z "$interval" ] && echo "" || echo "$interval"
-}
-
-get_watchtower_inspect_summary(){
-  if ! command -v docker &>/dev/null; then
-    echo "Watchtower: Docker 未安装或不可用"
-    echo ""
-    return 1
-  fi
-  if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    echo "Watchtower: 未检测到名为 'watchtower' 的容器"
-    echo ""
-    return 2
-  fi
-  local cmd_json restart_policy
-  cmd_json=$(docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]")
-  restart_policy=$(docker inspect watchtower --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || echo "unknown")
-  echo "=== Watchtower Inspect ==="
-  echo "容器: watchtower"
-  echo "RestartPolicy: ${restart_policy}"
-  echo "Cmd: ${cmd_json}"
-  local interval
-  interval=$(_extract_interval_from_cmd "$cmd_json")
-  if [ -n "$interval" ]; then
-    echo "检测到 --interval: ${interval}s"
-    echo "$interval"
-  else
-    echo "未能解析到 --interval（将使用脚本配置或默认值）"
-    echo ""
-  fi
-  return 0
-}
-
-get_last_session_time(){
-  local raw
-  raw=$(_safe_docker_logs watchtower || true)
-  if [ -z "$raw" ]; then echo ""; return 1; fi
-  local last
-  last=$(echo "$raw" | grep -E "Session done" | tail -n 1 || true)
-  if [ -n "$last" ]; then
-    local t
-    t=$(echo "$last" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || true)
-    if [ -n "$t" ]; then echo "$t"; return 0; fi
-    t=$(echo "$last" | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+' | tail -n1 || true)
-    if [ -n "$t" ]; then echo "$t"; return 0; fi
-    echo "${last}" | sed 's/^[ \t]*//; s/[ \t]*$//' ; return 0
-  fi
-  last=$(echo "$raw" | grep -E "Scheduling first run" | tail -n1 || true)
-  if [ -n "$last" ]; then
-    echo "$last"; return 0
-  fi
-  local lastline
-  lastline=$(echo "$raw" | tail -n 1 || true)
-  [ -n "$lastline" ] && echo "$lastline" || echo ""
-  return 0
-}
-
-get_updates_last_24h(){
-  local since_arg=""
-  if date -d "24 hours ago" >/dev/null 2>&1; then
-    since_arg=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
-  elif command -v gdate >/dev/null 2>&1; then
-    since_arg=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
-  else
-    since_arg=""
-  fi
-
-  local raw
-  if [ -n "$since_arg" ]; then
-    raw=$(_safe_docker_logs watchtower --since "$since_arg" 2>/dev/null || true)
-  else
-    raw=$(_safe_docker_logs watchtower 2>/dev/null || true)
-  fi
-
-  if [ -z "$raw" ]; then echo ""; return 1; fi
-
-  echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image" || true
-  return 0
-}
-
-_highlight_line(){
-  local line="$1"
-  if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error"; then
-    printf "%b%s%b\n" "$COLOR_RED" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container"; then
-    printf "%b%s%b\n" "$COLOR_GREEN" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "No new images found for container"; then
-    printf "%b%s%b\n" "$COLOR_CYAN" "$line" "$COLOR_RESET"
-  else
-    echo "$line"
-  fi
-}
-
-show_watchtower_details(){
-  clear
-  echo "=== Watchtower 运行详情与更新记录 ==="
-  if ! command -v docker &>/dev/null; then
-    echo "Docker 不可用，请先安装或以能访问 Docker 的用户运行本脚本。"
-    read -r -p "按回车返回主菜单..."
-    return
-  fi
-
-  local interval_secs=""
-  if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    interval_secs=$(get_watchtower_inspect_summary | tail -n1)
-  else
-    echo "Watchtower 容器未运行。"
-    interval_secs=""
-  fi
-
-  echo "----------------------------------------"
-  local last_session
-  last_session=$(get_last_session_time || true)
-  if [ -n "$last_session" ]; then
-    echo "上次扫描: $last_session"
-  else
-    echo "未检测到上次扫描完成记录 (Session done)"
-  fi
-
-  if [ -n "$interval_secs" ] && [ -n "$last_session" ]; then
-    local last_time_token="$last_session"
-    if echo "$last_time_token" | grep -q 'time="'; then
-      last_time_token=$(echo "$last_time_token" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || true)
-    fi
-    local last_epoch
-    last_epoch=$(_date_to_epoch "$last_time_token")
-    if [ -n "$last_epoch" ]; then
-      local now_epoch
-      now_epoch=$(date +%s)
-      local remaining
-      remaining=$(( last_epoch + interval_secs - now_epoch ))
-      if [ "$remaining" -le 0 ]; then
-        echo "下次检查：即将进行或已超时 (${remaining}s)"
-      else
-        local hh=$(( remaining / 3600 ))
-        local mm=$(((remaining % 3600) / 60))
-        local ss=$(( remaining % 60 ))
-        printf "下次检查倒计时: %02d时 %02d分 %02d秒\n" "$hh" "$mm" "$ss"
-      fi
-    else
-      echo "无法将上次扫描时间解析为时间戳，无法计算倒计时。"
-    fi
-  else
-    echo "下次检查倒计时: 无法计算 (缺少上次扫描时间或 interval)"
-  fi
-
-  echo "----------------------------------------"
-  echo "过去 24 小时的更新摘要（高亮重要事件）："
-  echo
-  local updates
-  updates=$(get_updates_last_24h || true)
-  if [ -z "$updates" ]; then
-    echo "过去 24 小时内未检测到关键更新记录或无法读取日志。"
-  else
-    echo "$updates" | tail -n 200 | while IFS= read -r line; do
-      _highlight_line "$line"
-    done
-  fi
-
-  echo "----------------------------------------"
-  while true; do
-    echo "选项："
-    echo " 1) 查看最近 200 行 Watchtower 日志 (实时 tail 模式)"
-    echo " 2) 导出过去 24 小时摘要到 /tmp/watchtower_updates_$(date +%s).log"
-    echo " 0) 返回主菜单"
-    read -r -p "请选择: " pick
-    case "$pick" in
-      1)
-        echo "按 Ctrl+C 停止查看，随后回到详情页。"
-        docker logs --tail 200 -f watchtower || true
-        echo "返回 Watchtower 详情..."
-        ;;
-      2)
-        outfile="/tmp/watchtower_updates_$(date +%s).log"
-        echo "导出摘要到: $outfile"
-        echo "$updates" > "$outfile"
-        echo "导出完成。"
-        ;;
-      0) break ;;
-      *) echo "无效选择" ;;
-    esac
-  done
-
-  read -r -p "按回车返回主菜单..."
-}
-
-# -------------------------
-# 主菜单与主循环（保持已有结构，7-> show_watchtower_details）
-# -------------------------
-
-configure_notify(){
-  echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
-  read -r -p "是否启用 Telegram 通知？(y/N): " tchoice
-  if [[ "$tchoice" =~ ^[Yy]$ ]]; then
-    read -r -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
-    read -r -p "请输入 Telegram Chat ID: " TG_CHAT_ID
-  else
-    TG_BOT_TOKEN=""; TG_CHAT_ID=""
-  fi
-  read -r -p "是否启用 Email 通知？(y/N): " echoice
-  if [[ "$echoice" =~ ^[Yy]$ ]]; then
-    read -r -p "请输入接收通知的邮箱地址: " EMAIL_TO
-  else
-    EMAIL_TO=""
-  fi
-  save_config
-  echo -e "${COLOR_GREEN}通知配置已保存。${COLOR_RESET}"
 }
 
 main_menu(){
