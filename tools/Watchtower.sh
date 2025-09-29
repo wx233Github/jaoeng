@@ -166,7 +166,7 @@ send_notify() {
     curl -s --retry 3 --retry-delay 5 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
       --data-urlencode "chat_id=${TG_CHAT_ID}" \
       --data-urlencode "text=$MSG" >/dev/null || log_warn "⚠️ Telegram 通知发送失败。"
-  fi
+  F
   if [ -n "$EMAIL_TO" ]; then
     if command -v mail &>/dev/null; then
       echo -e "$MSG" | mail -s "Docker 更新通知" "$EMAIL_TO" || log_warn "⚠️ Email 通知发送失败。"
@@ -183,7 +183,7 @@ get_docker_compose_command_main() {
     echo "docker-compose"
   else
     echo ""
-  F
+  fi # <--- 修复: 将 'F' 改为 'fi'
 }
 
 # -------------------------
