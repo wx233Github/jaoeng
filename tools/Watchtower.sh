@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored
+# Version: 2.17.35-fixed-option7-final-refactored-v2
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored"
+VERSION="2.17.35-fixed-option7-final-refactored-v2"
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -40,7 +40,7 @@ fi
 DATE_D_CAPABLE="false"
 if date -d "now" >/dev/null 2>&1; then
   DATE_D_CAPABLE="true"
-elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then
+elif command -v gdate >/dev/null 2>&1 && gdate -d "now" +%s >/dev/null 2>&1; then # Added +%s for a more robust check on gdate
   DATE_D_CAPABLE="true"
 fi
 if [ "$DATE_D_CAPABLE" = "false" ]; then
@@ -79,9 +79,17 @@ _parse_watchtower_timestamp_from_log_line() {
     return 0
   fi
 
-  # Try ISO-like format at the beginning of the line (newer Watchtower logs)
-  # Example: "2023-10-27T10:30:05Z" or "2023-10-27T10:30:05.123456789Z"
+  # Try ISO-like format at the beginning of the line (newer Watchtower logs),
+  # including seconds with optional milliseconds/nanoseconds.
+  # Example: "2023-10-27T10:30:05Z" or "2023-10-27T10:30:05.123Z" or "2023-10-27T10:30:05.123456789"
   timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+  if [ -n "$timestamp" ]; then
+    echo "$timestamp"
+    return 0
+  fi
+  
+  # Try to extract "YYYY-MM-DD HH:MM:SS" from a line like "Scheduling first run: YYYY-MM-DD HH:MM:SS +0000 UTC"
+  timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
   if [ -n "$timestamp" ]; then
     echo "$timestamp"
     return 0
@@ -175,7 +183,7 @@ get_docker_compose_command_main() {
     echo "docker-compose"
   else
     echo ""
-  fi
+  F
 }
 
 # -------------------------
@@ -531,7 +539,8 @@ _extract_interval_from_cmd(){
     # Fallback without jq: improved parsing but still limited compared to jq for complex args.
     # We strip array brackets and quotes, then split tokens by common delimiters (", ", " ",).
     local tokens_str
-    tokens_str=$(echo "$cmd_json" | sed -E 's/^\["|"]$//g; s/", "/ /g; s/"/ /g; s/,/ /g')
+    # 使用 tr 删除引号和逗号，然后用 xargs 将多个空格压缩为单个空格
+    tokens_str=$(echo "$cmd_json" | tr -d '[],"' | xargs)
     local tokens=( $tokens_str ) # Bash will split this string by IFS (space, tab, newline)
     local prev=""
     for t in "${tokens[@]}"; do
@@ -616,32 +625,69 @@ get_watchtower_inspect_summary(){
 }
 
 get_last_session_time(){
-  local raw
-  raw=$(get_watchtower_all_raw_logs 2>/dev/null || true)
-  [ -z "$raw" ] && echo "" && return 1
+  local raw_logs
+  raw_logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
 
-  local last_session_done_log
-  last_session_done_log=$(echo "$raw" | grep -E "Session done" | tail -n 1 || true)
-  if [ -n "$last_session_done_log" ]; then
-    _parse_watchtower_timestamp_from_log_line "$last_session_done_log"
-    return $? # Return status of parsing
+  if [ -z "$raw_logs" ]; then
+    echo "" # No logs at all
+    return 1
   fi
 
-  local last_first_run_log
-  last_first_run_log=$(echo "$raw" | grep -E "Scheduling first run" | tail -n1 || true)
-  if [ -n "$last_first_run_log" ]; then
-    # Specific parsing for "Scheduling first run: YYYY-MM-DD HH:MM:SS +ZZZZ ZZZ"
-    local t2
-    t2=$(echo "$last_first_run_log" | sed -n 's/.*Scheduling first run: \(.*\)/\1/p' || true)
-    if [ -n "$t2" ]; then
-      # Attempt to remove timezone string for better compatibility with _date_to_epoch
-      t2=$(echo "$t2" | sed -E 's/ (\+[0-9]{4} [A-Z]{3}|[A-Z]{3})$//')
-      echo "$t2"
+  local last_log_line=""
+  local timestamp_str=""
+
+  # 优先级 1: "Session done" (上次完成扫描)
+  last_log_line=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
+  if [ -n "$last_log_line" ]; then
+    timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
+    if [ -n "$timestamp_str" ]; then
+      echo "$timestamp_str"
       return 0
     fi
   fi
 
-  echo "" # No relevant log found
+  # 优先级 2: "Scheduling first run" (首次调度/启动时间)
+  last_log_line=$(echo "$raw_logs" | grep -E "Scheduling first run" | tail -n 1 || true)
+  if [ -n "$last_log_line" ]; then
+    # 尝试提取行首的ISO时间戳，表示容器启动时间
+    timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
+    if [ -n "$timestamp_str" ]; then
+      echo "$timestamp_str (首次调度)"
+      return 0
+    fi
+    # 尝试提取行内的调度时间（如果格式特殊）
+    timestamp_str=$(echo "$last_log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp_str" ]; then
+      echo "$timestamp_str (首次调度)"
+      return 0
+    fi
+  fi
+  
+  # 优先级 3: 任何带有 ISO 格式时间戳的 INFO 级别日志 (最近的活动日志)
+  last_log_line=$(echo "$raw_logs" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? INFO' | tail -n 1 || true)
+  if [ -n "$last_log_line" ]; then
+    timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
+    if [ -n "$timestamp_str" ]; then
+      echo "$timestamp_str (最近活动)"
+      return 0
+    fi
+  fi
+
+  # 最低优先级: 获取最后一条日志的原始文本 (可能不包含有效时间)
+  last_log_line=$(echo "$raw_logs" | tail -n 1 || true)
+  if [ -n "$last_log_line" ]; then
+    # 尝试从最后一行日志中解析时间戳
+    timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_log_line")
+    if [ -n "$timestamp_str" ]; then
+      echo "$timestamp_str (最近活动)"
+      return 0
+    else
+      echo "$last_log_line (原始日志)" # 如果无法解析时间戳，显示原始日志行
+      return 0
+    fi
+  fi
+
+  echo "" # 仍然没有找到任何可用的日志信息
   return 1
 }
 
@@ -657,9 +703,9 @@ get_updates_last_24h(){
   local since_arg=""
   if [ "$DATE_D_CAPABLE" = "true" ]; then
     # Use 'date -d' or 'gdate -d' to get the timestamp for '--since'
-    if date -d "24 hours ago" >/dev/null 2>&1; then
+    if date -d "24 hours ago" +%s >/dev/null 2>&1; then
       since_arg=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
-    elif command -v gdate >/dev/null 2>&1; then
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "24 hours ago" +%s >/dev/null 2>&1; then
       since_arg=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
     fi
   fi
@@ -680,7 +726,8 @@ get_updates_last_24h(){
   fi
 
   local filtered
-  filtered=$(echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image" || true)
+  # 增加了 "Starting Watchtower" 以捕获启动事件
+  filtered=$(echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image|Starting Watchtower" || true)
 
   if [ -z "$filtered" ]; then
     echo ""
@@ -695,7 +742,7 @@ _highlight_line(){
   local line="$1"
   if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error|failed"; then
     printf "%b%s%b\n" "$COLOR_RED" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container"; then
+  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container|Starting Watchtower|Session done|Scheduling first run"; then # 增加更多高亮关键词
     printf "%b%s%b\n" "$COLOR_GREEN" "$line" "$COLOR_RESET"
   elif echo "$line" | grep -qi -E "No new images found for container"; then
     printf "%b%s%b\n" "$COLOR_CYAN" "$line" "$COLOR_RESET"
@@ -725,17 +772,21 @@ show_watchtower_details(){
   fi
 
   echo "----------------------------------------"
-  local last_session_timestamp
-  last_session_timestamp=$(get_last_session_time || true)
-  if [ -n "$last_session_timestamp" ]; then
-    echo "上次扫描: $last_session_timestamp"
+  local last_session_timestamp_display
+  local last_session_timestamp_epoch_raw # 用于计算倒计时，可能不带后缀
+  last_session_timestamp_display=$(get_last_session_time 2>/dev/null || true)
+  
+  if [ -n "$last_session_timestamp_display" ]; then
+    # 从显示字符串中提取纯时间戳用于 epoch 转换
+    last_session_timestamp_epoch_raw=$(echo "$last_session_timestamp_display" | sed -E 's/ \((首次调度|最近活动|原始日志)\)//' || true)
+    echo "上次扫描/活动: $last_session_timestamp_display"
   else
-    echo "未检测到上次扫描完成记录 (Session done) 或首次运行记录"
+    echo "未检测到 Watchtower 任何有效日志记录。"
   fi
 
-  if [ -n "$interval_secs" ] && [ -n "$last_session_timestamp" ]; then
+  if [ -n "$interval_secs" ] && [ -n "$last_session_timestamp_epoch_raw" ]; then
     local last_epoch
-    last_epoch=$(_date_to_epoch "$last_session_timestamp")
+    last_epoch=$(_date_to_epoch "$last_session_timestamp_epoch_raw")
     if [ -n "$last_epoch" ]; then
       local now_epoch
       now_epoch=$(date +%s)
@@ -750,10 +801,10 @@ show_watchtower_details(){
         printf "下次检查倒计时: %02d时 %02d分 %02d秒\n" "$hh" "$mm" "$ss"
       fi
     else
-      echo "无法将上次扫描时间解析为时间戳，无法计算倒计时。"
+      echo "无法将上次活动时间解析为时间戳，无法计算倒计时。"
     fi
   else
-    echo "下次检查倒计时: 无法计算 (缺少上次扫描时间或 Watchtower 运行间隔)"
+    echo "下次检查倒计时: 无法计算 (缺少上次活动时间或 Watchtower 运行间隔)"
   fi
 
   echo "----------------------------------------"
@@ -762,7 +813,7 @@ show_watchtower_details(){
   local updates
   updates=$(get_updates_last_24h || true)
   if [ -z "$updates" ]; then
-    echo "未检测到相关日志事件。"
+    echo "未检测到 Watchtower 相关日志事件。"
   else
     echo "$updates" | tail -n 200 | while IFS= read -r line; do
       _highlight_line "$line"
@@ -819,16 +870,16 @@ configure_notify(){
   echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
   read -r -p "是否启用 Telegram 通知？(y/N, 当前: $([ -n "$TG_BOT_TOKEN" ] && echo "已启用" || echo "未设置")): " tchoice
   if [[ "$tchoice" =~ ^[Yy]$ ]]; then
-    read -r -p "请输入 Telegram Bot Token (当前: ${TG_BOT_TOKEN:-空}): " TG_BOT_TOKEN_INPUT
+    read -r -p "请输入 Telegram Bot Token (当前: ${TG_BOT_TOKEN:-空，回车保留}): " TG_BOT_TOKEN_INPUT
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
-    read -r -p "请输入 Telegram Chat ID (当前: ${TG_CHAT_ID:-空}): " TG_CHAT_ID_INPUT
+    read -r -p "请输入 Telegram Chat ID (当前: ${TG_CHAT_ID:-空，回车保留}): " TG_CHAT_ID_INPUT
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
   else
     TG_BOT_TOKEN=""; TG_CHAT_ID=""
   fi
   read -r -p "是否启用 Email 通知？(y/N, 当前: $([ -n "$EMAIL_TO" ] && echo "已启用" || echo "未设置")): " echoice
   if [[ "$echoice" =~ ^[Yy]$ ]]; then
-    read -r -p "请输入接收通知的邮箱地址 (当前: ${EMAIL_TO:-空}): " EMAIL_TO_INPUT
+    read -r -p "请输入接收通知的邮箱地址 (当前: ${EMAIL_TO:-空，回车保留}): " EMAIL_TO_INPUT
     EMAIL_TO="${EMAIL_TO_INPUT:-$EMAIL_TO}"
   else
     EMAIL_TO=""
@@ -922,18 +973,18 @@ main_menu(){
   while true; do
     clear
     echo "==================== VPS 容器管理 ===================="
-    local WATCHTOWER_STATUS LAST_CHECK TOTAL RUNNING STOPPED
+    local WATCHTOWER_STATUS LAST_CHECK_DISPLAY TOTAL RUNNING STOPPED
     WATCHTOWER_STATUS="$(docker ps --format '{{.Names}}' | grep -q '^watchtower$' && echo '已启动' || echo '未运行')"
 
-    LAST_CHECK=$(get_last_session_time 2>/dev/null || true)
-    LAST_CHECK="${LAST_CHECK:-未知}"
+    LAST_CHECK_DISPLAY=$(get_last_session_time 2>/dev/null || true)
+    LAST_CHECK_DISPLAY="${LAST_CHECK_DISPLAY:-未检测到Watchtower日志活动}" # 如果没有任何日志，显示更清晰的提示
 
     TOTAL=$(docker ps -a -q 2>/dev/null | wc -l)
     RUNNING=$(docker ps -q 2>/dev/null | wc -l)
     STOPPED=$((TOTAL - RUNNING))
 
     printf "🟢 Watchtower 状态: %s\n" "$WATCHTOWER_STATUS"
-    printf "🟡 上次更新检查: %s\n" "$LAST_CHECK"
+    printf "🟡 上次更新检查/活动: %s\n" "$LAST_CHECK_DISPLAY" # 修改显示文本
     printf "📦 容器总数: %s (运行: %s, 停止: %s)\n\n" "$TOTAL" "$RUNNING" "$STOPPED"
 
     echo "主菜单选项："
