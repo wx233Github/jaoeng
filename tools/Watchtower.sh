@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final-refactored-v6
+# Version: 2.17.35-fixed-option7-final-refactored-v7
 #
 set -euo pipefail
 IFS='\n\t'
 
-VERSION="2.17.35-fixed-option7-final-refactored-v6" # 更新版本号
+VERSION="2.17.35-fixed-option7-final-refactored-v7" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -263,8 +263,6 @@ _start_watchtower_container_logic(){
     cmd_parts+=("--label-enable" "$WATCHTOWER_LABELS")
   fi
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
-    # WARNING: This simple split may not work for complex arguments with spaces in values.
-    # It's recommended to put each argument as a separate token in WATCHTOWER_EXTRA_ARGS, e.g., "--arg1 val1 --arg2 val2"
     read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"
     cmd_parts+=("${extra_tokens[@]}")
   fi
@@ -521,15 +519,12 @@ get_watchtower_all_raw_logs(){
 
   set +e
   if command -v timeout >/dev/null 2>&1; then
-    # 关键修复：将 2>/dev/null 改为 2>&1，以捕获错误信息
     timeout 20s docker logs --tail 5000 watchtower > "$temp_log_file" 2>&1 || true
   else
-    # 关键修复：将 2>/dev/null 改为 2>&1，以捕获错误信息
     docker logs --tail 5000 watchtower > "$temp_log_file" 2>&1 || true
   fi
   set -e
 
-  # 如果文件为空，仍然发出警告，因为这可能意味着容器刚启动
   if [ ! -s "$temp_log_file" ]; then
     log_warn "⚠️ Watchtower 容器正在运行，但 'docker logs watchtower' 未返回任何日志。请检查容器状态或稍后重试。"
     echo ""
@@ -733,7 +728,8 @@ get_updates_last_24h(){
   fi
 
   local filtered
-  filtered=$(echo "$raw" | grep -E "Session done|Found new image for container|No new images found for container|container was updated|Unable to update|unauthorized|Scheduling first run|Could not do a head request|Stopping container|Starting container|Pulling image|Starting Watchtower" || true)
+  # 增加了 "Starting Watchtower" 以捕获启动事件
+  filtered=$(echo "$raw" | grep -E "Session done|Found new|Stopping /|Creating /|No new images found|unauthorized|Scheduling first run|Could not do a head request|Starting Watchtower" || true)
 
   if [ -z "$filtered" ]; then
     echo ""
@@ -744,17 +740,55 @@ get_updates_last_24h(){
   return 0
 }
 
-_highlight_line(){
+# 新增：解析日志并以中文格式化输出
+_format_and_highlight_log_line(){
   local line="$1"
-  if echo "$line" | grep -qi -E "unauthorized|authentication required|Could not do a head request|Unable to update|skipped because of an error|error|failed|permission denied|cannot connect"; then
-    printf "%b%s%b\n" "$COLOR_RED" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "Found new image for container|container was updated|Creating new container|Pulling image|Starting container|Stopping container|Starting Watchtower|Session done|Scheduling first run"; then
-    printf "%b%s%b\n" "$COLOR_GREEN" "$line" "$COLOR_RESET"
-  elif echo "$line" | grep -qi -E "No new images found for container"; then
-    printf "%b%s%b\n" "$COLOR_CYAN" "$line" "$COLOR_RESET"
-  else
-    echo "$line"
+  local timestamp
+  timestamp=$(_parse_watchtower_timestamp_from_log_line "$line")
+
+  # 优先处理错误日志
+  if echo "$line" | grep -qi -E "unauthorized|failed|error|permission denied|cannot connect|Could not do a head request"; then
+      printf "%s %b%s%b\n" "$timestamp" "$COLOR_RED" "❌ 错误: $(echo "$line" | sed 's/.*level=error msg="//; s/".*//') " "$COLOR_RESET"
+      return
   fi
+
+  case "$line" in
+    *"Session done"*)
+        local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+        local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+        local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+        if [[ -n "$scanned" && -n "$updated" && -n "$failed" ]]; then
+            printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✅ 扫描完成。已扫描: ${scanned}, 已更新: ${updated}, 失败: ${failed}" "$COLOR_RESET"
+        else
+            printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "$line" "$COLOR_RESET"
+        fi
+        ;;
+    *"Found new"*)
+        local image_name=$(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🆕 发现新镜像: ${image_name:-$line}" "$COLOR_RESET"
+        ;;
+    *"Stopping "*)
+        local container_name=$(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🛑 正在停止旧容器: ${container_name:-$line}" "$COLOR_RESET"
+        ;;
+    *"Creating "*)
+        local container_name=$(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🚀 正在创建新容器: ${container_name:-$line}" "$COLOR_RESET"
+        ;;
+    *"No new images found"*)
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_CYAN" "ℹ️ 未发现需要更新的镜像。" "$COLOR_RESET"
+        ;;
+    *"Scheduling first run"*)
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🕒 首次运行已调度 (Watchtower 启动)" "$COLOR_RESET"
+        ;;
+    *"Starting Watchtower"*)
+        printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"
+        ;;
+    *)
+        # 对于其他未识别的行，直接输出
+        echo "$line"
+        ;;
+  esac
 }
 
 # -------------------------
@@ -820,15 +854,16 @@ show_watchtower_details(){
   if [ -z "$updates" ]; then
     echo "未检测到 Watchtower 相关日志事件。"
   else
+    # 逐行处理日志并格式化输出
     echo "$updates" | tail -n 200 | while IFS= read -r line; do
-      _highlight_line "$line"
+      _format_and_highlight_log_line "$line"
     done
   fi
 
   echo "----------------------------------------"
   while true; do
     echo "选项："
-    echo " 1) 查看最近 200 行 Watchtower 日志 (实时 tail 模式)"
+    echo " 1) 查看最近 200 行 Watchtower 原始日志 (实时 tail 模式)"
     echo " (按回车直接返回上一层)"
     read -r -p "请选择 (直接回车返回): " pick
 
