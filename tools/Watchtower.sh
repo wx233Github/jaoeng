@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手（完整可执行脚本 - 修复 docker logs 参数顺序 & 日志解析）
+# Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
 # Version: 2.17.35-fixed-option7-final
 #
 
@@ -85,7 +85,7 @@ EMAIL_TO="${EMAIL_TO}"
 WATCHTOWER_LABELS="${WATCHTOWER_LABELS}"
 WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS}"
 WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED}"
-WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL}"
+WATCHTOWER_CONFIG_interval="${WATCHTOWER_CONFIG_INTERVAL}"
 WATCHTOWER_CONFIG_SELF_UPDATE_MODE="${WATCHTOWER_CONFIG_SELF_UPDATE_MODE}"
 WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON}"
@@ -208,8 +208,6 @@ _start_watchtower_container_logic(){
     cmd_parts+=("--label-enable" "$WATCHTOWER_LABELS")
   fi
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
-    # append raw extra args (user-supplied). This is best-effort.
-    # Split by spaces (naive) — advanced parsing left to user to ensure correct quoting.
     read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"
     cmd_parts+=("${extra_tokens[@]}")
   fi
@@ -438,7 +436,7 @@ manage_tasks(){
 }
 
 # -------------------------
-# log helpers (KEY FIX: docker logs option order)
+# log helpers (KEY FIX: docker logs options before container)
 # -------------------------
 get_watchtower_all_raw_logs(){
   local temp_log_file
@@ -519,7 +517,7 @@ _get_watchtower_remaining_time(){
 }
 
 # -------------------------
-# missing inspect + last session helpers
+# inspect + last session helpers
 # -------------------------
 get_watchtower_inspect_summary(){
   if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
@@ -586,7 +584,7 @@ get_last_session_time(){
 }
 
 # -------------------------
-# get_updates_last_24h (KEY FIX: --since before container)
+# get_updates_last_24h
 # -------------------------
 get_updates_last_24h(){
   if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
@@ -641,7 +639,7 @@ _highlight_line(){
 }
 
 # -------------------------
-# show_watchtower_details (按回车返回上一层；无摘要显示"未检测到日志")
+# show_watchtower_details
 # -------------------------
 show_watchtower_details(){
   clear
@@ -748,7 +746,7 @@ show_watchtower_details(){
 }
 
 # -------------------------
-# notify config
+# configure_notify
 # -------------------------
 configure_notify(){
   echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
@@ -770,7 +768,7 @@ configure_notify(){
 }
 
 # -------------------------
-# run once
+# run_watchtower_once
 # -------------------------
 run_watchtower_once(){
   echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
@@ -791,7 +789,7 @@ run_watchtower_once(){
 }
 
 # -------------------------
-# view/edit config
+# view_and_edit_config
 # -------------------------
 view_and_edit_config(){
   echo -e "${COLOR_YELLOW}🔍 脚本配置查看与编辑：${COLOR_RESET}"
@@ -838,7 +836,7 @@ view_and_edit_config(){
 }
 
 # -------------------------
-# main menu
+# main menu (已修复 LAST_CHECK 提取)
 # -------------------------
 main_menu(){
   while true; do
@@ -847,14 +845,11 @@ main_menu(){
     local WATCHTOWER_STATUS LAST_CHECK TOTAL RUNNING STOPPED
     WATCHTOWER_STATUS="$(docker ps --format '{{.Names}}' | grep -q '^watchtower$' && echo '已启动' || echo '未运行')"
 
-    # 更稳健地提取 LAST_CHECK
     LAST_CHECK=""
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-      LAST_CHECK=$(docker logs --tail 200 watchtower 2>/dev/null | grep -E 'Session done|Scheduling first run' | tail -n1 || true)
-      if [ -n "$LAST_CHECK" ]; then
-        # 尝试从 time="..." 提取时间
-        LAST_CHECK_EXTRACT=$(echo "$LAST_CHECK" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || true)
-        LAST_CHECK="${LAST_CHECK_EXTRACT:-$LAST_CHECK}"
+      LAST_CHECK=$(get_last_session_time 2>/dev/null || true)
+      if [ -n "$LAST_CHECK" ] && echo "$LAST_CHECK" | grep -q 'time="'; then
+        LAST_CHECK=$(echo "$LAST_CHECK" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || true)
       fi
     fi
     LAST_CHECK="${LAST_CHECK:-未知}"
