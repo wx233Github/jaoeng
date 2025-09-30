@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (完整可执行脚本 - 修复显示与交互)
-# Version: 2.18.2-fix-display
+# Docker 自动更新助手 (完整可执行脚本 - 最终修复版)
+# Version: 2.18.3-final-fixes
 #
 set -euo pipefail
-IFS=$'\n\t'
+# 移除了全局 IFS 设置，从根本上解决交互和显示问题
 
-VERSION="2.18.2-fix-display" # 更新版本号
+VERSION="2.18.3-final-fixes" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -136,7 +136,6 @@ confirm_action() {
   esac
 }
 
-# 交互优化：单次回车即可继续
 press_enter_to_continue() {
   # shellcheck disable=SC2162
   read -r -p "$(echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}")"
@@ -169,6 +168,7 @@ show_container_info() {
 
     local containers=()
     local i=1
+    # 此处使用局部 IFS，是安全且正确的做法
     while IFS='|' read -r name image status; do
       containers+=("$name")
       local status_colored="$status"
@@ -470,8 +470,8 @@ _extract_interval_from_cmd(){
 _get_watchtower_remaining_time(){
   local wt_interval_running="$1"
   local raw_logs="$2"
-  if [ -z "$wt_interval_running" ] || [ -z "$raw_logs" ]; then echo "${COLOR_YELLOW}N/A (信息不足)${COLOR_RESET}"; return; fi
-  if ! echo "$raw_logs" | grep -q "Session done"; then echo "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"; return; fi
+  if [ -z "$wt_interval_running" ] || [ -z "$raw_logs" ]; then echo -e "${COLOR_YELLOW}N/A (信息不足)${COLOR_RESET}"; return; fi
+  if ! echo "$raw_logs" | grep -q "Session done"; then echo -e "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"; return; fi
   local last_check_log; last_check_log=$(echo "$raw_logs" | grep -E "Session done" | tail -n 1 || true)
   local last_check_timestamp_str=""; if [ -n "$last_check_log" ]; then last_check_timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_check_log"); fi
   if [ -n "$last_check_timestamp_str" ]; then
@@ -485,10 +485,10 @@ _get_watchtower_remaining_time(){
         printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"
       fi
     else
-      echo "${COLOR_RED}时间解析失败${COLOR_RESET}"
+      echo -e "${COLOR_RED}时间解析失败${COLOR_RESET}"
     fi
   else
-    echo "${COLOR_YELLOW}未找到扫描日志${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}未找到扫描日志${COLOR_RESET}"
   fi
 }
 
@@ -527,23 +527,44 @@ get_updates_last_24h(){
 _format_and_highlight_log_line(){
   local line="$1"
   local timestamp; timestamp=$(_parse_watchtower_timestamp_from_log_line "$line")
-  if echo "$line" | grep -qi -E "unauthorized|failed|error|permission denied|cannot connect|Could not do a head request"; then
+
+  # 优先处理正常匹配的日志，避免被错误规则捕获
+  case "$line" in
+    *"Session done"*)
+        local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+        local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+        local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+        if [[ -n "$scanned" && -n "$updated" && -n "$failed" ]]; then
+            local color="$COLOR_GREEN"
+            # 如果有失败的，就高亮为黄色
+            if [ "$failed" -gt 0 ]; then color="$COLOR_YELLOW"; fi
+            printf "%s %b%s%b\n" "$timestamp" "$color" "✅ 扫描: ${scanned}, 更新: ${updated}, 失败: ${failed}" "$COLOR_RESET"
+        else
+            printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "$line" "$COLOR_RESET"
+        fi
+        return
+        ;;
+    *"Found new"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$COLOR_RESET"; return ;;
+    *"Stopping "*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$COLOR_RESET"; return ;;
+    *"Creating "*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$COLOR_RESET"; return ;;
+    *"No new images found"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_CYAN" "ℹ️ 未发现新镜像。" "$COLOR_RESET"; return ;;
+    *"Scheduling first run"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🕒 首次运行已调度" "$COLOR_RESET"; return ;;
+    *"Starting Watchtower"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"; return ;;
+  esac
+
+  # 如果以上规则都未匹配，再检查是否为错误日志
+  # 使用 \b 进行全词匹配，避免误判
+  if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then
       local error_message; error_message=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p')
       if [ -z "$error_message" ]; then
           error_message=$(echo "$line" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? *//; s/.*time="[^"]*" *//; s/level=(error|warn|info) *//')
       fi
-      printf "%s %b%s%b\n" "$timestamp" "$COLOR_RED" "❌ 错误: ${error_message:-$line}" "$COLOR_RESET"; return
+      printf "%s %b%s%b\n" "$timestamp" "$COLOR_RED" "❌ 错误: ${error_message:-$line}" "$COLOR_RESET"
+      return
   fi
-  case "$line" in
-    *"Session done"*) local f; f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); local s; s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); local u; u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); if [[ -n "$s" && -n "$u" && -n "$f" ]]; then printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✅ 扫描: ${s}, 更新: ${u}, 失败: ${f}" "$COLOR_RESET"; else printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "$line" "$COLOR_RESET"; fi ;;
-    *"Found new"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$COLOR_RESET" ;;
-    *"Stopping "*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$COLOR_RESET" ;;
-    *"Creating "*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$COLOR_RESET" ;;
-    *"No new images found"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_CYAN" "ℹ️ 未发现新镜像。" "$COLOR_RESET" ;;
-    *"Scheduling first run"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "🕒 首次运行已调度" "$COLOR_RESET" ;;
-    *"Starting Watchtower"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET" ;;
-    *) echo "$line" ;;
-  esac
+
+  # 对于其他未识别的行，直接输出
+  echo "$line"
 }
 
 show_watchtower_details(){
@@ -619,9 +640,9 @@ view_and_edit_config(){
     echo " 8) Watchtower 脚本启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"
     echo " 9) Cron 更新小时:      ${CRON_HOUR:-未设置}"
     echo "10) Cron 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"
-    echo "11) Cron 脚本启用: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"
+    echo "11) Cron 脚本启用: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"
     echo "-------------------------------------------------------------------------------------------------------------------"
-    read -r -p "请输入要编辑的编号 (1-11)，或按 'q' 返回: " edit_choice
+    read -r -p "请输入要编辑的编号 (1-11)，或按 'q'/'Enter' 返回: " edit_choice
 
     case "$edit_choice" in
       1) read -r -p "新 Token: " a; TG_BOT_TOKEN="${a:-$TG_BOT_TOKEN}"; save_config ;;
@@ -665,7 +686,6 @@ main_menu(){
 
     printf "Watchtower 状态: %b\n" "$WATCHTOWER_STATUS_COLORED"
     printf "下次检查倒计时: %b\n" "$COUNTDOWN_DISPLAY"
-    # --- FIX: 修复容器概览显示 ---
     printf "容器概览: 总数 %s (%b运行中 %s%b, %b已停止 %s%b)\n\n" \
       "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RESET}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
 
