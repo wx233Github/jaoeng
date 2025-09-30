@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 #
 # Docker 自动更新助手 (完整可执行脚本 - 最终修复版)
-# Version: 2.18.3-final-fixes
+# Version: 2.18.4-final-fix
 #
 set -euo pipefail
-# 移除了全局 IFS 设置，从根本上解决交互和显示问题
+# --- 最终修复 ---
+# 强制重置 IFS 为 Bash 默认值，以创建一个干净的运行环境。
+# 这将彻底解决因外部环境 IFS 设置不当导致的显示和交互问题。
+IFS=' \t\n'
 
-VERSION="2.18.3-final-fixes" # 更新版本号
+VERSION="2.18.4-final-fix" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -531,9 +534,9 @@ _format_and_highlight_log_line(){
   # 优先处理正常匹配的日志，避免被错误规则捕获
   case "$line" in
     *"Session done"*)
-        local failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
-        local scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
-        local updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+        local failed; failed=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+        local scanned; scanned=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+        local updated; updated=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
         if [[ -n "$scanned" && -n "$updated" && -n "$failed" ]]; then
             local color="$COLOR_GREEN"
             # 如果有失败的，就高亮为黄色
@@ -552,8 +555,7 @@ _format_and_highlight_log_line(){
     *"Starting Watchtower"*) printf "%s %b%s%b\n" "$timestamp" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"; return ;;
   esac
 
-  # 如果以上规则都未匹配，再检查是否为错误日志
-  # 使用 \b 进行全词匹配，避免误判
+  # 如果以上规则都未匹配，再检查是否为错误日志 (使用 \b 进行全词匹配)
   if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then
       local error_message; error_message=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p')
       if [ -z "$error_message" ]; then
