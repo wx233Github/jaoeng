@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.2 - 健壮配置加载版)
+# 🚀 VPS 一键安装入口脚本 (v8.3 - 健壮配置解析版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -32,11 +32,10 @@ log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
 # --- 配置加载 ---
 load_config() {
-    # 这里的 CONFIG_FILE 路径现在是固定的最终路径
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
-        # 排除 menus 和 dependencies, 因为它们有特殊的结构
-        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and .key | startswith("comment") | not))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
+        # 【增强】更健壮的解析：明确排除所有 comment* 键
+        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
     fi
     CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
@@ -88,6 +87,7 @@ execute_module() {
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
     if [[ "$has_config" == "true" ]]; then
+        # 【增强】更健壮的解析：明确排除所有 comment* 键
         while IFS='=' read -r key value; do
             env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value")
         done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "\(.key)=\(.value)"' "$config_path")
@@ -99,7 +99,8 @@ execute_module() {
             if [ -n "$all_labels" ]; then
                 env_vars+=("WT_AVAILABLE_LABELS=$all_labels")
             fi
-            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[] | select(. | startswith("comment") | not)' "$config_path" | tr '\n' ',' | sed 's/,$//')
+            # 【增强】这里的解析已经是正确的，因为它直接读取数组
+            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
             if [ -n "$exclude_list" ]; then
                 env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list")
             fi
@@ -115,7 +116,7 @@ execute_module() {
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     local config_path="${CONFIG[install_dir]}/config.json"
-    local header_text="🚀 VPS 一键安装入口 (v8.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v8.3)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
@@ -152,26 +153,21 @@ process_menu_selection() {
 
 # ====================== 主程序入口 ======================
 main() {
-    # 确保 install_dir 存在
     mkdir -p "${CONFIG[install_dir]}"
-    
-    # 【核心修复】检查并下载配置文件
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
         echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在从 GitHub 下载默认配置..."
         if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then
             echo -e "${RED}[错误]${NC} 下载默认配置文件失败！请检查网络或仓库地址。"
-            # 在没有日志系统的情况下退出
             exit 1
         fi
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载至 $config_path"
     fi
 
-    # 依赖检查和配置加载必须在日志系统启动之前
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
     load_config
     setup_logging
-    log_info "脚本启动 (v8.2)"
+    log_info "脚本启动 (v8.3)"
     check_and_install_dependencies
     
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
