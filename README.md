@@ -54,9 +54,9 @@ curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh 
 ---
 
 ## 删除
-jb
+jb&&目录
 ```
-sudo rm -rf /opt/vps_install_modules 和 sudo rm -f /usr/local/bin/jb
+sudo sh -c "rm -rf /opt/vps_install_modules && rm -f /usr/local/bin/jb"
 ```
 config.json
 ```
