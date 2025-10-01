@@ -183,7 +183,11 @@ _start_watchtower_container_logic(){
     cmd_parts=(docker run -e TZ=Asia/Shanghai -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}")
   fi
   if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then log_info "已应用排除规则: ${WT_EXCLUDE_CONTAINERS}"; fi
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}"); echo -e "${COLOR_GREEN}ℹ️ 已配置 Watchtower Telegram 通知。${COLOR_RESET}"; fi
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+      cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL='telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}'")
+      cmd_parts+=(-e WATCHTOWER_REPORT=true)
+      echo -e "${COLOR_GREEN}ℹ️ 已配置 Watchtower Telegram 报告 (每次运行后)。${COLOR_RESET}"
+  fi
   if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi
   if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable"); fi
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
