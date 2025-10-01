@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (完整可执行脚本 - 增加主菜单通知状态)
-# Version: 2.18.6-notify-status
+# Docker 自动更新助手 (完整可执行脚本 - 终极修复版)
+# Version: 2.18.7-final-fixes
 #
 set -euo pipefail
 
-# 强制设定脚本运行环境的区域设置为 C.UTF-8，以解决显示和交互问题。
+# --- 终极修复 1: 运行环境问题 ---
+# 强制重置 IFS 为 Bash 默认值，以创建一个干净的运行环境。
+# 这将彻底解决因外部环境 IFS 设置不当导致的显示和交互问题。
+IFS=' \t\n'
+# 同时，强制设定脚本运行环境的区域设置为 C.UTF-8，作为双重保险。
 export LC_ALL=C.UTF-8
 
-VERSION="2.18.6-notify-status" # 更新版本号
+VERSION="2.18.7-final-fixes" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -249,29 +253,46 @@ _start_watchtower_container_logic(){
   local mode_description="$2"
   echo "⬇️ 正在拉取 Watchtower 镜像..."
   set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
+  
   local cmd_parts
   if [ "$mode_description" = "一次性更新" ]; then
     cmd_parts=(docker run -e TZ=Asia/Shanghai --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once)
   else
     cmd_parts=(docker run -e TZ=Asia/Shanghai -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}")
   fi
+
+  # --- 新增逻辑: 自动配置 Watchtower 内置通知 ---
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+    cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}")
+    echo -e "${COLOR_GREEN}ℹ️ 已为 Watchtower 配置 Telegram 通知。${COLOR_RESET}"
+  fi
+
   if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi
   if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable" "$WATCHTOWER_LABELS"); fi
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
+  
   echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"
+  echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]}${COLOR_RESET}"
+
   set +e; "${cmd_parts[@]}"; local rc=$?; set -e
+  
   if [ "$mode_description" = "一次性更新" ]; then
     if [ $rc -eq 0 ]; then
-      echo -e "${COLOR_GREEN}✅ $mode_description 完成。${COLOR_RESET}"; send_notify "✅ Docker 自动更新助手：$mode_description 成功。"; return 0
+      echo -e "${COLOR_GREEN}✅ $mode_description 任务已完成。${COLOR_RESET}"
+      return 0
     else
-      echo -e "${COLOR_RED}❌ $mode_description 失败。${COLOR_RESET}"; send_notify "❌ Docker 自动更新助手：$mode_description 失败。"; return 1
+      echo -e "${COLOR_RED}❌ $mode_description 任务失败，返回码: $rc。请检查上方日志。${COLOR_RESET}"
+      return 1
     fi
   else
     sleep 3
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-      echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"; send_notify "✅ Docker 自动更新助手：$mode_description 启动成功。"; return 0
+      echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"
+      return 0
     else
-      echo -e "${COLOR_RED}❌ $mode_description 启动失败。${COLOR_RESET}"; send_notify "❌ Docker 自动更新助手：$mode_description 启动失败。"; return 1
+      echo -e "${COLOR_RED}❌ $mode_description 启动失败。请检查 Docker 日志。${COLOR_RESET}"
+      send_notify "❌ Docker 自动更新助手：Watchtower 容器启动失败。"
+      return 1
     fi
   fi
 }
@@ -667,7 +688,7 @@ view_and_edit_config(){
 
 main_menu(){
   while true; do
-    clear
+    clear; load_config
     echo "==================== Docker 自动更新与管理助手 v${VERSION} ===================="
     local WATCHTOWER_STATUS_COLORED WATCHTOWER_STATUS_RAW COUNTDOWN_DISPLAY TOTAL RUNNING STOPPED
     
@@ -691,7 +712,6 @@ main_menu(){
     printf "容器概览: 总数 %s (%b运行中 %s%b, %b已停止 %s%b)\n" \
       "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RESET}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
     
-    # --- 新增通知状态显示 ---
     local NOTIFICATION_STATUS_DISPLAY=""
     if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then
         NOTIFICATION_STATUS_DISPLAY="Telegram"
@@ -708,7 +728,7 @@ main_menu(){
       printf "🔔 通知已启用: %b%s%b\n" "${COLOR_GREEN}" "${NOTIFICATION_STATUS_DISPLAY}" "${COLOR_RESET}"
     fi
     
-    echo # 输出一个空行来分隔状态区和菜单
+    echo
 
     echo "主菜单选项："
     echo "1) 🔄 设置更新模式 (Watchtower / Cron)"
