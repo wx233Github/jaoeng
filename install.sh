@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.8 - 强制更新版)
+# 🚀 VPS 一键安装入口脚本 (v9.0 - 环境加固与模块通信版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -21,7 +21,7 @@ CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="true"
 
 # --- 辅助函数 & 日志系统 ---
-sudo_preserve_env() { sudo LC_ALL=C.utf8 "$@"; }
+sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() {
     sudo_preserve_env mkdir -p "$(dirname "${CONFIG[log_file]}")"
     sudo_preserve_env touch "${CONFIG[log_file]}"
@@ -148,6 +148,9 @@ execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! download_module_to_cache "$script_name"; then log_error "下载模块失败。"; return 1; fi; fi
     sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
+    # 【修改】将主脚本的清屏设置传递给子脚本
+    env_vars+=("JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}")
+
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
     if [[ "$has_config" == "true" ]]; then
@@ -171,7 +174,7 @@ CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json";
-    local header_text="🚀 VPS 一键安装入口 (v8.8)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v9.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -205,7 +208,7 @@ main() {
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v8.8)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v9.0)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
     setup_shortcut; self_update
