@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.1 - 智能扫描联动版)
+# 🚀 VPS 一键安装入口脚本 (v8.2 - 健壮配置加载版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -32,9 +32,11 @@ log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
 # --- 配置加载 ---
 load_config() {
-    CONFIG_FILE="$(dirname "${BASH_SOURCE[0]}")/config.json"
+    # 这里的 CONFIG_FILE 路径现在是固定的最终路径
+    CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
-        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies"))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
+        # 排除 menus 和 dependencies, 因为它们有特殊的结构
+        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and .key | startswith("comment") | not))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
     fi
     CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
@@ -69,7 +71,7 @@ self_update() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0
 download_module_to_cache() { local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local url="${CONFIG[base_url]}/$script_name"; mkdir -p "$(dirname "$local_file")"; local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; }
 _update_all_modules() {
     log_info "正在并行更新所有模块缓存..."
-    local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "$CONFIG_FILE")
+    local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
     for script_name in $scripts_to_update; do
         ( if download_module_to_cache "$script_name"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) &
     done
@@ -79,15 +81,16 @@ _update_all_modules() {
 update_all_modules_parallel() { with_lock _update_all_modules; }
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"
+    local config_path="${CONFIG[install_dir]}/config.json"
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! with_lock download_module_to_cache "$script_name"; then log_error "下载模块失败，无法执行。"; return 1; fi; fi
     chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
     
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
-    local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$CONFIG_FILE")
+    local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
     if [[ "$has_config" == "true" ]]; then
         while IFS='=' read -r key value; do
             env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value")
-        done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key != "comment") | "\(.key)=\(.value)"' "$CONFIG_FILE")
+        done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "\(.key)=\(.value)"' "$config_path")
     fi
 
     if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
@@ -96,7 +99,7 @@ execute_module() {
             if [ -n "$all_labels" ]; then
                 env_vars+=("WT_AVAILABLE_LABELS=$all_labels")
             fi
-            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[] | select(. != "comment")' "$CONFIG_FILE" | tr '\n' ',' | sed 's/,$//')
+            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[] | select(. | startswith("comment") | not)' "$config_path" | tr '\n' ',' | sed 's/,$//')
             if [ -n "$exclude_list" ]; then
                 env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list")
             fi
@@ -111,8 +114,9 @@ execute_module() {
 # --- 动态菜单核心 ---
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
-    local header_text="🚀 VPS 一键安装入口 (v8.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_FILE")
+    local config_path="${CONFIG[install_dir]}/config.json"
+    local header_text="🚀 VPS 一键安装入口 (v8.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -129,7 +133,8 @@ display_menu() {
     read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice
 }
 process_menu_selection() {
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_FILE")
+    local config_path="${CONFIG[install_dir]}/config.json"
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
 
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
@@ -147,14 +152,31 @@ process_menu_selection() {
 
 # ====================== 主程序入口 ======================
 main() {
+    # 确保 install_dir 存在
+    mkdir -p "${CONFIG[install_dir]}"
+    
+    # 【核心修复】检查并下载配置文件
+    local config_path="${CONFIG[install_dir]}/config.json"
+    if [ ! -f "$config_path" ]; then
+        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在从 GitHub 下载默认配置..."
+        if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then
+            echo -e "${RED}[错误]${NC} 下载默认配置文件失败！请检查网络或仓库地址。"
+            # 在没有日志系统的情况下退出
+            exit 1
+        fi
+        echo -e "${GREEN}[成功]${NC} 默认配置文件已下载至 $config_path"
+    fi
+
+    # 依赖检查和配置加载必须在日志系统启动之前
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v8.1)"; check_and_install_dependencies
+    load_config
+    setup_logging
+    log_info "脚本启动 (v8.2)"
+    check_and_install_dependencies
     
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then with_lock save_entry_script; fi
     with_lock setup_shortcut; self_update
-    # precache_modules_background 最好在 self_update 之后执行
-    # with_lock precache_modules_background &>/dev/null &
 
     while true; do
         clear 2>/dev/null || true; display_menu; local exit_code=0
