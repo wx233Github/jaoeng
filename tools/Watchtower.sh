@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (完整可执行脚本 - 终极修复版)
-# Version: 2.18.5-locale-fix
+# Docker 自动更新助手 (完整可执行脚本 - 增加主菜单通知状态)
+# Version: 2.18.6-notify-status
 #
 set -euo pipefail
 
-# --- 终极修复 ---
-# 强制设定脚本运行环境的区域设置为 C.UTF-8。
-# 这将创建一个标准的、支持UTF-8的环境，从根本上解决因服务器环境
-# locale 配置不当而导致的字符显示异常（文字间加空格）和 read 命令交互异常（需按两次回车）的问题。
+# 强制设定脚本运行环境的区域设置为 C.UTF-8，以解决显示和交互问题。
 export LC_ALL=C.UTF-8
 
-VERSION="2.18.5-locale-fix" # 更新版本号
+VERSION="2.18.6-notify-status" # 更新版本号
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -691,8 +688,27 @@ main_menu(){
 
     printf "Watchtower 状态: %b\n" "$WATCHTOWER_STATUS_COLORED"
     printf "下次检查倒计时: %b\n" "$COUNTDOWN_DISPLAY"
-    printf "容器概览: 总数 %s (%b运行中 %s%b, %b已停止 %s%b)\n\n" \
+    printf "容器概览: 总数 %s (%b运行中 %s%b, %b已停止 %s%b)\n" \
       "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RESET}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
+    
+    # --- 新增通知状态显示 ---
+    local NOTIFICATION_STATUS_DISPLAY=""
+    if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then
+        NOTIFICATION_STATUS_DISPLAY="Telegram"
+    fi
+    if [[ -n "$EMAIL_TO" ]]; then
+        if [ -n "$NOTIFICATION_STATUS_DISPLAY" ]; then
+            NOTIFICATION_STATUS_DISPLAY+=", Email"
+        else
+            NOTIFICATION_STATUS_DISPLAY="Email"
+        fi
+    fi
+
+    if [ -n "$NOTIFICATION_STATUS_DISPLAY" ]; then
+      printf "🔔 通知已启用: %b%s%b\n" "${COLOR_GREEN}" "${NOTIFICATION_STATUS_DISPLAY}" "${COLOR_RESET}"
+    fi
+    
+    echo # 输出一个空行来分隔状态区和菜单
 
     echo "主菜单选项："
     echo "1) 🔄 设置更新模式 (Watchtower / Cron)"
