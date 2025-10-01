@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v9.0 - 环境加固与模块通信版)
+# 🚀 VPS 一键安装入口脚本 (v9.1 - 最终修复与确认功能版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -71,13 +71,13 @@ check_and_install_dependencies() {
         read -p "$(echo -e "${YELLOW}是否尝试自动为您安装? (y/N): ${NC}")" choice
         if [[ "$choice" =~ ^[Yy]$ ]]; then
             log_info "正在使用 $pm 安装依赖..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo_preserve_env apt-get update"; fi
-            if ! $update_cmd && sudo_preserve_env $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败, 请检查系统或手动安装。"; fi
+            if ! $update_cmd && sudo_preserve_env $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败。"; fi
             log_success "依赖安装完成！"
-        else log_error "用户取消安装。请在手动安装依赖后重试。"; fi
+        else log_error "用户取消安装。"; fi
     fi
 }
 
-# --- 核心功能 (下载、执行等) ---
+# --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
 save_entry_script() { 
     sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; 
@@ -105,30 +105,22 @@ self_update() {
 }
 download_module_to_cache() { 
     sudo_preserve_env mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
-    local script_name="$1"; 
-    local force_update="${2:-false}";
-    local local_file="${CONFIG[install_dir]}/$script_name"; 
+    local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
     local url="${CONFIG[base_url]}/$script_name"; 
-    if [ "$force_update" = "true" ]; then
-        url="${url}?_=$(date +%s)";
-        log_info "  ↳ 强制刷新: $script_name"
-    fi
+    if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo_preserve_env rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
 _update_all_modules() {
-    local force_update="${1:-false}";
-    log_info "正在并行更新所有模块缓存..."
+    local force_update="${1:-false}"; log_info "正在并行更新所有模块缓存..."
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
     for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name" "$force_update"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
     wait; log_success "所有模块缓存更新完成！"
 }
 force_update_all() {
     log_info "开始强制更新流程 (绕过CDN缓存)..."
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh";
-    log_info "步骤 1: 正在检查主脚本更新..."
-    local temp_script="/tmp/install.sh.force.tmp";
-    local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "步骤 1: 正在检查主脚本更新..."
+    local temp_script="/tmp/install.sh.force.tmp"; local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"
     if curl -fsSL --connect-timeout 5 --max-time 30 "$force_url" -o "$temp_script"; then
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
             log_info "检测到主脚本新版本，正在应用并重启...";
@@ -138,19 +130,22 @@ force_update_all() {
         else
             log_success "主脚本已是最新版本。"; rm -f "$temp_script";
         fi
+    else log_warning "无法从 GitHub 获取主脚本，跳过主脚本更新。"; fi
+    log_info "步骤 2: 正在强制更新所有子模块..."; _update_all_modules "true"
+}
+# 【新增】强制更新的确认函数
+confirm_and_force_update() {
+    read -p "$(echo -e "${YELLOW}这将从GitHub强制拉取最新版本的主脚本和所有模块，确定要继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
+    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
+        force_update_all
     else
-        log_warning "无法从 GitHub 获取主脚本，跳过主脚本更新。"
+        log_info "强制更新已取消。"
     fi
-    log_info "步骤 2: 正在强制更新所有子模块...";
-    _update_all_modules "true"
 }
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! download_module_to_cache "$script_name"; then log_error "下载模块失败。"; return 1; fi; fi
-    sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
-    # 【修改】将主脚本的清屏设置传递给子脚本
-    env_vars+=("JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}")
-
+    sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true" "JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}")
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
     if [[ "$has_config" == "true" ]]; then
@@ -174,7 +169,7 @@ CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json";
-    local header_text="🚀 VPS 一键安装入口 (v9.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v9.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -208,7 +203,7 @@ main() {
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v9.0)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v9.1)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
     setup_shortcut; self_update
