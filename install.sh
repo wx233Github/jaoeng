@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.7 - Sudo 环境修复版)
+# 🚀 VPS 一键安装入口脚本 (v8.8 - 强制更新版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -10,7 +10,7 @@ export LC_ALL=C.utf8
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# --- 默认配置 (当config.json加载失败时的后备) ---
+# --- 默认配置 ---
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
@@ -21,11 +21,7 @@ CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="true"
 
 # --- 辅助函数 & 日志系统 ---
-# 【新增】带环境传递的 sudo 封装函数
-sudo_preserve_env() {
-    sudo LC_ALL=C.utf8 "$@"
-}
-
+sudo_preserve_env() { sudo LC_ALL=C.utf8 "$@"; }
 setup_logging() {
     sudo_preserve_env mkdir -p "$(dirname "${CONFIG[log_file]}")"
     sudo_preserve_env touch "${CONFIG[log_file]}"
@@ -38,14 +34,13 @@ log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
 log_warning() { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $1"; }
 log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
-# --- 健壮的并发锁机制 (PID 文件锁) ---
+# --- 并发锁机制 ---
 acquire_lock() {
     local lock_file="${CONFIG[lock_file]}"
     if [ -e "$lock_file" ]; then
         local old_pid; old_pid=$(cat "$lock_file" 2>/dev/null)
         if [ -n "$old_pid" ] && ps -p "$old_pid" > /dev/null 2>&1; then
-            log_warning "检测到另一个脚本实例 (PID: $old_pid) 正在运行。"
-            exit 1
+            log_warning "检测到另一个脚本实例 (PID: $old_pid) 正在运行。"; exit 1
         else
             log_warning "检测到陈旧的锁文件 (来自已停止的 PID: ${old_pid:-"N/A"})，将自动清理。"
             sudo_preserve_env rm -f "$lock_file"
@@ -53,9 +48,7 @@ acquire_lock() {
     fi
     echo "$$" | sudo_preserve_env tee "$lock_file" > /dev/null
 }
-release_lock() {
-    sudo_preserve_env rm -f "${CONFIG[lock_file]}"
-}
+release_lock() { sudo_preserve_env rm -f "${CONFIG[lock_file]}"; }
 
 # --- 配置加载 ---
 load_config() {
@@ -90,7 +83,7 @@ save_entry_script() {
     sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; 
     local temp_path="/tmp/install.sh.self"; 
     if ! _download_self "$temp_path"; then 
-        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。请检查网络或 GitHub 连接。"; else sudo_preserve_env cp "$0" "$SCRIPT_PATH"; fi; 
+        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。"; else sudo_preserve_env cp "$0" "$SCRIPT_PATH"; fi; 
     else sudo_preserve_env mv "$temp_path" "$SCRIPT_PATH"; fi; 
     sudo_preserve_env chmod +x "$SCRIPT_PATH"; 
 }
@@ -111,17 +104,46 @@ self_update() {
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
 download_module_to_cache() { 
-    sudo_preserve_env mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local url="${CONFIG[base_url]}/$script_name"; 
+    sudo_preserve_env mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
+    local script_name="$1"; 
+    local force_update="${2:-false}";
+    local local_file="${CONFIG[install_dir]}/$script_name"; 
+    local url="${CONFIG[base_url]}/$script_name"; 
+    if [ "$force_update" = "true" ]; then
+        url="${url}?_=$(date +%s)";
+        log_info "  ↳ 强制刷新: $script_name"
+    fi
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo_preserve_env rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
 _update_all_modules() {
+    local force_update="${1:-false}";
     log_info "正在并行更新所有模块缓存..."
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
-    for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
+    for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name" "$force_update"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
     wait; log_success "所有模块缓存更新完成！"
 }
-update_all_modules_parallel() { _update_all_modules; }
+force_update_all() {
+    log_info "开始强制更新流程 (绕过CDN缓存)..."
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh";
+    log_info "步骤 1: 正在检查主脚本更新..."
+    local temp_script="/tmp/install.sh.force.tmp";
+    local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"
+    if curl -fsSL --connect-timeout 5 --max-time 30 "$force_url" -o "$temp_script"; then
+        if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
+            log_info "检测到主脚本新版本，正在应用并重启...";
+            sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
+            log_success "主脚本更新成功！正在重新启动以加载新版本...";
+            exec sudo_preserve_env bash "$SCRIPT_PATH" "$@" 
+        else
+            log_success "主脚本已是最新版本。"; rm -f "$temp_script";
+        fi
+    else
+        log_warning "无法从 GitHub 获取主脚本，跳过主脚本更新。"
+    fi
+    log_info "步骤 2: 正在强制更新所有子模块...";
+    _update_all_modules "true"
+}
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! download_module_to_cache "$script_name"; then log_error "下载模块失败。"; return 1; fi; fi
@@ -147,11 +169,9 @@ execute_module() {
 # --- 动态菜单核心 ---
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
-    if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then
-        clear 2>/dev/null || true
-    fi
-    local config_path="${CONFIG[install_dir]}/config.json"
-    local header_text="🚀 VPS 一键安装入口 (v8.7)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
+    local config_path="${CONFIG[install_dir]}/config.json";
+    local header_text="🚀 VPS 一键安装入口 (v8.8)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -180,18 +200,15 @@ main() {
     sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在下载默认配置..."
-        if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then
-            echo -e "${RED}[错误]${NC} 下载默认配置文件失败！"; exit 1;
-        fi
+        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在下载默认配置...";
+        if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then echo -e "${RED}[错误]${NC} 下载默认配置文件失败！"; exit 1; fi
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v8.7)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v8.8)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
-    setup_shortcut; 
-    self_update
+    setup_shortcut; self_update
     while true; do 
         display_menu
         local exit_code=0
