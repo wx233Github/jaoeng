@@ -1,10 +1,15 @@
 #!/bin/bash
 # =============================================
-# 🚀 VPS GitHub 一键脚本拉取入口 (最终修正版 v3)
+# 🚀 VPS GitHub 一键脚本拉取入口 (最终修正版 v4)
 # =============================================
 
 # --- 严格模式 ---
 set -euo pipefail # -e: 任何命令失败立即退出, -u: 引用未设置变量时出错, -o pipefail: 管道中任何命令失败都将导致整个管道失败
+
+# --- 终极环境修复 ---
+# 在父脚本的最高层级设置正确的区域环境，确保所有子进程都能继承。
+# 这将从根本上解决所有中文显示和交互（如 read 回车）的问题。
+export LC_ALL=C.utf8
 
 # --- 颜色定义 ---
 RED='\033[0;31m'
@@ -14,22 +19,10 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # --- 辅助函数 ---
-log_info() {
-    echo -e "${BLUE}[信息]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[成功]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[警告]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[错误]${NC} $1" >&2
-    exit 1
-}
+log_info() { echo -e "${BLUE}[信息]${NC} $1"; }
+log_success() { echo -e "${GREEN}[成功]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[警告]${NC} $1"; }
+log_error() { echo -e "${RED}[错误]${NC} $1" >&2; exit 1; }
 
 # --- 临时目录设置与清理 ---
 TEMP_DIR="" # 声明全局变量
@@ -62,137 +55,98 @@ SCRIPTS=(
 # 检查网络连通性
 check_network() {
     log_info "正在检查网络连通性..."
-    if command -v ping >/dev/null 2>&1; then
-        if ! ping -c 1 -W 3 github.com >/dev/null 2>&1; then
-            log_error "网络不通或无法访问 GitHub (ping github.com 失败)。请检查您的网络设置。"
-        fi
-    elif command -v curl >/dev/null 2>&1; then
-        if ! curl -Is --connect-timeout 5 https://github.com >/dev/null 2>&1; then
-            log_error "网络不通或无法访问 GitHub (curl github.com 失败)。请检查您的网络设置。"
-        fi
-    else
-        log_warning "无法找到 ping 或 curl 命令来检查网络，跳过网络连通性检查。"
+    if ! curl -Is --connect-timeout 5 https://raw.githubusercontent.com >/dev/null 2>&1; then
+        log_error "网络不通或无法访问 GitHub (curl raw.githubusercontent.com 失败)。请检查您的网络设置。"
     fi
     log_success "网络连通性正常。"
 }
 
 # 下载脚本
 download() {
-    local file=$1                 # GitHub路径，例如 rm/rm_cert.sh
+    local file=$1                 # GitHub路径
     local url="$BASE_URL/$file"   # 完整URL
-    local save_name=$(basename "$file")  # 本地保存名 rm_cert.sh
+    local save_name=$(basename "$file")  # 本地保存名
     local download_path="${TEMP_DIR}/${save_name}" # 下载到临时目录
 
-    log_info "正在从 ${url} 下载到 ${download_path} ..."
-
-    # 尝试下载，并捕获 stderr
-    local download_output
-    if command -v wget >/dev/null 2>&1; then
-        download_output=$(wget -qO "$download_path" "$url" --show-progress 2>&1)
-    elif command -v curl >/dev/null 2>&1; then
-        download_output=$(curl -sSL -o "$download_path" "$url" --progress-bar 2>&1)
-    else
-        log_error "系统缺少 wget 或 curl"
-    fi
-
-    if [ $? -eq 0 ]; then
+    log_info "正在从 ${url} 下载..."
+    if curl -sSL -o "$download_path" "$url"; then
         chmod +x "$download_path"
-        log_success "已保存为 $download_path 并设置为可执行"
+        log_success "下载成功并设置为可执行: $download_path"
     else
-        log_error "下载 $save_name 失败。错误信息: ${download_output:-'未知错误'}"
+        log_error "下载 $save_name 失败。"
     fi
 }
 
 # 主菜单
 main_menu() {
-    # 创建临时目录
     TEMP_DIR=$(mktemp -d -t vps_script_XXXXXX)
-    if [ -z "$TEMP_DIR" ] || [ ! -d "$TEMP_DIR" ]; then
-        log_error "创建临时目录失败"
-    fi
     log_info "脚本将在临时目录 $TEMP_DIR 中运行"
-
-    # 执行网络检查
     check_network
 
     while true; do
-        # clear # <-- 已移除清屏命令
         echo ""
         echo -e "${BLUE}================================${NC}"
         echo -e "${BLUE}  🚀 VPS GitHub 一键脚本入口   ${NC}"
         echo -e "${BLUE}================================${NC}"
-        echo -e " ${GREEN}0. 退出 ${NC}" # 退出选项也加绿
+        echo -e " ${GREEN}0. 退出 ${NC}"
         i=1
         for entry in "${SCRIPTS[@]}"; do
-            name="${entry%%:*}"   # 显示名
+            name="${entry%%:*}"
             echo -e " ${YELLOW}$i.${NC} $name"
             ((i++))
         done
         echo ""
-        read -p "$(echo -e "${BLUE}请选择要执行的脚本 (0-${#SCRIPTS[@]}) 或直接回车退出:${NC} ")" choice
+        
+        # 使用 printf 来避免 echo 的潜在问题，并确保提示符颜色正确
+        printf "%b" "${BLUE}请选择要执行的脚本 (0-${#SCRIPTS[@]}) 或直接回车退出:${NC} "
+        read -r choice
 
-        # 判断是否为空 (直接回车)
         if [ -z "$choice" ]; then
             log_info "退出脚本"
             exit 0
         fi
 
-        # 验证输入是否为数字
         if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
             log_warning "无效选项：请输入数字"
-            sleep 1 # 短暂暂停，让用户看到警告
+            sleep 1
             continue
         fi
 
-        # 处理选择
         if [ "$choice" -eq 0 ]; then
             log_info "退出脚本"
             exit 0
         elif [ "$choice" -ge 1 ] && [ "$choice" -le "${#SCRIPTS[@]}" ]; then
             entry="${SCRIPTS[$((choice-1))]}"
-            name="${entry%%:*}"   # 显示名
-            file="${entry##*:}"   # GitHub路径
-            script_file=$(basename "$file")   # 本地保存名
-            local_script_path="${TEMP_DIR}/${script_file}" # 脚本在临时目录中的完整路径
+            name="${entry%%:*}"
+            file="${entry##*:}"
+            script_file=$(basename "$file")
+            local_script_path="${TEMP_DIR}/${script_file}"
 
             log_info "您选择了 [$name]"
-            
-            # 直接下载脚本到临时目录
             download "$file"
             
             # --- 执行下载的子脚本 ---
-            # 使用 if/else 结构来明确处理成功(0)和失败(非0)两种情况。
-            # 这是捕获和处理退出码最稳健的方式，可以完美配合 set -e。
-            local child_script_exit_code
-            if ( cd "$TEMP_DIR" && IS_NESTED_CALL=true bash ./"$script_file" ); then
-                # 子脚本返回 0 (成功)
-                child_script_exit_code=0
-            else
-                # 子脚本返回非 0 (包括 10 或其他错误)
+            # 修改了调用方式，避免 subshell 导致的 read 问题
+            local child_script_exit_code=0
+            if ! bash -c "cd '$TEMP_DIR' && IS_NESTED_CALL=true bash './$script_file'"; then
                 child_script_exit_code=$?
             fi
 
             # --- 处理子脚本的退出状态 ---
             if [ "$child_script_exit_code" -eq 10 ]; then
-                # 子脚本以特定退出码 10 退出，表示用户选择从子菜单返回父菜单。
                 log_info "脚本 [$name] 已返回主菜单。"
-                # 父脚本此时不打印任何成功消息或“按回车”提示。
-                # 只是让主菜单循环继续，显示下一个菜单
             elif [ "$child_script_exit_code" -eq 0 ]; then
-                # 子脚本正常完成了一个任务，并以 0 退出。
                 log_success "脚本 [$name] 执行完毕。"
-                read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
+                read -r -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
             else
-                # 子脚本因错误退出 (非 0 且非 10 的退出码)。
                 log_warning "脚本 [$name] 执行失败 (退出码: $child_script_exit_code)，请检查输出。"
-                read -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
+                read -r -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
             fi
-
         else
             log_warning "无效选项，请重新输入 (0-${#SCRIPTS[@]})"
-            sleep 1 # 短暂暂停
+            sleep 1
         fi
-        echo ""  # 换行美化
+        echo ""
     done
 }
 
