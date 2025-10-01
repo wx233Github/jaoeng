@@ -3,17 +3,30 @@
   "install_dir": "/opt/vps_install_modules",
   "bin_dir": "/usr/local/bin",
   "log_file": "/var/log/jb_launcher.log",
+  "comment_info": "这是 jb 启动器框架的配置文件 (v8.1)",
+
   "dependencies": {
+    "comment": "脚本运行所需的核心依赖列表",
     "common": ["curl", "cmp", "ln", "dirname", "flock", "jq"]
   },
+
   "module_configs": {
+    "comment": "各子模块的专属配置区域",
     "watchtower": {
       "comment": "Watchtower 模块的专属配置",
       "default_interval": "86400",
-      "default_cron_hour": "3"
+      "default_cron_hour": "3",
+      "exclude_containers": [
+        "comment: 在自动更新时, 永远要排除的容器名列表 (例如数据库)",
+        "mysql",
+        "postgres-db",
+        "redis"
+      ]
     }
   },
+
   "menus": {
+    "comment": "动态菜单系统定义",
     "MAIN_MENU": [
       { "type": "item", "name": "Docker", "action": "docker.sh" },
       { "type": "item", "name": "Nginx", "action": "nginx.sh" },
