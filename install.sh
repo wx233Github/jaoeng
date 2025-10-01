@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.4 - sudo 修复与健壮解析版)
+# 🚀 VPS 一键安装入口脚本 (v8.5 - 健壮 PID 锁机制版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -16,7 +16,8 @@ CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
 CONFIG[bin_dir]="/usr/local/bin"
 CONFIG[log_file]="/var/log/jb_launcher.log"
-CONFIG[dependencies]='curl cmp ln dirname flock jq'
+CONFIG[dependencies]='curl cmp ln dirname flock jq' # flock 依赖保留，以防用户回退版本
+CONFIG[lock_file]="/tmp/vps_install_modules.lock" # 默认锁文件路径
 
 # --- 辅助函数 & 日志系统 ---
 setup_logging() {
@@ -32,14 +33,41 @@ log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
 log_warning() { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $1"; }
 log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
+# --- 【新】健壮的并发锁机制 (PID 文件锁) ---
+acquire_lock() {
+    local lock_file="${CONFIG[lock_file]}"
+    # 1. 检查锁文件是否存在
+    if [ -e "$lock_file" ]; then
+        # 2. 读取旧的 PID
+        local old_pid
+        old_pid=$(cat "$lock_file" 2>/dev/null)
+        # 3. 检查旧 PID 进程是否还存活
+        if [ -n "$old_pid" ] && ps -p "$old_pid" > /dev/null 2>&1; then
+            log_warning "检测到另一个脚本实例 (PID: $old_pid) 正在运行。如果这不是预期的，请手动执行 'sudo pkill -f install.sh' 并删除 '$lock_file'。"
+            exit 1
+        else
+            # 4. 发现僵尸锁，自动清理
+            log_warning "检测到陈旧的锁文件 (来自已停止的 PID: ${old_pid:-"N/A"})，将自动清理。"
+            sudo rm -f "$lock_file"
+        fi
+    fi
+    # 5. 获取锁：将当前进程的 PID 写入锁文件
+    echo "$$" | sudo tee "$lock_file" > /dev/null
+}
+
+release_lock() {
+    sudo rm -f "${CONFIG[lock_file]}"
+}
+
 # --- 配置加载 ---
 load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
+        # 允许配置文件覆盖默认锁文件路径
+        CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
     fi
-    CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
 }
 
 # --- 智能依赖处理 ---
@@ -59,34 +87,87 @@ check_and_install_dependencies() {
     fi
 }
 
-# --- 核心功能 (并发锁、下载、执行等) ---
-with_lock() { ( flock -n 200 || { log_warning "其他更新任务正在运行，请稍后重试。"; exit 1; }; "$@"; ) 200>"${CONFIG[lock_file]}"; }
+# --- 核心功能 (下载、执行等) ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
-save_entry_script() { sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; local temp_path="/tmp/install.sh.self"; if ! with_lock _download_self "$temp_path"; then if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。"; else sudo cp "$0" "$SCRIPT_PATH"; fi; else sudo mv "$temp_path" "$SCRIPT_PATH"; fi; sudo chmod +x "$SCRIPT_PATH"; }
-# --- 【核心修复点】 ---
+save_entry_script() { 
+    sudo mkdir -p "${CONFIG[install_dir]}"; 
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    log_info "正在检查并保存入口脚本..."; 
+    local temp_path="/tmp/install.sh.self"; 
+    if ! _download_self "$temp_path"; then 
+        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then 
+            log_error "无法自动保存入口脚本。请检查网络或 GitHub 连接。"; 
+        else 
+            sudo cp "$0" "$SCRIPT_PATH"; 
+        fi; 
+    else 
+        sudo mv "$temp_path" "$SCRIPT_PATH"; 
+    fi; 
+    sudo chmod +x "$SCRIPT_PATH"; 
+}
 setup_shortcut() { 
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
     local BIN_DIR="${CONFIG[bin_dir]}"; 
-    # 使用 sudo 创建软链接
     if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then 
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; 
         log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
-self_update() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "正在检查入口脚本更新..."; local temp_script="/tmp/install.sh.tmp"; if with_lock _download_self "$temp_script"; then if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then log_info "检测到新版本，正在自动更新..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; log_success "脚本已更新！正在重新启动..."; exec sudo bash "$SCRIPT_PATH" "$@"; fi; rm -f "$temp_script"; else log_warning "无法连接 GitHub 检查更新。"; fi; }
-download_module_to_cache() { sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local url="${CONFIG[base_url]}/$script_name"; local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; }
+self_update() { 
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
+    log_info "正在检查入口脚本更新..."; 
+    local temp_script="/tmp/install.sh.tmp"; 
+    if _download_self "$temp_script"; then 
+        if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
+            log_info "检测到新版本，正在自动更新..."; 
+            sudo mv "$temp_script" "$SCRIPT_PATH"; 
+            sudo chmod +x "$SCRIPT_PATH"; 
+            log_success "脚本已更新！正在重新启动..."; 
+            exec sudo bash "$SCRIPT_PATH" "$@"; 
+        fi; 
+        rm -f "$temp_script"; 
+    else 
+        log_warning "无法连接 GitHub 检查更新。"; 
+    fi; 
+}
+download_module_to_cache() { 
+    sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
+    local script_name="$1"; 
+    local local_file="${CONFIG[install_dir]}/$script_name"; 
+    local url="${CONFIG[base_url]}/$script_name"; 
+    local http_code; 
+    http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
+    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then 
+        return 0; 
+    else 
+        sudo rm -f "$local_file"; 
+        log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; 
+        return 1; 
+    fi; 
+}
 _update_all_modules() {
     log_info "正在并行更新所有模块缓存..."
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
     for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
     wait; log_success "所有模块缓存更新完成！"
 }
-update_all_modules_parallel() { with_lock _update_all_modules; }
+update_all_modules_parallel() { 
+    _update_all_modules; # 直接调用，整个脚本已加锁
+}
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"
     local config_path="${CONFIG[install_dir]}/config.json"
-    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! with_lock download_module_to_cache "$script_name"; then log_error "下载模块失败。"; return 1; fi; fi
-    sudo chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
+    log_info "您选择了 [$display_name]"; 
+    if [ ! -f "$local_path" ]; then 
+        log_info "本地未找到模块，正在下载..."; 
+        if ! download_module_to_cache "$script_name"; then 
+            log_error "下载模块失败。"; 
+            return 1; 
+        fi; 
+    fi
+    sudo chmod +x "$local_path"; 
+    local env_vars=("IS_NESTED_CALL=true")
     
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
@@ -112,7 +193,7 @@ execute_module() {
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     local config_path="${CONFIG[install_dir]}/config.json"
-    local header_text="🚀 VPS 一键安装入口 (v8.4)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v8.5)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -136,6 +217,13 @@ process_menu_selection() {
 
 # ====================== 主程序入口 ======================
 main() {
+    # 在所有操作之前获取锁
+    acquire_lock
+    # 设置陷阱(trap)，确保脚本在任何情况下退出时都释放锁
+    # EXIT: 正常退出 HUP/INT/QUIT/TERM: 各种中断信号
+    trap 'release_lock; log_info "脚本已退出，锁已释放。"' EXIT HUP INT QUIT TERM
+
+    # --- 后续流程 ---
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
@@ -146,14 +234,23 @@ main() {
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v8.4)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v8.5)"; check_and_install_dependencies
+
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
-    if [ ! -f "$SCRIPT_PATH" ]; then with_lock save_entry_script; fi
-    with_lock setup_shortcut; self_update
-    while true; do clear 2>/dev/null || true; display_menu; local exit_code=0
+    # 直接调用函数，不再需要 with_lock
+    if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
+    setup_shortcut; 
+    self_update
+
+    while true; do 
+        clear 2>/dev/null || true
+        display_menu
+        local exit_code=0
         process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ]; then
-            while read -r -t 0; do :; done; read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
+            # 清空输入缓冲区并等待用户按键
+            while read -r -t 0; do :; done
+            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
         fi
     done
 }
