@@ -33,7 +33,7 @@
       { "type": "item", "name": "Nginx", "action": "nginx.sh" },
       { "type": "submenu", "name": "常用工具", "action": "TOOLS_MENU" },
       { "type": "item", "name": "证书申请", "action": "cert.sh" },
-      { "type": "func", "name": "更新所有模块缓存", "action": "update_all_modules_parallel" }
+      { "type": "func", "name": "强制更新 (主程序+所有模块)", "action": "force_update_all" }
     ],
     "TOOLS_MENU": [
       { "type": "item", "name": "Watchtower (Docker 更新)", "action": "tools/Watchtower.sh" },
