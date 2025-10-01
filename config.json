@@ -1,0 +1,31 @@
+{
+  "base_url": "https://raw.githubusercontent.com/wx233Github/jaoeng/main",
+  "install_dir": "/opt/vps_install_modules",
+  "bin_dir": "/usr/local/bin",
+  "log_file": "/var/log/jb_launcher.log",
+  "dependencies": {
+    "common": ["curl", "cmp", "ln", "dirname", "flock", "jq"]
+  },
+  "module_configs": {
+    "watchtower": {
+      "comment": "Watchtower 模块的专属配置",
+      "default_interval": "86400",
+      "default_cron_hour": "3"
+    }
+  },
+  "menus": {
+    "MAIN_MENU": [
+      { "type": "item", "name": "Docker", "action": "docker.sh" },
+      { "type": "item", "name": "Nginx", "action": "nginx.sh" },
+      { "type": "submenu", "name": "常用工具", "action": "TOOLS_MENU" },
+      { "type": "item", "name": "证书申请", "action": "cert.sh" },
+      { "type": "func", "name": "更新所有模块缓存", "action": "update_all_modules_parallel" }
+    ],
+    "TOOLS_MENU": [
+      { "type": "item", "name": "Watchtower (Docker 更新)", "action": "tools/Watchtower.sh" },
+      { "type": "item", "name": "BBR/系统网络优化", "action": "tcp.sh" },
+      { "type": "item", "name": "系统信息查看", "action": "sysinfo.sh" },
+      { "type": "back", "name": "返回主菜单", "action": "MAIN_MENU" }
+    ]
+  }
+}
