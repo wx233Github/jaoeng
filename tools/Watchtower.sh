@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.20.5 - 环境自净最终版)
+# Docker 自动更新助手 (v2.20.6 - 默认关闭清屏版)
 #
 set -euo pipefail
 
 # 【终极修复】不信任上游环境，强制自我设定为 UTF-8
 export LC_ALL=C.utf8
 
-VERSION="2.20.5-self-healing-env"
+VERSION="2.20.6-clear-off-by-default"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -67,7 +67,6 @@ WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"
 CRON_HOUR="${CRON_HOUR:-4}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
-
 log_info(){ printf "%b[信息] %s%b\n" "$COLOR_BLUE" "$*" "$COLOR_RESET"; }
 log_warn(){ printf "%b[警告] %s%b\n" "$COLOR_YELLOW" "$*" "$COLOR_RESET"; }
 log_err(){ printf "%b[错误] %s%b\n" "$COLOR_RED" "$*" "$COLOR_RESET"; }
@@ -122,7 +121,7 @@ select_labels_interactive() {
     local available_labels_str="${WT_AVAILABLE_LABELS:-}"; if [ -z "$available_labels_str" ]; then read -r -p "未扫描到可用标签。请输入要筛选的标签 (留空则不筛选): " WATCHTOWER_LABELS; return; fi
     IFS=',' read -r -a available_labels <<< "$available_labels_str"; local selected_labels=(); if [ -n "$WATCHTOWER_LABELS" ]; then IFS=',' read -r -a selected_labels <<< "$WATCHTOWER_LABELS"; fi
     while true; do
-        if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+        if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
         echo -e "${COLOR_YELLOW}请选择要启用自动更新的标签 (按数字键切换选择状态):${COLOR_RESET}"
         for i in "${!available_labels[@]}"; do
             local label="${available_labels[$i]}"; local is_selected=" "; for sel_label in "${selected_labels[@]}"; do if [[ "$sel_label" == "$label" ]]; then is_selected="✔"; break; fi; done
@@ -143,7 +142,7 @@ select_labels_interactive() {
 
 show_container_info() {
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
     echo -e "${COLOR_YELLOW}📋 交互式容器管理 📋${COLOR_RESET}"; echo "--------------------------------------------------------------------------------------------------------------------------------"
     printf "%-5s %-25s %-45s %-20s\n" "编号" "容器名称" "镜像" "状态"; echo "--------------------------------------------------------------------------------------------------------------------------------"
     local containers=(); local i=1
@@ -158,7 +157,7 @@ show_container_info() {
       q|Q|"") return ;;
       *) if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi
         if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超出范围。${COLOR_RESET}"; sleep 1; continue; fi
-        local selected_container="${containers[$((choice-1))]}"; if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+        local selected_container="${containers[$((choice-1))]}"; if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
         echo -e "${COLOR_CYAN}正在操作容器: ${selected_container}${COLOR_RESET}"; echo "----------------------------------------"
         echo "1) 查看实时日志 (tail -f)"; echo "2) 重启容器"; echo "3) 停止容器"; echo "4) 强制删除容器"; echo "q) 返回列表"
         read -r -p "请为 '${selected_container}' 选择操作: " action
@@ -241,11 +240,7 @@ configure_cron_task(){
   done
   CRON_HOUR="$CRON_HOUR_TEMP"; DOCKER_COMPOSE_PROJECT_DIR_CRON="$DIR_TEMP"; CRON_TASK_ENABLED="true"; save_config
   local SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"; local LOG="/var/log/docker-auto-update-cron.log"
-  echo '#!/bin/bash' > "$SCRIPT"; echo "export TZ=Asia/Shanghai" >> "$SCRIPT"
-  echo "echo \"\$(date '+%Y-%m-%d %H:%M:%S') - 开始更新...\" >> \"$LOG\" 2>&1" >> "$SCRIPT"
-  echo "cd \"$DOCKER_COMPOSE_PROJECT_DIR_CRON\" >> \"$LOG\" 2>&1 || exit 1" >> "$SCRIPT"
-  echo "docker compose pull >> \"$LOG\" 2>&1 && docker compose up -d --remove-orphans >> \"$LOG\" 2>&1 && docker image prune -f >> \"$LOG\" 2>&1" >> "$SCRIPT"
-  chmod +x "$SCRIPT"; (crontab -l 2>/dev/null | grep -v "$SCRIPT" || true; echo "0 $CRON_HOUR * * * $SCRIPT") | crontab -
+  echo '#!/bin/bash' > "$SCRIPT"; echo "export TZ=Asia/Shanghai" >> "$SCRIPT"; echo "echo \"\$(date '+%Y-%m-%d %H:%M:%S') - 开始更新...\" >> \"$LOG\" 2>&1" >> "$SCRIPT"; echo "cd \"$DOCKER_COMPOSE_PROJECT_DIR_CRON\" >> \"$LOG\" 2>&1 || exit 1" >> "$SCRIPT"; echo "docker compose pull >> \"$LOG\" 2>&1 && docker compose up -d --remove-orphans >> \"$LOG\" 2>&1 && docker image prune -f >> \"$LOG\" 2>&1" >> "$SCRIPT"; chmod +x "$SCRIPT"; (crontab -l 2>/dev/null | grep -v "$SCRIPT" || true; echo "0 $CRON_HOUR * * * $SCRIPT") | crontab -
   send_notify "✅ Cron 设置完成，每天 $CRON_HOUR 点更新。"; echo -e "${COLOR_GREEN}🎉 Cron 设置成功！${COLOR_RESET}"; echo "日志: $LOG"
 }
 
@@ -255,13 +250,12 @@ configure_systemd_timer() {
     local SERVICE="/etc/systemd/system/docker-compose-update.service"; local TIMER="/etc/systemd/system/docker-compose-update.timer"
     log_info "创建 service 文件..."; echo -e "[Unit]\nDescription=Daily Docker Compose Update for $DIR_TEMP\nAfter=network.target docker.service\nRequires=docker.service\n[Service]\nType=oneshot\nExecStart=/bin/sh -c 'cd \"$DIR_TEMP\" && docker compose pull && docker compose up -d --remove-orphans && docker image prune -f'" > "$SERVICE"
     log_info "创建 timer 文件..."; local h=${WT_CONF_DEFAULT_CRON_HOUR:-3}; echo -e "[Unit]\nDescription=Run docker-compose-update daily\n[Timer]\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=1h\nOnCalendar=*-*-* ${h}:00:00\n[Install]\nWantedBy=timers.target" > "$TIMER"
-    log_info "重载 systemd, 启用并启动 timer..."; systemctl daemon-reload; systemctl enable --now docker-compose-update.timer; log_success "Systemd Timer 设置成功！"
-    echo -e "任务将于每天 ${h} 点左右执行。\n状态: ${COLOR_CYAN}systemctl status docker-compose-update.timer${COLOR_RESET}\n日志: ${COLOR_CYAN}journalctl -u docker-compose-update.service${COLOR_RESET}"
+    log_info "重载 systemd..."; systemctl daemon-reload; systemctl enable --now docker-compose-update.timer; log_success "Systemd Timer 设置成功！"; echo -e "任务将于每天 ${h} 点左右执行。\n状态: ${COLOR_CYAN}systemctl status docker-compose-update.timer${COLOR_RESET}\n日志: ${COLOR_CYAN}journalctl -u docker-compose-update.service${COLOR_RESET}"
 }
 
 manage_tasks(){
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
     echo -e "${COLOR_YELLOW}⚙️ 任务管理 ⚙️${COLOR_RESET}"; echo "1) 停止/移除 Watchtower"; echo "2) 移除 Cron 任务"; echo "3) 移除 Systemd Timer"; echo "4) 重启 Watchtower"; echo "q) 返回"
     read -r -p "请选择: " choice
     case "$choice" in
@@ -326,7 +320,7 @@ _format_and_highlight_log_line(){
 
 show_watchtower_details(){
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
     echo "=== Watchtower 运行详情与更新记录 ==="; local interval; interval=$(get_watchtower_inspect_summary 2>/dev/null || true)
     echo "----------------------------------------"; local last_time; last_time=$(get_last_session_time)
     if [ -n "$last_time" ]; then echo "上次活动: $last_time"; else echo "上次活动: 未检测到"; fi
@@ -359,7 +353,7 @@ run_watchtower_once(){
 
 view_and_edit_config(){
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
     load_config; echo -e "${COLOR_YELLOW}⚙️ 脚本配置查看与编辑 ⚙️${COLOR_RESET}"; echo "-------------------------------------------------------------------------------------------------------------------"
     echo " 1) Telegram Bot Token: ${TG_BOT_TOKEN:-未设置}"; echo " 2) Telegram Chat ID:   ${TG_CHAT_ID:-未设置}"; echo " 3) Email 接收地址:     ${EMAIL_TO:-未设置}"; echo " 4) Watchtower 标签筛选: ${WATCHTOWER_LABELS:-无}"; echo " 5) Watchtower 额外参数: ${WATCHTOWER_EXTRA_ARGS:-无}"; echo " 6) Watchtower 调试模式: $([ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && echo "是" || echo "否")"; echo " 7) Watchtower 配置间隔: ${WATCHTOWER_CONFIG_INTERVAL:-未设置} 秒"; echo " 8) Watchtower 启用状态: $([ "$WATCHTOWER_ENABLED" = "true" ] && echo "是" || echo "否")"; echo " 9) Cron 更新小时:      ${CRON_HOUR:-未设置}"; echo "10) Cron 项目目录: ${DOCKER_COMPOSE_PROJECT_DIR_CRON:-未设置}"; echo "11) Cron 启用状态: $([ "$CRON_TASK_ENABLED" = "true" ] && echo "是" || echo "否")"; echo "-------------------------------------------------------------------------------------------------------------------"
     read -r -p "请输入要编辑的编号，或按 Enter 返回: " choice
@@ -374,7 +368,7 @@ view_and_edit_config(){
 
 update_menu(){
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi
     echo -e "${COLOR_YELLOW}请选择更新模式：${COLOR_RESET}"; echo "1) 🚀 Watchtower 模式 (推荐)"; echo "2) ⚙️ Systemd Timer 模式"; echo "3) 🕑 Cron 定时任务 模式"; echo "q) 返回"
     read -r -p "选择 [1-3] 或 q 返回: " c
     case "$c" in
@@ -385,7 +379,7 @@ update_menu(){
 
 main_menu(){
   while true; do
-    if [[ "${JB_ENABLE_AUTO_CLEAR}" != "false" ]]; then clear; fi
+    if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; 键，然后 clear; fi
     load_config
     echo "==================== Docker 自动更新与管理助手 v${VERSION} ===================="
     local STATUS_COLOR STATUS_RAW COUNTDOWN TOTAL RUNNING STOPPED
@@ -400,11 +394,11 @@ main_menu(){
     printf "容器概览: 总数 %s (%b运行中%s, %b已停止%s)\n" "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RED}" "${STOPPED}"
     local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi
     if [[ -n "$EMAIL_TO" ]]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi
-    if [ -n "$NOTIFY_STATUS" ]; then printf "🔔 通知已启用: %b%s%b\n" "${COLOR_GREEN}" "${NOTIFY_STATUS}" "${COLOR_RESET}"; fi
+    if [ -n "$NOTIFY_STATUS" ]; 键，然后 printf "🔔 通知已启用: %b%s%b\n" "${COLOR_GREEN}" "${NOTIFY_STATUS}" "${COLOR_RESET}"; fi
     echo; echo "主菜单选项："
     echo "1) 🔄 设置更新模式"; echo "2) 📋 交互式容器管理"; echo "3) 🔔 配置通知"; echo "4) ⚙️ 任务管理"; echo "5) 📝 查看/编辑配置"; echo "6) ⚡ 手动运行一次更新"; echo "7) 🔍 查看 Watchtower 详情"; echo
     read -r -p "请输入选项 [1-7] 或按 Enter 返回: " choice
-    case "$choice" in
+    case "$choice" 在
       1) update_menu; press_enter_to_continue ;; 2) show_container_info ;; 3) configure_notify; press_enter_to_continue ;;
       4) manage_tasks ;; 5) view_and_edit_config ;; 6) run_watchtower_once; press_enter_to_continue ;;
       7) show_watchtower_details ;; "") exit 10 ;; *) echo -e "${COLOR_RED}无效选项。${COLOR_RESET}"; sleep 1 ;;
