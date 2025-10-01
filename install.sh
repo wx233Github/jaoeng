@@ -1,251 +1,155 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.8 - 终极交互修复版)
+# 🚀 VPS 一键安装入口脚本 (v8.0 - 动态菜单框架版)
+# 特性:
+# - 动态菜单: 菜单系统完全由 config.json 定义，脚本动态渲染。
+# - 外部配置, 智能依赖, 持久化日志, 并发安全, 动态UI。
 # =============================================================
 
-# --- 严格模式 ---
+# --- 严格模式与环境设定 ---
 set -eo pipefail
-
-# --- 终极环境修复 ---
-# 在父脚本的最高层级设置正确的区域环境，确保所有子进程都能继承。
-# 这将从根本上解决所有中文显示和交互（如 read 回车）的问题。
 export LC_ALL=C.utf8
 
 # --- 颜色定义 ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# --- 辅助函数 ---
-log_info() { echo -e "${BLUE}[信息]${NC} $1"; }
-log_success() { echo -e "${GREEN}[成功]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[警告]${NC} $1"; }
-log_error() {
-    echo -e "${RED}[错误]${NC} $1" >&2
-    exit 1
+# --- 默认配置 (当config.json加载失败时的后备) ---
+declare -A CONFIG
+CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+CONFIG[install_dir]="/opt/vps_install_modules"
+CONFIG[bin_dir]="/usr/local/bin"
+CONFIG[log_file]="/var/log/jb_launcher.log"
+CONFIG[dependencies]='curl cmp ln dirname flock jq'
+
+# --- 辅助函数 & 日志系统 ---
+setup_logging() {
+    mkdir -p "$(dirname "${CONFIG[log_file]}")"
+    touch "${CONFIG[log_file]}" || { echo "无法创建日志文件 ${CONFIG[log_file]}，请检查权限。"; exit 1; }
+    exec > >(tee -a "${CONFIG[log_file]}") 2> >(tee -a "${CONFIG[log_file]}" >&2)
+}
+log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+log_info() { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $1"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
+log_warning() { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $1"; }
+log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
+
+# --- 配置加载 ---
+load_config() {
+    CONFIG_FILE="$(dirname "${BASH_SOURCE[0]}")/config.json"
+    if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
+        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies"))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
+        CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
+    fi
+    CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
 }
 
-# --- 核心配置 ---
-BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-INSTALL_DIR="/opt/vps_install_modules"
-SCRIPT_PATH="$INSTALL_DIR/install.sh"
-BIN_DIR="/usr/local/bin"
-
-# ====================== 菜单定义 ======================
-MAIN_MENU=(
-    "item:Docker:docker.sh"
-    "item:Nginx:nginx.sh"
-    "submenu:常用工具:TOOLS_MENU"
-    "item:证书申请:cert.sh"
-    "item:tools:tools.sh"
-    "func:更新所有模块缓存:update_all_modules_parallel"
-)
-
-TOOLS_MENU=(
-    "item:Watchtower (Docker 更新):tools/Watchtower.sh"
-    "item:BBR/系统网络优化:tcp.sh"
-    "item:系统信息查看:sysinfo.sh"
-    "back:返回主菜单:main_menu"
-)
-
-# ====================== 检查与初始化 ======================
-check_dependencies() {
-    local missing_deps=()
-    local deps=("curl" "cmp" "ln" "dirname")
-    for cmd in "${deps[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing_deps+=("$cmd")
-        fi
-    done
-
+# --- 智能依赖处理 ---
+detect_package_manager() { if command -v apt-get &>/dev/null; then echo "apt"; elif command -v dnf &>/dev/null; then echo "dnf"; elif command -v yum &>/dev/null; then echo "yum"; else echo "unknown"; fi; }
+check_and_install_dependencies() {
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done
     if [ ${#missing_deps[@]} -gt 0 ]; then
-        log_error "缺少必要的命令: ${missing_deps[*]}. 请先安装它们。"
-    fi
-}
-
-if [ "$(id -u)" -ne 0 ]; then log_error "请使用 root 用户运行此脚本"; fi
-mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-
-# ====================== 入口脚本自我管理 ======================
-save_entry_script() {
-    log_info "正在检查并保存入口脚本到 $SCRIPT_PATH..."
-    if ! curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$SCRIPT_PATH"; then
-        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then
-            log_error "无法自动保存入口脚本。请检查网络或直接下载脚本到本地运行。"
+        log_warning "系统缺少以下核心依赖: ${missing_deps[*]}"; local pm; pm=$(detect_package_manager)
+        if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装依赖: ${missing_deps[*]}"; fi
+        read -p "$(echo -e "${YELLOW}是否尝试自动为您安装? (y/N): ${NC}")" choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            log_info "正在使用 $pm 安装依赖..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi
+            # shellcheck disable=SC2086
+            if ! $update_cmd && sudo $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败, 请检查系统或手动安装。"; fi
+            log_success "依赖安装完成！"
         else
-           cp "$0" "$SCRIPT_PATH"
+            log_error "用户取消安装。请在手动安装依赖后重试。"
         fi
     fi
-    chmod +x "$SCRIPT_PATH"
 }
 
-setup_shortcut() {
-    if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then
-        ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"
-        log_success "快捷指令 'jb' 已创建。未来可直接输入 'jb' 运行。"
-    fi
-}
-
-self_update() {
-    if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then return; fi
-    log_info "正在检查入口脚本更新..."
-    local temp_script="/tmp/install.sh.tmp"
-    if curl -fsSL --connect-timeout 5 --max-time 30 "$BASE_URL/install.sh" -o "$temp_script"; then
-        if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-            log_info "检测到新版本，正在自动更新..."
-            mv "$temp_script" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH"
-            log_success "脚本已更新！正在重新启动..."
-            exec bash "$SCRIPT_PATH" "$@"
-        fi
-        rm -f "$temp_script"
-    else
-        log_warning "无法连接 GitHub 检查更新，将使用当前版本。"
-        rm -f "$temp_script"
-    fi
-}
-
-# ====================== 模块管理与执行 ======================
-download_module_to_cache() {
-    local script_name="$1"
-    local local_file="$INSTALL_DIR/$script_name"
-    local url="$BASE_URL/$script_name"
-    
-    mkdir -p "$(dirname "$local_file")"
-
-    if curl -fsSL --connect-timeout 5 --max-time 60 "$url" -o "$local_file"; then
-        if [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; return 1; fi
-    else
-        return 1
-    fi
-}
-
-precache_modules_background() {
-    log_info "正在后台静默预缓存所有模块..."
-    (
-        for menu_array_name in "MAIN_MENU" "TOOLS_MENU"; do
-            declare -n menu_ref="$menu_array_name"
-            for entry in "${menu_ref[@]}"; do
-                type="${entry%%:*}"
-                if [ "$type" == "item" ]; then
-                    script_name=$(echo "$entry" | cut -d: -f3); download_module_to_cache "$script_name" &
-                fi
-            done
-        done
-        wait
-    ) &
-}
-
-update_all_modules_parallel() {
+# --- 核心功能 (并发锁、下载、执行等) ---
+with_lock() { ( flock -n 200 || { log_warning "其他任务正在运行，请稍后重试。"; exit 1; }; "$@"; ) 200>"${CONFIG[lock_file]}"; }
+_download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
+save_entry_script() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; local temp_path="/tmp/install.sh.self"; if ! with_lock _download_self "$temp_path"; then if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。"; else cp "$0" "$SCRIPT_PATH"; fi; else mv "$temp_path" "$SCRIPT_PATH"; fi; chmod +x "$SCRIPT_PATH"; }
+setup_shortcut() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; fi; }
+self_update() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "正在检查入口脚本更新..."; local temp_script="/tmp/install.sh.tmp"; if with_lock _download_self "$temp_script"; then if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then log_info "检测到新版本，自动更新..."; mv "$temp_script" "$SCRIPT_PATH"; chmod +x "$SCRIPT_PATH"; log_success "脚本已更新！正在重新启动..."; exec bash "$SCRIPT_PATH" "$@"; fi; rm -f "$temp_script"; else log_warning "无法连接 GitHub 检查更新。"; fi; }
+download_module_to_cache() { local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local url="${CONFIG[base_url]}/$script_name"; mkdir -p "$(dirname "$local_file")"; local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; }
+_update_all_modules() {
     log_info "正在并行更新所有模块缓存..."
-    local pids=()
-    for menu_array_name in "MAIN_MENU" "TOOLS_MENU"; do
-        declare -n menu_ref="$menu_array_name"
-        for entry in "${menu_ref[@]}"; do
-            type="${entry%%:*}"
-            if [ "$type" == "item" ]; then
-                script_name=$(echo "$entry" | cut -d: -f3); download_module_to_cache "$script_name" & pids+=($!)
-            fi
-        done
+    # 智能扫描config.json中所有菜单里type为"item"的模块
+    local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "$CONFIG_FILE")
+    for script_name in $scripts_to_update; do
+        ( if download_module_to_cache "$script_name"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) &
     done
-    for pid in "${pids[@]}"; do wait "$pid"; done
+    wait
     log_success "所有模块缓存更新完成！"
-    read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
 }
-
-# 【核心修复】
+update_all_modules_parallel() { with_lock _update_all_modules; }
 execute_module() {
-    local script_name="$1"
-    local display_name="$2"
-    local local_path="$INSTALL_DIR/$script_name"
-    log_info "您选择了 [$display_name]"
-    if [ ! -f "$local_path" ]; then
-        log_info "本地未找到模块 [$script_name]，正在下载..."
-        if ! download_module_to_cache "$script_name"; then
-            log_error "下载或保存模块 $script_name 失败。请检查网络、权限或磁盘空间。"
-            read -p "$(echo -e "${YELLOW}按回车键返回...${NC}")"
-            return
-        fi
+    local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"
+    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! with_lock download_module_to_cache "$script_name"; then log_error "下载模块失败，无法执行。"; return 1; fi; fi
+    chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
+    # 动态读取模块配置并传递
+    local module_key; module_key=$(basename "$script_name" .sh)
+    local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$CONFIG_FILE")
+    if [[ "$has_config" == "true" ]]; then
+        while IFS='=' read -r key value; do
+            env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value")
+        done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | "\(.key)=\(.value)"' "$CONFIG_FILE")
     fi
-    chmod +x "$local_path"
-    
-    local exit_code=0
-    # 直接执行脚本，不再使用 (...) 将其包裹。
-    # 这可以保持输入流的连续性，彻底解决 read 命令需要按两次回车的问题。
-    IS_NESTED_CALL=true bash "$local_path" || exit_code=$?
-    
-    if [ "$exit_code" -eq 0 ]; then
-        log_success "模块 [$display_name] 执行完毕。"
-        read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
-    elif [ "$exit_code" -eq 10 ]; then
-        # 子脚本返回10，代表用户选择返回，此时父脚本不应有任何提示或暂停
-        log_info "已从 [$display_name] 返回。"
-    else
-        log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"
-        read -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
-    fi
+    local exit_code=0; env "${env_vars[@]}" bash "$local_path" || exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"; fi
+    return $exit_code
 }
 
-# ====================== 通用菜单显示函数 ======================
+# --- 动态菜单核心 ---
+CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
-    local menu_name=$1
-    declare -n menu_items=$menu_name
+    local header_text="🚀 VPS 一键安装入口 (v8.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_FILE")
+    local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
+    
+    local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
+    while IFS= read -r name; do local line_width=$(( ${#name} + 4 )); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi; done <<< "$names"
+    local border; border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '=')
+    
+    echo ""; echo -e "${BLUE}${border}${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}${border}${NC}";
+    for i in $(seq 0 $((menu_len - 1))); do
+        local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name")
+        echo -e " ${YELLOW}$((i+1)).${NC} $name"
+    done; echo ""
+    
+    local prompt_text; if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
+    read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice
+}
+process_menu_selection() {
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_FILE")
+    local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
 
-    local header_text="🚀 VPS 一键安装入口 (v5.8)"
-    if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
-
-    echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
-
-    local i=1
-    for item in "${menu_items[@]}"; do
-        local display_text=$(echo "$item" | cut -d: -f2); echo -e " ${YELLOW}$i.${NC} $display_text"; ((i++))
-    done
-    echo ""
-
-    if [ "$menu_name" == "MAIN_MENU" ]; then
-        read -p "$(echo -e "${BLUE}请选择操作 (1-${#menu_items[@]}) 或按 Enter 退出:${NC} ")" choice
-    else
-        read -p "$(echo -e "${BLUE}请选择操作 (1-${#menu_items[@]}) 或按 Enter 返回:${NC} ")" choice
-    fi
-
-    if [ -z "$choice" ]; then
-        if [ "$menu_name" == "MAIN_MENU" ]; then
-            log_info "已退出脚本。"
-            exit 0
-        else
-            return 1
-        fi
-    fi
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#menu_items[@]}" ]; then
-        log_warning "无效选项，请重新输入。"; sleep 1; return 0
-    fi
-
-    local selected_item="${menu_items[$((choice-1))]}"
-    local type=$(echo "$selected_item" | cut -d: -f1)
-    local name=$(echo "$selected_item" | cut -d: -f2)
-    local action=$(echo "$selected_item" | cut -d: -f3)
-
+    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项，请重新输入。"; return 0; fi
+    
+    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
+    local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
+    
     case "$type" in
-        item) execute_module "$action" "$name" ;;
-        submenu) display_menu "$action" ;;
-        func) "$action" ;;
-        back) return 1 ;;
-        exit) log_info "退出脚本。"; exit 0 ;;
+        item) execute_module "$action" "$name"; return $?;;
+        submenu | back) CURRENT_MENU_NAME=$action; return 10;; # submenu 和 back 逻辑统一
+        func) "$action"; return 0;;
     esac
-    return 0
 }
 
 # ====================== 主程序入口 ======================
 main() {
-    check_dependencies
-    if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
-    setup_shortcut
-    self_update
-    precache_modules_background
+    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+    load_config; setup_logging; log_info "脚本启动 (v8.0)"; check_and_install_dependencies
+    
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
+    if [ ! -f "$SCRIPT_PATH" ]; then with_lock save_entry_script; fi
+    with_lock setup_shortcut; self_update; with_lock precache_modules_background &>/dev/null &
 
-    while true; do display_menu "MAIN_MENU"; done
+    while true; do
+        clear 2>/dev/null || true; display_menu; local exit_code=0
+        process_menu_selection || exit_code=$?
+        if [ "$exit_code" -ne 10 ]; then
+            while read -r -t 0; do :; done; read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
+        fi
+    done
 }
 
 main "$@"
