@@ -3,13 +3,15 @@
   "install_dir": "/opt/vps_install_modules",
   "bin_dir": "/usr/local/bin",
   "log_file": "/var/log/jb_launcher.log",
-  "comment_info": "这是 jb 启动器框架的配置文件 (v8.2)",
+  
+  "comment_auto_clear": "是否在显示菜单时自动清屏 (true/false)",
+  "enable_auto_clear": false,
 
+  "comment_info": "这是 jb 启动器框架的配置文件 (v8.6)",
   "dependencies": {
     "comment": "脚本运行所需的核心依赖列表",
     "common": ["curl", "cmp", "ln", "dirname", "flock", "jq"]
   },
-
   "module_configs": {
     "comment": "各子模块的专属配置区域",
     "watchtower": {
@@ -24,7 +26,6 @@
       ]
     }
   },
-
   "menus": {
     "comment": "动态菜单系统定义",
     "MAIN_MENU": [
