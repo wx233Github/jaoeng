@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v9.1 - 最终修复与确认功能版)
+# 🚀 VPS 一键安装入口脚本 (v9.2 - 默认关闭清屏版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -18,7 +18,8 @@ CONFIG[bin_dir]="/usr/local/bin"
 CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
-CONFIG[enable_auto_clear]="true"
+# 【修改】默认值改为 false
+CONFIG[enable_auto_clear]="false"
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
@@ -57,7 +58,8 @@ load_config() {
         while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
         CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
-        CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // true' "$CONFIG_FILE")
+        # 【修改】jq 解析的默认值也改为 false
+        CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
     fi
 }
 
@@ -133,7 +135,6 @@ force_update_all() {
     else log_warning "无法从 GitHub 获取主脚本，跳过主脚本更新。"; fi
     log_info "步骤 2: 正在强制更新所有子模块..."; _update_all_modules "true"
 }
-# 【新增】强制更新的确认函数
 confirm_and_force_update() {
     read -p "$(echo -e "${YELLOW}这将从GitHub强制拉取最新版本的主脚本和所有模块，确定要继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
@@ -169,7 +170,7 @@ CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json";
-    local header_text="🚀 VPS 一键安装入口 (v9.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v9.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -203,7 +204,7 @@ main() {
         echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v9.1)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v9.2)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
     setup_shortcut; self_update
