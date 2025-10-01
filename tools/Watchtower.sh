@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.20.1 - 环境与颜色修复版)
+# Docker 自动更新助手 (v2.20.2 - UX 与退出逻辑优化版)
 #
 set -euo pipefail
 
-# 【修复 1】强制脚本在 UTF-8 环境下运行，解决中文乱码和颜色问题
 export LC_ALL=C.utf8
 
-VERSION="2.20.1-env-color-fix"
-# This version fixes locale issues causing garbled Chinese characters and color loss when called via sudo.
-# Also standardizes ANSI color code definitions for better compatibility.
+VERSION="2.20.2-ux-exit-logic-fix"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -17,7 +14,7 @@ if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
   CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
 
-# 【修复 2】修正颜色定义为更标准的格式
+# Colors
 if [ -t 1 ]; then
   COLOR_GREEN="\033[0;32m"
   COLOR_RED="\033[0;31m"
@@ -858,7 +855,7 @@ main_menu(){
     echo "6) ⚡ 手动运行一次更新"
     echo "7) 🔍 查看 Watchtower 详情"
     echo
-    read -r -p "请输入选项 [1-7] 或 q/Enter 返回父菜单: " choice
+    read -r -p "请输入选项 [1-7] 或按 Enter 返回: " choice
     case "$choice" in
       1) update_menu; press_enter_to_continue ;;
       2) show_container_info ;;
@@ -867,7 +864,7 @@ main_menu(){
       5) view_and_edit_config ;;
       6) run_watchtower_once; press_enter_to_continue ;;
       7) show_watchtower_details ;;
-      q|Q|"") exit 10 ;;
+      "") exit 10 ;;
       *) echo -e "${COLOR_RED}无效选项。${COLOR_RESET}"; sleep 1 ;;
     esac
   done
