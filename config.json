@@ -33,7 +33,7 @@
       { "type": "submenu", "name": "常用工具", "action": "TOOLS_MENU" },
       { "type": "item", "name": "证书申请", "action": "cert.sh" },
       { "type": "func", "name": "更新所有模块缓存", "action": "update_all_modules_parallel" }
-    ]
+    ],
     "TOOLS_MENU": [
       { "type": "item", "name": "Watchtower (Docker 更新)", "action": "tools/Watchtower.sh" },
       { "type": "item", "name": "BBR/系统网络优化", "action": "tcp.sh" },
