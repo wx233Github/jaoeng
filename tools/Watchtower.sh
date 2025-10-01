@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (完整可执行脚本 - 终极修复版)
-# Version: 2.18.7-final-fixes
+# Docker 自动更新助手 (完整可执行脚本 - 最终环境修复版)
+# Version: 2.18.8-final-locale-fix
 #
 set -euo pipefail
 
-# --- 终极修复 1: 运行环境问题 ---
-# 强制重置 IFS 为 Bash 默认值，以创建一个干净的运行环境。
-# 这将彻底解决因外部环境 IFS 设置不当导致的显示和交互问题。
-IFS=' \t\n'
-# 同时，强制设定脚本运行环境的区域设置为 C.UTF-8，作为双重保险。
-export LC_ALL=C.UTF-8
+# --- 终极环境修复 ---
+# 根据用户的诊断信息，其系统支持的 locale 名称为 C.utf8 (小写)。
+# 强制设定脚本运行环境的区域设置为 C.utf8，以确保与系统兼容。
+# 这将从根本上解决所有字符显示异常和交互异常的问题。
+export LC_ALL=C.utf8
 
-VERSION="2.18.7-final-fixes" # 更新版本号
+# 为以防万一，同时重置 IFS
+IFS=' \t\n'
+
+VERSION="2.18.8-final-locale-fix"
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
@@ -261,7 +263,7 @@ _start_watchtower_container_logic(){
     cmd_parts=(docker run -e TZ=Asia/Shanghai -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}")
   fi
 
-  # --- 新增逻辑: 自动配置 Watchtower 内置通知 ---
+  # 自动配置 Watchtower 内置通知
   if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
     cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}")
     echo -e "${COLOR_GREEN}ℹ️ 已为 Watchtower 配置 Telegram 通知。${COLOR_RESET}"
