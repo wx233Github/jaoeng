@@ -5,14 +5,6 @@
 #
 set -euo pipefail
 
-# --- 终极环境修复 ---
-# 根据用户的诊断信息，其系统支持的 locale 名称为 C.utf8 (小写)。
-# 强制设定脚本运行环境的区域设置为 C.utf8，以确保与系统兼容。
-# 这将从根本上解决所有字符显示异常和交互异常的问题。
-export LC_ALL=C.utf8
-
-# 为以防万一，同时重置 IFS
-IFS=' \t\n'
 
 VERSION="2.18.8-final-locale-fix"
 SCRIPT_NAME="Watchtower.sh"
