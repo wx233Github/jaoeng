@@ -1,20 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v5.7 - 交互修复版)
-# 特性:
-# - 持久化缓存 & 快捷指令 (jb)
-# - 入口脚本自动更新, 精细退出码处理
-# - 依赖检查成功时静默，失败时报错
-# - 健壮的网络操作 (带超时)
-# - 支持多级子菜单，易于扩展
-# - 优化交互：主菜单回车退出，子菜单回车返回
-# - 修正子脚本环境变量传递，实现完美静默返回
-# - 修复了下载到子目录时的路径创建问题
-# - 修复: 子脚本取消操作(返回码10)后，主脚本会暂停等待，而不是直接刷新菜单
+# 🚀 VPS 一键安装入口脚本 (v5.8 - 终极交互修复版)
 # =============================================================
 
 # --- 严格模式 ---
 set -eo pipefail
+
+# --- 终极环境修复 ---
+# 在父脚本的最高层级设置正确的区域环境，确保所有子进程都能继承。
+# 这将从根本上解决所有中文显示和交互（如 read 回车）的问题。
+export LC_ALL=C.utf8
 
 # --- 颜色定义 ---
 RED='\033[0;31m'
@@ -176,29 +171,28 @@ execute_module() {
     chmod +x "$local_path"
     
     local exit_code=0
-    # 在子shell中执行，并将环境变量传递进去
-    ( IS_NESTED_CALL=true bash "$local_path" ) || exit_code=$?
+    # 直接执行脚本，不再使用 (...) 将其包裹。
+    # 这可以保持输入流的连续性，彻底解决 read 命令需要按两次回车的问题。
+    IS_NESTED_CALL=true bash "$local_path" || exit_code=$?
     
-    # 统一处理所有非0非10的返回情况，并在返回码为10时也进行暂停
     if [ "$exit_code" -eq 0 ]; then
         log_success "模块 [$display_name] 执行完毕。"
         read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
     elif [ "$exit_code" -eq 10 ]; then
-        # 当用户在子脚本中选择“返回”时 (退出码10)，我们在这里进行暂停
-        read -p "$(echo -e "${BLUE}按回车键返回主菜单...${NC}")"
+        # 子脚本返回10，代表用户选择返回，此时父脚本不应有任何提示或暂停
+        log_info "已从 [$display_name] 返回。"
     else
         log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"
         read -p "$(echo -e "${YELLOW}按回车键返回主菜单...${NC}")"
     fi
 }
 
-
 # ====================== 通用菜单显示函数 ======================
 display_menu() {
     local menu_name=$1
     declare -n menu_items=$menu_name
 
-    local header_text="🚀 VPS 一键安装入口 (v5.7)"
+    local header_text="🚀 VPS 一键安装入口 (v5.8)"
     if [ "$menu_name" != "MAIN_MENU" ]; then header_text="🛠️ ${menu_name//_/ }"; fi
 
     echo ""; echo -e "${BLUE}==========================================${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}==========================================${NC}"
