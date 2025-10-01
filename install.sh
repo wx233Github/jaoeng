@@ -1,9 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v8.0 - 动态菜单框架版)
-# 特性:
-# - 动态菜单: 菜单系统完全由 config.json 定义，脚本动态渲染。
-# - 外部配置, 智能依赖, 持久化日志, 并发安全, 动态UI。
+# 🚀 VPS 一键安装入口脚本 (v8.1 - 智能扫描联动版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -46,10 +43,11 @@ load_config() {
 # --- 智能依赖处理 ---
 detect_package_manager() { if command -v apt-get &>/dev/null; then echo "apt"; elif command -v dnf &>/dev/null; then echo "dnf"; elif command -v yum &>/dev/null; then echo "yum"; else echo "unknown"; fi; }
 check_and_install_dependencies() {
+    # shellcheck disable=SC2206
     local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done
     if [ ${#missing_deps[@]} -gt 0 ]; then
         log_warning "系统缺少以下核心依赖: ${missing_deps[*]}"; local pm; pm=$(detect_package_manager)
-        if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装依赖: ${missing_deps[*]}"; fi
+        if [ "$pm" == "unknown" ]; then log_error "无法检测到系统的包管理器, 请手动安装依赖: ${missing_deps[*]}"; fi
         read -p "$(echo -e "${YELLOW}是否尝试自动为您安装? (y/N): ${NC}")" choice
         if [[ "$choice" =~ ^[Yy]$ ]]; then
             log_info "正在使用 $pm 安装依赖..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi
@@ -63,15 +61,14 @@ check_and_install_dependencies() {
 }
 
 # --- 核心功能 (并发锁、下载、执行等) ---
-with_lock() { ( flock -n 200 || { log_warning "其他任务正在运行，请稍后重试。"; exit 1; }; "$@"; ) 200>"${CONFIG[lock_file]}"; }
+with_lock() { ( flock -n 200 || { log_warning "其他更新任务正在运行，请稍后重试。"; exit 1; }; "$@"; ) 200>"${CONFIG[lock_file]}"; }
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
 save_entry_script() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; local temp_path="/tmp/install.sh.self"; if ! with_lock _download_self "$temp_path"; then if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。"; else cp "$0" "$SCRIPT_PATH"; fi; else mv "$temp_path" "$SCRIPT_PATH"; fi; chmod +x "$SCRIPT_PATH"; }
 setup_shortcut() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; fi; }
-self_update() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "正在检查入口脚本更新..."; local temp_script="/tmp/install.sh.tmp"; if with_lock _download_self "$temp_script"; then if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then log_info "检测到新版本，自动更新..."; mv "$temp_script" "$SCRIPT_PATH"; chmod +x "$SCRIPT_PATH"; log_success "脚本已更新！正在重新启动..."; exec bash "$SCRIPT_PATH" "$@"; fi; rm -f "$temp_script"; else log_warning "无法连接 GitHub 检查更新。"; fi; }
+self_update() { local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "正在检查入口脚本更新..."; local temp_script="/tmp/install.sh.tmp"; if with_lock _download_self "$temp_script"; then if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then log_info "检测到新版本，正在自动更新..."; mv "$temp_script" "$SCRIPT_PATH"; chmod +x "$SCRIPT_PATH"; log_success "脚本已更新！正在重新启动..."; exec bash "$SCRIPT_PATH" "$@"; fi; rm -f "$temp_script"; else log_warning "无法连接 GitHub 检查更新。"; fi; }
 download_module_to_cache() { local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local url="${CONFIG[base_url]}/$script_name"; mkdir -p "$(dirname "$local_file")"; local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; }
 _update_all_modules() {
     log_info "正在并行更新所有模块缓存..."
-    # 智能扫描config.json中所有菜单里type为"item"的模块
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "$CONFIG_FILE")
     for script_name in $scripts_to_update; do
         ( if download_module_to_cache "$script_name"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) &
@@ -84,14 +81,28 @@ execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! with_lock download_module_to_cache "$script_name"; then log_error "下载模块失败，无法执行。"; return 1; fi; fi
     chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true")
-    # 动态读取模块配置并传递
-    local module_key; module_key=$(basename "$script_name" .sh)
+    
+    local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$CONFIG_FILE")
     if [[ "$has_config" == "true" ]]; then
         while IFS='=' read -r key value; do
             env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value")
-        done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | "\(.key)=\(.value)"' "$CONFIG_FILE")
+        done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key != "comment") | "\(.key)=\(.value)"' "$CONFIG_FILE")
     fi
+
+    if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
+        if command -v docker &>/dev/null && docker ps -q &>/dev/null; then
+            local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$all_labels" ]; then
+                env_vars+=("WT_AVAILABLE_LABELS=$all_labels")
+            fi
+            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[] | select(. != "comment")' "$CONFIG_FILE" | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$exclude_list" ]; then
+                env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list")
+            fi
+        fi
+    fi
+
     local exit_code=0; env "${env_vars[@]}" bash "$local_path" || exit_code=$?
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行时发生错误 (退出码: $exit_code)。"; fi
     return $exit_code
@@ -100,7 +111,7 @@ execute_module() {
 # --- 动态菜单核心 ---
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
-    local header_text="🚀 VPS 一键安装入口 (v8.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local header_text="🚀 VPS 一键安装入口 (v8.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_FILE")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
@@ -129,7 +140,7 @@ process_menu_selection() {
     
     case "$type" in
         item) execute_module "$action" "$name"; return $?;;
-        submenu | back) CURRENT_MENU_NAME=$action; return 10;; # submenu 和 back 逻辑统一
+        submenu | back) CURRENT_MENU_NAME=$action; return 10;;
         func) "$action"; return 0;;
     esac
 }
@@ -137,11 +148,13 @@ process_menu_selection() {
 # ====================== 主程序入口 ======================
 main() {
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v8.0)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v8.1)"; check_and_install_dependencies
     
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then with_lock save_entry_script; fi
-    with_lock setup_shortcut; self_update; with_lock precache_modules_background &>/dev/null &
+    with_lock setup_shortcut; self_update
+    # precache_modules_background 最好在 self_update 之后执行
+    # with_lock precache_modules_background &>/dev/null &
 
     while true; do
         clear 2>/dev/null || true; display_menu; local exit_code=0
