@@ -584,6 +584,7 @@ show_watchtower_details(){
   echo "最近 24 小时更新摘要："
   echo
   local updates; updates=$(get_updates_last_24h || true)
+  # 此处使用局部 IFS，是安全且正确的做法
   if [ -z "$updates" ]; then echo "无相关日志事件。"; else echo "$updates" | tail -n 200 | while IFS= read -r line; do _format_and_highlight_log_line "$line"; done; fi
   echo "----------------------------------------"
   read -r -p "查看实时日志请输入 '1'，按 Enter 返回..." pick
