@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.20.0 - 智能联动整合版)
+# Docker 自动更新助手 (v2.20.1 - 环境与颜色修复版)
 #
 set -euo pipefail
 
-VERSION="2.20.0-intelligent-integrated"
-# This version is based on v2.18.9-clean and integrates intelligent features:
-# - Receives and displays available container labels for selection.
-# - Receives and applies a container exclusion list.
-# - Adds a new, more robust Systemd Timer deployment mode.
+# 【修复 1】强制脚本在 UTF-8 环境下运行，解决中文乱码和颜色问题
+export LC_ALL=C.utf8
+
+VERSION="2.20.1-env-color-fix"
+# This version fixes locale issues causing garbled Chinese characters and color loss when called via sudo.
+# Also standardizes ANSI color code definitions for better compatibility.
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -16,13 +17,13 @@ if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
   CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
 
-# Colors
+# 【修复 2】修正颜色定义为更标准的格式
 if [ -t 1 ]; then
-  COLOR_GREEN="\033[0m\033[0;32m"
-  COLOR_RED="\033[0m\033[0;31m"
-  COLOR_YELLOW="\033[0m\033[0;33m"
-  COLOR_BLUE="\033[0m\033[0;34m"
-  COLOR_CYAN="\033[0m\033[0;36m"
+  COLOR_GREEN="\033[0;32m"
+  COLOR_RED="\033[0;31m"
+  COLOR_YELLOW="\033[0;33m"
+  COLOR_BLUE="\033[0;34m"
+  COLOR_CYAN="\033[0;36m"
   COLOR_RESET="\033[0m"
 else
   COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""
@@ -181,10 +182,10 @@ select_labels_interactive() {
             local label="${available_labels[$i]}"
             local is_selected=" "
             for sel_label in "${selected_labels[@]}"; do if [[ "$sel_label" == "$label" ]]; then is_selected="✔"; break; fi; done
-            echo -e " ${YELLOW}$((i+1)).${NC} [${COLOR_GREEN}${is_selected}${NC}] $label"
+            echo -e " ${YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_selected}${COLOR_RESET}] $label"
         done
         echo "-----------------------------------------------------"
-        echo -e "${COLOR_CYAN}当前已选: ${selected_labels[*]:-无}${NC}"
+        echo -e "${COLOR_CYAN}当前已选: ${selected_labels[*]:-无}${COLOR_RESET}"
         read -r -p "输入数字选择/取消，'c' 确认，'a' 全选/全不选，'q' 取消: " choice
         
         case "$choice" in
@@ -304,13 +305,17 @@ _start_watchtower_container_logic(){
   fi
 
   # 【新增】处理从父脚本传递来的排除列表
-  if [ -n "${WT_CONF_EXCLUDE_CONTAINERS:-}" ]; then
-      IFS=',' read -r -a exclude_array <<< "$WT_CONF_EXCLUDE_CONTAINERS"
+  if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then # 使用新的环境变量名
+      IFS=',' read -r -a exclude_array <<< "$WT_EXCLUDE_CONTAINERS"
       for container_name in "${exclude_array[@]}"; do
-          cmd_parts+=(--name "$container_name") # Watchtower uses --name to exclude containers
+          # Watchtower's exclusion logic is based on container names passed as final arguments, not --name flag.
+          # We will append them at the end. This is a common point of confusion.
+          # The logic below is adjusted.
+          true # Placeholder
       done
-      log_info "已应用排除规则 (这些容器名不会被更新): ${WT_CONF_EXCLUDE_CONTAINERS}"
+      log_info "已应用排除规则 (这些容器名不会被更新): ${WT_EXCLUDE_CONTAINERS}"
   fi
+
 
   # 自动配置 Watchtower 内置通知
   if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
@@ -320,16 +325,26 @@ _start_watchtower_container_logic(){
 
   if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi
   
-  # 【修改】标签处理方式
   if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable"); fi
   
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
   
   echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"
-  # 【修改】执行命令时将标签作为独立参数
-  echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]} $WATCHTOWER_LABELS ${COLOR_RESET}"
+  
+  # Append labels and exclusion list at the very end
+  if [ -n "$WATCHTOWER_LABELS" ]; then
+      cmd_parts+=("$WATCHTOWER_LABELS")
+  fi
 
-  set +e; "${cmd_parts[@]}" $WATCHTOWER_LABELS; local rc=$?; set -e
+  # Append excluded container names at the end
+  if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then
+      IFS=',' read -r -a exclude_array <<< "$WT_EXCLUDE_CONTAINERS"
+      cmd_parts+=("${exclude_array[@]}")
+  fi
+
+  echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]} ${COLOR_RESET}"
+
+  set +e; "${cmd_parts[@]}"; local rc=$?; set -e
   
   if [ "$mode_description" = "一次性更新" ]; then
     if [ $rc -eq 0 ]; then
@@ -503,7 +518,7 @@ OnCalendar=*-*-* ${cron_hour}:00:00
 WantedBy=timers.target
 EOF
     log_info "重新加载 systemd, 启用并启动 timer..."; systemctl daemon-reload; systemctl enable --now docker-compose-update.timer; log_success "Systemd Timer 设置成功！"
-    echo -e "任务将于每天凌晨 ${cron_hour} 点左右执行。\n查看状态: ${COLOR_CYAN}systemctl status docker-compose-update.timer${NC}\n查看日志: ${COLOR_CYAN}journalctl -u docker-compose-update.service${NC}"
+    echo -e "任务将于每天凌晨 ${cron_hour} 点左右执行。\n查看状态: ${COLOR_CYAN}systemctl status docker-compose-update.timer${COLOR_RESET}\n查看日志: ${COLOR_CYAN}journalctl -u docker-compose-update.service${COLOR_RESET}"
 }
 
 manage_tasks(){
