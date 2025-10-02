@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v32.0 - 最终完整版)
+# 🚀 VPS 一键安装入口脚本 (v33.0 - 最终修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -30,8 +30,7 @@ fi
 sudo_preserve_env() { sudo -E "$@"; }
 
 setup_logging() {
-    # 移除日志相关逻辑，回归简单
-    :
+    : # Do nothing
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -93,7 +92,6 @@ setup_shortcut() {
 }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -142,8 +140,9 @@ _update_all_modules() {
 
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
-    # 强制更新时，总是调用 self_update 来检查主脚本
-    self_update
+    if [[ "$0" == "${CONFIG[install_dir]}/install.sh" ]]; then
+        self_update
+    fi
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
@@ -223,7 +222,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v32.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -286,7 +285,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v32.0 - 最终完整版)"
+    log_info "脚本启动 (v33.0 - 最终修复版)"
     
     check_and_install_dependencies
     
@@ -297,7 +296,7 @@ main() {
     
     setup_shortcut
     
-    # --- [最终修复]: 恢复安全的自动更新检查 ---
+    # --- 恢复安全的自动更新检查 ---
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
