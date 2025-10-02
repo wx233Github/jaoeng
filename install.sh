@@ -1,39 +1,58 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v16.0 - FIFO与伪终端日志版)
+# 🚀 VPS 一键安装入口脚本 (v18.0 - Bootstrap 引导版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造 1/3]: FIFO 日志系统 ---
-# 只有在主进程中才设置日志
-if [[ -z "$_JBL_LOG_WORKER" ]]; then
-    export _JBL_LOG_WORKER=1
+# --- [核心改造 1/2]: Bootstrap 引导逻辑 ---
+# 检查一个特殊环境变量，如果未设置，则执行引导程序
+if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
     
+    # 设置环境变量，防止无限循环
+    export _JAE_BOOTSTRAPPED=true
+    
+    # 定义日志文件路径
     LOG_FILE="/var/log/jb_launcher.log"
-    FIFO_PATH="/tmp/jb_log_pipe_$$"
-
-    # 创建日志文件和命名管道
+    
+    # 准备日志文件
     sudo mkdir -p "$(dirname "$LOG_FILE")"
     sudo touch "$LOG_FILE"
     sudo chown "$(whoami)" "$LOG_FILE"
-    mkfifo "$FIFO_PATH"
-
-    # 设置陷阱，确保在脚本退出时清理后台进程和FIFO
-    trap 'kill "$TEE_PID" 2>/dev/null; rm -f "$FIFO_PATH"' EXIT
-
-    # 启动后台日志工匠
-    # 使用 script 创建伪终端，保留颜色和格式
-    script -q -c "tee -a \"$LOG_FILE\" < \"$FIFO_PATH\"" /dev/null &
-    TEE_PID=$!
-
-    # 使用 exec 将脚本的 stdout 和 stderr 重定向到 FIFO
-    # 这将应用到整个脚本的生命周期
-    exec > "$FIFO_PATH" 2>&1
+    
+    # 创建一个安全的临时文件来存放主脚本
+    # mktemp 会创建一个唯一的临时文件，并返回其路径
+    MAIN_SCRIPT_PATH=$(mktemp)
+    
+    # 设置陷阱，确保在引导程序退出时，临时文件一定会被删除
+    trap 'rm -f "$MAIN_SCRIPT_PATH"' EXIT
+    
+    # 将脚本自身（即从 curl 管道传来的内容）完整地写入到临时文件中
+    # cat 无参数时会从标准输入读取
+    cat > "$MAIN_SCRIPT_PATH"
+    
+    # 魔法执行命令：
+    # 1. script -q -c "..." /dev/null: 创建一个伪终端 (pty) 来运行命令，
+    #    这能完美保留颜色和格式化输出，欺骗子进程让它以为自己连接着一个真实终端。
+    # 2. bash "$MAIN_SCRIPT_PATH" "$@": 在这个 pty 中，执行我们刚刚保存的临时脚本。
+    #    "$@" 会将所有原始参数（如果有的话）原封不动地传递给主脚本。
+    # 3. | tee -a "$LOG_FILE": 将 pty 的所有输出（包含颜色和格式）同时打印到屏幕
+    #    并追加到日志文件中，实现了您最初的优雅日志记录功能。
+    script -q -c "bash \"$MAIN_SCRIPT_PATH\" \"$@\"" /dev/null | tee -a "$LOG_FILE"
+    
+    # 获取 script 命令中 bash 进程的真实退出码
+    exit_code="${PIPESTATUS[0]}"
+    
+    # 引导程序完成任务，退出
+    exit "$exit_code"
 fi
-# --- 所有后续输出将通过 FIFO -> script -> tee ---
+# --- Bootstrap 结束。从这里开始，是运行在完美环境中的主脚本逻辑 ---
+
+
+# --- [核心改造 2/2]: 主业务逻辑 ---
+# 所有业务逻辑都将在 Bootstrap 创造的完美环境中运行
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -55,10 +74,12 @@ if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then
     AUTO_YES="true"
 fi
 
-# --- [核心改造 2/3]: setup_logging 函数现在为空 ---
-# 所有日志设置已在脚本顶部完成
+# --- 辅助函数 & 日志系统 ---
+sudo_preserve_env() { sudo -E "$@"; }
+
+# setup_logging 现在非常简单，因为复杂的逻辑已由 Bootstrap 处理
 setup_logging() {
-    : # Do nothing
+    : # Do nothing, logging is handled by the bootstrap
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -102,7 +123,7 @@ _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_u
 save_entry_script() { 
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
     local temp_path="/tmp/install.sh.self"; if ! _download_self "$temp_path"; then 
-        if [[ "$0" == "bash" || -z "$0" || "$0" == "/dev/fd/63" ]]; then log_error "无法自动保存。请先下载脚本再执行。"; else sudo cp "$0" "$SCRIPT_PATH"; fi; 
+        log_error "无法从 GitHub 下载脚本以保存。";
     else sudo mv "$temp_path" "$SCRIPT_PATH"; fi; sudo chmod +x "$SCRIPT_PATH"; 
 }
 setup_shortcut() { 
@@ -128,7 +149,6 @@ download_module_to_cache() {
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
 
-# --- [修复 Bug #1]: 强制更新功能 ---
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; log_info "正在并行更新所有模块..."; 
     local scripts_to_update
@@ -155,8 +175,6 @@ execute_module() {
     
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         local exports
-        
-        # --- [修复 Bug #2]: 模块配置解析 ---
         exports=$(jq -r --arg key "$module_key" '
             .module_configs[$key] | to_entries | .[] | 
             select(
@@ -165,7 +183,6 @@ execute_module() {
             ) | 
             "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
         ' "$config_path")
-        
         env_exports+="$exports"
     fi
     
@@ -178,17 +195,15 @@ execute_module() {
     fi
     
     local exit_code=0
-    # 由于日志系统已修复，不再需要 < /dev/tty
     sudo bash -c "$env_exports bash $local_path" || exit_code=$?
     
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
 }
 
-# --- 动态菜单核心 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v16.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v18.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -216,7 +231,6 @@ process_menu_selection() {
     case "$type" in item) execute_module "$action" "$name"; return $?;; submenu | back) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return 0;; esac
 }
 
-# ====================== 主程序入口 ======================
 main() {
     export LC_ALL=C.utf8
     local CACHE_BUSTER=""
@@ -227,13 +241,10 @@ main() {
         sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
     fi
     
-    # [核心改造 3/3]: 在 main 函数开头调用空的 setup_logging
-    # 实际的日志设置已在脚本顶部完成
     setup_logging
     
     acquire_lock
-    # trap 已被顶层 trap 取代，但保留 release_lock 以备不时之需
-    trap 'release_lock; log_info "脚本已退出。"' HUP INT QUIT TERM
+    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
     
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -251,7 +262,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v16.0 - FIFO与伪终端日志版)"
+    log_info "脚本启动 (v18.0 - Bootstrap 引导版)"
     
     check_and_install_dependencies
     
