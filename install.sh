@@ -1,46 +1,55 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v25.0 - flock引导与强制着色版)
+# 🚀 VPS 一键安装入口脚本 (v26.0 - 正确语法稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造 1/2]: 使用 flock 和 tee 实现原子锁、自引导和自动化日志 ---
+# --- [核心改造 1/2]: 使用 flock 和 tee 实现原子锁、自引导和自动化日志 (正确语法) ---
 LOCK_FILE="/tmp/vps_install_modules.lock"
-# 检查一个特殊环境变量，如果未设置，则执行加锁与日志引导
+# 检查一个特殊环境变量，如果未设置，则执行加锁引导
 if [[ -z "$_JAE_LOCKED_AND_LOGGED" ]]; then
     
-    # 设置环境变量，传递给子进程，防止无限循环
     export _JAE_LOCKED_AND_LOGGED=true
-    # 设置强制颜色变量
     export FORCE_COLOR=true
     
-    # 创建一个安全的临时文件来存放主脚本
     MAIN_SCRIPT_PATH=$(mktemp)
-    
-    # 设置陷阱，确保在引导程序退出时，临时文件一定会被删除
     trap 'rm -f "$MAIN_SCRIPT_PATH"' EXIT
-    
-    # 将脚本自身（即从 curl 管道传来的内容）完整地写入到临时文件中
     cat > "$MAIN_SCRIPT_PATH"
     
-    # 准备日志文件
     LOG_FILE="/var/log/jb_launcher.log"
     sudo mkdir -p "$(dirname "$LOG_FILE")"
     sudo touch "$LOG_FILE"
     sudo chown "$(whoami)" "$LOG_FILE"
 
-    # 终极执行命令:
-    # 1. exec flock: 以原子方式获取文件锁，并在命令结束时自动释放。-n 使其在锁定时立即失败。
-    # 2. -c '...': flock 成功后执行的命令。使用单引号保护内部的复杂命令。
-    # 3. sudo -E bash ...: 以 root 权限执行主脚本，并保留所有环境变量。
-    # 4. 2>&1 | sudo tee -a ...: 将主脚本的所有输出（stdout+stderr）通过管道传给 tee，
-    #    实现屏幕和文件的同时输出。flock 会等待整个管道执行完毕，从而解决了所有竞态条件问题。
-    exec flock -n "$LOCK_FILE" -c 'sudo -E bash "$0" "$@" 2>&1 | sudo tee -a "$1"' bash "$MAIN_SCRIPT_PATH" "$LOG_FILE" "$@"
+    # 定义要由 flock 在获取锁后执行的命令
+    # 这是一个多行字符串，将在一个新的 shell 中执行
+    FLOCK_COMMAND='
+        # 从参数列表中提取 main_script_path 和 log_file
+        main_script_path="$1"
+        log_file="$2"
+        # 使用 shift 移除前两个参数，剩下的 "$@" 就是原始参数
+        shift 2
+        
+        # 终极执行命令:
+        # sudo -E 保留环境变量, bash 执行主脚本并传递原始参数
+        # 2>&1 | sudo tee -a 将所有输出追加到日志文件和屏幕
+        sudo -E bash "$main_script_path" "$@" 2>&1 | sudo tee -a "$log_file"
+    '
     
-    # 如果 flock 获取锁失败，上面的命令会以非零状态退出，此处的 echo 不会执行，但作为最后的保险
+    # 使用 exec flock 重新执行自身:
+    # 1. exec flock -n "$LOCK_FILE": 以非阻塞方式获取文件锁。
+    # 2. sh -c "$FLOCK_COMMAND": flock 成功后，启动一个新 shell 来执行我们定义好的命令。
+    # 3. sh "$MAIN_SCRIPT_PATH" "$LOG_FILE" "$@":
+    #    - 'sh' 成为新 shell 内部的 $0
+    #    - "$MAIN_SCRIPT_PATH" 成为 $1
+    #    - "$LOG_FILE" 成为 $2
+    #    - "$@" 成为 $3, $4, ...
+    exec flock -n "$LOCK_FILE" sh -c "$FLOCK_COMMAND" sh "$MAIN_SCRIPT_PATH" "$LOG_FILE" "$@"
+    
+    # 如果 flock 获取锁失败，上面的命令会以非零状态退出，此处的 echo 不会执行
     echo "错误：检测到另一脚本实例正在运行。" >&2
     exit 1
 fi
@@ -50,7 +59,6 @@ fi
 # --- [核心改造 2/2]: 主业务逻辑 ---
 
 # --- 颜色定义 ---
-# [修复颜色问题]: 增加对 FORCE_COLOR 的判断，强制启用颜色
 if [ -t 1 ] || [[ "$FORCE_COLOR" == "true" ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 else
@@ -76,11 +84,7 @@ fi
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
-
-# setup_logging 现在非常简单，因为复杂的逻辑已由 Bootstrap 处理
-setup_logging() {
-    : # Do nothing
-}
+setup_logging() { :; }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log_info() { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $1"; }
@@ -197,7 +201,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v25.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v26.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -255,7 +259,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v25.0 - flock引导与强制着色版)"
+    log_info "脚本启动 (v26.0 - 正确语法稳定版)"
     
     check_and_install_dependencies
     
