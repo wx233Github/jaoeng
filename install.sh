@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v32.0 - 精简配置版)
+# 🚀 VPS 一键安装入口脚本 (v28.1 - 交互逻辑修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -15,6 +15,7 @@ declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
 CONFIG[bin_dir]="/usr/local/bin"
+CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
@@ -29,9 +30,10 @@ fi
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 
-# [最终修复]: 移除对 log_file 的依赖，函数变为空函数
 setup_logging() {
-    : # Do nothing
+    sudo mkdir -p "$(dirname "${CONFIG[log_file]}")"
+    sudo touch "${CONFIG[log_file]}"
+    sudo chown "$(whoami)" "${CONFIG[log_file]}"
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -92,7 +94,7 @@ setup_shortcut() {
     fi; 
 }
 self_update() { 
-    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "检查主脚本更新..."; 
+    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
@@ -145,19 +147,34 @@ force_update_all() {
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
+
+# --- [修复 交互逻辑]: 在取消时返回 10，以立即刷新菜单 ---
 confirm_and_force_update() {
-    export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty; fi
-    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
+    export LC_ALL=C.utf8
+    if [[ "$AUTO_YES" == "true" ]]; then
+        force_update_all
+        return 0
+    fi
+    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
+    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
+        force_update_all
+    else
+        log_info "强制更新已取消。"
+        return 10 # 返回 10 信号，立即刷新主菜单
+    fi
 }
 
+# --- [修复 交互逻辑]: 在取消时返回 10，以立即刷新菜单 ---
 uninstall_script() {
     log_warning "警告：这将从您的系统中彻底移除本脚本及其所有组件！"
     log_warning "将要删除的包括："
     log_warning "  - 安装目录: ${CONFIG[install_dir]}"
     log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
+    
     read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    
     if [[ "$choice" == "yes" ]]; then
-        log_info "开始卸载...";
+        log_info "开始卸载..."
         release_lock
         log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
@@ -169,6 +186,7 @@ uninstall_script() {
         exit 0
     else
         log_info "卸载操作已取消。"
+        return 10 # 返回 10 信号，立即刷新主菜单
     fi
 }
 
@@ -210,7 +228,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v32.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v28.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -235,7 +253,12 @@ process_menu_selection() {
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 0; fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
-    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu | back) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return 0;; esac
+    # 让 func 也能正确处理返回码
+    case "$type" in 
+        item) execute_module "$action" "$name"; return $?;; 
+        submenu | back) CURRENT_MENU_NAME=$action; return 10;; 
+        func) "$action"; return $?;; 
+    esac
 }
 
 main() {
@@ -269,7 +292,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v32.0 - 精简配置版)"
+    log_info "脚本启动 (v28.1 - 交互逻辑修复版)"
     
     check_and_install_dependencies
     
@@ -288,7 +311,7 @@ main() {
         display_menu
         local exit_code=0
         process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ] && [ "$AUTO_YES" != "true" ]; then
+        if [ "$exit_code" -ne 10 ]; then
             while read -r -t 0; do :; done
             read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
