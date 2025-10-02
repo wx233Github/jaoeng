@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v9.3 - exec 终极修复版)
+# 🚀 VPS 一键安装入口脚本 (v9.5 - 可配置时区版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -19,6 +19,7 @@ CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
+CONFIG[timezone]="Asia/Shanghai"
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
@@ -88,7 +89,6 @@ self_update() {
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本，正在更新并重启..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH"; 
             log_success "主脚本更新成功！正在重新启动..."; 
-            # 【修复】直接使用 sudo -E 调用，不再使用封装函数
             exec sudo -E bash "$SCRIPT_PATH" "$@" 
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
@@ -113,7 +113,6 @@ force_update_all() {
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
             log_info "检测到主脚本新版本，正在应用并重启..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
             log_success "主脚本更新成功！正在重新启动...";
-            # 【修复】直接使用 sudo -E 调用，不再使用封装函数
             exec sudo -E bash "$SCRIPT_PATH" "$@" 
         else
             log_success "主脚本已是最新版本。"; rm -f "$temp_script";
@@ -128,7 +127,7 @@ confirm_and_force_update() {
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
-    sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true" "JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}")
+    sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true" "JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}" "JB_TIMEZONE=${CONFIG[timezone]:-Asia/Shanghai}")
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         while IFS='=' read -r key value; do env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value"); done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "\(.key)=\(.value)"' "$config_path")
@@ -148,7 +147,7 @@ execute_module() {
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v9.3)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v9.5)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -182,7 +181,7 @@ main() {
         echo -e "${GREEN}[成功]${NC} 默认配置已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v9.3)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v9.5)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
     setup_shortcut; self_update
