@@ -27,6 +27,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/inst
 curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s
 ```
 
+临时记录日志-存放于执行命令所在的目录
+
+```
+curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee jb_a.log
+```
+
 更新主入口脚本（如果它不是最新版本）:
 
 ```Bash
