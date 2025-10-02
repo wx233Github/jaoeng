@@ -1,23 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v39.0 - 原子更新稳定版)
+# 🚀 VPS 一键安装入口脚本 (v40.0 - 终极稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
-
-# --- [核心改造]: Bootstrap 引导逻辑 ---
-# 检查脚本是否通过管道执行 (一个简单的启发式判断)
-if [[ "$0" != /* && "$0" != "bash" ]]; then
-    TEMP_SCRIPT_PATH=$(mktemp)
-    trap 'rm -f "$TEMP_SCRIPT_PATH"' EXIT SIGHUP SIGINT TERM
-    cat > "$TEMP_SCRIPT_PATH"
-    # 使用 sudo -E 保留所有环境变量 (如 FORCE_REFRESH)
-    exec sudo -E bash "$TEMP_SCRIPT_PATH" "$@"
-fi
-# --- Bootstrap 结束 ---
-
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -83,20 +71,27 @@ check_and_install_dependencies() {
 
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
+
+# --- [最终修复]: 移除脆弱的 fallback 逻辑，简化函数职责 ---
 save_entry_script() { 
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
-    # 因为 Bootstrap 确保了 $0 是一个真实的文件，所以可以直接复制
-    sudo cp "$0" "$SCRIPT_PATH";
+    local temp_path="/tmp/install.sh.self"; 
+    
+    # 函数的唯一职责：从 GitHub 下载。如果失败，则明确报错并退出。
+    if ! _download_self "$temp_path"; then 
+        log_error "无法从 GitHub 下载主脚本。请检查您的网络连接或 DNS 设置。";
+    fi
+    
+    sudo mv "$temp_path" "$SCRIPT_PATH"; 
     sudo chmod +x "$SCRIPT_PATH"; 
 }
+
 setup_shortcut() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; 
     if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then 
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
-
-# --- [最终修复]: 让自我更新变得“原子化” ---
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
@@ -104,13 +99,10 @@ self_update() {
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-            log_success "主脚本更新成功！正在重启以同步所有配置..."; 
-            # 关键修复: 在重启时，强制注入 FORCE_REFRESH=true，确保 config.json 也被更新
-            exec sudo -E env FORCE_REFRESH=true bash "$SCRIPT_PATH" "$@"
+            log_success "主脚本更新成功！正在重启..."; exec sudo -E bash "$SCRIPT_PATH" "$@" 
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
-
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
@@ -231,7 +223,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v39.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v40.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -300,7 +292,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v39.0 - 原子更新稳定版)"
+    log_info "脚本启动 (v40.0 - 终极稳定版)"
     
     check_and_install_dependencies
     
