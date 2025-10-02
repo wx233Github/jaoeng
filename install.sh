@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v31.0 - 串行更新稳定版)
+# 🚀 VPS 一键安装入口脚本 (v32.0 - 精简配置版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -15,7 +15,6 @@ declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
 CONFIG[bin_dir]="/usr/local/bin"
-CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
@@ -30,10 +29,9 @@ fi
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 
+# [最终修复]: 移除对 log_file 的依赖，函数变为空函数
 setup_logging() {
-    sudo mkdir -p "$(dirname "${CONFIG[log_file]}")"
-    sudo touch "${CONFIG[log_file]}"
-    sudo chown "$(whoami)" "${CONFIG[log_file]}"
+    : # Do nothing
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -106,41 +104,32 @@ download_module_to_cache() {
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
     local url="${CONFIG[base_url]}/$script_name"; 
-    
-    # 强制刷新模式下，为 URL 添加时间戳以绕过缓存
     if [ "$force_update" = "true" ]; then 
         url="${url}?_=$(date +%s)";
-        # 在串行模式下，我们可以把提示信息放在这里，更清晰
         log_info "  ↳ 强制刷新: $script_name"
     fi
-    
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
-    
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then 
         echo -e "  ${GREEN}✔ ${script_name}${NC}"
         return 0
     else 
         sudo rm -f "$local_file"; 
         echo -e "  ${RED}✖ ${script_name} (下载失败, HTTP: $http_code)${NC}"
-        # 在串行模式下，返回错误码是安全的
         return 1
     fi; 
 }
 
-# --- [最终修复]: 改为串行更新，确保输出整洁且能安全处理错误 ---
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type=="array") | .[] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
-    
     local all_successful=true
     for script_name in $scripts_to_update; do
         if ! download_module_to_cache "$script_name" "$force_update"; then
             all_successful=false
         fi
     done
-    
     if [[ "$all_successful" == "true" ]]; then
         log_success "所有模块更新完成！"
     else
@@ -150,12 +139,9 @@ _update_all_modules() {
 
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
-    # 步骤 1: 更新主脚本
-    # 只有通过 jb 命令执行时，$0 才是 SCRIPT_PATH
     if [[ "$0" == "${CONFIG[install_dir]}/install.sh" ]]; then
         self_update
     fi
-    # 步骤 2: 更新子模块
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
@@ -224,7 +210,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v31.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v32.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -283,7 +269,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v31.0 - 串行更新稳定版)"
+    log_info "脚本启动 (v32.0 - 精简配置版)"
     
     check_and_install_dependencies
     
@@ -294,7 +280,7 @@ main() {
     
     setup_shortcut
     
-    # 移除不稳定的自动更新，只保留用户手动触发的更新
+    # 移除不稳定的自动更新
     # self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
