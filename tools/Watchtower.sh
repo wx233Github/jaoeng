@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.24.0 - 最终交互修复版)
+# Docker 自动更新助手 (v2.25.0 - 最终交互修复版)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="2.24.0-final-ux"
+VERSION="2.25.0-final-ux-fix"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -93,35 +93,27 @@ _extract_interval_from_cmd(){ local cmd_json="$1"; local interval=""; if command
 _get_watchtower_remaining_time(){ local int="$1"; local logs="$2"; if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${COLOR_YELLOW}N/A${COLOR_RESET}"; return; fi; if ! echo "$logs" | grep -q "Session done"; then echo -e "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"; return; fi; local log; log=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true); local ts=""; if [ -n "$log" ]; then ts=$(_parse_watchtower_timestamp_from_log_line "$log"); fi; if [ -n "$ts" ]; then local epoch; epoch=$(_date_to_epoch "$ts"); if [ -n "$epoch" ]; then local rem=$((int - ( $(date +%s) - epoch ))); if [ "$rem" -gt 0 ]; then printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"; else printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"; fi; else echo -e "${COLOR_RED}时间解析失败${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}未找到扫描日志${COLOR_RESET}"; fi; }
 get_watchtower_inspect_summary(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 2; fi; local cmd; cmd=$(docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]"); _extract_interval_from_cmd "$cmd" 2>/dev/null || true; }
 get_last_session_time(){ local logs; logs=$(get_watchtower_all_raw_logs 2>/dev/null || true); if [ -z "$logs" ]; then echo ""; return 1; fi; local line=""; local ts=""; if echo "$logs" | grep -qiE "permission denied|cannot connect"; then echo -e "${COLOR_RED}错误:权限不足${COLOR_RESET}"; return 1; fi; line=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true); if [ -n "$line" ]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [ -n "$ts" ]; then echo "$ts"; return 0; fi; fi; line=$(echo "$logs" | grep -E "Scheduling first run" | tail -n 1 || true); if [ -n "$line" ]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [ -n "$ts" ]; then echo "$ts (首次)"; return 0; fi; fi; line=$(echo "$logs" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? INFO' | tail -n 1 || true); if [ -n "$line" ]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [ -n "$ts" ]; then echo "$ts (活动)"; return 0; fi; fi; echo ""; return 1; }
-# --- [修复 日志摘要]: 放宽 grep 过滤条件，显示更丰富的日志 ---
 get_updates_last_24h(){ 
     if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then 
         echo ""
         return 1
     fi
     local since=""
-    # 优先使用 --since 参数，更精确
     if [ "$(date -d "24 hours ago" >/dev/null 2>&1 && echo true)" = "true" ]; then 
         since=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
     elif [ "$(command -v gdate >/dev/null 2>&1 && echo true)" = "true" ]; then 
         since=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
     fi
-
     local raw_logs=""
     if [ -n "$since" ]; then 
         raw_logs=$(docker logs --since "$since" watchtower 2>&1 || true)
     fi
-    # 如果 --since 没有获取到日志 (例如新启动的容器)，则回退到 --tail
     if [ -z "$raw_logs" ]; then 
         raw_logs=$(docker logs --tail 200 watchtower 2>&1 || true)
     fi
-    
-    # 放宽 grep 过滤，显示更多过程信息
     echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|permission denied|cannot connect|Could not do a head request" || true
 }
-
 _format_and_highlight_log_line(){ local line="$1"; local ts; ts=$(_parse_watchtower_timestamp_from_log_line "$line"); case "$line" in *"Session done"*) local f; f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); local s; s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); local u; u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); if [[ -n "$s" && -n "$u" && -n "$f" ]]; then local c="$COLOR_GREEN"; if [ "$f" -gt 0 ]; then c="$COLOR_YELLOW"; fi; printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s}, 更新: ${u}, 失败: ${f}" "$COLOR_RESET"; else printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "$line" "$COLOR_RESET"; fi; return ;; *"Found new"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$COLOR_RESET"; return ;; *"Stopping "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"Creating "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"No new images found"*) printf "%s %b%s%b\n" "$ts" "$COLOR_CYAN" "ℹ️ 未发现新镜像。" "$COLOR_RESET"; return ;; *"Scheduling first run"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🕒 首次运行已调度" "$COLOR_RESET"; return ;; *"Starting Watchtower"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"; return ;; esac; if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then local msg; msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p'); if [ -z "$msg" ]; then msg=$(echo "$line" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? *//; s/.*time="[^"]*" *//; s/level=(error|warn|info) *//'); fi; printf "%s %b%s%b\n" "$ts" "$COLOR_RED" "❌ 错误: ${msg:-$line}" "$COLOR_RESET"; return; fi; echo "$line"; }
-# --- [修复 双重回车]: 让函数返回 10，告知主脚本立即刷新菜单 ---
 show_watchtower_details(){ 
     while true; do 
         if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; 
@@ -142,13 +134,11 @@ show_watchtower_details(){
             if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then 
                 echo -e "\n按 Ctrl+C 停止..."; 
                 docker logs --tail 200 -f watchtower 2>/dev/null || true
-                # 查看完实时日志后，不需要再次暂停
             else 
                 echo -e "\n${COLOR_RED}Watchtower 未运行。${COLOR_RESET}"; 
                 press_enter_to_continue
             fi; 
         else 
-            # 用户直接按回车返回，返回 10 信号
             return 10
         fi; 
     done
@@ -175,13 +165,13 @@ main_menu(){
     echo; echo "主菜单："; echo "1. 设置更新模式"; echo "2. 容器管理"; echo "3. 配置通知"; echo "4. 任务管理"; echo "5. 查看/编辑配置"; echo "6. 手动更新"; echo "7. Watchtower 详情"; echo
     read -r -p "输入选项 [1-7] 或按 Enter 返回: " choice
     case "$choice" in
-      1) update_menu; return 10 ;; # 增加返回 10
-      2) show_container_info; return 10 ;; # 增加返回 10
-      3) configure_notify; return 10 ;; # 增加返回 10
-      4) manage_tasks; return 10 ;; # 增加返回 10
-      5) view_and_edit_config; return 10 ;; # 增加返回 10
+      1) update_menu; return 10 ;;
+      2) show_container_info; return 10 ;;
+      3) configure_notify; return 10 ;;
+      4) manage_tasks; return 10 ;;
+      5) view_and_edit_config; return 10 ;;
       6) run_watchtower_once; press_enter_to_continue ;;
-      7) show_watchtower_details; return $? ;; # 接收 show_watchtower_details 的返回码
+      7) show_watchtower_details; return $? ;;
       "") exit 10 ;; 
       *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;;
     esac
