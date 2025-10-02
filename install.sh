@@ -1,15 +1,27 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (修正版 - 增强 jq/CONFIG 健壮性)
+# 🚀 VPS 一键安装入口脚本
+# 版本: v9.9
+# 状态: 终极原子化修复版
+# 作者: wx233Github
+# 日期: 2025-10-02
+# 描述:
+#   - 自动加载配置 (config.json)
+#   - 动态菜单管理
+#   - 模块化子脚本支持
+#   - 并发锁机制防止重复执行
+#   - 自更新 + 强制更新模式
+#   - 日志系统 (输出到 /var/log/jb_launcher.log)
 # =============================================================
 
+# --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# --- 默认配置 (定义一次，全局使用) ---
+# --- 默认配置 ---
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
@@ -25,8 +37,8 @@ sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() {
     export LC_ALL=C.utf8
     sudo mkdir -p "$(dirname "${CONFIG[log_file]}")"
-    sudo touch "${CONFIG[log_file]}" || true
-    sudo chown "$(whoami)" "${CONFIG[log_file]}" || true
+    sudo touch "${CONFIG[log_file]}"
+    sudo chown "$(whoami)" "${CONFIG[log_file]}"
     exec > >(tee -a "${CONFIG[log_file]}") 2> >(tee -a "${CONFIG[log_file]}" >&2)
 }
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -46,69 +58,66 @@ acquire_lock() {
             exit 1
         else
             log_warning "检测到陈旧锁文件 (PID: ${old_pid:-"N/A"})，将自动清理。"
-            sudo rm -f "$lock_file" || true
+            sudo rm -f "$lock_file"
         fi
     fi
     echo "$$" | sudo tee "$lock_file" > /dev/null
 }
-release_lock() { sudo rm -f "${CONFIG[lock_file]}" || true; }
+release_lock() { sudo rm -f "${CONFIG[lock_file]}"; }
 
-# --- 配置加载 (更健壮) ---
+# --- 配置加载 ---
 load_config() {
     export LC_ALL=C.utf8
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
-        # FIX: 使用安全的 jq 查询，避免对 null 做 .[] 导致报错
         while IFS='=' read -r key value; do
             value="${value#\"}"; value="${value%\"}"
             CONFIG[$key]="$value"
-        done < <(jq -r 'to_entries | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not))) | .[]? | "\(.key)=\(.value)"' "$CONFIG_FILE" 2>/dev/null || true)
-
-        # dependencies.common 可能为空，使用 // [] 防护
-        local deps
-        deps=$(jq -r '.dependencies.common // [] | @sh' "$CONFIG_FILE" 2>/dev/null || echo "")
-        CONFIG[dependencies]="$(echo "$deps" | tr -d "'" )"
-        CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
-        CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")
-        CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")
-    else
-        log_warning "未找到 config.json 或 jq 不可用，使用默认配置。"
+        done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
+        CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
+        CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE")"
+        CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
+        CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
     fi
 }
 
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]})
+    local missing_deps=()
+    local deps=(${CONFIG[dependencies]})
     for cmd in "${deps[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi
     done
     if [ ${#missing_deps[@]} -gt 0 ]; then
         log_warning "缺少核心依赖: ${missing_deps[*]}"
-        local pm
-        if command -v apt-get &>/dev/null; then pm="apt"; elif command -v dnf &>/dev/null; then pm="dnf"; elif command -v yum &>/dev/null; then pm="yum"; else pm="unknown"; fi
+        local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown")))
         if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi
         read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice
         if [[ "$choice" =~ ^[Yy]$ ]]; then
             log_info "正在使用 $pm 安装..."
-            if [ "$pm" == "apt" ]; then sudo apt-get update -y; fi
-            if ! sudo $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败。"; fi
-            log_success "依赖安装完成！"
+            local update_cmd=""
+            if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi
+            if ! { $update_cmd && sudo $pm install -y "${missing_deps[@]}"; }; then
+                log_error "依赖安装失败。"
+            else
+                log_success "依赖安装完成！"
+            fi
         else
             log_error "用户取消安装。"
         fi
     fi
 }
 
-# --- 下载 / 保存 / 更新 ---
+# --- 核心下载 / 更新 / 执行逻辑 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
-save_entry_script() {
+save_entry_script() { 
     export LC_ALL=C.utf8
     sudo mkdir -p "${CONFIG[install_dir]}"
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     log_info "正在保存入口脚本..."
     local temp_path="/tmp/install.sh.self"
-    if ! _download_self "$temp_path"; then
+    if ! _download_self "$temp_path"; then 
         if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then
             log_error "无法自动保存。"
         else
@@ -119,18 +128,16 @@ save_entry_script() {
     fi
     sudo chmod +x "$SCRIPT_PATH"
 }
-
-setup_shortcut() {
+setup_shortcut() { 
     export LC_ALL=C.utf8
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     local BIN_DIR="${CONFIG[bin_dir]}"
-    if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb" 2>/dev/null)" != "$SCRIPT_PATH" ]; then
+    if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"
         log_success "快捷指令 'jb' 已创建。"
     fi
 }
-
-self_update() {
+self_update() { 
     export LC_ALL=C.utf8
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi
@@ -142,7 +149,7 @@ self_update() {
             sudo mv "$temp_script" "$SCRIPT_PATH"
             sudo chmod +x "$SCRIPT_PATH"
             log_success "主脚本更新成功！正在重启..."
-            exec sudo -E bash "$SCRIPT_PATH" "$@"
+            exec sudo -E bash "$SCRIPT_PATH" "$@" 
         fi
         rm -f "$temp_script"
     else
@@ -150,7 +157,8 @@ self_update() {
     fi
 }
 
-download_module_to_cache() {
+# --- 模块下载 & 更新 ---
+download_module_to_cache() { 
     export LC_ALL=C.utf8
     sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"
     local script_name="$1"
@@ -169,19 +177,12 @@ download_module_to_cache() {
     fi
 }
 
-# --- 更新所有模块 (安全的 jq 使用) ---
 _update_all_modules() {
     export LC_ALL=C.utf8
     local force_update="${1:-false}"
     log_info "正在并行更新所有模块..."
-    local cfg_path="${CONFIG[install_dir]}/config.json"
-    if [ ! -f "$cfg_path" ]; then log_warning "配置文件不存在，跳过模块更新。"; return; fi
-
-    # FIX: 使用安全的 jq 路径 .menus[]?[]? 避免对 null 做迭代
     local scripts_to_update
-    scripts_to_update=$(jq -r '.menus[]?[]? | select(.type=="item") | .action' "$cfg_path" 2>/dev/null || true)
-    if [ -z "$scripts_to_update" ]; then log_info "未找到可更新的模块列表。"; return; fi
-
+    scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
     for script_name in $scripts_to_update; do
         (
             if download_module_to_cache "$script_name" "$force_update"; then
@@ -195,6 +196,7 @@ _update_all_modules() {
     log_success "所有模块更新完成！"
 }
 
+# --- 强制更新入口 ---
 force_update_all() {
     export LC_ALL=C.utf8
     log_info "开始强制更新流程..."
@@ -208,7 +210,7 @@ force_update_all() {
             sudo mv "$temp_script" "$SCRIPT_PATH"
             sudo chmod +x "$SCRIPT_PATH"
             log_success "主脚本更新成功！正在重启..."
-            exec sudo -E bash "$SCRIPT_PATH" "$@"
+            exec sudo -E bash "$SCRIPT_PATH" "$@" 
         else
             log_success "主脚本已是最新版本。"
             rm -f "$temp_script"
@@ -230,13 +232,13 @@ confirm_and_force_update() {
     fi
 }
 
+# --- 执行模块 ---
 execute_module() {
     export LC_ALL=C.utf8
     local script_name="$1"
     local display_name="$2"
     local local_path="${CONFIG[install_dir]}/$script_name"
     local config_path="${CONFIG[install_dir]}/config.json"
-
     log_info "您选择了 [$display_name]"
     if [ ! -f "$local_path" ]; then
         log_info "正在下载模块..."
@@ -245,45 +247,28 @@ execute_module() {
             return 1
         fi
     fi
-    sudo chmod +x "$local_path" || true
+    sudo chmod +x "$local_path"
 
-    # export 环境变量（把模块配置安全地导入）
     local env_exports="export IS_NESTED_CALL=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
-
     local module_key
     module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
-
-    # FIX: 使用安全的 jq 读取 module_configs，并且忽略以 comment 开头的键
-    if [ -f "$config_path" ] && command -v jq &>/dev/null; then
-        if jq -e --arg key "$module_key" '.module_configs[$key] != null' "$config_path" >/dev/null 2>&1; then
-            local exports
-            exports=$(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries[]? | select(.key | startswith("comment") | not) | "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh)"' "$config_path" 2>/dev/null || true)
-            if [ -n "$exports" ]; then
-                # 把换行转成分号，结尾确保有分号
-                exports="$(echo "$exports" | tr '\n' ';')"
-                env_exports+="$exports;"
-            fi
-        fi
+    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+        local exports
+        exports=$(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"/' "$config_path")
+        env_exports+="$exports"
     fi
 
-    # 特殊处理 Watchtower: 尝试收集 labels / exclude 列表（都要有防护）
-    if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
-        if command -v docker &>/dev/null && docker ps -q &>/dev/null; then
-            local all_labels
-            all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-            if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
-
-            local exclude_list
-            if [ -f "$config_path" ] && command -v jq &>/dev/null; then
-                exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-                if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
-            fi
-        fi
+    if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
+        local all_labels
+        all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
+        local exclude_list
+        exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
     fi
 
     local exit_code=0
-    # 使用 eval 以确保多条 export 能被正确执行（保留 sudo 环境）
-    sudo bash -c "export IS_NESTED_CALL=true; $env_exports bash '$local_path'" || exit_code=$?
+    sudo bash -c "$env_exports bash $local_path" || exit_code=$?
 
     if [ "$exit_code" -eq 0 ]; then
         log_success "模块 [$display_name] 执行完毕。"
@@ -295,39 +280,26 @@ execute_module() {
     return $exit_code
 }
 
-# --- 动态菜单核心 ---
+# --- 动态菜单 ---
 display_menu() {
     export LC_ALL=C.utf8
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"
     local header_text="🚀 VPS 一键安装入口 (v9.9)"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
-
-    if [ ! -f "$config_path" ]; then
-        echo ""
-        log_warning "配置文件缺失：${config_path}。"
-        echo ""
-        return
-    fi
-
     local menu_items_json
-    # FIX: 使用安全读取，如果失败则返回空菜单
-    menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] // []' "$config_path" 2>/dev/null || echo "[]")
+    menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len
-    menu_len=$(echo "$menu_items_json" | jq 'length' 2>/dev/null || echo 0)
-
-    local max_width=${#header_text}
-    local names
-    names=$(echo "$menu_items_json" | jq -r '.[].name' 2>/dev/null || echo "")
-    while IFS= read -r name; do
-        local line_width=$(( ${#name} + 4 ))
-        if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
-    done <<< "$names"
-
-    local border; border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '=')
+    menu_len=$(echo "$menu_items_json" | jq 'length')
+    local max_width=${#header_text}; local names
+    names=$(echo "$menu_items_json" | jq -r '.[].name')
+    while IFS= read -r name; do local line_width=$(( ${#name} + 4 )); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi; done <<< "$names"
+    local border
+    border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '=')
     echo ""; echo -e "${BLUE}${border}${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}${border}${NC}";
     for i in $(seq 0 $((menu_len - 1))); do
-        local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name")
+        local name
+        name=$(echo "$menu_items_json" | jq -r ".[$i].name")
         echo -e " ${YELLOW}$((i+1)).${NC} $name"
     done
     echo ""
@@ -344,10 +316,9 @@ process_menu_selection() {
     export LC_ALL=C.utf8
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json
-    menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] // []' "$config_path" 2>/dev/null || echo "[]")
+    menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len
-    menu_len=$(echo "$menu_items_json" | jq 'length' 2>/dev/null || echo 0)
-
+    menu_len=$(echo "$menu_items_json" | jq 'length')
     if [ -z "$choice" ]; then
         if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then
             log_info "已退出脚本。"
@@ -357,78 +328,19 @@ process_menu_selection() {
             return 10
         fi
     fi
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then
-        log_warning "无效选项。"
-        return 0
-    fi
-
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 0; fi
     local item_json
     item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
-    local type; type=$(echo "$item_json" | jq -r ".type")
-    local name; name=$(echo "$item_json" | jq -r ".name")
-    local action; action=$(echo "$item_json" | jq -r ".action")
+    local type name action
+    type=$(echo "$item_json" | jq -r ".type")
+    name=$(echo "$item_json" | jq -r ".name")
+    action=$(echo "$item_json" | jq -r ".action")
     case "$type" in
-        item) execute_module "$action" "$name"; return $?;;
-        submenu | back) CURRENT_MENU_NAME=$action; return 10;;
-        func) "$action"; return 0;;
+        item) execute_module "$action" "$name"; return $? ;;
+        submenu | back) CURRENT_MENU_NAME=$action; return 10 ;;
+        func) "$action"; return 0 ;;
     esac
 }
 
 # ====================== 主程序入口 ======================
-main() {
-    export LC_ALL=C.utf8
-    local CACHE_BUSTER=""
-    if [[ "${ONLINE_INSTALL}" == "true" ]]; then
-        CACHE_BUSTER="?_=$(date +%s)"
-        echo -e "${YELLOW}[警告]${NC} 在线安装模式：将强制拉取所有最新文件。"
-        sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
-    fi
-
-    acquire_lock
-    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
-
-    sudo mkdir -p "${CONFIG[install_dir]}"
-
-    local config_path="${CONFIG[install_dir]}/config.json"
-
-    if [ ! -f "$config_path" ]; then
-        echo -e "${BLUE}[信息]${NC} 未找到配置，正在下载..."
-        if ! curl -fsSL "${CONFIG[base_url]}/config.json${CACHE_BUSTER}" -o "$config_path"; then
-            echo -e "${RED}[错误]${NC} 下载失败！"
-            exit 1
-        fi
-        echo -e "${GREEN}[成功]${NC} 已下载。"
-    fi
-
-    # 确保 jq 存在（部分功能依赖）
-    if ! command -v jq &>/dev/null; 键，然后
-        check_and_install_dependencies
-    fi
-
-    load_config
-    setup_logging
-    log_info "脚本启动 (v9.9)"
-    check_and_install_dependencies
-
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
-    if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
-    setup_shortcut
-    self_update
-
-    # 默认菜单名
-    CURRENT_MENU_NAME="MAIN_MENU"
-
-    while true; do
-        display_menu
-        local exit_code=0
-        process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ]; then
-            # 等待用户按回车（但不会退出主循环）
-            while read -r -t 0; do :; done
-            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
-        fi
-    done
-}
-
-main "$@"
+main()
