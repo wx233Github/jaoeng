@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.20.7 - 交互式通知与终极环境修复)
+# Docker 自动更新助手 (v2.20.8 - 可配置报告版)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
-VERSION="2.20.7-interactive-notify"
-# ... (脚本大部分内容与 v2.20.6 一致，仅修改 configure_notify 函数) ...
-# ... 为了完整性，将再次输出全部代码 ...
+VERSION="2.20.8-configurable-report"
 
 SCRIPT_NAME="Watchtower.sh"; CONFIG_FILE="/etc/docker-auto-update.conf"; if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then CONFIG_FILE="$HOME/.docker-auto-update.conf"; fi
 if [ -t 1 ]; then COLOR_GREEN="\033[0;32m"; COLOR_RED="\033[0;31m"; COLOR_YELLOW="\033[0;33m"; COLOR_BLUE="\033[0;34m"; COLOR_CYAN="\033[0;36m"; COLOR_RESET="\033[0m"; else COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""; fi
@@ -43,7 +41,15 @@ _start_watchtower_container_logic(){
   local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
   local cmd_parts; if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e TZ=Asia/Shanghai --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); else cmd_parts=(docker run -e TZ=Asia/Shanghai -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}"); fi
   if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then log_info "已应用排除规则: ${WT_EXCLUDE_CONTAINERS}"; fi
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL='telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}'"); cmd_parts+=(-e WATCHTOWER_REPORT=true); log_info "已配置 Watchtower Telegram 报告。"; fi
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+      cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL='telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}'")
+      if [[ "${WT_CONF_ENABLE_REPORT}" == "true" ]]; then
+          cmd_parts+=(-e WATCHTOWER_REPORT=true)
+          echo -e "${COLOR_GREEN}ℹ️ 已配置 Telegram 报告 (每次扫描后)。${COLOR_RESET}"
+      else
+          echo -e "${COLOR_GREEN}ℹ️ 已配置 Telegram 通知 (仅更新后)。${COLOR_RESET}"
+      fi
+  fi
   if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi; if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable"); fi; if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
   echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"; if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("$WATCHTOWER_LABELS"); fi; if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then IFS=',' read -r -a exclude_array <<< "$WT_EXCLUDE_CONTAINERS"; cmd_parts+=("${exclude_array[@]}"); fi
   echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]} ${COLOR_RESET}"; set +e; "${cmd_parts[@]}"; local rc=$?; set -e
@@ -51,45 +57,17 @@ _start_watchtower_container_logic(){
     sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"; return 0; else echo -e "${COLOR_RED}❌ $mode_description 启动失败。${COLOR_RESET}"; send_notify "❌ Watchtower 启动失败。"; return 1; fi
   fi
 }
-# 【修改】重构通知配置函数
 configure_notify() {
-    echo -e "${COLOR_YELLOW}⚙️ 通知配置 ⚙️${COLOR_RESET}"
-
-    if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then
-        echo "当前已配置:"
-        if [ -n "$TG_BOT_TOKEN" ]; then echo "  - Telegram (Token: ...${TG_BOT_TOKEN: -5})"; fi
-        if [ -n "$EMAIL_TO" ]; then echo "  - Email: $EMAIL_TO"; fi
-        read -p "$(echo -e "${YELLOW}是否要覆盖旧的配置？(y 继续, n/回车 取消): ${NC}")" confirm_overwrite
-        if [[ ! "$confirm_overwrite" =~ ^[Yy]$ ]]; then
-            log_info "操作已取消。"
-            return
-        fi
+    echo -e "${COLOR_YELLOW}⚙️ 通知配置 ⚙️${COLOR_RESET}"; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then
+        echo "当前已配置:"; if [ -n "$TG_BOT_TOKEN" ]; then echo "  - Telegram (Token: ...${TG_BOT_TOKEN: -5})"; fi; if [ -n "$EMAIL_TO" ]; then echo "  - Email: $EMAIL_TO"; fi
+        read -p "$(echo -e "${YELLOW}是否要覆盖旧的配置？(y 继续, n/回车 取消): ${NC}")" confirm_overwrite; if [[ ! "$confirm_overwrite" =~ ^[Yy]$ ]]; then log_info "操作已取消。"; return; fi
     fi
-
-    read -r -p "启用 Telegram 通知？(y/N): " tchoice
-    if [[ "$tchoice" =~ ^[Yy]$ ]]; then
-        read -r -p "请输入 Bot Token: " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT}"
-        read -r -p "请输入 Chat ID: " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT}"
-    else
-        TG_BOT_TOKEN=""; TG_CHAT_ID=""
-    fi
-    
-    read -r -p "启用 Email 通知？(y/N): " echoice
-    if [[ "$echoice" =~ ^[Yy]$ ]]; then
-        read -r -p "请输入接收邮箱: " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT}"
-    else
-        EMAIL_TO=""
-    fi
-    
-    save_config
-    if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then
-        if confirm_action "配置已保存。是否发送一条测试通知？"; then
-            echo "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${VERSION} 的测试消息。"
-            log_success "测试通知已发送。"
-        fi
-    fi
+    read -r -p "启用 Telegram 通知？(y/N): " tchoice; if [[ "$tchoice" =~ ^[Yy]$ ]]; then read -r -p "请输入 Bot Token: " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT}"; read -r -p "请输入 Chat ID: " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT}"; else TG_BOT_TOKEN=""; TG_CHAT_ID=""; fi
+    read -r -p "启用 Email 通知？(y/N): " echoice; if [[ "$echoice" =~ ^[Yy]$ ]]; then read -r -p "请输入接收邮箱: " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT}"; else EMAIL_TO=""; fi
+    save_config; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then if confirm_action "配置已保存。是否发送一条测试通知？"; then echo "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${VERSION} 的测试消息。"; log_success "测试通知已发送。"; fi; fi
 }
-# ... (其他所有函数保持不变，为完整性粘贴如下) ...
+# ... (The rest of the script is the same as the previous full version) ...
+# ... I've omitted the unchanged functions for brevity, but they are included in the final script logic ...
 _parse_watchtower_timestamp_from_log_line() { local log_line="$1"; local timestamp=""; timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; echo ""; return 1; }
 _date_to_epoch() { local dt="$1"; [ -z "$dt" ] && echo "" && return; if [ "$(date -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""); elif [ "$(command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""); else log_warn "⚠️ 'date' 或 'gdate' 不支持。"; echo ""; fi; }
 select_labels_interactive() { local available_labels_str="${WT_AVAILABLE_LABELS:-}"; if [ -z "$available_labels_str" ]; then read -r -p "未扫描到标签。请输入标签: " WATCHTOWER_LABELS; return; fi; IFS=',' read -r -a available_labels <<< "$available_labels_str"; local selected_labels=(); if [ -n "$WATCHTOWER_LABELS" ]; then IFS=',' read -r -a selected_labels <<< "$WATCHTOWER_LABELS"; fi; while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; echo -e "${COLOR_YELLOW}请选择要启用的标签:${COLOR_RESET}"; for i in "${!available_labels[@]}"; do local label="${available_labels[$i]}"; local is_selected=" "; for sel_label in "${selected_labels[@]}"; do if [[ "$sel_label" == "$label" ]]; then is_selected="✔"; break; fi; done; echo -e " ${YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_selected}${COLOR_RESET}] $label"; done; echo "---"; echo -e "${COLOR_CYAN}当前: ${selected_labels[*]:-无}${COLOR_RESET}"; read -r -p "输入数字选择/取消, 'c'确认, 'a'全选/不选, 'q'取消: " choice; case "$choice" in q|Q) selected_labels=(); break ;; c|C|"") break ;; a|A) if [ ${#selected_labels[@]} -eq ${#available_labels[@]} ]; then selected_labels=(); else selected_labels=("${available_labels[@]}"); fi ;; *) if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#available_labels[@]}" ]; then local target_label="${available_labels[$((choice-1))]}"; local found=false; local temp_labels=(); for item in "${selected_labels[@]}"; do if [[ "$item" == "$target_label" ]]; then found=true; else temp_labels+=("$item"); fi; done; if $found; then selected_labels=("${temp_labels[@]}"); else selected_labels+=("$target_label"); fi; else log_warn "无效输入。" && sleep 1; fi ;; esac; done; WATCHTOWER_LABELS=$(IFS=,; echo "${selected_labels[*]}"); }
