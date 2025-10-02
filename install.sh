@@ -1,11 +1,39 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v15.0 - 最终稳定版)
+# 🚀 VPS 一键安装入口脚本 (v16.0 - FIFO与伪终端日志版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
+
+# --- [核心改造 1/3]: FIFO 日志系统 ---
+# 只有在主进程中才设置日志
+if [[ -z "$_JBL_LOG_WORKER" ]]; then
+    export _JBL_LOG_WORKER=1
+    
+    LOG_FILE="/var/log/jb_launcher.log"
+    FIFO_PATH="/tmp/jb_log_pipe_$$"
+
+    # 创建日志文件和命名管道
+    sudo mkdir -p "$(dirname "$LOG_FILE")"
+    sudo touch "$LOG_FILE"
+    sudo chown "$(whoami)" "$LOG_FILE"
+    mkfifo "$FIFO_PATH"
+
+    # 设置陷阱，确保在脚本退出时清理后台进程和FIFO
+    trap 'kill "$TEE_PID" 2>/dev/null; rm -f "$FIFO_PATH"' EXIT
+
+    # 启动后台日志工匠
+    # 使用 script 创建伪终端，保留颜色和格式
+    script -q -c "tee -a \"$LOG_FILE\" < \"$FIFO_PATH\"" /dev/null &
+    TEE_PID=$!
+
+    # 使用 exec 将脚本的 stdout 和 stderr 重定向到 FIFO
+    # 这将应用到整个脚本的生命周期
+    exec > "$FIFO_PATH" 2>&1
+fi
+# --- 所有后续输出将通过 FIFO -> script -> tee ---
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -27,16 +55,10 @@ if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then
     AUTO_YES="true"
 fi
 
-# --- 辅助函数 & 日志系统 ---
-sudo_preserve_env() { sudo -E "$@"; }
-
-# [修复 EOF/颜色问题]: 移除不稳定的 exec 日志重定向，日志将仅输出到屏幕
-# 保留此函数用于创建日志文件目录，以备将来使用
+# --- [核心改造 2/3]: setup_logging 函数现在为空 ---
+# 所有日志设置已在脚本顶部完成
 setup_logging() {
-    sudo mkdir -p "$(dirname "${CONFIG[log_file]}")"
-    sudo touch "${CONFIG[log_file]}"
-    sudo chown "$(whoami)" "${CONFIG[log_file]}"
-    # 移除: exec > >(tee -a "${CONFIG[log_file]}") 2> >(tee -a "${CONFIG[log_file]}" >&2)
+    : # Do nothing
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -72,13 +94,11 @@ load_config() {
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
 }
 
 # --- 核心功能 ---
-# [修复 CDN缓存问题]: 确保下载自身时总是绕过缓存
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
-
 save_entry_script() { 
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
     local temp_path="/tmp/install.sh.self"; if ! _download_self "$temp_path"; then 
@@ -108,7 +128,7 @@ download_module_to_cache() {
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
 
-# [修复 Bug #1]: 强制更新功能
+# --- [修复 Bug #1]: 强制更新功能 ---
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; log_info "正在并行更新所有模块..."; 
     local scripts_to_update
@@ -121,7 +141,7 @@ force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; self_update; log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true";
 }
 confirm_and_force_update() {
-    export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty; fi
+    export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice; fi
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
 
@@ -136,7 +156,7 @@ execute_module() {
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         local exports
         
-        # [修复 Bug #2]: 模块配置解析
+        # --- [修复 Bug #2]: 模块配置解析 ---
         exports=$(jq -r --arg key "$module_key" '
             .module_configs[$key] | to_entries | .[] | 
             select(
@@ -158,8 +178,8 @@ execute_module() {
     fi
     
     local exit_code=0
-    # 子脚本也需要从 tty 读取输入
-    sudo bash -c "$env_exports bash $local_path" < /dev/tty || exit_code=$?
+    # 由于日志系统已修复，不再需要 < /dev/tty
+    sudo bash -c "$env_exports bash $local_path" || exit_code=$?
     
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
@@ -168,7 +188,7 @@ execute_module() {
 # --- 动态菜单核心 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v15.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v16.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -182,7 +202,7 @@ display_menu() {
         choice=""
         echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]"
     else
-        read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty
+        read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice
     fi
 }
 process_menu_selection() {
@@ -207,10 +227,13 @@ main() {
         sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
     fi
     
+    # [核心改造 3/3]: 在 main 函数开头调用空的 setup_logging
+    # 实际的日志设置已在脚本顶部完成
     setup_logging
     
     acquire_lock
-    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
+    # trap 已被顶层 trap 取代，但保留 release_lock 以备不时之需
+    trap 'release_lock; log_info "脚本已退出。"' HUP INT QUIT TERM
     
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -228,7 +251,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v15.0 - 最终稳定版)"
+    log_info "脚本启动 (v16.0 - FIFO与伪终端日志版)"
     
     check_and_install_dependencies
     
@@ -247,7 +270,7 @@ main() {
         process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ] && [ "$AUTO_YES" != "true" ]; then
             while read -r -t 0; do :; done
-            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
+            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
         fi
     done
 }
