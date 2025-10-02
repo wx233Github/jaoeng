@@ -24,7 +24,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/inst
 调试拉取最新
 
 ```
-ONLINE_INSTALL=true bash <(curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)")
+FORCE_REFRESH=true bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh')"
 ```
 
 更新主入口脚本（如果它不是最新版本）:
