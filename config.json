@@ -71,16 +71,6 @@
         "action": "tools/Watchtower.sh"
       },
       {
-        "type": "item",
-        "name": "BBR/系统网络优化",
-        "action": "tcp.sh"
-      },
-      {
-        "type": "item",
-        "name": "系统信息查看",
-        "action": "sysinfo.sh"
-      },
-      {
         "type": "back",
         "name": "返回主菜单",
         "action": "MAIN_MENU"
