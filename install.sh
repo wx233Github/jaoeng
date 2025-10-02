@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v31.1 - 最终交互优化版)
+# 🚀 VPS 一键安装入口脚本 (v32.0 - 最终完整版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -92,7 +92,10 @@ setup_shortcut() {
     fi; 
 }
 self_update() { 
-    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "检查主脚本更新..."; 
+    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
+    if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
+    log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
@@ -139,19 +142,16 @@ _update_all_modules() {
 
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
-    if [[ "$0" == "${CONFIG[install_dir]}/install.sh" ]]; then
-        self_update
-    fi
+    # 强制更新时，总是调用 self_update 来检查主脚本
+    self_update
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
-
-# --- [最终优化 交互逻辑]: 在完成或取消时都返回 10，以立即刷新菜单 ---
 confirm_and_force_update() {
     export LC_ALL=C.utf8
     if [[ "$AUTO_YES" == "true" ]]; then
         force_update_all
-        return 10 # 自动模式下也刷新菜单
+        return 10
     fi
     read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
@@ -159,7 +159,7 @@ confirm_and_force_update() {
     else
         log_info "强制更新已取消。"
     fi
-    return 10 # 无论成功或取消，都返回 10 信号立即刷新主菜单
+    return 10 
 }
 
 uninstall_script() {
@@ -181,7 +181,7 @@ uninstall_script() {
         exit 0
     else
         log_info "卸载操作已取消。"
-        return 10 # 返回 10 信号，立即刷新主菜单
+        return 10
     fi
 }
 
@@ -223,7 +223,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v31.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v32.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -286,7 +286,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v31.1 - 最终交互优化版)"
+    log_info "脚本启动 (v32.0 - 最终完整版)"
     
     check_and_install_dependencies
     
@@ -297,8 +297,8 @@ main() {
     
     setup_shortcut
     
-    # 移除不稳定的自动更新
-    # self_update
+    # --- [最终修复]: 恢复安全的自动更新检查 ---
+    self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
