@@ -10,8 +10,8 @@
   "bin_dir": "/usr/local/bin",
   "comment_bin_dir": "'jb' 快捷方式的存放目录。",
 
-  "enable_auto_clear": true,
-  "comment_enable_auto_clear": "切换菜单时是否自动清屏。",
+  "enable_auto_clear": false,
+  "comment_enable_auto_clear": "切换菜单时是否自动清屏 (默认 false 关闭，开启:true)",
 
   "timezone": "Asia/Shanghai",
   "comment_timezone": "为各模块(如Docker容器)设置时区。",
@@ -22,10 +22,10 @@
   },
 
   "menus": {
-    "comment": "动态菜单配置区",
+    "comment": "动态菜单配置区。在子菜单中，直接按回车即可返回主菜单。",
     "MAIN_MENU": [
       {
-        "comment": "菜单项结构: name(显示名), type(类型: submenu, item, func, back), action(目标)",
+        "comment": "菜单项结构: name(显示名), type(类型: submenu, item, func), action(目标)",
         "name": "Docker",
         "type": "submenu",
         "action": "DOCKER_MENU"
@@ -58,23 +58,19 @@
     ],
     
     "DOCKER_MENU": [
-      { "name": "安装 Docker", "type": "item", "action": "docker.sh" },
-      { "name": "返回主菜单", "type": "back", "action": "MAIN_MENU" }
+      { "name": "安装 Docker", "type": "item", "action": "docker.sh" }
     ],
 
     "NGINX_MENU": [
-      { "name": "安装 Nginx", "type": "item", "action": "nginx.sh" },
-      { "name": "返回主菜单", "type": "back", "action": "MAIN_MENU" }
+      { "name": "安装 Nginx", "type": "item", "action": "nginx.sh" }
     ],
 
     "TOOLS_MENU": [
-      { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh" },
-      { "name": "返回主菜单", "type": "back", "action": "MAIN_MENU" }
+      { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh" }
     ],
 
     "CERT_MENU": [
-      { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh" },
-      { "name": "返回主菜单", "type": "back", "action": "MAIN_MENU" }
+      { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh" }
     ]
   },
 
