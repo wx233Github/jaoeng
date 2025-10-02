@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v9.5 - 可配置时区版)
+# 🚀 VPS 一键安装入口脚本 (v9.5 - 终极环境自净版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -111,40 +111,64 @@ force_update_all() {
     local temp_script="/tmp/install.sh.force.tmp"; local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"
     if curl -fsSL "$force_url" -o "$temp_script"; then
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-            log_info "检测到主脚本新版本，正在应用并重启..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
+            log_info "检测到主脚本新版本..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
             log_success "主脚本更新成功！正在重新启动...";
             exec sudo -E bash "$SCRIPT_PATH" "$@" 
         else
             log_success "主脚本已是最新版本。"; rm -f "$temp_script";
         fi
-    else log_warning "无法获取主脚本，跳过更新。"; fi
+    else log_warning "无法获取主脚本。"; fi
     log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true"
 }
 confirm_and_force_update() {
-    read -p "$(echo -e "${YELLOW}这将从GitHub强制拉取最新版本，确定要继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
+    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
+
 execute_module() {
-    local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
-    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
-    sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true" "JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}" "JB_TIMEZONE=${CONFIG[timezone]:-Asia/Shanghai}")
-    local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
-    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
-        while IFS='=' read -r key value; do env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value"); done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "\(.key)=\(.value)"' "$config_path")
+    local script_name="$1"; local display_name="$2"
+    local local_path="${CONFIG[install_dir]}/$script_name"
+    local config_path="${CONFIG[install_dir]}/config.json"
+    
+    log_info "您选择了 [$display_name]"
+    if [ ! -f "$local_path" ]; then
+        log_info "正在下载模块..."
+        if ! download_module_to_cache "$script_name"; then
+            log_error "下载失败。"
+            return 1
+        fi
     fi
-    if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
-        local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$all_labels" ]; then env_vars+=("WT_AVAILABLE_LABELS=$all_labels"); fi
-        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$exclude_list" ]; then env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list"); fi
-    fi
-    local exit_code=0; sudo_preserve_env env "${env_vars[@]}" bash "$local_path" || exit_code=$?
+    
+    sudo_preserve_env chmod +x "$local_path"
+    
+    local env_script="/tmp/jb_env_vars.sh"
+    {
+        echo "export IS_NESTED_CALL=true"
+        echo "export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]:-false}'"
+        echo "export JB_TIMEZONE='${CONFIG[timezone]:-Asia/Shanghai}'"
+        
+        local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
+        if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+            jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "export WT_CONF_\(.key | ascii_upcase)=\(.value)"' "$config_path"
+        fi
+
+        if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
+            local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$all_labels" ]; then echo "export WT_AVAILABLE_LABELS='$all_labels'"; fi
+            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$exclude_list" ]; then echo "export WT_EXCLUDE_CONTAINERS='$exclude_list'"; fi
+        fi
+    } > "$env_script"
+
+    local exit_code=0
+    sudo bash -c "source $env_script && bash $local_path" || exit_code=$?
+    rm -f "$env_script"
+    
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
 }
 
 # --- 动态菜单核心 ---
-CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v9.5)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
@@ -172,13 +196,13 @@ process_menu_selection() {
 # ====================== 主程序入口 ======================
 main() {
     acquire_lock
-    trap 'release_lock; log_info "脚本已退出，锁已释放。"' EXIT HUP INT QUIT TERM
+    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
     sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在下载...";
+        echo -e "${BLUE}[信息]${NC} 未找到配置，正在下载...";
         if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then echo -e "${RED}[错误]${NC} 下载失败！"; exit 1; fi
-        echo -e "${GREEN}[成功]${NC} 默认配置已下载。"
+        echo -e "${GREEN}[成功]${NC} 已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
     load_config; setup_logging; log_info "脚本启动 (v9.5)"; check_and_install_dependencies
