@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v33.2 - 最终逻辑修复版)
+# 🚀 VPS 一键安装入口脚本 (v35.0 - 最终完整版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -90,17 +90,23 @@ setup_shortcut() {
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
+
+# --- [最终修复]: 加固并恢复自动更新 ---
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
-    local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
+    local temp_script="/tmp/install.sh.tmp"; 
+    # 统一使用加固过的 _download_self 函数，确保能抵抗 CDN 缓存
+    if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
             log_success "主脚本更新成功！正在重启..."; exec sudo -E bash "$SCRIPT_PATH" "$@" 
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
+
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
@@ -221,7 +227,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v35.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -288,7 +294,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v33.2 - 最终逻辑修复版)"
+    log_info "脚本启动 (v35.0 - 最终完整版)"
     
     check_and_install_dependencies
     
@@ -299,6 +305,7 @@ main() {
     
     setup_shortcut
     
+    # 恢复安全的自动更新检查
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
