@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v11.0 - 智能补丁与自愈更新版)
+# 🚀 VPS 一键安装入口脚本 (v12.0 - 双重 Bug 修复与稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -84,59 +84,15 @@ setup_shortcut() {
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
-
-# --- MODIFICATION START: 智能更新与自愈修复 ---
-self_update() {
-    export LC_ALL=C.utf8
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
-    # 只在通过 jb 命令执行时才进行更新检查
-    if [[ "$0" != "$SCRIPT_PATH" ]]; then
-        return
-    fi
-    log_info "检查主脚本更新..."
-    
-    local temp_script="/tmp/install.sh.tmp"
-    local patched_script="/tmp/install.sh.patched"
-    
-    # 定义 bug 特征和修复内容
-    local buggy_pattern="select(.key | startswith(\"comment\") | not)"
-    local fix_pattern="select((.key | startswith(\"comment\") | not) and (.value | type | IN(\"string\", \"number\", \"boolean\")))"
-    
-    # 1. 下载最新脚本
-    if ! _download_self "$temp_script"; then
-        log_warning "无法连接 GitHub 检查更新。"
-        return
-    fi
-    
-    # 2. 检查是否有新版本
-    if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-        log_info "检测到新版本，正在应用兼容性修复..."
-        # 3. 对新版本打上补丁
-        sed "s/${buggy_pattern}/${fix_pattern}/" "$temp_script" > "$patched_script"
-        
-        sudo mv "$patched_script" "$SCRIPT_PATH"
-        sudo chmod +x "$SCRIPT_PATH"
-        rm -f "$temp_script"
-        log_success "主脚本更新并修复成功！正在重启..."
-        exec sudo -E bash "$SCRIPT_PATH" "$@"
-    else
-        # 4. 如果没有新版本，检查本地脚本是否已修复 (自愈功能)
-        if ! grep -q 'IN("string", "number", "boolean")' "$SCRIPT_PATH"; then
-            log_warning "检测到本地脚本未被修复，正在自动修复..."
-            sed "s/${buggy_pattern}/${fix_pattern}/" "$SCRIPT_PATH" > "$patched_script"
-            
-            sudo mv "$patched_script" "$SCRIPT_PATH"
-            sudo chmod +x "$SCRIPT_PATH"
-            log_success "本地脚本修复成功！正在重启..."
-            exec sudo -E bash "$SCRIPT_PATH" "$@"
-        fi
-    fi
-    
-    # 清理临时文件
-    rm -f "$temp_script"
+self_update() { 
+    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "检查主脚本更新..."; 
+    local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
+        if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
+            log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
+            log_success "主脚本更新成功！正在重启..."; exec sudo -E bash "$SCRIPT_PATH" "$@" 
+        fi; rm -f "$temp_script"; 
+    else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
-# --- MODIFICATION END ---
-
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
@@ -144,14 +100,29 @@ download_module_to_cache() {
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
+
+# --- [修复 Bug #1]: 强制更新功能 ---
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; log_info "正在并行更新所有模块..."; 
-    local scripts_to_update; scripts_to_update=$(jq -r '.menus[][] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
+    local scripts_to_update
+    # 通过 select(type=="array") 过滤掉非数组项 (如注释)，避免 jq 崩溃
+    scripts_to_update=$(jq -r '.menus[] | select(type=="array") | .[] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
     for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name" "$force_update"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
     wait; log_success "所有模块更新完成！"
 }
+
 force_update_all() {
-    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; self_update; log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true";
+    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "步骤 1: 检查主脚本更新..."; 
+    local temp_script="/tmp/install.sh.force.tmp"; local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"; 
+    if curl -fsSL "$force_url" -o "$temp_script"; then
+        if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
+            log_info "检测到主脚本新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH";
+            log_success "主脚本更新成功！正在重启..."; exec sudo -E bash "$SCRIPT_PATH" "$@" 
+        else
+            log_success "主脚本已是最新版本。"; rm -f "$temp_script";
+        fi
+    else log_warning "无法获取主脚本。"; fi
+    log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true"
 }
 confirm_and_force_update() {
     export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice; fi
@@ -169,10 +140,14 @@ execute_module() {
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         local exports
         
-        # [THE FIX]: jq 命令已修复，使其能处理复杂数据类型
+        # --- [修复 Bug #2]: 模块配置解析 ---
+        # 通过增加类型检查，只处理简单值，避免在处理数组时崩溃
         exports=$(jq -r --arg key "$module_key" '
             .module_configs[$key] | to_entries | .[] | 
-            select((.key | startswith("comment") | not) and (.value | type | IN("string", "number", "boolean"))) | 
+            select(
+                (.key | startswith("comment") | not) and 
+                (.value | type | IN("string", "number", "boolean"))
+            ) | 
             "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
         ' "$config_path")
         
@@ -197,7 +172,7 @@ execute_module() {
 # --- 动态菜单核心 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v11.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v12.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -256,7 +231,7 @@ main() {
     load_config
     setup_logging
     
-    log_info "脚本启动 (v11.0 - 智能补丁与自愈更新版)"
+    log_info "脚本启动 (v12.0 - 双重 Bug 修复与稳定版)"
     
     check_and_install_dependencies
     
@@ -266,7 +241,9 @@ main() {
     fi
     
     setup_shortcut
-    self_update
+    
+    # --- 禁用不稳定的自动更新，确保修复的永久性 ---
+    # self_update 
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
