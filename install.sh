@@ -1,39 +1,22 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v38.0 - 健壮引导版)
+# 🚀 VPS 一键安装入口脚本 (v39.0 - 原子更新稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造]: 使用 sudo -E 的健壮 Bootstrap 引导逻辑 ---
-# 检查一个特殊环境变量，如果未设置，则执行引导程序
-if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
-    
-    # 设置环境变量，防止无限循环
-    export _JAE_BOOTSTRAPPED=true
-    
-    # 创建一个安全的临时文件
+# --- [核心改造]: Bootstrap 引导逻辑 ---
+# 检查脚本是否通过管道执行 (一个简单的启发式判断)
+if [[ "$0" != /* && "$0" != "bash" ]]; then
     TEMP_SCRIPT_PATH=$(mktemp)
-    
-    # 设置陷阱，确保在任何情况下退出时，临时文件都会被删除
     trap 'rm -f "$TEMP_SCRIPT_PATH"' EXIT SIGHUP SIGINT TERM
-    
-    # 将从管道 (stdin) 传来的自身全部代码，保存到临时文件中
     cat > "$TEMP_SCRIPT_PATH"
-    
-    # 终极执行命令:
-    # 1. exec: 替换当前进程，保持进程树干净。
-    # 2. sudo -E: 以 root 权限执行，并使用 -E 标志保留所有环境变量
-    #    (如 FORCE_REFRESH)，这是解决所有问题的关键。
-    # 3. bash "$TEMP_SCRIPT_PATH" "$@": 执行我们刚刚保存的、绝对正确的临时脚本，
-    #    并传递所有原始参数。
+    # 使用 sudo -E 保留所有环境变量 (如 FORCE_REFRESH)
     exec sudo -E bash "$TEMP_SCRIPT_PATH" "$@"
-    
-    # exec 执行后，当前脚本的后续代码不会被执行
 fi
-# --- Bootstrap 结束。从这里开始，脚本运行在一个权限正确、环境变量完整的环境中 ---
+# --- Bootstrap 结束 ---
 
 
 # --- 颜色定义 ---
@@ -112,18 +95,22 @@ setup_shortcut() {
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
+
+# --- [最终修复]: 让自我更新变得“原子化” ---
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    # 只有当脚本从其最终安装路径运行时，才执行自动更新
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-            log_success "主脚本更新成功！正在重启..."; exec sudo -E bash "$SCRIPT_PATH" "$@" 
+            log_success "主脚本更新成功！正在重启以同步所有配置..."; 
+            # 关键修复: 在重启时，强制注入 FORCE_REFRESH=true，确保 config.json 也被更新
+            exec sudo -E env FORCE_REFRESH=true bash "$SCRIPT_PATH" "$@"
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
+
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
@@ -244,7 +231,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v38.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v39.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -287,7 +274,6 @@ main() {
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         CACHE_BUSTER="?_=$(date +%s)"
         log_info "强制刷新模式：将强制拉取所有最新文件。"
-        # 只有在 config.json 存在时才尝试删除，避免不必要的 sudo 提示
         if [ -f "${CONFIG[install_dir]}/config.json" ]; then
             sudo rm -f "${CONFIG[install_dir]}/config.json"
         fi
@@ -314,7 +300,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v38.0 - 健壮引导版)"
+    log_info "脚本启动 (v39.0 - 原子更新稳定版)"
     
     check_and_install_dependencies
     
@@ -339,6 +325,4 @@ main() {
     done
 }
 
-# 脚本的主业务逻辑启动点
-# 这个调用只会在 Bootstrap 引导完成后，从文件执行时才会被运行
 main "$@"
