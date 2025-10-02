@@ -47,7 +47,7 @@
         "action": "docker.sh"
       },
       {
-        "type": "item",
+        "type":- "item",
         "name": "Nginx",
         "action": "nginx.sh"
       },
