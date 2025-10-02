@@ -92,7 +92,6 @@ setup_shortcut() {
 }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -139,16 +138,13 @@ _update_all_modules() {
     fi
 }
 
-# --- [最终逻辑修复]: 移除错误的 if 判断，确保强制更新总是检查主脚本 ---
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主脚本更新...";
-    # 无条件调用 self_update。self_update 内部已有保护，不会在 curl | bash 时执行。
     self_update
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
-
 confirm_and_force_update() {
     export LC_ALL=C.utf8
     if [[ "$AUTO_YES" == "true" ]]; then
