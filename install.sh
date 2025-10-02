@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v29.0 - 终极返璞归真版)
+# 🚀 VPS 一键安装入口脚本 (v31.0 - 串行更新稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -93,7 +93,6 @@ setup_shortcut() {
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
-# self_update function can be kept for force_update_all to use
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -106,25 +105,85 @@ self_update() {
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
-    local url="${CONFIG[base_url]}/$script_name"; if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
+    local url="${CONFIG[base_url]}/$script_name"; 
+    
+    # 强制刷新模式下，为 URL 添加时间戳以绕过缓存
+    if [ "$force_update" = "true" ]; then 
+        url="${url}?_=$(date +%s)";
+        # 在串行模式下，我们可以把提示信息放在这里，更清晰
+        log_info "  ↳ 强制刷新: $script_name"
+    fi
+    
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
-    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
+    
+    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then 
+        echo -e "  ${GREEN}✔ ${script_name}${NC}"
+        return 0
+    else 
+        sudo rm -f "$local_file"; 
+        echo -e "  ${RED}✖ ${script_name} (下载失败, HTTP: $http_code)${NC}"
+        # 在串行模式下，返回错误码是安全的
+        return 1
+    fi; 
 }
 
+# --- [最终修复]: 改为串行更新，确保输出整洁且能安全处理错误 ---
 _update_all_modules() {
-    export LC_ALL=C.utf8; local force_update="${1:-false}"; log_info "正在并行更新所有模块..."; 
+    export LC_ALL=C.utf8; local force_update="${1:-false}"; 
+    log_info "正在串行更新所有模块..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type=="array") | .[] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
-    for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name" "$force_update"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
-    wait; log_success "所有模块更新完成！"
+    
+    local all_successful=true
+    for script_name in $scripts_to_update; do
+        if ! download_module_to_cache "$script_name" "$force_update"; then
+            all_successful=false
+        fi
+    done
+    
+    if [[ "$all_successful" == "true" ]]; then
+        log_success "所有模块更新完成！"
+    else
+        log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中。"
+    fi
 }
 
 force_update_all() {
-    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; self_update; log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true";
+    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
+    # 步骤 1: 更新主脚本
+    # 只有通过 jb 命令执行时，$0 才是 SCRIPT_PATH
+    if [[ "$0" == "${CONFIG[install_dir]}/install.sh" ]]; then
+        self_update
+    fi
+    # 步骤 2: 更新子模块
+    log_info "步骤 2: 强制更新所有子模块..."; 
+    _update_all_modules "true";
 }
 confirm_and_force_update() {
     export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty; fi
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
+}
+
+uninstall_script() {
+    log_warning "警告：这将从您的系统中彻底移除本脚本及其所有组件！"
+    log_warning "将要删除的包括："
+    log_warning "  - 安装目录: ${CONFIG[install_dir]}"
+    log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
+    read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    if [[ "$choice" == "yes" ]]; then
+        log_info "开始卸载...";
+        release_lock
+        log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
+        if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
+        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
+        if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
+        log_info "正在清理锁文件...";
+        sudo rm -f "${CONFIG[lock_file]}"
+        log_success "脚本已成功卸载。"; log_info "再见！";
+        exit 0
+    else
+        log_info "卸载操作已取消。"
+    fi
 }
 
 execute_module() {
@@ -165,7 +224,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v29.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v31.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -224,7 +283,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v29.0 - 终极返璞归真版)"
+    log_info "脚本启动 (v31.0 - 串行更新稳定版)"
     
     check_and_install_dependencies
     
@@ -235,7 +294,7 @@ main() {
     
     setup_shortcut
     
-    # --- [最终修复]: 移除不稳定的自动更新，只保留用户手动触发的更新 ---
+    # 移除不稳定的自动更新，只保留用户手动触发的更新
     # self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
