@@ -72,12 +72,11 @@ check_and_install_dependencies() {
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
 
-# --- [最终修复]: 移除脆弱的 fallback 逻辑，简化函数职责 ---
+# [最终修复]: 移除脆弱的 fallback 逻辑，简化函数职责
 save_entry_script() { 
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
     local temp_path="/tmp/install.sh.self"; 
     
-    # 函数的唯一职责：从 GitHub 下载。如果失败，则明确报错并退出。
     if ! _download_self "$temp_path"; then 
         log_error "无法从 GitHub 下载主脚本。请检查您的网络连接或 DNS 设置。";
     fi
