@@ -1,21 +1,21 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v22.0 - 自引导稳定版)
+# 🚀 VPS 一键安装入口脚本 (v25.0 - flock引导与强制着色版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造 1/2]: Bootstrap 引导逻辑 ---
-# 检查一个特殊环境变量，如果未设置，则执行引导程序
-if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
+# --- [核心改造 1/2]: 使用 flock 和 tee 实现原子锁、自引导和自动化日志 ---
+LOCK_FILE="/tmp/vps_install_modules.lock"
+# 检查一个特殊环境变量，如果未设置，则执行加锁与日志引导
+if [[ -z "$_JAE_LOCKED_AND_LOGGED" ]]; then
     
     # 设置环境变量，传递给子进程，防止无限循环
-    export _JAE_BOOTSTRAPPED=true
-    
-    # 定义日志文件路径
-    LOG_FILE="/var/log/jb_launcher.log"
+    export _JAE_LOCKED_AND_LOGGED=true
+    # 设置强制颜色变量
+    export FORCE_COLOR=true
     
     # 创建一个安全的临时文件来存放主脚本
     MAIN_SCRIPT_PATH=$(mktemp)
@@ -27,27 +27,31 @@ if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
     cat > "$MAIN_SCRIPT_PATH"
     
     # 准备日志文件
+    LOG_FILE="/var/log/jb_launcher.log"
     sudo mkdir -p "$(dirname "$LOG_FILE")"
     sudo touch "$LOG_FILE"
     sudo chown "$(whoami)" "$LOG_FILE"
+
+    # 终极执行命令:
+    # 1. exec flock: 以原子方式获取文件锁，并在命令结束时自动释放。-n 使其在锁定时立即失败。
+    # 2. -c '...': flock 成功后执行的命令。使用单引号保护内部的复杂命令。
+    # 3. sudo -E bash ...: 以 root 权限执行主脚本，并保留所有环境变量。
+    # 4. 2>&1 | sudo tee -a ...: 将主脚本的所有输出（stdout+stderr）通过管道传给 tee，
+    #    实现屏幕和文件的同时输出。flock 会等待整个管道执行完毕，从而解决了所有竞态条件问题。
+    exec flock -n "$LOCK_FILE" -c 'sudo -E bash "$0" "$@" 2>&1 | sudo tee -a "$1"' bash "$MAIN_SCRIPT_PATH" "$LOG_FILE" "$@"
     
-    # 魔法执行命令：
-    # 1. exec: 替换当前进程，避免留下僵尸进程。
-    # 2. sudo -E: 以 root 权限执行，并保留当前环境变量 (_JAE_BOOTSTRAPPED, FORCE_REFRESH 等)。
-    # 3. bash "$MAIN_SCRIPT_PATH" "$@": 执行我们保存的临时脚本，并传递所有原始参数。
-    # 4. 2>&1 | sudo tee -a "$LOG_FILE": 将新进程的所有输出通过管道传给 tee，实现日志记录。
-    exec sudo -E bash "$MAIN_SCRIPT_PATH" "$@" 2>&1 | sudo tee -a "$LOG_FILE"
-    
-    # exec 执行后，当前脚本的后续代码不会被执行
+    # 如果 flock 获取锁失败，上面的命令会以非零状态退出，此处的 echo 不会执行，但作为最后的保险
+    echo "错误：检测到另一脚本实例正在运行。" >&2
+    exit 1
 fi
-# --- Bootstrap 结束。从这里开始，是运行在完美环境中的主脚本逻辑 ---
+# --- 引导结束。从这里开始，是运行在文件锁和日志管道保护下的主脚本逻辑 ---
 
 
 # --- [核心改造 2/2]: 主业务逻辑 ---
 
 # --- 颜色定义 ---
-# [修复颜色问题]: 增加判断，如果在 bootstrap 模式下，强制启用颜色
-if [ -t 1 ] || [[ "$_JAE_BOOTSTRAPPED" == "true" ]]; then
+# [修复颜色问题]: 增加对 FORCE_COLOR 的判断，强制启用颜色
+if [ -t 1 ] || [[ "$FORCE_COLOR" == "true" ]]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
@@ -60,7 +64,7 @@ CONFIG[install_dir]="/opt/vps_install_modules"
 CONFIG[bin_dir]="/usr/local/bin"
 CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
-CONFIG[lock_file]="/tmp/vps_install_modules.lock"
+CONFIG[lock_file]=$LOCK_FILE 
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
 
@@ -75,7 +79,7 @@ sudo_preserve_env() { sudo -E "$@"; }
 
 # setup_logging 现在非常简单，因为复杂的逻辑已由 Bootstrap 处理
 setup_logging() {
-    : # Do nothing, logging is handled by the bootstrap
+    : # Do nothing
 }
 
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -84,17 +88,9 @@ log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
 log_warning() { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $1"; }
 log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
-# --- 并发锁机制 ---
-acquire_lock() {
-    export LC_ALL=C.utf8
-    local lock_file="${CONFIG[lock_file]}"; if [ -e "$lock_file" ]; then
-        local old_pid; old_pid=$(cat "$lock_file" 2>/dev/null)
-        if [ -n "$old_pid" ] && ps -p "$old_pid" > /dev/null 2>&1; then log_warning "检测到另一实例 (PID: $old_pid) 正在运行。"; exit 1; else
-            log_warning "检测到陈旧锁文件 (PID: ${old_pid:-"N/A"})，将自动清理。"; sudo rm -f "$lock_file"
-        fi
-    fi; echo "$$" | sudo tee "$lock_file" > /dev/null
-}
-release_lock() { sudo rm -f "${CONFIG[lock_file]}"; }
+# --- 并发锁机制 (已由 flock 取代) ---
+acquire_lock() { :; }
+release_lock() { :; }
 
 # --- 配置加载 ---
 load_config() {
@@ -102,7 +98,6 @@ load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"; if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
-        CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE")"
         CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
         CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
     fi
@@ -120,7 +115,10 @@ save_entry_script() {
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
     local temp_path="/tmp/install.sh.self"; if ! _download_self "$temp_path"; then 
         log_error "无法从 GitHub 下载脚本以保存。";
-    else sudo mv "$temp_path" "$SCRIPT_PATH"; fi; sudo chmod +x "$SCRIPT_PATH"; 
+    else 
+        sudo mv "$temp_path" "$SCRIPT_PATH"; 
+    fi; 
+    sudo chmod +x "$SCRIPT_PATH"; 
 }
 setup_shortcut() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; 
@@ -199,7 +197,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v22.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v25.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -239,8 +237,7 @@ main() {
     
     setup_logging
     
-    acquire_lock
-    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
+    # 锁机制已由顶层 flock 处理，不再需要 acquire_lock 和 trap
     
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -258,7 +255,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v22.0 - 自引导稳定版)"
+    log_info "脚本启动 (v25.0 - flock引导与强制着色版)"
     
     check_and_install_dependencies
     
