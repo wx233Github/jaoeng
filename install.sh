@@ -1,34 +1,39 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v36.0 - Bootstrap 稳定版)
+# 🚀 VPS 一键安装入口脚本 (v37.0 - 健壮引导版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造]: Bootstrap 引导逻辑 ---
-# 检查脚本是否通过管道执行 (一个简单的启发式判断)
-# 如果 $0 不是以 / 开头的绝对路径，我们假设它需要引导
-if [[ "$0" != /* ]]; then
+# --- [核心改造]: 使用 sudo -E 的健壮 Bootstrap 引导逻辑 ---
+# 检查一个特殊环境变量，如果未设置，则执行引导程序
+if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
+    
+    # 设置环境变量，防止无限循环
+    export _JAE_BOOTSTRAPPED=true
+    
     # 创建一个安全的临时文件
     TEMP_SCRIPT_PATH=$(mktemp)
     
     # 设置陷阱，确保在任何情况下退出时，临时文件都会被删除
-    # SIGHUP SIGINT SIGTERM 是常见的终止信号
     trap 'rm -f "$TEMP_SCRIPT_PATH"' EXIT SIGHUP SIGINT SIGTERM
     
     # 将从管道 (stdin) 传来的自身全部代码，保存到临时文件中
     cat > "$TEMP_SCRIPT_PATH"
     
-    # 使用 exec 从刚刚保存的、绝对正确的临时文件中重新启动自己
-    # "$@" 会将所有原始参数 (如 FORCE_REFRESH=true) 原封不动地传递下去
-    # 我们需要将环境变量也传递过去
-    exec bash "$TEMP_SCRIPT_PATH" "$@"
+    # 终极执行命令:
+    # 1. exec: 替换当前进程，保持进程树干净。
+    # 2. sudo -E: 以 root 权限执行，并使用 -E 标志保留所有环境变量
+    #    (如 FORCE_REFRESH)，这是解决所有问题的关键。
+    # 3. bash "$TEMP_SCRIPT_PATH" "$@": 执行我们刚刚保存的、绝对正确的临时脚本，
+    #    并传递所有原始参数。
+    exec sudo -E bash "$TEMP_SCRIPT_PATH" "$@"
     
     # exec 执行后，当前脚本的后续代码不会被执行
 fi
-# --- Bootstrap 结束。从这里开始，我们保证脚本是从一个真实文件中运行的 ---
+# --- Bootstrap 结束。从这里开始，脚本运行在一个权限正确、环境变量完整的环境中 ---
 
 
 # --- 颜色定义 ---
@@ -97,7 +102,7 @@ check_and_install_dependencies() {
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
 save_entry_script() { 
     export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
-    # 因为我们现在总是从一个文件中运行，所以 $0 总是有效的
+    # 因为 Bootstrap 确保了 $0 是一个真实的文件，所以可以直接复制
     sudo cp "$0" "$SCRIPT_PATH";
     sudo chmod +x "$SCRIPT_PATH"; 
 }
@@ -109,7 +114,6 @@ setup_shortcut() {
 }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -169,7 +173,7 @@ confirm_and_force_update() {
         force_update_all
         return 10
     fi
-    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
+    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取取消): ${NC}")" choice < /dev/tty
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
         force_update_all
     else
@@ -239,7 +243,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v36.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v37.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -279,6 +283,7 @@ main() {
     export LC_ALL=C.utf8
     local CACHE_BUSTER=""
     
+    # 环境变量由 Bootstrap 传递，这里可以直接使用
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         CACHE_BUSTER="?_=$(date +%s)"
         log_info "强制刷新模式：将强制拉取所有最新文件。"
@@ -306,7 +311,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v36.0 - Bootstrap 稳定版)"
+    log_info "脚本启动 (v37.0 - 健壮引导版)"
     
     check_and_install_dependencies
     
