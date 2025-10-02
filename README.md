@@ -14,6 +14,8 @@
 
 ---
 
+<details><summary>Watchtower.sh</summary>自动化日志</details>
+
 ## 使用方法
 
 在 VPS 上执行：
