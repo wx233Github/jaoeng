@@ -4,15 +4,23 @@
   "bin_dir": "/usr/local/bin",
   "log_file": "/var/log/jb_launcher.log",
   
-  "comment_timezone": "【新增】全局时区设置, 用于所有需要时区的模块 (例如 Watchtower), 默认 'Asia/Shanghai'",
+  "comment_timezone": "全局时区设置, 用于所有需要时区的模块 (例如 Watchtower), 默认 'Asia/Shanghai'",
   "timezone": "Asia/Shanghai",
 
   "comment_auto_clear": "是否在显示菜单时自动清屏 (true/false)",
   "enable_auto_clear": false,
+
   "comment_info": "这是 jb 启动器框架的配置文件",
   "dependencies": {
     "comment": "脚本运行所需的核心依赖列表",
-    "common": ["curl", "cmp", "ln", "dirname", "flock", "jq"]
+    "common": [
+      "curl",
+      "cmp",
+      "ln",
+      "dirname",
+      "flock",
+      "jq"
+    ]
   },
   "module_configs": {
     "comment": "各子模块的专属配置区域",
@@ -20,26 +28,66 @@
       "comment_desc": "Watchtower 模块的专属配置",
       "default_interval": "86400",
       "default_cron_hour": "3",
-      "comment_report": "配置TG通知后, 是否每次都发报告 (true), 或仅更新后发送 (false)",
+      "comment_report": "配置TG通知后, 是否每次扫描都发送报告 (true), 或仅在有更新时才发送 (false)",
       "enable_report": true,
-      "comment_exclude": "在自动更新时, 永远要排除的容器名列表",
-      "exclude_containers": ["mysql", "postgres-db", "redis"]
+      "comment_exclude": "在自动更新时, 永远要排除的容器名列表 (例如数据库)",
+      "exclude_containers": [
+        "mysql",
+        "postgres-db",
+        "redis"
+      ]
     }
   },
   "menus": {
     "comment": "动态菜单系统定义",
     "MAIN_MENU": [
-      { "type": "item", "name": "Docker", "action": "docker.sh" },
-      { "type": "item", "name": "Nginx", "action": "nginx.sh" },
-      { "type": "submenu", "name": "常用工具", "action": "TOOLS_MENU" },
-      { "type": "item", "name": "证书申请", "action": "cert.sh" },
-      { "type": "func", "name": "强制更新 (主程序+所有模块)", "action": "confirm_and_force_update" }
+      {
+        "type": "item",
+        "name": "Docker",
+        "action": "docker.sh"
+      },
+      {
+        "type": "item",
+        "name": "Nginx",
+        "action": "nginx.sh"
+      },
+      {
+        "type": "submenu",
+        "name": "常用工具",
+        "action": "TOOLS_MENU"
+      },
+      {
+        "type": "item",
+        "name": "证书申请",
+        "action": "cert.sh"
+      },
+      {
+        "type": "func",
+        "name": "强制更新 (主程序+所有模块)",
+        "action": "confirm_and_force_update"
+      }
     ],
     "TOOLS_MENU": [
-      { "type": "item", "name": "Watchtower (Docker 更新)", "action": "tools/Watchtower.sh" },
-      { "type": "item", "name": "BBR/系统网络优化", "action": "tcp.sh" },
-      { "type": "item", "name": "系统信息查看", "action": "sysinfo.sh" },
-      { "type": "back", "name": "返回主菜单", "action": "MAIN_MENU" }
+      {
+        "type": "item",
+        "name": "Watchtower (Docker 更新)",
+        "action": "tools/Watchtower.sh"
+      },
+      {
+        "type": "item",
+        "name": "BBR/系统网络优化",
+        "action": "tcp.sh"
+      },
+      {
+        "type": "item",
+        "name": "系统信息查看",
+        "action": "sysinfo.sh"
+      },
+      {
+        "type": "back",
+        "name": "返回主菜单",
+        "action": "MAIN_MENU"
+      }
     ]
   }
 }
