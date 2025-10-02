@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v10.0 - 解耦重构版)
+# 🚀 VPS 一键安装入口脚本 (v10.1 - 纯净解耦版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -21,22 +21,12 @@ CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
 
-# --- MODIFICATION START 1: 新增控制变量与向后兼容性处理 ---
-# 如果旧的 ONLINE_INSTALL 变量被使用, 则同时激活新变量并给出提示
-if [[ "${ONLINE_INSTALL:-}" == "true" ]]; then
-    echo -e "${YELLOW}[警告] 环境变量 ONLINE_INSTALL 已弃用, 推荐使用 FORCE_REFRESH 和 NON_INTERACTIVE 变量。${NC}"
-    echo -e "${YELLOW}       为确保兼容, 已自动设置 FORCE_REFRESH=true 和 NON_INTERACTIVE=true。${NC}"
-    export FORCE_REFRESH="true"
-    export NON_INTERACTIVE="true"
-fi
-
-# 非交互 / 自动确认判断
-# 使用新的 NON_INTERACTIVE 变量, 解除了与强制刷新的绑定
+# --- 控制变量定义 ---
+# NON_INTERACTIVE=true 或 YES_TO_ALL=true 将开启非交互模式
 AUTO_YES="false"
 if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then
     AUTO_YES="true"
 fi
-# --- MODIFICATION END 1 ---
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
@@ -78,7 +68,7 @@ load_config() {
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! $update_cmd && sudo $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
 }
 
 # --- 核心功能 ---
@@ -131,7 +121,7 @@ force_update_all() {
     log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true"
 }
 confirm_and_force_update() {
-    export LC_ALL=C.utf8; read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
+    export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice; fi
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
 execute_module() {
@@ -162,7 +152,7 @@ execute_module() {
 # --- 动态菜单核心 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v10.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v10.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -172,15 +162,12 @@ display_menu() {
     for i in $(seq 0 $((menu_len - 1))); do local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name"); echo -e " ${YELLOW}$((i+1)).${NC} $name"; done; echo ""
     local prompt_text; if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
     
-    # --- MODIFICATION START 2: 在菜单读取处使用 AUTO_YES ---
-    # 此处的逻辑不需要修改, 因为它依赖的 AUTO_YES 变量已经在脚本开头被正确设置了
     if [ "$AUTO_YES" == "true" ]; then
-        choice="" # 在非交互模式下, choice 为空, 触发默认退出行为
+        choice=""
         echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]"
     else
         read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice
     fi
-    # --- MODIFICATION END 2 ---
 }
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
@@ -198,15 +185,11 @@ main() {
     export LC_ALL=C.utf8
     local CACHE_BUSTER=""
     
-    # --- MODIFICATION START 3: 解耦强制刷新逻辑 ---
-    # 旧逻辑: if [[ "${ONLINE_INSTALL}" == "true" ]]; then ...
-    # 新逻辑: 使用新的 FORCE_REFRESH 变量来控制刷新行为
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         CACHE_BUSTER="?_=$(date +%s)"
-        echo -e "${YELLOW}[警告]${NC} 强制刷新模式：将强制拉取所有最新文件。"
+        log_info "强制刷新模式：将强制拉取所有最新文件。"
         sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
     fi
-    # --- MODIFICATION END 3 ---
     
     acquire_lock
     trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
@@ -228,7 +211,7 @@ main() {
     load_config
     setup_logging
     
-    log_info "脚本启动 (v10.0 - 解耦重构版)"
+    log_info "脚本启动 (v10.1 - 纯净解耦版)"
     
     check_and_install_dependencies
     
@@ -246,7 +229,7 @@ main() {
         local exit_code=0
         process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ] && [ "$AUTO_YES" != "true" ]; then
-            while read -r -t 0; do :; done # 清空输入缓冲区
+            while read -r -t 0; do :; done
             read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
         fi
     done
