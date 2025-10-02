@@ -3,13 +3,10 @@
   "install_dir": "/opt/vps_install_modules",
   "bin_dir": "/usr/local/bin",
   "log_file": "/var/log/jb_launcher.log",
-  
   "comment_timezone": "全局时区设置, 用于所有需要时区的模块 (例如 Watchtower), 默认 'Asia/Shanghai'",
   "timezone": "Asia/Shanghai",
-
   "comment_auto_clear": "是否在显示菜单时自动清屏 (true/false)",
   "enable_auto_clear": false,
-
   "comment_info": "这是 jb 启动器框架的配置文件",
   "dependencies": {
     "comment": "脚本运行所需的核心依赖列表",
@@ -47,7 +44,7 @@
         "action": "docker.sh"
       },
       {
-        "type":- "item",
+        "type": "item",
         "name": "Nginx",
         "action": "nginx.sh"
       },
