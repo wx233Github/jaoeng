@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v27.0 - 最终稳定版)
+# 🚀 VPS 一键安装入口脚本 (v28.0 - 增加卸载功能)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -30,7 +30,6 @@ fi
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 
-# 回归最稳定的屏幕输出模式
 setup_logging() {
     sudo mkdir -p "$(dirname "${CONFIG[log_file]}")"
     sudo touch "${CONFIG[log_file]}"
@@ -127,12 +126,55 @@ confirm_and_force_update() {
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
 
+# --- 新增卸载功能 ---
+uninstall_script() {
+    log_warning "警告：这将从您的系统中彻底移除本脚本及其所有组件！"
+    log_warning "将要删除的包括："
+    log_warning "  - 安装目录: ${CONFIG[install_dir]}"
+    log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
+    
+    # 强制从终端读取输入，以兼容所有执行方式
+    read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    
+    if [[ "$choice" == "yes" ]]; then
+        log_info "开始卸载..."
+        
+        # 释放文件锁（如果存在），以允许删除锁文件
+        release_lock
+        
+        log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
+        if sudo rm -rf "${CONFIG[install_dir]}"; then
+            log_success "安装目录已移除。"
+        else
+            log_error "移除安装目录失败。"
+        fi
+        
+        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
+        if sudo rm -f "${CONFIG[bin_dir]}/jb"; then
+            log_success "快捷方式已移除。"
+        else
+            log_error "移除快捷方式失败。"
+        fi
+        
+        # 尝试移除锁文件
+        log_info "正在清理锁文件..."
+        sudo rm -f "${CONFIG[lock_file]}"
+        
+        log_success "脚本已成功卸载。"
+        log_info "再见！"
+        
+        # 成功卸载后，必须退出脚本
+        exit 0
+    else
+        log_info "卸载操作已取消。"
+    fi
+}
+
 execute_module() {
     export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
     sudo chmod +x "$local_path"
     
-    # [修复 颜色问题]: 增加 FORCE_COLOR=true，强制子脚本启用颜色
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     
@@ -166,7 +208,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v27.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v28.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -225,7 +267,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v27.0 - 最终稳定版)"
+    log_info "脚本启动 (v28.0 - 增加卸载功能)"
     
     check_and_install_dependencies
     
