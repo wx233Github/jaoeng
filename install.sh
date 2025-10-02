@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v10.1 - 纯净解耦版)
+# 🚀 VPS 一键安装入口脚本 (v10.2 - 健壮性修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -22,7 +22,6 @@ CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
 
 # --- 控制变量定义 ---
-# NON_INTERACTIVE=true 或 YES_TO_ALL=true 将开启非交互模式
 AUTO_YES="false"
 if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then
     AUTO_YES="true"
@@ -124,6 +123,7 @@ confirm_and_force_update() {
     export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice; fi
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
+
 execute_module() {
     export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
@@ -131,13 +131,33 @@ execute_module() {
     
     local env_exports="export IS_NESTED_CALL=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
+    
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
-        local exports; exports=$(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"/' "$config_path")
+        local exports
+        
+        # --- MODIFICATION START: 修复 jq 命令 ---
+        # 旧的命令没有过滤值的类型，导致处理数组时出错
+        # exports=$(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"/' "$config_path")
+        
+        # 新的命令增加了对值类型的判断，只处理字符串、数字、布尔值这些简单类型
+        exports=$(jq -r --arg key "$module_key" '
+            .module_configs[$key] | to_entries | .[] | 
+            select(
+                (.key | startswith("comment") | not) and 
+                (.value | type | IN("string", "number", "boolean"))
+            ) | 
+            "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
+        ' "$config_path")
+        # --- MODIFICATION END ---
+        
         env_exports+="$exports"
     fi
+    
     if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
         local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
         if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
+        
+        # 这个是专门处理 exclude_containers 的，所以上面那个通用的转换器应该忽略它
         local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
         if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
     fi
@@ -152,7 +172,7 @@ execute_module() {
 # --- 动态菜单核心 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v10.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v10.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -177,7 +197,7 @@ process_menu_selection() {
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 0; fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
-    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu | back) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return 0;; esac
+    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu | back) CURRENT_MENU_NAME=$action; return 10;; func) "$action" "true"; return 0;; esac
 }
 
 # ====================== 主程序入口 ======================
@@ -211,7 +231,7 @@ main() {
     load_config
     setup_logging
     
-    log_info "脚本启动 (v10.1 - 纯净解耦版)"
+    log_info "脚本启动 (v10.2 - 健壮性修复版)"
     
     check_and_install_dependencies
     
