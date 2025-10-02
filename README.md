@@ -30,18 +30,9 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh
 临时记录日志-存放于执行命令所在的目录
 
 ```
-curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee jb_a.log
+curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee jb_a_$(date +%Y%m%d_%H%M%S).log
 ```
 
-更新主入口脚本（如果它不是最新版本）:
-
-```Bash
-sudo jb --save-self
-```
-
-```
-curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh -o /opt/vps_install_modules/install.sh && chmod +x /opt/vps_install_modules/install.sh
-```
 
 ---
 
