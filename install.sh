@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v33.0 - 最终修复版)
+# 🚀 VPS 一键安装入口脚本 (v33.1 - 最终交互修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -222,7 +222,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -239,12 +239,17 @@ display_menu() {
         read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty
     fi
 }
+
+# --- [最终交互修复]: 无效选项时，返回 10 以立即刷新菜单 ---
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 0; fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
+        log_warning "无效选项。"
+        return 10 # 返回 10 信号，立即刷新当前菜单
+    fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in 
@@ -285,7 +290,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v33.0 - 最终修复版)"
+    log_info "脚本启动 (v33.1 - 最终交互修复版)"
     
     check_and_install_dependencies
     
@@ -296,7 +301,6 @@ main() {
     
     setup_shortcut
     
-    # --- 恢复安全的自动更新检查 ---
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
