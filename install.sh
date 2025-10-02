@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v9.2 - 默认关闭清屏版)
+# 🚀 VPS 一键安装入口脚本 (v9.3 - exec 终极修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -18,15 +18,12 @@ CONFIG[bin_dir]="/usr/local/bin"
 CONFIG[log_file]="/var/log/jb_launcher.log"
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
-# 【修改】默认值改为 false
 CONFIG[enable_auto_clear]="false"
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() {
-    sudo_preserve_env mkdir -p "$(dirname "${CONFIG[log_file]}")"
-    sudo_preserve_env touch "${CONFIG[log_file]}"
-    sudo_preserve_env chown "$(whoami)" "${CONFIG[log_file]}"
+    sudo_preserve_env mkdir -p "$(dirname "${CONFIG[log_file]}")"; sudo_preserve_env touch "${CONFIG[log_file]}"; sudo_preserve_env chown "$(whoami)" "${CONFIG[log_file]}"
     exec > >(tee -a "${CONFIG[log_file]}") 2> >(tee -a "${CONFIG[log_file]}" >&2)
 }
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -37,28 +34,21 @@ log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 
 # --- 并发锁机制 ---
 acquire_lock() {
-    local lock_file="${CONFIG[lock_file]}"
-    if [ -e "$lock_file" ]; then
+    local lock_file="${CONFIG[lock_file]}"; if [ -e "$lock_file" ]; then
         local old_pid; old_pid=$(cat "$lock_file" 2>/dev/null)
-        if [ -n "$old_pid" ] && ps -p "$old_pid" > /dev/null 2>&1; then
-            log_warning "检测到另一个脚本实例 (PID: $old_pid) 正在运行。"; exit 1
-        else
-            log_warning "检测到陈旧的锁文件 (来自已停止的 PID: ${old_pid:-"N/A"})，将自动清理。"
-            sudo_preserve_env rm -f "$lock_file"
+        if [ -n "$old_pid" ] && ps -p "$old_pid" > /dev/null 2>&1; then log_warning "检测到另一实例 (PID: $old_pid) 正在运行。"; exit 1; else
+            log_warning "检测到陈旧锁文件 (PID: ${old_pid:-"N/A"})，将自动清理。"; sudo_preserve_env rm -f "$lock_file"
         fi
-    fi
-    echo "$$" | sudo_preserve_env tee "$lock_file" > /dev/null
+    fi; echo "$$" | sudo_preserve_env tee "$lock_file" > /dev/null
 }
 release_lock() { sudo_preserve_env rm -f "${CONFIG[lock_file]}"; }
 
 # --- 配置加载 ---
 load_config() {
-    CONFIG_FILE="${CONFIG[install_dir]}/config.json"
-    if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
+    CONFIG_FILE="${CONFIG[install_dir]}/config.json"; if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common | @sh' "$CONFIG_FILE" | tr -d "'")"
         CONFIG[lock_file]="${CONFIG[lock_file]:-/tmp/vps_install_modules.lock}"
-        # 【修改】jq 解析的默认值也改为 false
         CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
     fi
 }
@@ -68,13 +58,12 @@ detect_package_manager() { if command -v apt-get &>/dev/null; then echo "apt"; e
 check_and_install_dependencies() {
     local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done
     if [ ${#missing_deps[@]} -gt 0 ]; then
-        log_warning "系统缺少以下核心依赖: ${missing_deps[*]}"; local pm; pm=$(detect_package_manager)
-        if [ "$pm" == "unknown" ]; then log_error "无法检测到系统的包管理器, 请手动安装依赖: ${missing_deps[*]}"; fi
-        read -p "$(echo -e "${YELLOW}是否尝试自动为您安装? (y/N): ${NC}")" choice
+        log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(detect_package_manager)
+        if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi
+        read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice
         if [[ "$choice" =~ ^[Yy]$ ]]; then
-            log_info "正在使用 $pm 安装依赖..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo_preserve_env apt-get update"; fi
-            if ! $update_cmd && sudo_preserve_env $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败。"; fi
-            log_success "依赖安装完成！"
+            log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo_preserve_env apt-get update"; fi
+            if ! $update_cmd && sudo_preserve_env $pm install -y ${missing_deps[@]}; then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"
         else log_error "用户取消安装。"; fi
     fi
 }
@@ -82,12 +71,10 @@ check_and_install_dependencies() {
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh" -o "$1"; }
 save_entry_script() { 
-    sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在检查并保存入口脚本..."; 
-    local temp_path="/tmp/install.sh.self"; 
-    if ! _download_self "$temp_path"; then 
-        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存入口脚本。"; else sudo_preserve_env cp "$0" "$SCRIPT_PATH"; fi; 
-    else sudo_preserve_env mv "$temp_path" "$SCRIPT_PATH"; fi; 
-    sudo_preserve_env chmod +x "$SCRIPT_PATH"; 
+    sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
+    local temp_path="/tmp/install.sh.self"; if ! _download_self "$temp_path"; then 
+        if [[ "$0" == /dev/fd/* || "$0" == "bash" ]]; then log_error "无法自动保存。"; else sudo_preserve_env cp "$0" "$SCRIPT_PATH"; fi; 
+    else sudo_preserve_env mv "$temp_path" "$SCRIPT_PATH"; fi; sudo_preserve_env chmod +x "$SCRIPT_PATH"; 
 }
 setup_shortcut() { 
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; 
@@ -96,20 +83,20 @@ setup_shortcut() {
     fi; 
 }
 self_update() { 
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "正在检查入口脚本更新..."; 
-    local temp_script="/tmp/install.sh.tmp"; 
-    if _download_self "$temp_script"; then 
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "检查主脚本更新..."; 
+    local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
-            log_info "检测到新版本，正在自动更新..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH"; log_success "脚本已更新！正在重新启动..."; 
-            exec sudo_preserve_env bash "$SCRIPT_PATH" "$@"; 
+            log_info "检测到新版本，正在更新并重启..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH"; 
+            log_success "主脚本更新成功！正在重新启动..."; 
+            # 【修复】直接使用 sudo -E 调用，不再使用封装函数
+            exec sudo -E bash "$SCRIPT_PATH" "$@" 
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
 download_module_to_cache() { 
     sudo_preserve_env mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
-    local url="${CONFIG[base_url]}/$script_name"; 
-    if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
+    local url="${CONFIG[base_url]}/$script_name"; if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
     if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo_preserve_env rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
 }
@@ -120,48 +107,40 @@ _update_all_modules() {
     wait; log_success "所有模块缓存更新完成！"
 }
 force_update_all() {
-    log_info "开始强制更新流程 (绕过CDN缓存)..."
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "步骤 1: 正在检查主脚本更新..."
+    log_info "开始强制更新流程..."; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "步骤 1: 检查主脚本更新..."
     local temp_script="/tmp/install.sh.force.tmp"; local force_url="${CONFIG[base_url]}/install.sh?_=$(date +%s)"
-    if curl -fsSL --connect-timeout 5 --max-time 30 "$force_url" -o "$temp_script"; then
+    if curl -fsSL "$force_url" -o "$temp_script"; then
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-            log_info "检测到主脚本新版本，正在应用并重启...";
-            sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
-            log_success "主脚本更新成功！正在重新启动以加载新版本...";
-            exec sudo_preserve_env bash "$SCRIPT_PATH" "$@" 
+            log_info "检测到主脚本新版本，正在应用并重启..."; sudo_preserve_env mv "$temp_script" "$SCRIPT_PATH"; sudo_preserve_env chmod +x "$SCRIPT_PATH";
+            log_success "主脚本更新成功！正在重新启动...";
+            # 【修复】直接使用 sudo -E 调用，不再使用封装函数
+            exec sudo -E bash "$SCRIPT_PATH" "$@" 
         else
             log_success "主脚本已是最新版本。"; rm -f "$temp_script";
         fi
-    else log_warning "无法从 GitHub 获取主脚本，跳过主脚本更新。"; fi
-    log_info "步骤 2: 正在强制更新所有子模块..."; _update_all_modules "true"
+    else log_warning "无法获取主脚本，跳过更新。"; fi
+    log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true"
 }
 confirm_and_force_update() {
-    read -p "$(echo -e "${YELLOW}这将从GitHub强制拉取最新版本的主脚本和所有模块，确定要继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
-    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
-        force_update_all
-    else
-        log_info "强制更新已取消。"
-    fi
+    read -p "$(echo -e "${YELLOW}这将从GitHub强制拉取最新版本，确定要继续吗？(Y/回车 确认, N 取消): ${NC}")" choice
+    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
 }
 execute_module() {
     local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
-    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "本地未找到模块，正在下载..."; if ! download_module_to_cache "$script_name"; then log_error "下载模块失败。"; return 1; fi; fi
+    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
     sudo_preserve_env chmod +x "$local_path"; local env_vars=("IS_NESTED_CALL=true" "JB_ENABLE_AUTO_CLEAR=${CONFIG[enable_auto_clear]}")
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
-    local has_config; has_config=$(jq --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path")
-    if [[ "$has_config" == "true" ]]; then
+    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         while IFS='=' read -r key value; do env_vars+=("$(echo "WT_CONF_$key" | tr '[:lower:]' '[:upper:]')=$value"); done < <(jq -r --arg key "$module_key" '.module_configs[$key] | to_entries | .[] | select(.key | startswith("comment") | not) | "\(.key)=\(.value)"' "$config_path")
     fi
-    if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
-        if command -v docker &>/dev/null && docker ps -q &>/dev/null; then
-            local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
-            if [ -n "$all_labels" ]; then env_vars+=("WT_AVAILABLE_LABELS=$all_labels"); fi
-            local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
-            if [ -n "$exclude_list" ]; then env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list"); fi
-        fi
+    if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
+        local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$all_labels" ]; then env_vars+=("WT_AVAILABLE_LABELS=$all_labels"); fi
+        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$exclude_list" ]; then env_vars+=("WT_EXCLUDE_CONTAINERS=$exclude_list"); fi
     fi
     local exit_code=0; sudo_preserve_env env "${env_vars[@]}" bash "$local_path" || exit_code=$?
-    if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行时发生错误 (码: $exit_code)。"; fi
+    if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
 }
 
@@ -169,8 +148,7 @@ execute_module() {
 CURRENT_MENU_NAME="MAIN_MENU"
 display_menu() {
     if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json";
-    local header_text="🚀 VPS 一键安装入口 (v9.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v9.3)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -199,22 +177,20 @@ main() {
     sudo_preserve_env mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在下载默认配置...";
-        if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then echo -e "${RED}[错误]${NC} 下载默认配置文件失败！"; exit 1; fi
-        echo -e "${GREEN}[成功]${NC} 默认配置文件已下载。"
+        echo -e "${BLUE}[信息]${NC} 未找到配置文件，正在下载...";
+        if ! curl -fsSL "${CONFIG[base_url]}/config.json" -o "$config_path"; then echo -e "${RED}[错误]${NC} 下载失败！"; exit 1; fi
+        echo -e "${GREEN}[成功]${NC} 默认配置已下载。"
     fi
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config; setup_logging; log_info "脚本启动 (v9.2)"; check_and_install_dependencies
+    load_config; setup_logging; log_info "脚本启动 (v9.3)"; check_and_install_dependencies
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then save_entry_script; fi
     setup_shortcut; self_update
     while true; do 
         display_menu
-        local exit_code=0
-        process_menu_selection || exit_code=$?
+        local exit_code=0; process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ]; then
-            while read -r -t 0; do :; done
-            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
+            while read -r -t 0; do :; done; read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
         fi
     done
 }
