@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v33.1 - 最终交互修复版)
+# 🚀 VPS 一键安装入口脚本 (v33.2 - 最终逻辑修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -92,6 +92,7 @@ setup_shortcut() {
 }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -138,14 +139,16 @@ _update_all_modules() {
     fi
 }
 
+# --- [最终逻辑修复]: 移除错误的 if 判断，确保强制更新总是检查主脚本 ---
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
-    if [[ "$0" == "${CONFIG[install_dir]}/install.sh" ]]; then
-        self_update
-    fi
+    log_info "步骤 1: 检查主脚本更新...";
+    # 无条件调用 self_update。self_update 内部已有保护，不会在 curl | bash 时执行。
+    self_update
     log_info "步骤 2: 强制更新所有子模块..."; 
     _update_all_modules "true";
 }
+
 confirm_and_force_update() {
     export LC_ALL=C.utf8
     if [[ "$AUTO_YES" == "true" ]]; then
@@ -222,7 +225,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v33.2)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -240,7 +243,6 @@ display_menu() {
     fi
 }
 
-# --- [最终交互修复]: 无效选项时，返回 10 以立即刷新菜单 ---
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
@@ -248,7 +250,7 @@ process_menu_selection() {
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
         log_warning "无效选项。"
-        return 10 # 返回 10 信号，立即刷新当前菜单
+        return 10 
     fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
@@ -290,7 +292,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v33.1 - 最终交互修复版)"
+    log_info "脚本启动 (v33.2 - 最终逻辑修复版)"
     
     check_and_install_dependencies
     
