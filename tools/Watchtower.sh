@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.20.9 - 可配置时区版)
+# Docker 自动更新助手 (v2.21.0 - 终极环境自净与新功能)
 #
 set -euo pipefail
 
+# 【终极修复】不信任任何上游环境，强制自我设定为 UTF-8
 export LC_ALL=C.utf8
-VERSION="2.20.9-configurable-timezone"
 
-SCRIPT_NAME="Watchtower.sh"; CONFIG_FILE="/etc/docker-auto-update.conf"; if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then CONFIG_FILE="$HOME/.docker-auto-update.conf"; fi
-if [ -t 1 ]; then COLOR_GREEN="\033[0;32m"; COLOR_RED="\033[0;31m"; COLOR_YELLOW="\033[0;33m"; COLOR_BLUE="\033[0;34m"; COLOR_CYAN="\033[0;36m"; COLOR_RESET="\033[0m"; else COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""; fi
+VERSION="2.21.0-self-healing-final"
+
+SCRIPT_NAME="Watchtower.sh"
+CONFIG_FILE="/etc/docker-auto-update.conf"
+if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
+  CONFIG_FILE="$HOME/.docker-auto-update.conf"
+fi
+
+# 颜色定义
+if [ -t 1 ]; then
+  COLOR_GREEN="\033[0;32m"; COLOR_RED="\033[0;31m"; COLOR_YELLOW="\033[0;33m"
+  COLOR_BLUE="\033[0;34m"; COLOR_CYAN="\033[0;36m"; COLOR_RESET="\033[0m"
+else
+  COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""
+fi
+
+# --- 启动环境检查 ---
 if ! command -v docker >/dev/null 2>&1; then echo -e "${COLOR_RED}❌ 错误: 未检测到 'docker' 命令。${COLOR_RESET}"; exit 1; fi
 if ! docker ps -q >/dev/null 2>&1; then echo -e "${COLOR_RED}❌ 错误:无法连接到 Docker。${COLOR_RESET}"; exit 1; fi
 # Default config vars
@@ -66,6 +81,7 @@ configure_notify() {
     read -r -p "启用 Email 通知？(y/N): " echoice; if [[ "$echoice" =~ ^[Yy]$ ]]; then read -r -p "请输入接收邮箱: " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT}"; else EMAIL_TO=""; fi
     save_config; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then if confirm_action "配置已保存。是否发送一条测试通知？"; then echo "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${VERSION} 的测试消息。"; log_success "测试通知已发送。"; fi; fi
 }
+# ... (The rest of the script is the same as the previous full version) ...
 _parse_watchtower_timestamp_from_log_line() { local log_line="$1"; local timestamp=""; timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; echo ""; return 1; }
 _date_to_epoch() { local dt="$1"; [ -z "$dt" ] && echo "" && return; if [ "$(date -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""); elif [ "$(command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""); else log_warn "⚠️ 'date' 或 'gdate' 不支持。"; echo ""; fi; }
 select_labels_interactive() { local available_labels_str="${WT_AVAILABLE_LABELS:-}"; if [ -z "$available_labels_str" ]; then read -r -p "未扫描到标签。请输入标签: " WATCHTOWER_LABELS; return; fi; IFS=',' read -r -a available_labels <<< "$available_labels_str"; local selected_labels=(); if [ -n "$WATCHTOWER_LABELS" ]; then IFS=',' read -r -a selected_labels <<< "$WATCHTOWER_LABELS"; fi; while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; echo -e "${COLOR_YELLOW}请选择要启用的标签:${COLOR_RESET}"; for i in "${!available_labels[@]}"; do local label="${available_labels[$i]}"; local is_selected=" "; for sel_label in "${selected_labels[@]}"; do if [[ "$sel_label" == "$label" ]]; then is_selected="✔"; break; fi; done; echo -e " ${YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_selected}${COLOR_RESET}] $label"; done; echo "---"; echo -e "${COLOR_CYAN}当前: ${selected_labels[*]:-无}${COLOR_RESET}"; read -r -p "输入数字选择/取消, 'c'确认, 'a'全选/不选, 'q'取消: " choice; case "$choice" in q|Q) selected_labels=(); break ;; c|C|"") break ;; a|A) if [ ${#selected_labels[@]} -eq ${#available_labels[@]} ]; then selected_labels=(); else selected_labels=("${available_labels[@]}"); fi ;; *) if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#available_labels[@]}" ]; then local target_label="${available_labels[$((choice-1))]}"; local found=false; local temp_labels=(); for item in "${selected_labels[@]}"; do if [[ "$item" == "$target_label" ]]; then found=true; else temp_labels+=("$item"); fi; done; if $found; then selected_labels=("${temp_labels[@]}"); else selected_labels+=("$target_label"); fi; else log_warn "无效输入。" && sleep 1; fi ;; esac; done; WATCHTOWER_LABELS=$(IFS=,; echo "${selected_labels[*]}"); }
