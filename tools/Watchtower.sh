@@ -16,11 +16,10 @@ if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
 fi
 
 # 颜色定义
-if [ -t 1 ]; then
-  COLOR_GREEN="\033[0;32m"; COLOR_RED="\033[0;31m"; COLOR_YELLOW="\033[0;33m"
-  COLOR_BLUE="\033[0;34m"; COLOR_CYAN="\033[0;36m"; COLOR_RESET="\033[0m"
+if [ -t 1 ] || [[ "${FORCE_COLOR:-}" == "true" ]]; then
+  COLOR_GREEN="\033[0;32m"; # ... etc
 else
-  COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""
+  COLOR_GREEN=""; # ... etc
 fi
 
 # --- 启动环境检查 ---
