@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v37.0 - 健壮引导版)
+# 🚀 VPS 一键安装入口脚本 (v38.0 - 健壮引导版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -18,7 +18,7 @@ if [[ -z "$_JAE_BOOTSTRAPPED" ]]; then
     TEMP_SCRIPT_PATH=$(mktemp)
     
     # 设置陷阱，确保在任何情况下退出时，临时文件都会被删除
-    trap 'rm -f "$TEMP_SCRIPT_PATH"' EXIT SIGHUP SIGINT SIGTERM
+    trap 'rm -f "$TEMP_SCRIPT_PATH"' EXIT SIGHUP SIGINT TERM
     
     # 将从管道 (stdin) 传来的自身全部代码，保存到临时文件中
     cat > "$TEMP_SCRIPT_PATH"
@@ -114,6 +114,7 @@ setup_shortcut() {
 }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    # 只有当脚本从其最终安装路径运行时，才执行自动更新
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
@@ -173,7 +174,7 @@ confirm_and_force_update() {
         force_update_all
         return 10
     fi
-    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取取消): ${NC}")" choice < /dev/tty
+    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
         force_update_all
     else
@@ -243,7 +244,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v37.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v38.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -283,11 +284,13 @@ main() {
     export LC_ALL=C.utf8
     local CACHE_BUSTER=""
     
-    # 环境变量由 Bootstrap 传递，这里可以直接使用
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         CACHE_BUSTER="?_=$(date +%s)"
         log_info "强制刷新模式：将强制拉取所有最新文件。"
-        sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
+        # 只有在 config.json 存在时才尝试删除，避免不必要的 sudo 提示
+        if [ -f "${CONFIG[install_dir]}/config.json" ]; then
+            sudo rm -f "${CONFIG[install_dir]}/config.json"
+        fi
     fi
     
     setup_logging
@@ -311,7 +314,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v37.0 - 健壮引导版)"
+    log_info "脚本启动 (v38.0 - 健壮引导版)"
     
     check_and_install_dependencies
     
@@ -336,4 +339,6 @@ main() {
     done
 }
 
+# 脚本的主业务逻辑启动点
+# 这个调用只会在 Bootstrap 引导完成后，从文件执行时才会被运行
 main "$@"
