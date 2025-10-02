@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v28.0 - 增加卸载功能)
+# 🚀 VPS 一键安装入口脚本 (v29.0 - 终极返璞归真版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -93,8 +93,9 @@ setup_shortcut() {
         sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
+# self_update function can be kept for force_update_all to use
 self_update() { 
-    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "检查主脚本更新..."; 
+    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
@@ -124,50 +125,6 @@ force_update_all() {
 confirm_and_force_update() {
     export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty; fi
     if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
-}
-
-# --- 新增卸载功能 ---
-uninstall_script() {
-    log_warning "警告：这将从您的系统中彻底移除本脚本及其所有组件！"
-    log_warning "将要删除的包括："
-    log_warning "  - 安装目录: ${CONFIG[install_dir]}"
-    log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
-    
-    # 强制从终端读取输入，以兼容所有执行方式
-    read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
-    
-    if [[ "$choice" == "yes" ]]; then
-        log_info "开始卸载..."
-        
-        # 释放文件锁（如果存在），以允许删除锁文件
-        release_lock
-        
-        log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
-        if sudo rm -rf "${CONFIG[install_dir]}"; then
-            log_success "安装目录已移除。"
-        else
-            log_error "移除安装目录失败。"
-        fi
-        
-        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
-        if sudo rm -f "${CONFIG[bin_dir]}/jb"; then
-            log_success "快捷方式已移除。"
-        else
-            log_error "移除快捷方式失败。"
-        fi
-        
-        # 尝试移除锁文件
-        log_info "正在清理锁文件..."
-        sudo rm -f "${CONFIG[lock_file]}"
-        
-        log_success "脚本已成功卸载。"
-        log_info "再见！"
-        
-        # 成功卸载后，必须退出脚本
-        exit 0
-    else
-        log_info "卸载操作已取消。"
-    fi
 }
 
 execute_module() {
@@ -208,7 +165,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v28.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v29.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -267,7 +224,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v28.0 - 增加卸载功能)"
+    log_info "脚本启动 (v29.0 - 终极返璞归真版)"
     
     check_and_install_dependencies
     
@@ -277,7 +234,9 @@ main() {
     fi
     
     setup_shortcut
-    self_update
+    
+    # --- [最终修复]: 移除不稳定的自动更新，只保留用户手动触发的更新 ---
+    # self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
