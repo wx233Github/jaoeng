@@ -21,10 +21,10 @@
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh)
 ```
-拉取最新
+调试拉取最新
 
 ```
-bash <(curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)")
+ONLINE_INSTALL=true bash <(curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)")
 ```
 
 更新主入口脚本（如果它不是最新版本）:
