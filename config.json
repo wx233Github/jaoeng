@@ -84,6 +84,11 @@
         "type": "back",
         "name": "返回主菜单",
         "action": "MAIN_MENU"
+      },
+      {
+      "name": "卸载脚本 (Uninstall)",
+      "type": "func",
+      "action": "uninstall_script"
       }
     ]
   }
