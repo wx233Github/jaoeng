@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.5 - Ultimate JQ Hardening)
+# 🚀 VPS 一键安装入口脚本 (v67.0 - Architecturally Robust JQ Parsing)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.5"
+SCRIPT_VERSION="v67.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -259,21 +259,21 @@ display_menu() {
     echo -e "$title_line"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
-    # [FIX] Hardened the menu JSON parsing to prevent errors from invalid data types.
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then . else [] end' "$config_path")
-    local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
-    
-    for i in $(seq 0 $((menu_len - 1))); do
-        local item_json; item_json=$(echo "$menu_items_json" | jq ".[$i]")
-        # [FIX] THE ULTIMATE FIX: Validate that the item is a valid object before trying to access its keys.
-        if ! echo "$item_json" | jq -e 'type == "object" and has("name")' > /dev/null; then
-            continue # Skip invalid entries silently.
-        fi
-        local name; name=$(echo "$item_json" | jq -r ".name")
-        local icon; icon=$(echo "$item_json" | jq -r '.icon // "›"')
-        
-        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$((i+1))" "$icon" "$name"
+    # [ARCH-FIX] Use a single, robust jq command to render the menu.
+    local i=1
+    jq -r --arg menu "$CURRENT_MENU_NAME" '
+        .menus[$menu] | if type == "array" then .[] else empty end |
+        if type == "object" and has("name") then
+            [.name, (.icon // "›")] | @tsv
+        else
+            empty
+        end
+    ' "$config_path" | while IFS=$'\t' read -r name icon; do
+        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"
+        i=$((i+1))
     done
+    
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then (.[] | select(type == "object" and has("name"))) | length else 0 end' "$config_path")
     
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
     echo -e "${BLUE}${line_separator}${NC}"
@@ -289,22 +289,33 @@ display_menu() {
 
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    # [FIX] Hardened the menu JSON parsing.
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then . else [] end' "$config_path")
-    local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then (.[] | select(type == "object" and has("name"))) | length else 0 end' "$config_path")
+
     if [ -z "$choice" ]; then 
         if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
         else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; 
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
     
-    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))]")
-    # [FIX] THE ULTIMATE FIX: Validate the chosen item before processing.
-    if ! echo "$item_json" | jq -e 'type == "object" and has("type") and has("action") and has("name")' > /dev/null; then
+    # [ARCH-FIX] Use a single, robust jq command to get and validate the chosen item.
+    local item_json
+    item_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" --argjson idx "$((choice - 1))" '
+        .menus[$menu] | if type == "array" then .[$idx] else null end |
+        if type == "object" and has("type") and has("action") and has("name") then
+            .
+        else
+            null
+        end
+    ' "$config_path")
+
+    if [[ "$item_json" == "null" || -z "$item_json" ]]; then
         log_warning "菜单项配置无效或不完整。"; return 10;
     fi
+    
+    local type; type=$(echo "$item_json" | jq -r ".type")
+    local name; name=$(echo "$item_json" | jq -r ".name")
+    local action; action=$(echo "$item_json" | jq -r ".action")
 
-    local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in 
         item) execute_module "$action" "$name"; return $?;; 
         submenu) CURRENT_MENU_NAME=$action; return 10;; 
@@ -339,7 +350,6 @@ main() {
                 exit 0
                 ;;
             *)
-                # [FIX] Globally hardened jq query.
                 local item_json
                 item_json=$(jq -r --arg cmd "$command" '
                     .menus[] | select(type == "array") | .[] | select(type == "object") |
