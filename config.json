@@ -39,7 +39,7 @@
           "icon": "›"
         },
         {
-          "name": "常用工具 (Tools)",
+          "name": "🛠️ 常用工具",
           "type": "submenu",
           "action": "TOOLS_MENU",
           "icon": "→"
@@ -51,7 +51,7 @@
           "icon": "→"
         },
         {
-          "name": "强制更新 (主程序+所有模块)",
+          "name": "强制重置 (更新脚本+恢复配置)",
           "type": "func",
           "action": "confirm_and_force_update",
           "icon": "⚙️"
@@ -66,7 +66,7 @@
     },
 
     "TOOLS_MENU": {
-      "title": "常用工具 (Tools)",
+      "title": "🛠️ 常用工具",
       "items": [
         { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh", "icon": "›" }
       ]
