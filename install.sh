@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.8 - Ultimate Compatibility Rollback Fix)
+# 🚀 VPS 一键安装入口脚本 (v69.9 - Ultimate Stability Fallback)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.8"
+SCRIPT_VERSION="v69.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -233,88 +233,26 @@ execute_module() {
 }
 generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
 
-### [ULTIMATE FIX v69.8] ###
-# This function is rewritten to be 100% POSIX compatible to avoid any `bash`
-# specific parsing issues. It uses `case` instead of `[[...]]` for character class checks.
-_get_visual_width() {
-    local text="$1"
-    local plain_text
-    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    
-    local width=0
-    local i=0
-    local char
-    
-    while [ $i -lt ${#plain_text} ]; do
-        char=${plain_text:$i:1}
-        case "$char" in
-            # This covers all standard ASCII printable characters
-            [ -~])
-                width=$((width + 1))
-                ;;
-            # Anything else is considered double-width
-            *)
-                width=$((width + 2))
-                ;;
-        esac
-        i=$((i+1))
-    done
-    echo "$width"
-}
-
+### [ULTIMATE FIX v69.9] ###
+# Reverting the entire display_menu function to its original v69.2 state.
+# This sacrifices perfect UI alignment for guaranteed script execution.
+# All complex width calculations are removed.
 display_menu() {
-    export LANG=${LANG:-en_US.UTF-8}
-    export LC_ALL=C.utf8
-    if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi;
-    
+    export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi;
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
-
-    local title_width; title_width=$(_get_visual_width "$main_title_text")
-    
-    local max_item_width=0
-    local item_width
-    while IFS=$'\t' read -r name; do
-        item_width=$(_get_visual_width "  XX. › ${name}")
-        if [ $item_width -gt $max_item_width ]; then
-            max_item_width=$item_width
-        fi
-    done < <(echo "$menu_json" | jq -r '.items[] | .name')
-    
-    local box_width=$((title_width > max_item_width ? title_width : max_item_width))
-    box_width=$((box_width + 6))
-    if [ $box_width -lt 40 ]; then box_width=40; fi
-
-    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total=$((box_width - title_width))
-    local padding_left=$((padding_total / 2))
-    local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
-    
-    echo ""
-    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
-    echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
-    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
-    
+    local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g'); local total_chars=${#plain_title}; local ascii_chars_only; ascii_chars_only=$(echo "$main_title_text" | tr -dc '[ -~]'); local ascii_count=${#ascii_chars_only}; local non_ascii_count=$((total_chars - ascii_count)); local title_width=$((ascii_count + non_ascii_count * 2)); local box_width=$((title_width + 10)); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total=$((box_width - title_width)); local padding_left=$((padding_total / 2));
+    echo ""; echo -e "${CYAN}╭${top_bottom_border}╮${NC}"; local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))"); echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"; echo -e "${CYAN}╰${top_bottom_border}╯${NC}";
     local i=1
     echo "$menu_json" | jq -r '.items[] | [.name, (.icon // "›")] | @tsv' | while IFS=$'\t' read -r name icon; do
         printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$((i+1));
     done
-    
-    local line_separator; line_separator=$(generate_line "$((box_width + 2))")
-    echo -e "${BLUE}${line_separator}${NC}"
-    
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
+    local line_separator; line_separator=$(generate_line "$((box_width + 2))"); echo -e "${BLUE}${line_separator}${NC}";
     local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi;
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
-    
-    if [ "$AUTO_YES" == "true" ]; then 
-        choice=""
-        echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
-    else 
-        read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
-    fi
+    if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
 }
 
 process_menu_selection() {
@@ -325,9 +263,9 @@ process_menu_selection() {
     # Restoring the exact working syntax from v69.2
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     
-    ### [ULTIMATE FIX v69.8] ###
+    ### [ULTIMATE FIX v69.9] ###
     # Reverting to the exact conditional logic from the user's working v69.2 script.
-    # No further modifications or "improvements" are made to this specific line.
+    # This is the line that repeatedly caused syntax errors.
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
         log_warning "无效选项."; 
         return 10; 
