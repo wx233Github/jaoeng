@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.5 - Final Dynamic UI & Compatibility Fix)
+# 🚀 VPS 一键安装入口脚本 (v70.6 - Final UI & Compatibility Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.5"
+SCRIPT_VERSION="v70.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -273,21 +273,19 @@ display_menu() {
     
     local max_item_width=0
     local item_width
-    # Safely iterate over menu items to find the max width
-    local items_jq_query='.items[] | ((.icon // "›") + " " + .name)'
+    local items_jq_query='.items[] | .name'
     local item_list; item_list=$(jq -r "$items_jq_query" <<< "$menu_json")
     
     local old_ifs=$IFS
     IFS=$'\n'
     for item in $item_list; do
-        # Add padding for number, etc.
-        item_width=$(_get_visual_width "  XX. $item")
+        item_width=$(_get_visual_width "  XX. › ${item}")
         if [ $item_width -gt $max_item_width ]; then
             max_item_width=$item_width
         fi
     done
     IFS=$old_ifs
-
+    
     local box_width=$title_width
     if [ $max_item_width -gt $box_width ]; then
         box_width=$max_item_width
@@ -311,7 +309,6 @@ display_menu() {
     local icons_str; icons_str=$(jq -r '.items[] | (.icon // "›")' <<< "$menu_json")
     local names_str; names_str=$(jq -r '.items[] | .name' <<< "$menu_json")
     
-    # Use arrays to safely handle multi-line inputs
     readarray -t icons <<< "$icons_str"
     readarray -t names <<< "$names_str"
     
