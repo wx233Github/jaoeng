@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.2 - 最终修复与功能重构)
+# Docker 自动更新助手 (v3.8.3 - 终极毕业版)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="v3.8.2-final"
+VERSION="v3.8.3-final"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
