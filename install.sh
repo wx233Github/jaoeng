@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v67.2 - Dynamic Menu Titles)
+# 🚀 VPS 一键安装入口脚本 (v67.3 - Robust Menu Handling)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v67.2"
+SCRIPT_VERSION="v67.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,8 +138,8 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    # MODIFICATION: Updated jq query to work with the new {"title": ..., "items": ...} structure
-    scripts_to_update=$(jq -r '.menus[] | .items[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
+    # ROBUST: Handles both old (array) and new (object) menu formats.
+    scripts_to_update=$(jq -r '.menus[] | (if type == "object" then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     
     if [[ -z "$scripts_to_update" ]]; then
         log_success "没有需要更新的模块。";
@@ -238,9 +238,11 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # MODIFICATION: Dynamically get the title from config.json based on the current menu
+    # ROBUST: Handle both old and new config formats to get the title.
     local main_title_text
-    main_title_text=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu].title // "🚀 VPS 一键安装脚本"' "$config_path")
+    main_title_text=$(jq -r --arg menu "$CURRENT_MENU_NAME" '
+        if .menus[$menu] | type == "object" then .menus[$menu].title else "🚀 VPS 一键安装脚本" end
+    ' "$config_path")
     
     local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
     local total_chars=${#plain_title}
@@ -263,9 +265,9 @@ display_menu() {
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
     local i=1
-    # MODIFICATION: Updated jq query to read from the "items" array in the new structure
+    # ROBUST: Handle both formats to list menu items.
     jq -r --arg menu "$CURRENT_MENU_NAME" '
-        .menus[$menu].items | if type == "array" then .[] else empty end |
+        (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[] else empty end |
         if type == "object" and has("name") then
             [.name, (.icon // "›")] | @tsv
         else
@@ -276,8 +278,8 @@ display_menu() {
         i=$((i+1))
     done
     
-    # MODIFICATION: Updated jq query to calculate menu length from the "items" array
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu].items | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
+    # ROBUST: Handle both formats to calculate menu length.
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
     
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
     echo -e "${BLUE}${line_separator}${NC}"
@@ -293,8 +295,8 @@ display_menu() {
 
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    # MODIFICATION: Updated jq query to calculate menu length from the "items" array
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu].items | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
+    # ROBUST: Handle both formats to calculate menu length.
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
 
     if [ -z "$choice" ]; then 
         if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
@@ -302,10 +304,10 @@ process_menu_selection() {
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
     
-    # MODIFICATION: Updated jq query to get the selected item from the "items" array
+    # ROBUST: Handle both formats to get the selected item.
     local item_json
     item_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" --argjson idx "$((choice - 1))" '
-        .menus[$menu].items | if type == "array" then .[$idx] else null end |
+        (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[$idx] else null end |
         if type == "object" and has("type") and has("action") and has("name") then
             .
         else
@@ -356,9 +358,9 @@ main() {
                 ;;
             *)
                 local item_json
-                # MODIFICATION: Updated jq query to search for commands in the new structure
+                # ROBUST: Handle both formats to find commands.
                 item_json=$(jq -r --arg cmd "$command" '
-                    .menus[] | .items[] | select(type == "object") |
+                    .menus[] | (if type == "object" then .items[] else .[] end) | select(type == "object") |
                     select(.type != "submenu") |
                     select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))
                 ' "${CONFIG[install_dir]}/config.json" | head -n 1)
