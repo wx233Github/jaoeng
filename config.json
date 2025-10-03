@@ -22,20 +22,19 @@
   },
 
   "menus": {
-    "comment": "动态菜单配置区。在子菜单中，直接按回车即可返回主菜单。",
+    "comment": "动态菜单配置区。",
     "MAIN_MENU": [
       {
-        "comment": "菜单项结构: name(显示名), type(类型: submenu, item, func), action(目标), icon(图标)",
-        "name": "Docker",
-        "type": "submenu",
-        "action": "DOCKER_MENU",
-        "icon": "→"
+        "name": "安装 Docker",
+        "type": "item",
+        "action": "docker.sh",
+        "icon": "›"
       },
       {
-        "name": "Nginx",
-        "type": "submenu",
-        "action": "NGINX_MENU",
-        "icon": "→"
+        "name": "安装 Nginx",
+        "type": "item",
+        "action": "nginx.sh",
+        "icon": "›"
       },
       {
         "name": "常用工具 (Tools)",
@@ -61,14 +60,6 @@
         "action": "uninstall_script",
         "icon": "🗑️"
       }
-    ],
-    
-    "DOCKER_MENU": [
-      { "name": "安装 Docker", "type": "item", "action": "docker.sh", "icon": "›" }
-    ],
-
-    "NGINX_MENU": [
-      { "name": "安装 Nginx", "type": "item", "action": "nginx.sh", "icon": "›" }
     ],
 
     "TOOLS_MENU": [
