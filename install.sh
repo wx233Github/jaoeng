@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.6 - Final UI & Compatibility Fix)
+# 🚀 VPS 一键安装入口脚本 (v70.7 - Final Ultimate Stability Release)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.6"
+SCRIPT_VERSION="v70.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -261,39 +261,38 @@ _get_visual_width() {
 }
 
 display_menu() {
-    export LANG=${LANG:-en_US.UTF-8}
-    export LC_ALL=C.utf8
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
     
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json")
 
+    # --- Start Dynamic UI Calculation ---
+    local max_width=0
+    local line_width
+    
+    # 1. Gather all lines to be displayed
     local title_width; title_width=$(_get_visual_width "$main_title_text")
-    
-    local max_item_width=0
-    local item_width
-    local items_jq_query='.items[] | .name'
-    local item_list; item_list=$(jq -r "$items_jq_query" <<< "$menu_json")
-    
+    max_width=$title_width
+
+    local item_list; item_list=$(jq -r '.items[] | ((.icon // "›") + " " + .name)' <<< "$menu_json")
     local old_ifs=$IFS
     IFS=$'\n'
     for item in $item_list; do
-        item_width=$(_get_visual_width "  XX. › ${item}")
-        if [ $item_width -gt $max_item_width ]; then
-            max_item_width=$item_width
+        line_width=$(_get_visual_width "  XX. $item")
+        if [ $line_width -gt $max_width ]; then
+            max_width=$line_width
         fi
     done
     IFS=$old_ifs
-    
-    local box_width=$title_width
-    if [ $max_item_width -gt $box_width ]; then
-        box_width=$max_item_width
-    fi
 
-    box_width=$(expr $box_width + 6)
+    # 2. Determine final box width
+    local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
 
+    # --- End Dynamic UI Calculation ---
+
+    # Render Header
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total; padding_total=$(expr $box_width - $title_width)
     local padding_left; padding_left=$(expr $padding_total / 2)
@@ -305,10 +304,12 @@ display_menu() {
     echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
+    # Render Items
     local i=1
     local icons_str; icons_str=$(jq -r '.items[] | (.icon // "›")' <<< "$menu_json")
     local names_str; names_str=$(jq -r '.items[] | .name' <<< "$menu_json")
     
+    # Using arrays is safer for multiline content
     readarray -t icons <<< "$icons_str"
     readarray -t names <<< "$names_str"
     
@@ -318,6 +319,7 @@ display_menu() {
         i=$(expr $i + 1)
     done
 
+    # Render Footer
     local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)")
     echo -e "${BLUE}${line_separator}${NC}"
     
