@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.4 - Final Dynamic UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v70.5 - Ultimate Stability & UI Release)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.4"
+SCRIPT_VERSION="v70.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -16,14 +16,14 @@ INSTALL_DIR="/opt/vps_install_modules"
 FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
 
-if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
+if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     
     BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\033[0;32m';
     echo_info() { echo -e "${BLUE}[启动器]${NC} $1"; }
     echo_success() { echo -e "${GREEN}[启动器]${NC} $1"; }
     echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
 
-    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [[ "${FORCE_REFRESH}" == "true" ]]; then
+    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
         if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
         
@@ -71,7 +71,7 @@ CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
 # --- 控制变量定义 ---
 AUTO_YES="false"
-if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then AUTO_YES="true"; fi
+if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then AUTO_YES="true"; fi
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() { :; }
@@ -84,24 +84,30 @@ log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 # --- 配置加载 ---
 load_config() {
     export LC_ALL=C.utf8
-    CONFIG_FILE="${CONFIG[install_dir]}/config.json"; if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
-        CONFIG[dependencies]="$(jq -r '.dependencies.common // ""' "$CONFIG_FILE")"
-        CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE")"
-        CONFIG[enable_auto_clear]=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
-        CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
+    CONFIG_FILE="${CONFIG[install_dir]}/config.json"
+    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        # Load main config keys
+        while IFS='=' read -r key value; do
+            value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"
+        done < <(jq -r 'to_entries | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not))) | map("\(.key)=\(.value)") | .[]' "$CONFIG_FILE")
+        
+        # Safely load specific keys to avoid jq errors with boolean/null values
+        CONFIG[dependencies]="$(jq -r 'if .dependencies and .dependencies.common then .dependencies.common else "" end' "$CONFIG_FILE")"
+        CONFIG[lock_file]="$(jq -r 'if .lock_file then .lock_file else "/tmp/vps_install_modules.lock" end' "$CONFIG_FILE")"
+        CONFIG[enable_auto_clear]=$(jq -r 'if .enable_auto_clear then .enable_auto_clear else false end' "$CONFIG_FILE")
+        CONFIG[timezone]=$(jq -r 'if .timezone then .timezone else "Asia/Shanghai" end' "$CONFIG_FILE")
     fi
 }
 # --- 智能依赖处理 (使用旧版兼容语法) ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" = "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [ "$AUTO_YES" = "true" ]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if echo "$choice" | grep -qE '^[Yy]$'; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" = "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
 }
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
+    if [ "$0" != "$SCRIPT_PATH" ]; then return; fi; 
     
     local temp_script="/tmp/install.sh.tmp.$$"; if ! _download_self "$temp_script"; then 
         log_warning "主程序 (install.sh) 更新检查失败 (无法连接)。"; rm -f "$temp_script"; return;
@@ -142,7 +148,7 @@ _update_all_modules() {
     export LC_ALL=C.utf8
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
-    if [[ -z "$scripts_to_update" ]]; then return; fi
+    if [ -z "$scripts_to_update" ]; then return; fi
 
     local pids=()
     for script_name in $scripts_to_update; do
@@ -164,7 +170,7 @@ confirm_and_force_update() {
     log_warning "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
     log_warning "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
     read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
-    if [[ "$choice" == "yes" ]]; then
+    if [ "$choice" = "yes" ]; then
         log_info "开始强制完全重置..."
         local temp_config="/tmp/config.json.$$"
         log_info "正在强制更新 config.json..."
@@ -182,7 +188,7 @@ uninstall_script() {
     log_warning "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
     log_warning "将要删除的包括:"; log_warning "  - 安装目录: ${CONFIG[install_dir]}"; log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
     read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
-    if [[ "$choice" == "yes" ]]; then
+    if [ "$choice" = "yes" ]; then
         log_info "开始卸载...";
         sudo rm -rf "${CONFIG[install_dir]}"; log_success "安装目录已移除."
         sudo rm -f "${CONFIG[bin_dir]}/jb"; log_success "快捷方式已移除."
@@ -204,18 +210,18 @@ execute_module() {
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
-    local module_config_json; module_config_json=$(jq -r --arg key "$module_key" 'if has("module_configs") and (.module_configs | has($key)) and (.module_configs[$key] | type == "object") then .module_configs[$key] | tojson else "null" end' "$config_path")
+    local module_config_json; module_config_json=$(jq -r --arg key "$module_key" 'if .module_configs and (.module_configs | has($key)) and .module_configs[$key] and (.module_configs[$key] | type == "object") then .module_configs[$key] | tojson else "null" end' "$config_path")
 
-    if [[ "$module_config_json" != "null" ]]; then
+    if [ "$module_config_json" != "null" ]; then
         local prefix; prefix=$(basename "$script_name" .sh | tr '[:lower:]' '[:upper:]')
         local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | if ($v|type) == "array" then [$k, ($v|join(","))] elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] else empty end | @tsv'
         while IFS=$'\t' read -r key value; do
-            if [[ -n "$key" ]]; then
+            if [ -n "$key" ]; then
                 local key_upper; key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
                 env_exports+=$(printf "export %s_CONF_%s=%q;" "$prefix" "$key_upper" "$value")
             fi
         done < <(echo "$module_config_json" | jq -r "$jq_script")
-    elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+    elif jq -e --arg key "$module_key" '.module_configs and (.module_configs | has($key))' "$config_path" > /dev/null; then
         log_warning "在 config.json 中找到模块 '${module_key}' 的配置, 但其格式不正确(不是一个对象), 已跳过加载."
     fi
     
@@ -256,58 +262,75 @@ _get_visual_width() {
     echo "$width"
 }
 
-display_menu() {
-    export LANG=${LANG:-en_US.UTF-8}
-    export LC_ALL=C.utf8
-    if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi;
+_render_menu() {
+    local title="$1"
+    local items_str="$2"
     
-    local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
-    local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
-
-    local title_width; title_width=$(_get_visual_width "$main_title_text")
+    local max_width=0
+    local line_width
     
-    local max_item_width=0
-    local item_width
-    while IFS=$'\t' read -r name; do
-        item_width=$(_get_visual_width "  XX. › ${name}")
-        if [ $item_width -gt $max_item_width ]; then
-            max_item_width=$item_width
+    # Calculate title width
+    line_width=$(_get_visual_width "$title"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    
+    # Calculate max item width
+    local old_ifs=$IFS
+    IFS=$'\n'
+    for item in $items_str; do
+        line_width=$(_get_visual_width "  XX. › $item")
+        if [ $line_width -gt $max_width ]; then
+            max_width=$line_width
         fi
-    done < <(echo "$menu_json" | jq -r '.items[] | .name')
+    done
+    IFS=$old_ifs
     
-    local box_width=$title_width
-    if [ $max_item_width -gt $box_width ]; then
-        box_width=$max_item_width
-    fi
-
-    box_width=$(expr $box_width + 6)
+    local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
-
-    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
+    
+    # Render header
+    local title_width; title_width=$(_get_visual_width "$title")
     local padding_total; padding_total=$(expr $box_width - $title_width)
     local padding_left; padding_left=$(expr $padding_total / 2)
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
     echo ""
-    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
-    echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
-    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
+    echo -e "${CYAN}╭$(generate_line "$box_width")╮${NC}"
+    echo -e "${CYAN}│${left_padding}${title}${right_padding}${CYAN}│${NC}"
+    echo -e "${CYAN}╰$(generate_line "$box_width")╯${NC}"
     
+    # Render items
     local i=1
-    echo "$menu_json" | jq -r '.items[] | [.name, (.icon // "›")] | @tsv' | while IFS=$'\t' read -r name icon; do
-        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$(expr $i + 1);
+    IFS=$'\n'
+    for item in $items_str; do
+        printf "  ${YELLOW}%2d.${NC} %s\n" "$i" "$item"
+        i=$(expr $i + 1)
     done
+    IFS=$old_ifs
     
-    local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)")
-    echo -e "${BLUE}${line_separator}${NC}"
+    # Render footer
+    echo -e "${BLUE}$(generate_line $(expr $box_width + 2))${NC}"
+}
+
+
+display_menu() {
+    export LANG=${LANG:-en_US.UTF-8}
+    export LC_ALL=C.utf8
+    if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
     
-    local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
+    local config_path="${CONFIG[install_dir]}/config.json"
+    local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
+    local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json")
+    
+    local items_str
+    items_str=$(jq -r '.items[] | ((.icon // "›") + " " + .name)' <<< "$menu_json")
+
+    _render_menu "$main_title_text" "$items_str"
+
+    local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
     local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi;
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     
-    if [ "$AUTO_YES" == "true" ]; then 
+    if [ "$AUTO_YES" = "true" ]; then 
         choice=""
         echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
     else 
@@ -318,9 +341,9 @@ display_menu() {
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
-    local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
+    local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
     
-    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     
     # Retaining the exact working syntax from v69.2 for maximum stability
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
@@ -328,8 +351,8 @@ process_menu_selection() {
         return 10; 
     fi
 
-    local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
-    if [[ -z "$item_json" || "$item_json" == "null" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
+    local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]')
+    if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac
 }
@@ -356,10 +379,10 @@ main() {
                 ;;
             *)
                 local item_json; item_json=$(jq -r --arg cmd "$command" '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" | head -n 1)
-                if [[ -n "$item_json" ]]; then
+                if [ -n "$item_json" ]; then
                     local action_to_run; action_to_run=$(echo "$item_json" | jq -r '.action'); local display_name; display_name=$(echo "$item_json" | jq -r '.name'); local type; type=$(echo "$item_json" | jq -r '.type')
                     log_info "正在以 Headless 模式执行: ${display_name}"
-                    if [[ "$type" == "func" ]]; then "$action_to_run" "$@"; else execute_module "$action_to_run" "$display_name" "$@"; fi
+                    if [ "$type" = "func" ]; then "$action_to_run" "$@"; else execute_module "$action_to_run" "$display_name" "$@"; fi
                     exit $?
                 else
                     log_error "未知命令: $command"; fi
