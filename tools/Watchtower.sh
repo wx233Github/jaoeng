@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v2.26.0 - 修复了与主框架的集成问题)
+# Docker 自动更新助手 (v2.27.0 - 修正了容器监控范围的核心逻辑)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="2.26.0-integration-fix"
+VERSION="2.27.0-scope-logic-fix"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -24,26 +24,18 @@ fi
 if ! command -v docker >/dev/null 2>&1; then echo -e "${COLOR_RED}❌ 错误: 未检测到 'docker' 命令。${COLOR_RESET}"; exit 1; fi
 if ! docker ps -q >/dev/null 2>&1; then echo -e "${COLOR_RED}❌ 错误:无法连接到 Docker。${COLOR_RESET}"; exit 1; fi
 
-# --- FIX START: 正确初始化从主脚本和配置文件加载的变量 ---
-# 优先级: 主脚本环境变量 > 配置文件 > 脚本内置默认值
-
-# 1. 从主脚本环境变量加载 (格式: WATCHTOWER_CONF_XXX)
 WT_CONF_DEFAULT_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-}"
 WT_CONF_DEFAULT_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-}"
 WT_CONF_ENABLE_REPORT="${WATCHTOWER_CONF_ENABLE_REPORT:-}"
 WT_EXCLUDE_CONTAINERS="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
 
-# 2. 从本地配置文件加载 (会覆盖上面的值，如果存在)
 load_config(){ if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE" &>/dev/null || true; fi; }; load_config
 
-# 3. 为其他未设置的变量提供默认值
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"; TG_CHAT_ID="${TG_CHAT_ID:-}"; EMAIL_TO="${EMAIL_TO:-}"; WATCHTOWER_LABELS="${WATCHTOWER_LABELS:-}"; WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"; WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"; WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-300}"; WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"; DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"; CRON_HOUR="${CRON_HOUR:-4}"; CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
 WT_AVAILABLE_LABELS="${JB_DOCKER_LABELS:-}"
-# --- FIX END ---
-
 
 log_info(){ printf "%b[信息] %s%b\n" "$COLOR_BLUE" "$*" "$COLOR_RESET"; }; log_warn(){ printf "%b[警告] %s%b\n" "$COLOR_YELLOW" "$*" "$COLOR_RESET"; }; log_err(){ printf "%b[错误] %s%b\n" "$COLOR_RED" "$*" "$COLOR_RESET"; }
-# load_config 已在FIX块中提前调用
+
 save_config(){
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
@@ -66,42 +58,84 @@ send_notify() {
   local MSG="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then curl -s --retry 3 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "text=$MSG" >/dev/null || log_warn "⚠️ Telegram 发送失败。"; fi
   if [ -n "$EMAIL_TO" ]; then if command -v mail &>/dev/null; then echo -e "$MSG" | mail -s "Docker 更新通知" "$EMAIL_TO" || log_warn "⚠️ Email 发送失败。"; else log_warn "⚠️ 未检测到 mail 命令。"; fi; fi
 }
+
+# ========= FIX START: 彻底修正 Watchtower 监控范围的核心逻辑 =========
 _start_watchtower_container_logic(){
   local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
   local timezone="${JB_TIMEZONE:-Asia/Shanghai}"
-  local cmd_parts; if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e "TZ=${timezone}" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); else cmd_parts=(docker run -e "TZ=${timezone}" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}"); fi
   
-  # FIX: 现在 WT_EXCLUDE_CONTAINERS 会被正确加载
-  if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then 
-      log_info "已应用排除规则 (来自 config.json): ${WT_EXCLUDE_CONTAINERS}"
+  # 基础命令
+  local cmd_parts; 
+  if [ "$mode_description" = "一次性更新" ]; then 
+      cmd_parts=(docker run -e "TZ=${timezone}" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once)
+  else 
+      cmd_parts=(docker run -e "TZ=${timezone}" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-${WATCHTOWER_CONFIG_INTERVAL:-300}}")
   fi
   
+  # 配置通知
   if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
       cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL='telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}'")
-      # FIX: 现在 WT_CONF_ENABLE_REPORT 会被正确加载
       if [[ "${WT_CONF_ENABLE_REPORT}" == "true" ]]; then
           cmd_parts+=(-e WATCHTOWER_REPORT=true); echo -e "${COLOR_GREEN}ℹ️ 已配置 Telegram 报告 (每次扫描后)。${COLOR_RESET}"
       else
           echo -e "${COLOR_GREEN}ℹ️ 已配置 Telegram 通知 (仅更新后)。${COLOR_RESET}"
       fi
   fi
-  if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi; if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable"); fi; if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
-  echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"; if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("$WATCHTOWER_LABELS"); fi
   
-  # FIX: 将排除容器列表正确地传递给 docker run 命令
-  if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then 
-      IFS=',' read -r -a exclude_array <<< "$WT_EXCLUDE_CONTAINERS"
-      for container_to_exclude in "${exclude_array[@]}"; do
-          # Watchtower 期望每个排除的容器都是一个独立的参数
-          cmd_parts+=("$container_to_exclude")
-      done
+  # 配置其他参数
+  if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi; 
+  if [ -n "$WATCHTOWER_LABELS" ]; then cmd_parts+=("--label-enable" "$WATCHTOWER_LABELS"); fi; 
+  if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
+  
+  # --- 核心逻辑修正 ---
+  # 如果定义了排除列表，则计算出应该包含的容器列表
+  local containers_to_monitor=()
+  if [ -n "${WT_EXCLUDE_CONTAINERS:-}" ]; then
+      log_info "发现排除规则 (来自 config.json): ${WT_EXCLUDE_CONTAINERS}"
+      # 将逗号分隔的排除列表转换为 grep 能用的格式
+      local exclude_pattern; exclude_pattern=$(echo "${WT_EXCLUDE_CONTAINERS}" | sed 's/,/\\|/g')
+      
+      # 获取所有正在运行的容器，并用 grep -v 排除掉指定的容器
+      local included_containers; included_containers=$(docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern})$" || true)
+      
+      if [ -n "$included_containers" ]; then
+          # 将换行符分隔的列表转换为数组
+          readarray -t containers_to_monitor <<< "$included_containers"
+          log_info "计算后的监控范围: ${containers_to_monitor[*]}"
+      else
+          log_warn "排除规则导致监控列表为空！Watchtower 将不会监控任何容器。"
+      fi
+  else
+      log_info "未发现排除规则，Watchtower 将监控所有容器。"
+  fi
+  # --- 修正结束 ---
+
+  echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"
+  
+  # 将最终的容器列表（如果存在）附加到命令末尾
+  if [ ${#containers_to_monitor[@]} -gt 0 ]; then
+      cmd_parts+=("${containers_to_monitor[@]}")
   fi
 
   echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]} ${COLOR_RESET}"; set +e; "${cmd_parts[@]}"; local rc=$?; set -e
-  if [ "$mode_description" = "一次性更新" ]; then if [ $rc -eq 0 ]; then echo -e "${COLOR_GREEN}✅ $mode_description 完成。${COLOR_RESET}"; return 0; else echo -e "${COLOR_RED}❌ $mode_description 失败。${COLOR_RESET}"; return 1; fi; else
-    sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"; return 0; else echo -e "${COLOR_RED}❌ $mode_description 启动失败。${COLOR_RESET}"; send_notify "❌ Watchtower 启动失败。"; return 1; fi
+  
+  if [ "$mode_description" = "一次性更新" ]; then 
+      if [ $rc -eq 0 ]; then 
+          echo -e "${COLOR_GREEN}✅ $mode_description 完成。${COLOR_RESET}"; return 0; 
+      else 
+          echo -e "${COLOR_RED}❌ $mode_description 失败。${COLOR_RESET}"; return 1; 
+      fi; 
+  else
+    sleep 3; 
+    if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then 
+        echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"; return 0; 
+    else 
+        echo -e "${COLOR_RED}❌ $mode_description 启动失败。${COLOR_RESET}"; send_notify "❌ Watchtower 启动失败。"; return 1; 
+    fi
   fi
 }
+# ========= FIX END =========
+
 configure_notify() {
     echo -e "${COLOR_YELLOW}⚙️ 通知配置 ⚙️${COLOR_RESET}"; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then
         echo "当前已配置:"; if [ -n "$TG_BOT_TOKEN" ]; then echo "  - Telegram (Token: ...${TG_BOT_TOKEN: -5})"; fi; if [ -n "$EMAIL_TO" ]; then echo "  - Email: $EMAIL_TO"; fi
