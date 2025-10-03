@@ -90,11 +90,12 @@
       "comment_cron_hour": "Cron模式默认执行小时 (0-23)",
       "enable_report": true,
       "comment_report": "报告模式: true(每次都通知), false(仅更新后通知)",
+      
+      "comment_exclude": "【备用配置】当脚本内未设置排除列表时，将使用此列表。在这里填入不想被更新的容器名称。",
       "exclude_containers": [
         "portainer",
         "portainer_agent"
-      ],
-      "comment_exclude": "不自动更新的容器列表"
+      ]
     }
   }
 }
