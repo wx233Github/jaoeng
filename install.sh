@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.2 - Reverted to Serial Updates for UI Clarity)
+# 🚀 VPS 一键安装入口脚本 (v66.3 - Robust Headless Mode & Menu Refactor)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.2"
+SCRIPT_VERSION="v66.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -117,7 +117,6 @@ download_module_to_cache() {
 
     if [ "$force_update" = "true" ]; then 
         url="${url}?_=$(date +%s)";
-        # 串行模式下, 我们打印完整的行
         log_info "  ↳ 强制刷新: $script_name";
     fi
 
@@ -135,8 +134,6 @@ download_module_to_cache() {
         return 1; 
     fi; 
 }
-
-# [REVERTED] Reverted to a clean serial download loop to fix chaotic parallel output.
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
@@ -161,7 +158,6 @@ _update_all_modules() {
         log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中.";
     fi
 }
-
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主脚本更新..."; self_update
@@ -331,17 +327,28 @@ main() {
                 exit 0
                 ;;
             *)
-                local action_to_run
-                action_to_run=$(jq -r --arg cmd "$command" '
-                    .menus[][] | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd))) | .action
+                # [FIX] Made headless mode jq query robust to prevent errors.
+                # 1. It now only iterates over arrays in the .menus object.
+                # 2. It ensures each item is an object before accessing keys.
+                # 3. It will not match 'submenu' type items.
+                local item_json
+                item_json=$(jq -r --arg cmd "$command" '
+                    .menus[] | select(type == "array") | .[] | select(type == "object") |
+                    select(.type != "submenu") |
+                    select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))
                 ' "${CONFIG[install_dir]}/config.json" | head -n 1)
-                if [[ -n "$action_to_run" ]]; then
-                    local display_name
-                    display_name=$(jq -r --arg act "$action_to_run" '
-                        .menus[][] | select(.action == $act) | .name
-                    ' "${CONFIG[install_dir]}/config.json" | head -n 1)
+
+                if [[ -n "$item_json" ]]; then
+                    local action_to_run; action_to_run=$(echo "$item_json" | jq -r '.action')
+                    local display_name; display_name=$(echo "$item_json" | jq -r '.name')
+                    local type; type=$(echo "$item_json" | jq -r '.type')
+
                     log_info "正在以 Headless 模式执行: ${display_name}"
-                    execute_module "$action_to_run" "$display_name" "$@"
+                    if [[ "$type" == "func" ]]; then
+                        "$action_to_run"
+                    else
+                        execute_module "$action_to_run" "$display_name" "$@"
+                    fi
                     exit $?
                 else
                     log_error "未知命令: $command"
