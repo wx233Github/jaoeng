@@ -1,7 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v64.0 - Seamless Self-Update)
+# 🚀 VPS 一键安装入口脚本 (v65.0 - Modern UI)
 # =============================================================
+
+# --- 脚本元数据 ---
+SCRIPT_VERSION="v65.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -50,7 +53,7 @@ fi
 # --- 主程序逻辑 ---
 
 # --- 颜色定义 ---
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 # --- 默认配置 ---
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -99,10 +102,7 @@ self_update() {
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
         log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-        
-        # [FIX] 实现无缝自我更新, 解决用户体验痛点
         log_success "主程序更新成功！正在无缝重启..."
-        # 在 exec 替换当前进程之前, 必须手动释放锁并禁用 trap, 否则锁文件将永远残留
         flock -u 200
         rm -f "${CONFIG[lock_file]}"
         trap - EXIT
@@ -170,12 +170,9 @@ execute_module() {
 
     if [[ "$module_config_json" != "null" ]]; then
         local prefix; prefix=$(basename "$script_name" .sh | tr '[:lower:]' '[:upper:]')
-        
         local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | if ($v|type) == "array" then [$k, ($v|join(","))] elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] else empty end | @tsv'
-        
         local module_vars_str
         module_vars_str=$(echo "$module_config_json" | jq -r "$jq_script")
-
         if [[ -n "$module_vars_str" ]]; then
             while IFS=$'\t' read -r key value; do
                 if [[ -n "$key" ]]; then
@@ -184,7 +181,6 @@ execute_module() {
                 fi
             done <<< "$module_vars_str"
         fi
-        
     elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         log_warning "在 config.json 中找到模块 '${module_key}' 的配置, 但其格式不正确(不是一个对象), 已跳过加载."
     fi
@@ -200,50 +196,68 @@ execute_module() {
     return $exit_code
 }
 
-# --- UI ---
+# --- [UI REDESIGN] ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    local header_text="🚀 VPS 一键安装脚本"
-    local sub_header_text
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
-    local full_header="  ${header_text} :: ${sub_header_text}"
-
-    local plain_header; plain_header=$(echo -e "$full_header" | sed 's/\x1b\[[0-9;]*m//g')
+    # 1. 定义标题内容
+    local main_title_text="🚀 VPS 一键安装脚本 (${SCRIPT_VERSION})"
+    local sub_title_text
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
+        sub_title_text="主菜单"
+    else 
+        sub_title_text="${CURRENT_MENU_NAME//_/ }"
+    fi
     
-    local total_chars=${#plain_header}
-    local ascii_chars_only; ascii_chars_only=$(echo "$plain_header" | tr -dc '[ -~]')
+    # 2. 计算标题的实际显示宽度
+    local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
+    local total_chars=${#plain_title}
+    local ascii_chars_only; ascii_chars_only=$(echo "$plain_title" | tr -dc '[ -~]')
     local ascii_count=${#ascii_chars_only}
     local non_ascii_count=$((total_chars - ascii_count))
-    local display_width=$((ascii_count + non_ascii_count * 2))
-
-    local separator; separator=$(printf '%*s' "$display_width" | tr ' ' '=')
-
+    local title_width=$((ascii_count + non_ascii_count * 2))
+    
+    # 3. 动态生成边框和填充
+    local box_width=$((title_width + 10)) # 边框比标题宽一点
+    local top_bottom_border; top_bottom_border=$(printf '%*s' "$box_width" | tr ' ' '─')
+    local padding_total=$((box_width - title_width))
+    local padding_left=$((padding_total / 2))
+    local padding_right=$((padding_total - padding_left))
+    
+    # 4. 渲染UI
     echo ""
-    echo -e "${BLUE}${separator}${NC}"
-    echo -e "${full_header}"
-    echo -e "${BLUE}${separator}${NC}"
+    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
+    printf "%s%*s%s%*s%s\n" "${CYAN}│" "$padding_left" "" "${main_title_text}" "$padding_right" "" "${CYAN}│${NC}"
+    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
     for i in $(seq 0 $((menu_len - 1))); do
-        local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
-        printf " ${YELLOW}%2d.${NC} %s\n" "$((i+1))" "$name"
+        local item_json; item_json=$(echo "$menu_items_json" | jq ".[$i]")
+        local name; name=$(echo "$item_json" | jq -r ".name")
+        local type; type=$(echo "$item_json" | jq -r ".type")
+        local action; action=$(echo "$item_json" | jq -r ".action")
+        
+        local icon="›" # 默认为 item 类型
+        if [[ "$type" == "submenu" ]]; then icon="→"; fi
+        if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
+        if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
+        
+        printf " %s  ${YELLOW}%d.${NC} %s\n" "$icon" "$((i+1))" "$name"
     done
     
-    echo ""
+    local line_separator; line_separator=$(printf '%*s' "$((box_width + 2))" | tr ' ' '─')
+    echo -e "${BLUE}${line_separator}${NC}"
     
-    local prompt_text; 
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
-    else 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
-    fi
+    local exit_hint="退出"
+    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     
-    if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式, 自动选择默认选项]";
-    else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
+    local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
+    
+    if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]";
+    else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
 }
 
 process_menu_selection() {
@@ -251,15 +265,11 @@ process_menu_selection() {
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     if [ -z "$choice" ]; then 
-        if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-            exit 0; 
-        else 
-            CURRENT_MENU_NAME="MAIN_MENU"; 
-            return 10; 
-        fi; 
+        if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
+        else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; 
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
-    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
+    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in 
         item) execute_module "$action" "$name"; return $?;; 
@@ -286,7 +296,7 @@ main() {
     fi
     load_config
     
-    log_info "脚本启动 (v64.0 - Seamless Self-Update)"
+    log_info "脚本启动 (${SCRIPT_VERSION})"
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
