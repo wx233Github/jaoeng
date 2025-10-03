@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v63.1 - Wide Character UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v63.2 - Robust Update & Log Order Fix)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -115,8 +115,14 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    scripts_to_update=$(jq -r '.menus[][] | select(.type=="item").action' "${CONFIG[install_dir]}/config.json")
+    # [FIX #1] 修复jq错误: 增加 select(type == "array") 来过滤掉 "comment" 字符串
+    scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     local all_successful=true
+    # 如果没有可更新的脚本,直接返回成功
+    if [[ -z "$scripts_to_update" ]]; then
+        log_success "所有模块更新完成！";
+        return
+    fi
     for script_name in $scripts_to_update; do if ! download_module_to_cache "$script_name" "$force_update"; then all_successful=false; fi; done
     if [[ "$all_successful" == "true" ]]; then log_success "所有模块更新完成！";
     else log_warning "部分模块更新失败, 请检查网络或确认文件是否存在于仓库中."; fi
@@ -194,26 +200,21 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # 1. 组合标题
     local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local full_header="  ${header_text} :: ${sub_header_text}"
 
-    # 2. 测量纯文本长度 (移除颜色代码)
     local plain_header; plain_header=$(echo -e "$full_header" | sed 's/\x1b\[[0-9;]*m//g')
     
-    # [FIX] 正确计算包含 CJK/Emoji 等宽字符的显示宽度
     local total_chars=${#plain_header}
     local ascii_chars_only; ascii_chars_only=$(echo "$plain_header" | tr -dc '[ -~]')
     local ascii_count=${#ascii_chars_only}
     local non_ascii_count=$((total_chars - ascii_count))
     local display_width=$((ascii_count + non_ascii_count * 2))
 
-    # 3. 生成匹配长度的分隔线
     local separator; separator=$(printf '%*s' "$display_width" | tr ' ' '=')
 
-    # 4. 渲染
     echo ""
     echo -e "${BLUE}${separator}${NC}"
     echo -e "${full_header}"
@@ -279,9 +280,10 @@ main() {
         check_and_install_dependencies
     fi
     load_config
-    log_info "脚本启动 (v63.1 - Wide Character UI Fix)"
     
+    # [FIX #2] 调整日志顺序: 先检查更新, 再打印启动信息
     self_update
+    log_info "脚本启动 (v63.2 - Robust Update & Log Order Fix)"
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
