@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.0 - 最终修复与流程重构)
+# Docker 自动更新助手 (v3.8.1 - 终极版)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="v3.8.0-graduation"
+VERSION="v3.8.1-final"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -43,7 +43,10 @@ generate_line() {
 
 _print_header() {
     local title=" $1 "; local total_width=62
-    local plain_title; plain_title=$(echo -e "$title" | sed 's/\x1b\[[0-9;]*m//g'); local total_chars=${#plain_title}; local ascii_chars_only; ascii_chars_only=$(echo "$plain_title" | tr -dc '[ -~]'); local ascii_count=${#ascii_chars_only}; local non_ascii_count=$((total_chars - ascii_count)); local title_width=$((ascii_count + non_ascii_count * 2)); local padding_total=$((total_width - title_width)); if [ $padding_total -lt 0 ]; then padding_total=0; fi; local padding_left=$((padding_total / 2));
+    local title_len; title_len=$(echo -n "$title" | wc -m)
+    local padding_total=$((total_width - title_len))
+    if [ $padding_total -lt 0 ]; then padding_total=0; fi
+    local padding_left=$((padding_total / 2))
     echo; echo -e "${COLOR_YELLOW}╭$(generate_line $padding_left)${title}$(generate_line $((padding_total - padding_left)))╮${COLOR_RESET}"
 }
 
@@ -102,7 +105,66 @@ notification_menu() {
 }
 _parse_watchtower_timestamp_from_log_line() { local log_line="$1"; local timestamp=""; timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; echo ""; return 1; }
 _date_to_epoch() { local dt="$1"; [ -z "$dt" ] && echo "" && return; if [ "$(date -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""); elif [ "$(command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""); else log_warn "⚠️ 'date' 或 'gdate' 不支持。"; echo ""; fi; }
-show_container_info() { while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "📋 容器管理 📋"; printf "%-5s %-25s %-45s %-20s\n" "编号" "名称" "镜像" "状态"; local containers=(); local i=1; while IFS='|' read -r name image status; do containers+=("$name"); local status_colored="$status"; if [[ "$status" =~ ^Up ]]; then status_colored="${COLOR_GREEN}运行中${COLOR_RESET}"; elif [[ "$status" =~ ^Exited|Created ]]; then status_colored="${COLOR_RED}已退出${COLOR_RESET}"; else status_colored="${COLOR_YELLOW}${status}${COLOR_RESET}"; fi; printf "%-5s %-25.25s %-45.45s %b\n" "$i" "$name" "$image" "$status_colored"; i=$((i+1)); done < <(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'); echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "输入编号操作, 或按 Enter 返回: " choice; case "$choice" in "") return ;; *) if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi; if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue; fi; local selected_container="${containers[$((choice-1))]}"; if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "操作容器: ${selected_container}"; echo " 1. 查看日志 (Logs)"; echo " 2. 重启 (Restart)"; echo " 3. 停止 (Stop)"; echo " 4. 删除 (Remove)"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "请选择, 或按 Enter 返回: " action; case "$action" in 1) echo -e "${COLOR_YELLOW}日志 (Ctrl+C 停止)...${COLOR_RESET}"; trap '' INT; docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;; 2) echo "重启中..."; if docker restart "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 3) echo "停止中..."; if docker stop "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 4) if confirm_action "警告: 这将永久删除 '${selected_container}' 及其关联的匿名卷！"; then echo "删除中..."; if docker rm -f "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1; else echo "已取消。"; fi ;; *) echo -e "${COLOR_RED}❌ 无效操作。${COLOR_RESET}"; sleep 1 ;; esac ;; esac; done; }
+show_container_info() {
+    while true; do 
+        if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; 
+        _print_header "📋 容器管理 📋"; 
+        printf "%-5s %-25s %-45s %-20s\n" "编号" "名称" "镜像" "状态"; 
+        local containers=(); local i=1; 
+        while IFS='|' read -r name image status; do 
+            containers+=("$name"); 
+            local status_colored="$status"; 
+            if [[ "$status" =~ ^Up ]]; then status_colored="${COLOR_GREEN}运行中${COLOR_RESET}"; 
+            elif [[ "$status" =~ ^Exited|Created ]]; then status_colored="${COLOR_RED}已退出${COLOR_RESET}"; 
+            else status_colored="${COLOR_YELLOW}${status}${COLOR_RESET}"; fi; 
+            printf "%-5s %-25.25s %-45.45s %b\n" "$i" "$name" "$image" "$status_colored"; 
+            i=$((i+1)); 
+        done < <(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'); 
+        echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}";
+        echo " c. 清理已停止的容器"
+        read -r -p "输入编号操作, 'c' 清理, 或按 Enter 返回: " choice
+        case "$choice" in 
+            "") return ;; 
+            c|C) 
+                if confirm_action "警告: 这将删除所有已停止的容器！"; then
+                    log_info "正在清理..."
+                    docker container prune -f
+                    log_success "清理完成。"
+                    press_enter_to_continue
+                else
+                    log_info "操作已取消。"
+                fi
+                ;;
+            *) 
+                if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi; 
+                if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue; fi; 
+                local selected_container="${containers[$((choice-1))]}"; 
+                if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; 
+                _print_header "操作容器: ${selected_container}"; 
+                echo " 1. 查看日志 (Logs)"; echo " 2. 重启 (Restart)"; echo " 3. 停止 (Stop)"; echo " 4. 删除 (Remove)"; echo " 5. 查看详情 (Inspect)"; echo " 6. 进入容器 (Exec)";
+                echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; 
+                read -r -p "请选择, 或按 Enter 返回: " action; 
+                case "$action" in 
+                    1) echo -e "${COLOR_YELLOW}日志 (Ctrl+C 停止)...${COLOR_RESET}"; trap '' INT; docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;; 
+                    2) echo "重启中..."; if docker restart "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 
+                    3) echo "停止中..."; if docker stop "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 
+                    4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if docker rm -f "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1; else echo "已取消。"; fi ;;
+                    5) _print_header "容器详情: ${selected_container}"; docker inspect "$selected_container" | jq '.' 2>/dev/null || docker inspect "$selected_container"; press_enter_to_continue ;;
+                    6) 
+                        if [[ "$(docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]]; then
+                            log_warn "容器未在运行，无法进入。"
+                        else
+                            log_info "尝试进入容器... (输入 'exit' 退出)"
+                            docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true
+                        fi
+                        press_enter_to_continue
+                        ;;
+                    *) ;;
+                esac 
+            ;; 
+        esac; 
+    done; 
+}
 _prompt_for_interval() { local default_value="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; local formatted_default=$(_format_seconds_to_human "$default_value"); while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, [回车]使用 ${formatted_default}): " input_interval; input_interval=${input_interval:-${default_value}s}; if [[ "$input_interval" =~ ^([0-9]+)s$ ]]; then result_interval=${BASH_REMATCH[1]}; break; elif [[ "$input_interval" =~ ^([0-9]+)h$ ]]; then result_interval=$((${BASH_REMATCH[1]}*3600)); break; elif [[ "$input_interval" =~ ^([0-9]+)d$ ]]; then result_interval=$((${BASH_REMATCH[1]}*86400)); break; elif [[ "$input_interval" =~ ^[0-9]+$ ]]; then result_interval="${input_interval}"; break; else echo -e "${COLOR_RED}❌ 格式错误...${COLOR_RESET}"; fi; done; echo "$result_interval"; }
 configure_exclusion_list() {
     local all_containers=(); readarray -t all_containers < <(docker ps --format '{{.Names}}')
@@ -150,11 +212,11 @@ get_updates_last_24h(){
 }
 _format_and_highlight_log_line(){ local line="$1"; local ts; ts=$(_parse_watchtower_timestamp_from_log_line "$line"); case "$line" in *"Session done"*) local f; f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); local s; s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); local u; u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); if [[ -n "$s" && -n "$u" && -n "$f" ]]; then local c="$COLOR_GREEN"; if [ "$f" -gt 0 ]; then c="$COLOR_YELLOW"; fi; printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s}, 更新: ${u}, 失败: ${f}" "$COLOR_RESET"; else printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "$line" "$COLOR_RESET"; fi; return ;; *"Found new"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$COLOR_RESET"; return ;; *"Stopping "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"Creating "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"No new images found"*) printf "%s %b%s%b\n" "$ts" "$COLOR_CYAN" "ℹ️ 未发现新镜像。" "$COLOR_RESET"; return ;; *"Scheduling first run"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🕒 首次运行已调度" "$COLOR_RESET"; return ;; *"Starting Watchtower"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"; return ;; esac; if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then local msg; msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p'); if [ -z "$msg" ]; then msg=$(echo "$line" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? *//; s/.*time="[^"]*" *//; s/level=(error|warn|info) *//'); fi; printf "%s %b%s%b\n" "$ts" "$COLOR_RED" "❌ 错误: ${msg:-$line}" "$COLOR_RESET"; printf "   %b💡 [建议]: 认证失败。如果您使用私有仓库，请检查 Docker 登录凭证。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"; return; fi; echo "$line"; }
 show_watchtower_details(){ 
-    _print_header "📊 Watchtower 运行详情 📊"; local interval; interval=$(get_watchtower_inspect_summary 2>/dev/null || true); echo "上次活动: $(get_last_session_time :- "未检测到")"; local raw_logs countdown; raw_logs=$(get_watchtower_all_raw_logs); countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}"); printf "下次检查: %s\n" "$countdown"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; echo "最近 24h 摘要："; local updates; updates=$(get_updates_last_24h || true); if [ -z "$updates" ]; then echo "无日志事件。"; else echo "$updates" | tail -n 200 | while IFS= read -r line; do _format_and_highlight_log_line "$line"; done; fi; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "[1] 实时日志, [2] 管理容器, [3] 立即触发扫描, [Enter] 返回: " pick; 
+    _print_header "📊 Watchtower 详情与管理 📊"; local interval; interval=$(get_watchtower_inspect_summary 2>/dev/null || true); echo "上次活动: $(get_last_session_time :- "未检测到")"; local raw_logs countdown; raw_logs=$(get_watchtower_all_raw_logs); countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}"); printf "下次检查: %s\n" "$countdown"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; echo "最近 24h 摘要："; local updates; updates=$(get_updates_last_24h || true); if [ -z "$updates" ]; then echo "无日志事件。"; else echo "$updates" | tail -n 200 | while IFS= read -r line; do _format_and_highlight_log_line "$line"; done; fi; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "[1] 实时日志, [2] 管理容器, [3] 立即触发扫描, [Enter] 返回: " pick; 
     case "$pick" in
         1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${COLOR_RED}Watchtower 未运行。${COLOR_RESET}"; press_enter_to_continue; fi ;;
         2) show_container_info ;;
-        3) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志以确认扫描已开始。"; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_error "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
+        3) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_error "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
         *) return ;;
     esac
 }
@@ -192,14 +254,14 @@ main_menu(){
     COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
     TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); RUNNING=$(docker ps --format '{{.ID}}' | wc -l); STOPPED=$((TOTAL - RUNNING))
     
-    printf " Watchtower 状态: %b (名称排除模式)\n" "$STATUS_COLOR"
-    printf "      下次检查: %b\n" "$COUNTDOWN"
-    printf "      容器概览: 总计 %s (%b运行中%s, %b已停止%s%b)\n" "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
+    printf "%-22s: %b\n" " Watchtower 状态" "$STATUS_COLOR (名称排除模式)"
+    printf "%-22s: %b\n" "      下次检查" "$COUNTDOWN"
+    printf "%-22s: 总计 %s (%b运行中%s, %b已停止%s%b)\n" "      容器概览" "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
     
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
-    if [ -n "$FINAL_EXCLUDE_LIST" ]; then printf "      排除列表 (%s): %b%s%b\n" "$FINAL_EXCLUDE_SOURCE" "${COLOR_YELLOW}" "${FINAL_EXCLUDE_LIST//,/, }" "${COLOR_RESET}"; fi
-    local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi; if [[ -n "$EMAIL_TO" ]]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then printf "      通知已启用: %b%s%b\n" "${COLOR_GREEN}" "${NOTIFY_STATUS}" "${COLOR_RESET}"; fi
+    if [ -n "$FINAL_EXCLUDE_LIST" ]; then printf "%-22s: %b%s%b\n" " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE})" "${COLOR_YELLOW}" "${FINAL_EXCLUDE_LIST//,/, }" "${COLOR_RESET}"; fi
+    local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi; if [[ -n "$EMAIL_TO" ]]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then printf "%-22s: %b%s%b\n" " 🔔 通知已启用" "${COLOR_GREEN}" "${NOTIFY_STATUS}" "${COLOR_RESET}"; fi
     
     echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
     echo " 主菜单："
@@ -208,7 +270,7 @@ main_menu(){
     echo " 3. 任务管理"
     echo " 4. 查看/编辑配置 (底层)"
     echo " 5. 手动更新所有容器"
-    echo " 6. Watchtower 详情与管理"
+    echo " 6. 详情与管理"
     echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
     read -r -p "输入选项 [1-6] 或按 Enter 返回: " choice
     
