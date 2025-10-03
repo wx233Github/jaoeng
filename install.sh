@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v63.3 - Prettier Startup)
+# 🚀 VPS 一键安装入口脚本 (v64.0 - Seamless Self-Update)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -42,7 +42,6 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     
     echo_info "正在启动主程序..."
     echo "--------------------------------------------------"
-    # [FIX] 增加空行以优化视觉分隔
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
@@ -100,8 +99,14 @@ self_update() {
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
         log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-        log_success "主程序更新成功！新版本将在下次运行时生效."; 
-        exit 0
+        
+        # [FIX] 实现无缝自我更新, 解决用户体验痛点
+        log_success "主程序更新成功！正在无缝重启..."
+        # 在 exec 替换当前进程之前, 必须手动释放锁并禁用 trap, 否则锁文件将永远残留
+        flock -u 200
+        rm -f "${CONFIG[lock_file]}"
+        trap - EXIT
+        exec sudo -E bash "$SCRIPT_PATH" "$@"
     fi; rm -f "$temp_script"; 
 }
 download_module_to_cache() { 
@@ -281,8 +286,7 @@ main() {
     fi
     load_config
     
-    # [FIX] 调整日志顺序和排版
-    log_info "脚本启动 (v63.3 - Prettier Startup)"
+    log_info "脚本启动 (v64.0 - Seamless Self-Update)"
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
