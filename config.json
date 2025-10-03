@@ -22,53 +22,62 @@
   },
 
   "menus": {
-    "comment": "动态菜单配置区。",
-    "MAIN_MENU": [
-      {
-        "name": "安装 Docker",
-        "type": "item",
-        "action": "docker.sh",
-        "icon": "›"
-      },
-      {
-        "name": "安装 Nginx",
-        "type": "item",
-        "action": "nginx.sh",
-        "icon": "›"
-      },
-      {
-        "name": "常用工具 (Tools)",
-        "type": "submenu",
-        "action": "TOOLS_MENU",
-        "icon": "→"
-      },
-      {
-        "name": "证书申请 (Cert)",
-        "type": "submenu",
-        "action": "CERT_MENU",
-        "icon": "→"
-      },
-      {
-        "name": "强制更新 (主程序+所有模块)",
-        "type": "func",
-        "action": "confirm_and_force_update",
-        "icon": "⚙️"
-      },
-      {
-        "name": "卸载脚本 (Uninstall)",
-        "type": "func",
-        "action": "uninstall_script",
-        "icon": "🗑️"
-      }
-    ],
+    "comment": "动态菜单配置区。结构已修改，每个菜单都有 title 和 items。",
+    "MAIN_MENU": {
+      "title": "🚀 VPS 一键安装脚本",
+      "items": [
+        {
+          "name": "安装 Docker",
+          "type": "item",
+          "action": "docker.sh",
+          "icon": "›"
+        },
+        {
+          "name": "安装 Nginx",
+          "type": "item",
+          "action": "nginx.sh",
+          "icon": "›"
+        },
+        {
+          "name": "常用工具 (Tools)",
+          "type": "submenu",
+          "action": "TOOLS_MENU",
+          "icon": "→"
+        },
+        {
+          "name": "证书申请 (Cert)",
+          "type": "submenu",
+          "action": "CERT_MENU",
+          "icon": "→"
+        },
+        {
+          "name": "强制更新 (主程序+所有模块)",
+          "type": "func",
+          "action": "confirm_and_force_update",
+          "icon": "⚙️"
+        },
+        {
+          "name": "卸载脚本 (Uninstall)",
+          "type": "func",
+          "action": "uninstall_script",
+          "icon": "🗑️"
+        }
+      ]
+    },
 
-    "TOOLS_MENU": [
-      { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh", "icon": "›" }
-    ],
+    "TOOLS_MENU": {
+      "title": "常用工具 (Tools)",
+      "items": [
+        { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh", "icon": "›" }
+      ]
+    },
 
-    "CERT_MENU": [
-      { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh", "icon": "›" }
-    ]
+    "CERT_MENU": {
+      "title": "证书申请 (Cert)",
+      "items": [
+        { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh", "icon": "›" }
+      ]
+    }
   },
 
   "module_configs": {
