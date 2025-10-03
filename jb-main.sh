@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装主程序 (v45.0)
+# 🚀 VPS 一键安装主程序 (v45.1 - 防御性编程)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -69,7 +69,6 @@ check_and_install_dependencies() {
 _download_main_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/jb-main.sh?_=$(date +%s)" -o "$1"; }
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/jb-main.sh"; 
-    # 确保 $0 是主程序自身
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主程序更新..."; 
     local temp_script="/tmp/jb-main.sh.tmp"; if ! _download_main_self "$temp_script"; then 
@@ -122,7 +121,6 @@ force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主程序更新...";
     self_update
-    # 更新启动器
     log_info "步骤 2: 检查启动器更新...";
     sudo curl -fsSL "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "${CONFIG[install_dir]}/install.sh"
     sudo chmod +x "${CONFIG[install_dir]}/install.sh"
@@ -175,7 +173,9 @@ execute_module() {
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     
-    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+    # --- [最终修复]: 增加对损坏配置的防御性编程 ---
+    # 检查模块配置是否存在，并且是一个对象
+    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key) and (.module_configs[$key] | type == "object")' "$config_path" > /dev/null; then
         local exports
         exports=$(jq -r --arg key "$module_key" '
             .module_configs[$key] | to_entries | .[] | 
@@ -186,13 +186,18 @@ execute_module() {
             "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
         ' "$config_path")
         env_exports+="$exports"
+    elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+        # 如果配置存在但不是对象，则打印警告
+        log_warning "在 config.json 中找到模块 '${module_key}' 的配置，但其格式不正确（不是一个对象），已跳过加载。"
     fi
+    # --- 修复结束 ---
     
     if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
         local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
         if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
         
-        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
+        # 即使通用配置加载失败，也尝试加载专门的数组配置
+        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | select(type=="array") | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
         if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
     fi
     
@@ -205,7 +210,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装主程序 (v45.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装主程序 (v45.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -244,18 +249,15 @@ process_menu_selection() {
 main() {
     export LC_ALL=C.utf8
     
-    # 主程序启动时，不再需要处理 FORCE_REFRESH，这个逻辑已由启动器处理
-    
     setup_logging
     
     acquire_lock
     trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
     
-    # 启动器已确保目录存在
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        log_error "配置文件丢失，安装已损坏。请重新运行安装命令。"
+        log_error "配置文件丢失，安装已损坏。请重新运行 'curl ... | bash -s' 安装命令。"
     fi
     
     if ! command -v jq &>/dev/null; then
@@ -264,11 +266,10 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v45.0 - 主程序)"
+    log_info "脚本启动 (v45.1 - 主程序)"
     
     check_and_install_dependencies
     
-    # 自动更新检查
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
