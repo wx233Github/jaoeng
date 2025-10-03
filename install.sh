@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.1 - Robust UI Rendering)
+# 🚀 VPS 一键安装入口脚本 (v65.2 - Fix ANSI Title Rendering)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.1"
+SCRIPT_VERSION="v65.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -197,7 +197,6 @@ execute_module() {
 }
 
 # --- UI ---
-# [FIX] 辅助函数, 用于可靠地生成重复字符的线条
 generate_line() {
     local len=$1
     local char="─"
@@ -228,15 +227,19 @@ display_menu() {
     local title_width=$((ascii_count + non_ascii_count * 2))
     
     local box_width=$((title_width + 10))
-    # [FIX] 使用更可靠的 for 循环来生成边框
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total=$((box_width - title_width))
     local padding_left=$((padding_total / 2))
-    local padding_right=$((padding_total - padding_left))
     
     echo ""
     echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
-    printf "%s%*s%s%*s%s\n" "${CYAN}│" "$padding_left" "" "${main_title_text}" "$padding_right" "" "${CYAN}│${NC}"
+    # [FIX] Re-engineer title line rendering for maximum compatibility.
+    # The previous 'printf' command failed to interpret ANSI color codes on some systems.
+    # This new approach builds the string first, then prints with 'echo -e'.
+    local left_padding; left_padding=$(printf '%*s' "$padding_left")
+    local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
+    local title_line="${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
+    echo -e "$title_line"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
@@ -256,7 +259,6 @@ display_menu() {
         printf " %s  ${YELLOW}%d.${NC} %s\n" "$icon" "$((i+1))" "$name"
     done
     
-    # [FIX] 使用更可靠的 for 循环来生成分隔线
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
     echo -e "${BLUE}${line_separator}${NC}"
     
