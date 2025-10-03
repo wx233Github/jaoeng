@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v67.0 - Architecturally Robust JQ Parsing)
+# 🚀 VPS 一键安装入口脚本 (v67.1 - Correct JQ Stream Handling)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v67.0"
+SCRIPT_VERSION="v67.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -259,7 +259,6 @@ display_menu() {
     echo -e "$title_line"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
-    # [ARCH-FIX] Use a single, robust jq command to render the menu.
     local i=1
     jq -r --arg menu "$CURRENT_MENU_NAME" '
         .menus[$menu] | if type == "array" then .[] else empty end |
@@ -273,7 +272,8 @@ display_menu() {
         i=$((i+1))
     done
     
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then (.[] | select(type == "object" and has("name"))) | length else 0 end' "$config_path")
+    # [ARCH-FIX] Correctly calculate menu length by collecting the stream into an array first.
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
     
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
     echo -e "${BLUE}${line_separator}${NC}"
@@ -289,7 +289,8 @@ display_menu() {
 
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then (.[] | select(type == "object" and has("name"))) | length else 0 end' "$config_path")
+    # [ARCH-FIX] Correctly calculate menu length.
+    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
 
     if [ -z "$choice" ]; then 
         if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
