@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.0 - Modern UI)
+# 🚀 VPS 一键安装入口脚本 (v65.1 - Robust UI Rendering)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.0"
+SCRIPT_VERSION="v65.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -196,12 +196,22 @@ execute_module() {
     return $exit_code
 }
 
-# --- [UI REDESIGN] ---
+# --- UI ---
+# [FIX] 辅助函数, 用于可靠地生成重复字符的线条
+generate_line() {
+    local len=$1
+    local char="─"
+    local line=""
+    for ((i=0; i<len; i++)); do
+        line+="$char"
+    done
+    echo "$line"
+}
+
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # 1. 定义标题内容
     local main_title_text="🚀 VPS 一键安装脚本 (${SCRIPT_VERSION})"
     local sub_title_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
@@ -210,7 +220,6 @@ display_menu() {
         sub_title_text="${CURRENT_MENU_NAME//_/ }"
     fi
     
-    # 2. 计算标题的实际显示宽度
     local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
     local total_chars=${#plain_title}
     local ascii_chars_only; ascii_chars_only=$(echo "$plain_title" | tr -dc '[ -~]')
@@ -218,14 +227,13 @@ display_menu() {
     local non_ascii_count=$((total_chars - ascii_count))
     local title_width=$((ascii_count + non_ascii_count * 2))
     
-    # 3. 动态生成边框和填充
-    local box_width=$((title_width + 10)) # 边框比标题宽一点
-    local top_bottom_border; top_bottom_border=$(printf '%*s' "$box_width" | tr ' ' '─')
+    local box_width=$((title_width + 10))
+    # [FIX] 使用更可靠的 for 循环来生成边框
+    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total=$((box_width - title_width))
     local padding_left=$((padding_total / 2))
     local padding_right=$((padding_total - padding_left))
     
-    # 4. 渲染UI
     echo ""
     echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
     printf "%s%*s%s%*s%s\n" "${CYAN}│" "$padding_left" "" "${main_title_text}" "$padding_right" "" "${CYAN}│${NC}"
@@ -240,7 +248,7 @@ display_menu() {
         local type; type=$(echo "$item_json" | jq -r ".type")
         local action; action=$(echo "$item_json" | jq -r ".action")
         
-        local icon="›" # 默认为 item 类型
+        local icon="›" 
         if [[ "$type" == "submenu" ]]; then icon="→"; fi
         if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
         if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
@@ -248,7 +256,8 @@ display_menu() {
         printf " %s  ${YELLOW}%d.${NC} %s\n" "$icon" "$((i+1))" "$name"
     done
     
-    local line_separator; line_separator=$(printf '%*s' "$((box_width + 2))" | tr ' ' '─')
+    # [FIX] 使用更可靠的 for 循环来生成分隔线
+    local line_separator; line_separator=$(generate_line "$((box_width + 2))")
     echo -e "${BLUE}${line_separator}${NC}"
     
     local exit_hint="退出"
