@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.7 - Ultimate UI Compatibility Fix)
+# Docker 自动更新助手 (v3.8.8 - Ultimate UI & Syntax Compatibility Fix)
 #
 set -euo pipefail
 
 export LANG=${LANG:-en_US.UTF-8}
 export LC_ALL=C.utf8
 
-VERSION="v3.8.7"
+VERSION="v3.8.8"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -211,7 +211,7 @@ configure_exclusion_list() {
             if [ -n "${excluded_map[$container]+_}" ]; then # POSIX-compatible check for key existence
                 is_excluded="✔"
             fi
-            echo -e " ${COLOR_YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_excluded}${COLOR_RESET}] $container"
+            echo -e " $(expr $i + 1). [${is_excluded}] $container"
         done
         
         local current_excluded_display=""
@@ -470,59 +470,66 @@ update_menu(){ while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]; then c
 main_menu(){
   while true; do
     if [ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]; then clear; fi; load_config
-    _print_header "Docker 助手 v${VERSION}"
-    local STATUS_COLOR STATUS_RAW COUNTDOWN TOTAL RUNNING STOPPED
     
+    local STATUS_RAW
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         STATUS_RAW="已启动"
     else
         STATUS_RAW="未运行"
     fi
 
-    if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${COLOR_GREEN}已启动${COLOR_RESET}"; else STATUS_COLOR="${COLOR_RED}未运行${COLOR_RESET}"; fi
-    
-    local interval=""
-    local raw_logs=""
+    local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${COLOR_GREEN}已启动${COLOR_RESET}"; else STATUS_COLOR="${COLOR_RED}未运行${COLOR_RESET}"; fi
+    local interval=""; local raw_logs="";
     if [ "$STATUS_RAW" = "已启动" ]; then
         interval=$(get_watchtower_inspect_summary)
         raw_logs=$(get_watchtower_all_raw_logs)
     fi
     
-    COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
-    TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); RUNNING=$(docker ps --format '{{.ID}}' | wc -l); STOPPED=$(expr $TOTAL - $RUNNING)
-    
-    echo -e " 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)"
-    echo -e "      ⏳ 下次检查: $COUNTDOWN"
-    echo -e "      📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
+    local COUNTDOWN; COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+    local TOTAL; TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l)
+    local RUNNING; RUNNING=$(docker ps --format '{{.ID}}' | wc -l)
+    local STOPPED; STOPPED=$(expr $TOTAL - $RUNNING)
     
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
-    if [ -n "$FINAL_EXCLUDE_LIST" ]; then echo -e " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET}"; fi
-    local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then echo -e " 🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}"; fi
+    
+    local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi
+
+    # Dynamically calculate width before printing anything
+    local header_text="Docker 助手 v${VERSION}"
+    local line1=" 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)"
+    local line2="      ⏳ 下次检查: $COUNTDOWN"
+    local line3="      📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
+    local line4=""; if [ -n "$FINAL_EXCLUDE_LIST" ]; then line4=" 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${FINAL_EXCLUDE_LIST//,/, }"; fi
+    local line5=""; if [ -n "$NOTIFY_STATUS" ]; then line5=" 🔔 通知已启用: ${NOTIFY_STATUS}"; fi
     
     local max_width=0
     local line_width
-    while IFS= read -r line; do
-        line_width=$(_get_visual_width "$line")
-        if [ $line_width -gt $max_width ]; then
-            max_width=$line_width
-        fi
-    done <<-EOF
-    $(echo " 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)")
-    $(echo "      ⏳ 下次检查: $COUNTDOWN")
-    $(echo "      📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})")
-    $(if [ -n "$FINAL_EXCLUDE_LIST" ]; then echo " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${FINAL_EXCLUDE_LIST//,/, }"; fi)
-    $(if [ -n "$NOTIFY_STATUS" ]; then echo " 🔔 通知已启用: ${NOTIFY_STATUS}"; fi)
-EOF
+    max_width=$(_get_visual_width "$header_text")
+    
+    line_width=$(_get_visual_width "$line1"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "$line2"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "$line3"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "$line4"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "$line5"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    
+    max_width=$(expr $max_width + 4) # Add padding
+    
+    # Now, print everything with the calculated max_width
+    local title=" $header_text "
+    local title_width; title_width=$(_get_visual_width "$title")
+    local padding_total; padding_total=$(expr $max_width - $title_width)
+    local padding_left; padding_left=$(expr $padding_total / 2)
+    echo
+    echo -e "${COLOR_YELLOW}╭$(generate_line $padding_left)${title}$(generate_line $(expr $padding_total - $padding_left))╮${COLOR_RESET}"
 
-    local bottom_line_len;
-    if [ $max_width -gt 62 ]; then
-        bottom_line_len=$max_width
-    else
-        bottom_line_len=62
-    fi
+    echo -e "$line1"
+    echo -e "$line2"
+    echo -e "$line3"
+    if [ -n "$line4" ]; then echo -e "$line4"; fi
+    if [ -n "$line5" ]; then echo -e "$line5"; fi
 
-    echo -e "${COLOR_BLUE}$(generate_line $bottom_line_len)${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}$(generate_line $max_width)${COLOR_RESET}"
     echo " 主菜单："
     echo " 1. 配置 Watchtower"
     echo " 2. 配置通知"
@@ -530,7 +537,7 @@ EOF
     echo " 4. 查看/编辑配置 (底层)"
     echo " 5. 手动更新所有容器"
     echo " 6. 详情与管理"
-    echo -e "${COLOR_BLUE}$(generate_line $bottom_line_len)${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}$(generate_line $max_width)${COLOR_RESET}"
     read -r -p "输入选项 [1-6] 或按 Enter 返回: " choice
     
     case "$choice" in
