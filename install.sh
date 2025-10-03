@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.4 - Globally Hardened JQ Queries)
+# 🚀 VPS 一键安装入口脚本 (v66.5 - Ultimate JQ Hardening)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.4"
+SCRIPT_VERSION="v66.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,7 +138,6 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    # [FIX] Globally hardened jq query to be robust against non-array/non-object values.
     scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(type == "object" and .type == "item").action' "${CONFIG[install_dir]}/config.json")
     
     if [[ -z "$scripts_to_update" ]]; then
@@ -260,11 +259,16 @@ display_menu() {
     echo -e "$title_line"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
+    # [FIX] Hardened the menu JSON parsing to prevent errors from invalid data types.
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then . else [] end' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
     for i in $(seq 0 $((menu_len - 1))); do
         local item_json; item_json=$(echo "$menu_items_json" | jq ".[$i]")
+        # [FIX] THE ULTIMATE FIX: Validate that the item is a valid object before trying to access its keys.
+        if ! echo "$item_json" | jq -e 'type == "object" and has("name")' > /dev/null; then
+            continue # Skip invalid entries silently.
+        fi
         local name; name=$(echo "$item_json" | jq -r ".name")
         local icon; icon=$(echo "$item_json" | jq -r '.icon // "›"')
         
@@ -285,16 +289,20 @@ display_menu() {
 
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
+    # [FIX] Hardened the menu JSON parsing.
+    local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu] | if type == "array" then . else [] end' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     if [ -z "$choice" ]; then 
         if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
         else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; 
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
-    # [FIX] Globally hardened jq query.
-    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))] | select(type==\"object\")")
-    if [[ -z "$item_json" ]]; then log_warning "无效的菜单项配置."; return 10; fi
+    
+    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))]")
+    # [FIX] THE ULTIMATE FIX: Validate the chosen item before processing.
+    if ! echo "$item_json" | jq -e 'type == "object" and has("type") and has("action") and has("name")' > /dev/null; then
+        log_warning "菜单项配置无效或不完整。"; return 10;
+    fi
 
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in 
