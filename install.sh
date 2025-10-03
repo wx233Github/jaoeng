@@ -207,7 +207,10 @@ execute_module() {
                 fi
             done <<< "$module_vars_str"
         fi
-    elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
+    # ========= FIX START =========
+    # 增加了 '(.module_configs | type == "object")' 来确保我们总是在一个对象上进行 'has' 检查
+    elif jq -e --arg key "$module_key" 'has("module_configs") and (.module_configs | type == "object") and (.module_configs | has($key))' "$config_path" > /dev/null; then
+    # ========= FIX END ===========
         log_warning "在 config.json 中找到模块 '${module_key}' 的配置, 但其格式不正确(不是一个对象), 已跳过加载."
     fi
     
