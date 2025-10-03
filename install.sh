@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.1 - Security Hardened)
+# 🚀 VPS 一键安装入口脚本 (v66.2 - Reverted to Serial Updates for UI Clarity)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.1"
+SCRIPT_VERSION="v66.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -116,8 +116,9 @@ download_module_to_cache() {
     local url="${CONFIG[base_url]}/$script_name"; 
 
     if [ "$force_update" = "true" ]; then 
-        url="${url}?_=$(date +%s)"; 
-        echo -n -e "  ↳ 强制刷新: $script_name ... ";
+        url="${url}?_=$(date +%s)";
+        # 串行模式下, 我们打印完整的行
+        log_info "  ↳ 强制刷新: $script_name";
     fi
 
     local http_code
@@ -126,17 +127,19 @@ download_module_to_cache() {
 
     if [ "$curl_exit_code" -eq 0 ] && [ "$http_code" -eq 200 ] && [ -s "$tmp_file" ]; then
         sudo mv "$tmp_file" "$local_file"
-        echo -e "${GREEN}✔${NC}"; 
+        echo -e "    ${GREEN}✔ 下载成功${NC}"; 
         return 0;
     else
         sudo rm -f "$tmp_file"
-        echo -e "${RED}✖ (HTTP: $http_code, Curl: $curl_exit_code)${NC}"; 
+        echo -e "    ${RED}✖ 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)${NC}"; 
         return 1; 
     fi; 
 }
+
+# [REVERTED] Reverted to a clean serial download loop to fix chaotic parallel output.
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
-    log_info "正在并行更新所有模块..."
+    log_info "正在串行更新所有模块..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     
@@ -145,26 +148,20 @@ _update_all_modules() {
         return
     fi
 
-    local pids=()
+    local all_successful=true
     for script_name in $scripts_to_update; do
-        (download_module_to_cache "$script_name" "$force_update") &
-        pids+=($!)
-    done
-
-    local has_error=0
-    for pid in "${pids[@]}"; do
-        if ! wait "$pid"; then
-            has_error=1
+        if ! download_module_to_cache "$script_name" "$force_update"; then
+            all_successful=false
         fi
     done
 
-    echo ""
-    if [[ "$has_error" -eq 0 ]]; then
+    if [[ "$all_successful" == "true" ]]; then
         log_success "所有模块更新完成！";
     else
         log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中.";
     fi
 }
+
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主脚本更新..."; self_update
@@ -224,8 +221,6 @@ execute_module() {
     fi
 
     local exit_code=0
-    # [SECURITY] This executes the module in a clean sudo environment (no -E), 
-    # only passing explicitly defined variables via '$env_exports'.
     sudo bash -c "$env_exports bash $local_path" < /dev/tty || exit_code=$?
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
