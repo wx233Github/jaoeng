@@ -1,18 +1,17 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v53.0 - 终极 UI 修复版)
+# 🚀 VPS 一键安装入口脚本 (v56.0 - 最终合并版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造]: 智能自引导启动器 ---
+# --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
 FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
 
-# 检查当前脚本的执行路径 ($0) 是否是最终安装路径。
 if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     
     BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\033[0;32m';
@@ -145,6 +144,7 @@ uninstall_script() {
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
         log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
         if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
+        # 卸载时，锁文件会被 flock 自动释放，但为了干净，手动删除
         log_info "正在清理锁文件..."; sudo rm -f "${CONFIG[lock_file]}"
         log_success "脚本已成功卸载。"; log_info "再见！";
         exit 0
@@ -180,33 +180,38 @@ execute_module() {
     return $exit_code
 }
 
-# --- [最终修复]: 使用 printf 和美化框线，并移除版本号 ---
+# --- [UI 修复]: 引入视觉宽度计算函数 ---
+get_visual_width() {
+    local s="$1"
+    # 使用 perl 来处理 Unicode 字符宽度，比循环更高效可靠
+    echo "$s" | perl -MText::CharWidth=mbswidth -lne 'print mbswidth($_)'
+}
+
+# --- [UI 修复]: 全面使用 printf 和视觉宽度计算 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
-    local header_text="🚀 VPS 一键安装脚本" # 移除版本号
+    local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
-    # 动态计算菜单最大宽度
     local max_width=0
-    # 比较标题宽度
-    [[ ${#header_text} -gt $max_width ]] && max_width=${#header_text}
-    [[ ${#sub_header_text} -gt $max_width ]] && max_width=${#sub_header_text}
-    # 比较菜单项宽度
+    local current_width
+    current_width=$(get_visual_width "$header_text")
+    [[ $current_width -gt $max_width ]] && max_width=$current_width
+    current_width=$(get_visual_width "$sub_header_text")
+    [[ $current_width -gt $max_width ]] && max_width=$current_width
     local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
     while IFS= read -r name; do 
-        local line_width=$((2 + 2 + 1 + 1 + ${#name})) # 缩进+序号+点+空格+名字
-        if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+        current_width=$((2 + 2 + 1 + 1 + $(get_visual_width "$name")))
+        if [ $current_width -gt $max_width ]; then max_width=$current_width; fi
     done <<< "$names"
 
-    # 生成边框字符串
     local border; border=$(printf '%*s' "$max_width" | tr ' ' '═')
 
-    # 使用 printf 绘制菜单
     echo ""
     printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
     printf "║  %-*s  ║\n" "$max_width" "$header_text"
@@ -215,18 +220,17 @@ display_menu() {
     
     for i in $(seq 0 $((menu_len - 1))); do
         local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
-        printf "║  ${YELLOW}%2d.${NC} %-*s  ║\n" "$((i+1))" "$max_width" "$name"
+        local name_width; name_width=$(get_visual_width "$name")
+        local padding=$((max_width - (2 + 2 + 1 + 1 + name_width)))
+        printf "║  ${YELLOW}%2d.${NC} %s%*s  ║\n" "$((i+1))" "$name" "$padding" ""
     done
     
     printf "%b╚══%s══╝%b\n" "$BLUE" "$border" "$NC"
     echo ""
     
     local prompt_text; 
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
-    else 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
-    fi
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; 
+    else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
     
     if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]";
     else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
@@ -255,9 +259,11 @@ main_logic() {
         log_info "强制刷新模式：配置已在启动时更新。"
     fi
     
-    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+    # 依赖检查需要提前，因为 flock 可能不存在
+    if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then check_and_install_dependencies; fi
     load_config
-    log_info "脚本启动 (v53.0 - 终极 UI 修复版)"
+    log_info "脚本启动 (v56.0 - 最终合并版)"
+    # 再次检查，以防第一次安装失败
     check_and_install_dependencies
     
     self_update
@@ -275,6 +281,8 @@ main_logic() {
 }
 
 # --- [核心改造]: 使用 flock 将主逻辑包裹起来 ---
+# 将 load_config 提前，以便获取 lock_file 的路径
+load_config
 (
     flock -n 200 || {
         echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2
