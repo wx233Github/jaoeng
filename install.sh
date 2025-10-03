@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.5 - Ultimate Stability & UI Release)
+# 🚀 VPS 一键安装入口脚本 (v70.5 - Final Dynamic UI & Compatibility Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -86,16 +86,14 @@ load_config() {
     export LC_ALL=C.utf8
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        # Load main config keys
         while IFS='=' read -r key value; do
             value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"
         done < <(jq -r 'to_entries | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not))) | map("\(.key)=\(.value)") | .[]' "$CONFIG_FILE")
         
-        # Safely load specific keys to avoid jq errors with boolean/null values
-        CONFIG[dependencies]="$(jq -r 'if .dependencies and .dependencies.common then .dependencies.common else "" end' "$CONFIG_FILE")"
-        CONFIG[lock_file]="$(jq -r 'if .lock_file then .lock_file else "/tmp/vps_install_modules.lock" end' "$CONFIG_FILE")"
-        CONFIG[enable_auto_clear]=$(jq -r 'if .enable_auto_clear then .enable_auto_clear else false end' "$CONFIG_FILE")
-        CONFIG[timezone]=$(jq -r 'if .timezone then .timezone else "Asia/Shanghai" end' "$CONFIG_FILE")
+        CONFIG[dependencies]="$(jq -r 'if .dependencies and .dependencies.common then .dependencies.common else "curl cmp ln dirname flock jq" end' "$CONFIG_FILE")"
+        CONFIG[lock_file]="$(jq -r 'if .lock_file and (.lock_file | type == "string") then .lock_file else "/tmp/vps_install_modules.lock" end' "$CONFIG_FILE")"
+        CONFIG[enable_auto_clear]=$(jq -r 'if .enable_auto_clear and (.enable_auto_clear | type == "boolean") then .enable_auto_clear else false end' "$CONFIG_FILE")
+        CONFIG[timezone]=$(jq -r 'if .timezone and (.timezone | type == "string") then .timezone else "Asia/Shanghai" end' "$CONFIG_FILE")
     fi
 }
 # --- 智能依赖处理 (使用旧版兼容语法) ---
@@ -262,56 +260,6 @@ _get_visual_width() {
     echo "$width"
 }
 
-_render_menu() {
-    local title="$1"
-    local items_str="$2"
-    
-    local max_width=0
-    local line_width
-    
-    # Calculate title width
-    line_width=$(_get_visual_width "$title"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
-    
-    # Calculate max item width
-    local old_ifs=$IFS
-    IFS=$'\n'
-    for item in $items_str; do
-        line_width=$(_get_visual_width "  XX. › $item")
-        if [ $line_width -gt $max_width ]; then
-            max_width=$line_width
-        fi
-    done
-    IFS=$old_ifs
-    
-    local box_width; box_width=$(expr $max_width + 6)
-    if [ $box_width -lt 40 ]; then box_width=40; fi
-    
-    # Render header
-    local title_width; title_width=$(_get_visual_width "$title")
-    local padding_total; padding_total=$(expr $box_width - $title_width)
-    local padding_left; padding_left=$(expr $padding_total / 2)
-    local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
-    
-    echo ""
-    echo -e "${CYAN}╭$(generate_line "$box_width")╮${NC}"
-    echo -e "${CYAN}│${left_padding}${title}${right_padding}${CYAN}│${NC}"
-    echo -e "${CYAN}╰$(generate_line "$box_width")╯${NC}"
-    
-    # Render items
-    local i=1
-    IFS=$'\n'
-    for item in $items_str; do
-        printf "  ${YELLOW}%2d.${NC} %s\n" "$i" "$item"
-        i=$(expr $i + 1)
-    done
-    IFS=$old_ifs
-    
-    # Render footer
-    echo -e "${BLUE}$(generate_line $(expr $box_width + 2))${NC}"
-}
-
-
 display_menu() {
     export LANG=${LANG:-en_US.UTF-8}
     export LC_ALL=C.utf8
@@ -320,12 +268,62 @@ display_menu() {
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json")
+
+    local title_width; title_width=$(_get_visual_width "$main_title_text")
     
-    local items_str
-    items_str=$(jq -r '.items[] | ((.icon // "›") + " " + .name)' <<< "$menu_json")
+    local max_item_width=0
+    local item_width
+    # Safely iterate over menu items to find the max width
+    local items_jq_query='.items[] | ((.icon // "›") + " " + .name)'
+    local item_list; item_list=$(jq -r "$items_jq_query" <<< "$menu_json")
+    
+    local old_ifs=$IFS
+    IFS=$'\n'
+    for item in $item_list; do
+        # Add padding for number, etc.
+        item_width=$(_get_visual_width "  XX. $item")
+        if [ $item_width -gt $max_item_width ]; then
+            max_item_width=$item_width
+        fi
+    done
+    IFS=$old_ifs
 
-    _render_menu "$main_title_text" "$items_str"
+    local box_width=$title_width
+    if [ $max_item_width -gt $box_width ]; then
+        box_width=$max_item_width
+    fi
 
+    box_width=$(expr $box_width + 6)
+    if [ $box_width -lt 40 ]; then box_width=40; fi
+
+    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
+    local padding_total; padding_total=$(expr $box_width - $title_width)
+    local padding_left; padding_left=$(expr $padding_total / 2)
+    local left_padding; left_padding=$(printf '%*s' "$padding_left")
+    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    
+    echo ""
+    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
+    echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
+    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
+    
+    local i=1
+    local icons_str; icons_str=$(jq -r '.items[] | (.icon // "›")' <<< "$menu_json")
+    local names_str; names_str=$(jq -r '.items[] | .name' <<< "$menu_json")
+    
+    # Use arrays to safely handle multi-line inputs
+    readarray -t icons <<< "$icons_str"
+    readarray -t names <<< "$names_str"
+    
+    i=0
+    while [ $i -lt ${#names[@]} ]; do
+        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$(expr $i + 1)" "${icons[$i]}" "${names[$i]}"
+        i=$(expr $i + 1)
+    done
+
+    local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)")
+    echo -e "${BLUE}${line_separator}${NC}"
+    
     local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
     local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi;
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
