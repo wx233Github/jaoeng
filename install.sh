@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.0 - Final UI & Stability Release)
+# 🚀 VPS 一键安装入口脚本 (v70.1 - Perfected UI & Final Release)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.0"
+SCRIPT_VERSION="v70.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -233,9 +233,6 @@ execute_module() {
 }
 generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
 
-### [ULTIMATE FIX v70.0] ###
-# This new width calculation function is 100% POSIX compatible.
-# It uses `wc -c` to count bytes, which is extremely stable.
 _get_visual_width() {
     local text="$1"
     local plain_text
@@ -252,7 +249,6 @@ _get_visual_width() {
         if [ "$byte_count" -eq 1 ]; then
             width=$((width + 1))
         else
-            # Assume multi-byte characters are double-width
             width=$((width + 2))
         fi
         i=$((i+1))
@@ -269,6 +265,8 @@ display_menu() {
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
 
+    ### [FINAL UI FIX v70.1] ###
+    # This logic now dynamically adjusts the box width based on both the title and the longest menu item.
     local title_width; title_width=$(_get_visual_width "$main_title_text")
     
     local max_item_width=0
@@ -280,7 +278,11 @@ display_menu() {
         fi
     done < <(echo "$menu_json" | jq -r '.items[] | .name')
     
-    local box_width=$((title_width > max_item_width ? title_width : max_item_width))
+    local box_width=$title_width
+    if [ $max_item_width -gt $box_width ]; then
+        box_width=$max_item_width
+    fi
+
     box_width=$((box_width + 6))
     if [ $box_width -lt 40 ]; then box_width=40; fi
 
@@ -322,7 +324,7 @@ process_menu_selection() {
     
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     
-    # Retaining the exact working syntax from v69.2
+    # Retaining the exact working syntax from v69.2 for maximum stability
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
         log_warning "无效选项."; 
         return 10; 
