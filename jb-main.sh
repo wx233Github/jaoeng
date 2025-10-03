@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v20.0 - Main Program)
+# 🚀 VPS 一键安装主程序 (v45.0)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -15,8 +15,6 @@ declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
 CONFIG[bin_dir]="/usr/local/bin"
-# 日志文件路径由启动器管理，这里仅作记录
-CONFIG[log_file]="/var/log/jb_launcher.log" 
 CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
@@ -30,12 +28,7 @@ fi
 
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
-
-# 日志记录已由外部启动器通过 tee 全面接管，此函数无需做任何事
-setup_logging() {
-    :
-}
-
+setup_logging() { :; }
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log_info() { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $1"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
@@ -69,59 +62,109 @@ load_config() {
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
 }
 
 # --- 核心功能 ---
-_download_main_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/main.sh?_=$(date +%s)" -o "$1"; }
-save_entry_script() { 
-    export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/main.sh"; log_info "正在保存主程序脚本..."; 
-    local temp_path="/tmp/main.sh.self"; if ! _download_main_self "$temp_path"; then 
-        log_error "无法从 GitHub 下载主程序以保存。";
-    else sudo mv "$temp_path" "$SCRIPT_PATH"; fi; sudo chmod +x "$SCRIPT_PATH"; 
-}
-setup_shortcut() { 
-    # 快捷方式 jb 应该指向启动器 install.sh，而不是主程序
-    export LC_ALL=C.utf8; local LAUNCHER_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}";
-    # 下载启动器到标准位置
-    curl -fsSL "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$LAUNCHER_PATH"
-    chmod +x "$LAUNCHER_PATH"
-    if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$LAUNCHER_PATH" ]; then 
-        sudo ln -sf "$LAUNCHER_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建/更新。"; 
-    fi; 
-}
+_download_main_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/jb-main.sh?_=$(date +%s)" -o "$1"; }
 self_update() { 
-    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/main.sh"; if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; log_info "检查主程序更新..."; 
-    local temp_script="/tmp/main.sh.tmp"; if ! _download_main_self "$temp_script"; then 
+    export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/jb-main.sh"; 
+    # 确保 $0 是主程序自身
+    if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
+    log_info "检查主程序更新..."; 
+    local temp_script="/tmp/jb-main.sh.tmp"; if ! _download_main_self "$temp_script"; then 
         log_warning "无法连接 GitHub 检查更新。"; return;
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
         log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-        log_success "主程序更新成功！下次运行时将生效。"; 
+        log_success "主程序更新成功！正在重启..."; 
+        exec sudo -E bash "$SCRIPT_PATH" "$@"
     fi; rm -f "$temp_script"; 
 }
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
-    local url="${CONFIG[base_url]}/$script_name"; if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
+    local url="${CONFIG[base_url]}/$script_name"; 
+    if [ "$force_update" = "true" ]; then 
+        url="${url}?_=$(date +%s)";
+        log_info "  ↳ 强制刷新: $script_name"
+    fi
     local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
-    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then return 0; else sudo rm -f "$local_file"; log_warning "下载 [$script_name] 失败 (HTTP: $http_code)。"; return 1; fi; 
+    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then 
+        echo -e "  ${GREEN}✔ ${script_name}${NC}"
+        return 0
+    else 
+        sudo rm -f "$local_file"; 
+        echo -e "  ${RED}✖ ${script_name} (下载失败, HTTP: $http_code)${NC}"
+        return 1
+    fi; 
 }
 
 _update_all_modules() {
-    export LC_ALL=C.utf8; local force_update="${1:-false}"; log_info "正在并行更新所有模块..."; 
+    export LC_ALL=C.utf8; local force_update="${1:-false}"; 
+    log_info "正在串行更新所有模块..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type=="array") | .[] | select(.type=="item") | .action' "${CONFIG[install_dir]}/config.json")
-    for script_name in $scripts_to_update; do ( if download_module_to_cache "$script_name" "$force_update"; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; else echo -e "  ${RED}✖ ${script_name}${NC}"; fi ) & done
-    wait; log_success "所有模块更新完成！"
+    local all_successful=true
+    for script_name in $scripts_to_update; do
+        if ! download_module_to_cache "$script_name" "$force_update"; then
+            all_successful=false
+        fi
+    done
+    if [[ "$all_successful" == "true" ]]; then
+        log_success "所有模块更新完成！"
+    else
+        log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中。"
+    fi
 }
 
 force_update_all() {
-    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; self_update; log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true";
+    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
+    log_info "步骤 1: 检查主程序更新...";
+    self_update
+    # 更新启动器
+    log_info "步骤 2: 检查启动器更新...";
+    sudo curl -fsSL "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "${CONFIG[install_dir]}/install.sh"
+    sudo chmod +x "${CONFIG[install_dir]}/install.sh"
+    log_info "步骤 3: 强制更新所有子模块..."; 
+    _update_all_modules "true";
 }
 confirm_and_force_update() {
-    export LC_ALL=C.utf8; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice; fi
-    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all; else log_info "强制更新已取消。"; fi
+    export LC_ALL=C.utf8
+    if [[ "$AUTO_YES" == "true" ]]; then
+        force_update_all
+        return 10
+    fi
+    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本，继续吗？(Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
+    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then
+        force_update_all
+    else
+        log_info "强制更新已取消。"
+    fi
+    return 10 
+}
+
+uninstall_script() {
+    log_warning "警告：这将从您的系统中彻底移除本脚本及其所有组件！"
+    log_warning "将要删除的包括："
+    log_warning "  - 安装目录: ${CONFIG[install_dir]}"
+    log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
+    read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    if [[ "$choice" == "yes" ]]; then
+        log_info "开始卸载...";
+        release_lock
+        log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
+        if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
+        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
+        if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
+        log_info "正在清理锁文件...";
+        sudo rm -f "${CONFIG[lock_file]}"
+        log_success "脚本已成功卸载。"; log_info "再见！";
+        exit 0
+    else
+        log_info "卸载操作已取消。"
+        return 10
+    fi
 }
 
 execute_module() {
@@ -129,7 +172,7 @@ execute_module() {
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
     sudo chmod +x "$local_path"
     
-    local env_exports="export IS_NESTED_CALL=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
+    local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     
     if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
@@ -154,8 +197,7 @@ execute_module() {
     fi
     
     local exit_code=0
-    # 因为运行在 pty 中，不再需要 < /dev/tty
-    sudo bash -c "$env_exports bash $local_path" || exit_code=$?
+    sudo bash -c "$env_exports bash $local_path" < /dev/tty || exit_code=$?
     
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
@@ -163,7 +205,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v20.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装主程序 (v45.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -177,43 +219,43 @@ display_menu() {
         choice=""
         echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]"
     else
-        read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice
+        read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty
     fi
 }
+
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 0; fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
+        log_warning "无效选项。"
+        return 10 
+    fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
-    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu | back) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return 0;; esac
+    case "$type" in 
+        item) execute_module "$action" "$name"; return $?;; 
+        submenu | back) CURRENT_MENU_NAME=$action; return 10;; 
+        func) "$action"; return $?;; 
+    esac
 }
 
 main() {
     export LC_ALL=C.utf8
-    local CACHE_BUSTER=""
     
-    if [[ "${FORCE_REFRESH}" == "true" ]]; then
-        CACHE_BUSTER="?_=$(date +%s)"
-        log_info "强制刷新模式：将强制拉取所有最新文件。"
-        sudo rm -f "${CONFIG[install_dir]}/config.json" 2>/dev/null || true
-    fi
+    # 主程序启动时，不再需要处理 FORCE_REFRESH，这个逻辑已由启动器处理
     
     setup_logging
     
     acquire_lock
     trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
     
+    # 启动器已确保目录存在
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        log_info "未找到配置，正在下载..."
-        if ! curl -fsSL "${CONFIG[base_url]}/config.json${CACHE_BUSTER}" -o "$config_path"; then
-            log_error "下载 config.json 失败！"
-        fi
-        log_success "已下载 config.json。"
+        log_error "配置文件丢失，安装已损坏。请重新运行安装命令。"
     fi
     
     if ! command -v jq &>/dev/null; then
@@ -222,17 +264,11 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v20.0 - Main Program)"
+    log_info "脚本启动 (v45.0 - 主程序)"
     
     check_and_install_dependencies
     
-    # 首次运行时，保存主程序和启动器
-    local MAIN_SCRIPT_PATH="${CONFIG[install_dir]}/main.sh"
-    if [ ! -f "$MAIN_SCRIPT_PATH" ]; then
-        save_entry_script
-    fi
-    
-    setup_shortcut
+    # 自动更新检查
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
@@ -240,9 +276,9 @@ main() {
         display_menu
         local exit_code=0
         process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ] && [ "$AUTO_YES" != "true" ]; then
+        if [ "$exit_code" -ne 10 ]; then
             while read -r -t 0; do :; done
-            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")"
+            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
     done
 }
