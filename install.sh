@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.3 - Minimalist Separator)
+# 🚀 VPS 一键安装入口脚本 (v65.4 - Perfected UI Alignment)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.3"
+SCRIPT_VERSION="v65.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,8 +43,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    # [UI] Replaced the startup message with a single, clean separator line.
-    echo -e "${BLUE}──────${NC}"
+    # [FIX] Use a longer, more deliberate separator for better visual consistency.
+    echo -e "${BLUE}────────────────────────────────────────────────────────────${NC}"
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
@@ -211,13 +211,8 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    local main_title_text="🚀 VPS 一键安装脚本 (${SCRIPT_VERSION})"
-    local sub_title_text
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-        sub_title_text="主菜单"
-    else 
-        sub_title_text="${CURRENT_MENU_NAME//_/ }"
-    fi
+    # [FIX] Removed version number from the visual title for a cleaner look.
+    local main_title_text="🚀 VPS 一键安装脚本"
     
     local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
     local total_chars=${#plain_title}
@@ -253,7 +248,13 @@ display_menu() {
         if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
         if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
         
-        printf " %s  ${YELLOW}%d.${NC} %s\n" "$icon" "$((i+1))" "$name"
+        # [FIX] Use conditional spacing to perfectly align single-width and double-width icons.
+        local spacing=" "
+        if [[ "$icon" != "⚙️" && "$icon" != "🗑️" ]]; then
+            spacing="  "
+        fi
+        
+        printf " %s%s${YELLOW}%d.${NC} %s\n" "$icon" "$spacing" "$((i+1))" "$name"
     done
     
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
