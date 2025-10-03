@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v67.4 - Final Robust JQ Queries)
+# 🚀 VPS 一键安装入口脚本 (v67.8 - Reset Option)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v67.4"
+SCRIPT_VERSION="v67.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -97,81 +97,114 @@ self_update() {
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if ! _download_self "$temp_script"; then 
-        log_warning "无法连接 GitHub 检查更新."; return;
+        log_warning "无法连接 GitHub 检查更新."; rm -f "$temp_script"; return;
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
-        log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
+        log_info "  ↳ 检测到新版本，正在更新主程序...";
+        sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
         log_success "主程序更新成功！正在无缝重启..."
-        flock -u 200
-        rm -f "${CONFIG[lock_file]}"
-        trap - EXIT
+        flock -u 200; rm -f "${CONFIG[lock_file]}"; trap - EXIT
         exec sudo -E bash "$SCRIPT_PATH" "$@"
+    else
+        log_info "  ↳ 主程序已是最新版本。"
     fi; rm -f "$temp_script"; 
 }
 download_module_to_cache() { 
-    export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
-    local script_name="$1"; local force_update="${2:-false}"; 
-    local local_file="${CONFIG[install_dir]}/$script_name";
+    export LC_ALL=C.utf8
+    local script_name="$1"
+    log_info "  ↳ 正在检查模块: $script_name"
+    
+    sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$script_name")"
+    
+    local local_file="${CONFIG[install_dir]}/$script_name"
     local tmp_file="${local_file}.tmp"
-    local url="${CONFIG[base_url]}/$script_name"; 
-
-    if [ "$force_update" = "true" ]; then 
-        url="${url}?_=$(date +%s)";
-        log_info "  ↳ 强制刷新: $script_name";
-    fi
+    local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"
 
     local http_code
     http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url")
     local curl_exit_code=$?
 
-    if [ "$curl_exit_code" -eq 0 ] && [ "$http_code" -eq 200 ] && [ -s "$tmp_file" ]; then
-        sudo mv "$tmp_file" "$local_file"
-        echo -e "    ${GREEN}✔ 下载成功${NC}"; 
-        return 0;
-    else
+    if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then
+        echo -e "    ${RED}✖ 检查失败 (HTTP: $http_code, Curl: $curl_exit_code)${NC}"
         sudo rm -f "$tmp_file"
-        echo -e "    ${RED}✖ 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)${NC}"; 
-        return 1; 
-    fi; 
+        return 1
+    fi
+
+    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
+        echo -e "    ${CYAN}✔ 已是最新版本${NC}"
+        sudo rm -f "$tmp_file"
+        return 0
+    else
+        if [ ! -f "$local_file" ]; then
+            echo -e "    ${GREEN}✔ 下载成功 (首次)${NC}"
+        else
+            echo -e "    ${GREEN}✔ 更新成功${NC}"
+        fi
+        sudo mv "$tmp_file" "$local_file"
+        return 0
+    fi
 }
 _update_all_modules() {
-    export LC_ALL=C.utf8; local force_update="${1:-false}"; 
-    log_info "正在串行更新所有模块..."
+    export LC_ALL=C.utf8
+    log_info "正在检查所有模块更新..."
     local scripts_to_update
-    # FIX: Added 'select(type == "object")' to filter out string comments before iteration.
     scripts_to_update=$(jq -r '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     
     if [[ -z "$scripts_to_update" ]]; then
-        log_success "没有需要更新的模块。";
+        log_success "没有需要检查的模块。";
         return
     fi
 
     local all_successful=true
     for script_name in $scripts_to_update; do
-        if ! download_module_to_cache "$script_name" "$force_update"; then
+        if ! download_module_to_cache "$script_name"; then
             all_successful=false
         fi
     done
 
     if [[ "$all_successful" == "true" ]]; then
-        log_success "所有模块更新完成！";
+        log_success "所有模块检查完成！";
     else
-        log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中.";
+        log_warning "部分模块检查或更新失败。";
     fi
 }
 force_update_all() {
-    export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
-    log_info "步骤 1: 检查主脚本更新..."; self_update
-    log_info "步骤 2: 强制更新所有子模块..."; _update_all_modules "true";
+    export LC_ALL=C.utf8; log_info "开始脚本更新流程..."; 
+    self_update
+    _update_all_modules
 }
+
+# ========= FIX START: 修改选项5的行为 =========
 confirm_and_force_update() {
     export LC_ALL=C.utf8
-    if [[ "$AUTO_YES" == "true" ]]; then force_update_all; return 10; fi
-    read -p "$(echo -e "${YELLOW}这将强制拉取最新版本, 继续吗? (Y/回车 确认, N 取消): ${NC}")" choice < /dev/tty
-    if [[ "$choice" =~ ^[Yy]$ || -z "$choice" ]]; then force_update_all;
-    else log_info "强制更新已取消."; fi
+    log_warning "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
+    log_warning "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
+    read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    
+    if [[ "$choice" == "yes" ]]; then
+        log_info "开始强制完全重置..."
+        
+        # 1. 更新所有脚本 (智能检查模式)
+        force_update_all
+        
+        # 2. 强制更新 config.json
+        log_info "正在强制更新 config.json..."
+        local config_url="${CONFIG[base_url]}/config.json?_=$(date +%s)"
+        if ! sudo curl -fsSL "$config_url" -o "${CONFIG[install_dir]}/config.json"; then
+            log_error "下载最新的 config.json 失败。"
+        else
+            log_success "config.json 已重置为最新版本。"
+        fi
+        
+        log_info "正在重新加载配置..."
+        load_config
+    else 
+        log_info "操作已取消。"
+    fi
     return 10 
 }
+# ========= FIX END =========
+
 uninstall_script() {
     log_warning "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
     log_warning "将要删除的包括:"; log_warning "  - 安装目录: ${CONFIG[install_dir]}"; log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
@@ -223,107 +256,11 @@ execute_module() {
     return $exit_code
 }
 
-# --- UI ---
-generate_line() {
-    local len=$1
-    local char="─"
-    local line=""
-    for ((i=0; i<len; i++)); do
-        line+="$char"
-    done
-    echo "$line"
-}
+# --- UI Functions (unchanged) ---
+generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
+display_menu() { export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi; local config_path="${CONFIG[install_dir]}/config.json"; local main_title_text; main_title_text=$(jq -r --arg menu "$CURRENT_MENU_NAME" 'if .menus[$menu] | type == "object" then .menus[$menu].title else "🚀 VPS 一键安装脚本" end' "$config_path"); local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g'); local total_chars=${#plain_title}; local ascii_chars_only; ascii_chars_only=$(echo "$main_title_text" | tr -dc '[ -~]'); local ascii_count=${#ascii_chars_only}; local non_ascii_count=$((total_chars - ascii_count)); local title_width=$((ascii_count + non_ascii_count * 2)); local box_width=$((title_width + 10)); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total=$((box_width - title_width)); local padding_left=$((padding_total / 2)); echo ""; echo -e "${CYAN}╭${top_bottom_border}╮${NC}"; local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))"); local title_line="${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"; echo -e "$title_line"; echo -e "${CYAN}╰${top_bottom_border}╯${NC}"; local i=1; jq -r --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[] else empty end | if type == "object" and has("name") then [.name, (.icon // "›")] | @tsv else empty end' "$config_path" | while IFS=$'\t' read -r name icon; do printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$((i+1)); done; local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path"); local line_separator; line_separator=$(generate_line "$((box_width + 2))"); echo -e "${BLUE}${line_separator}${NC}"; local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "; if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi; }
+process_menu_selection() { export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"; local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path"); if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi; local item_json; item_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" --argjson idx "$((choice - 1))" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[$idx] else null end | if type == "object" and has("type") and has("action") and has("name") then . else null end' "$config_path"); if [[ "$item_json" == "null" || -z "$item_json" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi; local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action"); case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac; }
 
-display_menu() {
-    export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; 
-    
-    local main_title_text
-    main_title_text=$(jq -r --arg menu "$CURRENT_MENU_NAME" '
-        if .menus[$menu] | type == "object" then .menus[$menu].title else "🚀 VPS 一键安装脚本" end
-    ' "$config_path")
-    
-    local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
-    local total_chars=${#plain_title}
-    local ascii_chars_only; ascii_chars_only=$(echo "$main_title_text" | tr -dc '[ -~]')
-    local ascii_count=${#ascii_chars_only}
-    local non_ascii_count=$((total_chars - ascii_count))
-    local title_width=$((ascii_count + non_ascii_count * 2))
-    
-    local box_width=$((title_width + 10))
-    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total=$((box_width - title_width))
-    local padding_left=$((padding_total / 2))
-    
-    echo ""
-    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
-    local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
-    local title_line="${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
-    echo -e "$title_line"
-    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
-    
-    local i=1
-    jq -r --arg menu "$CURRENT_MENU_NAME" '
-        (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[] else empty end |
-        if type == "object" and has("name") then
-            [.name, (.icon // "›")] | @tsv
-        else
-            empty
-        end
-    ' "$config_path" | while IFS=$'\t' read -r name icon; do
-        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"
-        i=$((i+1))
-    done
-    
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
-    
-    local line_separator; line_separator=$(generate_line "$((box_width + 2))")
-    echo -e "${BLUE}${line_separator}${NC}"
-    
-    local exit_hint="退出"
-    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
-    
-    local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
-    
-    if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]";
-    else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
-}
-
-process_menu_selection() {
-    export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
-
-    if [ -z "$choice" ]; then 
-        if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; 
-        else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; 
-    fi
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
-    
-    local item_json
-    item_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" --argjson idx "$((choice - 1))" '
-        (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[$idx] else null end |
-        if type == "object" and has("type") and has("action") and has("name") then
-            .
-        else
-            null
-        end
-    ' "$config_path")
-
-    if [[ "$item_json" == "null" || -z "$item_json" ]]; then
-        log_warning "菜单项配置无效或不完整。"; return 10;
-    fi
-    
-    local type; type=$(echo "$item_json" | jq -r ".type")
-    local name; name=$(echo "$item_json" | jq -r ".name")
-    local action; action=$(echo "$item_json" | jq -r ".action")
-
-    case "$type" in 
-        item) execute_module "$action" "$name"; return $?;; 
-        submenu) CURRENT_MENU_NAME=$action; return 10;; 
-        func) "$action"; return $?;; 
-    esac
-}
 main() {
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
@@ -342,9 +279,10 @@ main() {
         shift
         case "$command" in
             update)
-                log_info "正在以 Headless 模式执行强制更新..."
+                log_info "正在执行脚本更新..."
                 force_update_all
-                exit 0
+                log_info "更新完成，即将进入主菜单..."
+                sleep 1
                 ;;
             uninstall)
                 log_info "正在以 Headless 模式执行卸载..."
@@ -353,7 +291,6 @@ main() {
                 ;;
             *)
                 local item_json
-                # FIX: Added 'select(type == "object")' to filter out string comments.
                 item_json=$(jq -r --arg cmd "$command" '
                     .menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(type == "object") |
                     select(.type != "submenu") |
@@ -380,7 +317,8 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    self_update
+    log_info "正在智能检查所有脚本更新..."
+    force_update_all
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
