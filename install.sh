@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v67.8 - Reset Option)
+# 🚀 VPS 一键安装入口脚本 (v68.0 - 'update' now resets config.json)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v67.8"
+SCRIPT_VERSION="v68.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -95,25 +95,20 @@ _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_u
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
-    log_info "检查主脚本更新..."; 
+    
     local temp_script="/tmp/install.sh.tmp"; if ! _download_self "$temp_script"; then 
-        log_warning "无法连接 GitHub 检查更新."; rm -f "$temp_script"; return;
+        log_warning "主程序 (install.sh) 更新检查失败 (无法连接)。"; rm -f "$temp_script"; return;
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
-        log_info "  ↳ 检测到新版本，正在更新主程序...";
+        log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-        log_success "主程序更新成功！正在无缝重启..."
         flock -u 200; rm -f "${CONFIG[lock_file]}"; trap - EXIT
         exec sudo -E bash "$SCRIPT_PATH" "$@"
-    else
-        log_info "  ↳ 主程序已是最新版本。"
     fi; rm -f "$temp_script"; 
 }
 download_module_to_cache() { 
     export LC_ALL=C.utf8
     local script_name="$1"
-    log_info "  ↳ 正在检查模块: $script_name"
-    
     sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$script_name")"
     
     local local_file="${CONFIG[install_dir]}/$script_name"
@@ -125,56 +120,36 @@ download_module_to_cache() {
     local curl_exit_code=$?
 
     if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then
-        echo -e "    ${RED}✖ 检查失败 (HTTP: $http_code, Curl: $curl_exit_code)${NC}"
+        log_error "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         sudo rm -f "$tmp_file"
         return 1
     fi
 
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
-        echo -e "    ${CYAN}✔ 已是最新版本${NC}"
         sudo rm -f "$tmp_file"
         return 0
     else
-        if [ ! -f "$local_file" ]; then
-            echo -e "    ${GREEN}✔ 下载成功 (首次)${NC}"
-        else
-            echo -e "    ${GREEN}✔ 更新成功${NC}"
-        fi
+        log_success "模块 (${script_name}) 已更新。"
         sudo mv "$tmp_file" "$local_file"
         return 0
     fi
 }
 _update_all_modules() {
     export LC_ALL=C.utf8
-    log_info "正在检查所有模块更新..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
-    
-    if [[ -z "$scripts_to_update" ]]; then
-        log_success "没有需要检查的模块。";
-        return
-    fi
+    if [[ -z "$scripts_to_update" ]]; then return; fi
 
-    local all_successful=true
     for script_name in $scripts_to_update; do
-        if ! download_module_to_cache "$script_name"; then
-            all_successful=false
-        fi
+        download_module_to_cache "$script_name" || true
     done
-
-    if [[ "$all_successful" == "true" ]]; then
-        log_success "所有模块检查完成！";
-    else
-        log_warning "部分模块检查或更新失败。";
-    fi
 }
 force_update_all() {
-    export LC_ALL=C.utf8; log_info "开始脚本更新流程..."; 
+    export LC_ALL=C.utf8
     self_update
     _update_all_modules
+    log_success "检查完成！"
 }
-
-# ========= FIX START: 修改选项5的行为 =========
 confirm_and_force_update() {
     export LC_ALL=C.utf8
     log_warning "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
@@ -184,10 +159,6 @@ confirm_and_force_update() {
     if [[ "$choice" == "yes" ]]; then
         log_info "开始强制完全重置..."
         
-        # 1. 更新所有脚本 (智能检查模式)
-        force_update_all
-        
-        # 2. 强制更新 config.json
         log_info "正在强制更新 config.json..."
         local config_url="${CONFIG[base_url]}/config.json?_=$(date +%s)"
         if ! sudo curl -fsSL "$config_url" -o "${CONFIG[install_dir]}/config.json"; then
@@ -198,13 +169,13 @@ confirm_and_force_update() {
         
         log_info "正在重新加载配置..."
         load_config
+        
+        force_update_all
     else 
         log_info "操作已取消。"
     fi
     return 10 
 }
-# ========= FIX END =========
-
 uninstall_script() {
     log_warning "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
     log_warning "将要删除的包括:"; log_warning "  - 安装目录: ${CONFIG[install_dir]}"; log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
@@ -278,12 +249,27 @@ main() {
         local command="$1"
         shift
         case "$command" in
+            # ========= FIX START: 修改 update 参数的行为 =========
             update)
-                log_info "正在执行脚本更新..."
+                log_info "正在执行强制重置 (更新脚本+恢复配置)..."
+                
+                log_info "正在强制更新 config.json..."
+                local config_url="${CONFIG[base_url]}/config.json?_=$(date +%s)"
+                if ! sudo curl -fsSL "$config_url" -o "${CONFIG[install_dir]}/config.json"; then
+                    log_error "下载最新的 config.json 失败。"
+                else
+                    log_success "config.json 已重置为最新版本。"
+                fi
+                
+                log_info "正在重新加载配置..."
+                load_config
+                
                 force_update_all
-                log_info "更新完成，即将进入主菜单..."
+                
+                log_info "强制重置完成，即将进入主菜单..."
                 sleep 1
                 ;;
+            # ========= FIX END =========
             uninstall)
                 log_info "正在以 Headless 模式执行卸载..."
                 uninstall_script
@@ -317,7 +303,10 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    log_info "正在智能检查所有脚本更新..."
+    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🕛"
+    sleep 0.5; echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🚀"
+    echo ""
+
     force_update_all
     
     CURRENT_MENU_NAME="MAIN_MENU"
