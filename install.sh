@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.3 - Robustness & UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v69.4 - Final Syntax Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.3"
+SCRIPT_VERSION="v69.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -307,25 +307,50 @@ display_menu() {
         read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
     fi
 }
+
 process_menu_selection() {
-    export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
-    local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
-    if [[ -z "$choice" ]]; then if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    export LC_ALL=C.utf8
+    local config_path="${CONFIG[install_dir]}/config.json"
+    local menu_json
+    menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
+    local menu_len
+    menu_len=$(echo "$menu_json" | jq -r '.items | length')
     
-    ### [FINAL FIX] ###
-    # This is the line that caused the error (line 252 in previous version).
-    # Replaced the mixed conditional '[[...]] || [...]' with a single, robust '[[...]]'.
+    if [[ -z "$choice" ]]; then
+        if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then
+            exit 0
+        else
+            CURRENT_MENU_NAME="MAIN_MENU"
+            return 10
+        fi
+    fi
+    
+    ### [ULTIMATE FIX for install.sh] ###
+    # This robust check replaces the previous mixed-syntax conditional that caused errors.
     if ! [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "$menu_len" ]]; then
         log_warning "无效选项."
         return 10
     fi
     
-    local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
-    if [[ -z "$item_json" || "$item_json" == "null" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
-    local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
-    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac
+    local item_json
+    item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
+    if [[ -z "$item_json" || "$item_json" == "null" ]]; then
+        log_warning "菜单项配置无效或不完整。"
+        return 10
+    fi
+    
+    local type name action
+    type=$(echo "$item_json" | jq -r ".type")
+    name=$(echo "$item_json" | jq -r ".name")
+    action=$(echo "$item_json" | jq -r ".action")
+    
+    case "$type" in
+        item) execute_module "$action" "$name"; return $?;;
+        submenu) CURRENT_MENU_NAME=$action; return 10;;
+        func) "$action"; return $?;;
+    esac
 }
+
 
 main() {
     exec 200>"${CONFIG[lock_file]}"
