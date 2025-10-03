@@ -1,42 +1,60 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v50.0 - flock 锁最终稳定版)
+# 🚀 VPS 一键安装入口脚本 (v52.0 - UI美化与智能启动版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
 
-# --- [核心改造]: 自引导 (Self-Bootstrap) 启动器 ---
+# --- [核心改造]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
 FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
+CONFIG_PATH="${INSTALL_DIR}/config.json"
+
+# 检查当前脚本的执行路径 ($0) 是否是最终安装路径。
+# 如果不是（例如，通过 curl | bash 或 jb 执行），则进入启动器模式。
 if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
+    
     BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\033[0;32m';
     echo_info() { echo -e "${BLUE}[启动器]${NC} $1"; }
     echo_success() { echo -e "${GREEN}[启动器]${NC} $1"; }
     echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
-    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到，无法继续。请先安装 curl。"; fi
-    echo_info "正在执行首次安装或强制刷新..."
-    sudo mkdir -p "$INSTALL_DIR"
-    BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-    echo_info "正在下载最新的主程序..."
-    if ! sudo curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$FINAL_SCRIPT_PATH"; then echo_error "下载主程序失败，请检查网络连接。"; fi
-    sudo chmod +x "$FINAL_SCRIPT_PATH"
-    echo_info "正在下载最新的配置文件..."
-    CONFIG_PATH="${INSTALL_DIR}/config.json"
-    if ! sudo curl -fsSL "${BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_PATH"; then echo_error "下载配置文件失败。"; fi
-    echo_info "正在创建快捷指令 'jb'..."
-    BIN_DIR="/usr/local/bin"
-    sudo ln -sf "$FINAL_SCRIPT_PATH" "${BIN_DIR}/jb"
-    echo_success "安装/更新完成！"
+
+    # 只有在主脚本或配置文件不存在，或被强制刷新时，才执行完整的安装流程
+    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [[ "${FORCE_REFRESH}" == "true" ]]; then
+        echo_info "正在执行首次安装或强制刷新..."
+        
+        if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到，请先安装。"; fi
+        
+        sudo mkdir -p "$INSTALL_DIR"
+        BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+        
+        echo_info "正在下载最新的主程序..."
+        if ! sudo curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$FINAL_SCRIPT_PATH"; then echo_error "下载主程序失败。"; fi
+        sudo chmod +x "$FINAL_SCRIPT_PATH"
+        
+        echo_info "正在下载最新的配置文件..."
+        if ! sudo curl -fsSL "${BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_PATH"; then echo_error "下载配置文件失败。"; fi
+        
+        echo_info "正在创建/更新快捷指令 'jb'..."
+        BIN_DIR="/usr/local/bin"
+        sudo ln -sf "$FINAL_SCRIPT_PATH" "${BIN_DIR}/jb"
+        
+        echo_success "安装/更新完成！"
+    fi
+    
     echo_info "正在启动主程序..."
     echo "--------------------------------------------------"
+    
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
 # --- 主程序逻辑 ---
+
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+
 # --- 默认配置 ---
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -46,9 +64,11 @@ CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
+
 # --- 控制变量定义 ---
 AUTO_YES="false"
 if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then AUTO_YES="true"; fi
+
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() { :; }
@@ -57,10 +77,6 @@ log_info() { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $1"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $1"; }
 log_warning() { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $1"; }
 log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
-
-# --- [核心改造]: 并发锁机制升级为 flock (移除旧函数) ---
-# acquire_lock() { ... }
-# release_lock() { ... }
 
 # --- 配置加载 ---
 load_config() {
@@ -73,11 +89,13 @@ load_config() {
         CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
     fi
 }
+
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
     local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
 }
+
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
 self_update() { 
@@ -89,7 +107,7 @@ self_update() {
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
         log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-        log_success "主脚本更新成功！正在重启以同步所有配置..."; 
+        log_success "主程序更新成功！正在重启..."; 
         exec sudo -E env FORCE_REFRESH=true bash "$SCRIPT_PATH" "$@"
     fi; rm -f "$temp_script"; 
 }
@@ -130,8 +148,7 @@ uninstall_script() {
     log_warning "将要删除的包括："; log_warning "  - 安装目录: ${CONFIG[install_dir]}"; log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
     read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
     if [[ "$choice" == "yes" ]]; then
-        log_info "开始卸载..."; 
-        # release_lock 不再需要
+        log_info "开始卸载...";
         log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
         log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
@@ -170,34 +187,61 @@ execute_module() {
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回。"; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)。"; fi
     return $exit_code
 }
+
+# --- [UI 优化]: 使用 printf 和美化框线 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v50.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; 
+    local header_text="🚀 VPS 一键安装脚本 v52.0"
+    local sub_header_text
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
-    local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
-    while IFS= read -r name; do local line_width=$(( ${#name} + 4 )); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi; done <<< "$names"
-    local border; border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '=')
-    echo ""; echo -e "${BLUE}${border}${NC}"; echo -e "  ${header_text}"; echo -e "${BLUE}${border}${NC}";
-    for i in $(seq 0 $((menu_len - 1))); do local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name"); echo -e " ${YELLOW}$((i+1)).${NC} $name"; done; echo ""
-    local prompt_text; if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
+    
+    # 计算菜单最大宽度
+    local max_width=${#header_text}
+    local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
+    while IFS= read -r name; do 
+        # 菜单项宽度 = 缩进 + 序号 + 点 + 空格 + 名字
+        local line_width=$((2 + 2 + 1 + 1 + ${#name}))
+        if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    done <<< "$names"
+    if [ ${#sub_header_text} -gt $max_width ]; then max_width=${#sub_header_text}; fi
+
+    # 生成边框
+    local border; border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '═')
+
+    echo ""
+    echo -e "${BLUE}╔${border}╗${NC}"
+    printf "║ %-*s ║\n" "$((max_width + 2))" "$header_text"
+    printf "║ %-*s ║\n" "$((max_width + 2))" "  ${sub_header_text}"
+    echo -e "${BLUE}╠${border}╣${NC}"
+    
+    for i in $(seq 0 $((menu_len - 1))); do
+        local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
+        printf "║  ${YELLOW}%2d.${NC} %-*s ║\n" "$((i+1))" "$max_width" "$name"
+    done
+    
+    echo -e "${BLUE}╚${border}╝${NC}"
+    echo ""
+    
+    local prompt_text; 
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
+        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
+    else 
+        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
+    fi
     
     if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]";
     else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
 }
+
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
-    if [ -z "$choice" ]; then 
-        if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-            # [最终修复]: 移除此处的 log_info，让 trap 成为唯一退出信息来源
-            exit 0; 
-        else 
-            CURRENT_MENU_NAME="MAIN_MENU"; 
-            return 10; 
-        fi; 
-    fi
+    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 10; fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
@@ -207,43 +251,36 @@ process_menu_selection() {
         func) "$action"; return $?;; 
     esac
 }
-main_logic() {
-    export LC_ALL=C.utf8
-    # [最终修复]: 设置唯一的、干净的 trap
-    trap 'log_info "脚本已退出。"' EXIT
-    
-    # 启动器已处理首次安装的 FORCE_REFRESH
-    if [[ "${FORCE_REFRESH}" == "true" ]]; then
-        log_info "强制刷新模式：配置已在启动时更新。"
-    fi
-    
-    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-    load_config
-    log_info "脚本启动 (v50.0 - flock 锁最终稳定版)"
-    check_and_install_dependencies
-    
-    self_update
-    
-    CURRENT_MENU_NAME="MAIN_MENU"
-    while true; do
-        display_menu
-        local exit_code=0
-        process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ]; then
-            while read -r -t 0; do :; done
-            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
+
+main() {
+    (
+        flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2; exit 1; }
+        
+        export LC_ALL=C.utf8
+        
+        # 启动器已处理首次安装的 FORCE_REFRESH
+        if [[ "${FORCE_REFRESH}" == "true" ]]; then
+            log_info "强制刷新模式：配置已在启动时更新。"
         fi
-    done
+        
+        if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+        load_config
+        log_info "脚本启动 (v52.0 - UI美化与智能启动版)"
+        check_and_install_dependencies
+        
+        self_update
+        
+        CURRENT_MENU_NAME="MAIN_MENU"
+        while true; do
+            display_menu
+            local exit_code=0
+            process_menu_selection || exit_code=$?
+            if [ "$exit_code" -ne 10 ]; then
+                while read -r -t 0; do :; done
+                read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
+            fi
+        done
+    ) 200>"${CONFIG[lock_file]}"
 }
 
-# --- [最终修复]: 使用 flock 将 main_logic 包裹起来，实现原子锁 ---
-(
-    # -n: non-blocking, 如果不能立即获取锁，则失败退出
-    # 200: 这是一个自定义的文件描述符，flock 将锁定此描述符指向的文件
-    flock -n 200 || {
-        echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2
-        exit 1
-    }
-    # 如果 flock 成功，则执行主逻辑
-    main_logic "$@"
-) 200>"${CONFIG[lock_file]}"
+main "$@"
