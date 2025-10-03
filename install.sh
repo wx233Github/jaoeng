@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.1 - Refined Update Emoji)
+# 🚀 VPS 一键安装入口脚本 (v69.2 - UI Unification)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.1"
+SCRIPT_VERSION="v69.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -49,7 +49,7 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    echo -e "${BLUE}────────────────────────────────────────────${NC}"
+    echo -e "${BLUE}────────────────────────────────────────────────────────────${NC}"
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
