@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.8 - Final Alignment Polish)
+# 🚀 VPS 一键安装入口脚本 (v66.0 - All Optimizations Implemented)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.8"
+SCRIPT_VERSION="v66.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,7 +43,6 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    # [FIX] Use a separator precisely aligned with the visual width of the LONGEST initial log line.
     echo -e "${BLUE}────────────────────────────────────────────${NC}"
     echo ""
     
@@ -109,29 +108,67 @@ self_update() {
         exec sudo -E bash "$SCRIPT_PATH" "$@"
     fi; rm -f "$temp_script"; 
 }
+# [ROBUSTNESS] Implemented atomic downloads to prevent corrupted script files.
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
-    local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
+    local script_name="$1"; local force_update="${2:-false}"; 
+    local local_file="${CONFIG[install_dir]}/$script_name";
+    local tmp_file="${local_file}.tmp"
     local url="${CONFIG[base_url]}/$script_name"; 
-    if [ "$force_update" = "true" ]; then url="${url}?_=$(date +%s)"; log_info "  ↳ 强制刷新: $script_name"; fi
-    local http_code; http_code=$(curl -sL --connect-timeout 5 --max-time 60 "$url" -o "$local_file" -w "%{http_code}"); 
-    if [ "$http_code" -eq 200 ] && [ -s "$local_file" ]; then echo -e "  ${GREEN}✔ ${script_name}${NC}"; return 0;
-    else sudo rm -f "$local_file"; echo -e "  ${RED}✖ ${script_name} (下载失败, HTTP: $http_code)${NC}"; return 1; fi; 
+
+    if [ "$force_update" = "true" ]; then 
+        url="${url}?_=$(date +%s)"; 
+        echo -n -e "  ↳ 强制刷新: $script_name ... "; # Use echo -n for single-line status
+    fi
+
+    local http_code
+    http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url")
+    local curl_exit_code=$?
+
+    if [ "$curl_exit_code" -eq 0 ] && [ "$http_code" -eq 200 ] && [ -s "$tmp_file" ]; then
+        sudo mv "$tmp_file" "$local_file"
+        echo -e "${GREEN}✔${NC}"; 
+        return 0;
+    else
+        sudo rm -f "$tmp_file"
+        echo -e "${RED}✖ (HTTP: $http_code, Curl: $curl_exit_code)${NC}"; 
+        return 1; 
+    fi; 
 }
+
+# [PERFORMANCE] Implemented parallel downloads for faster updates.
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
-    log_info "正在串行更新所有模块..."
+    log_info "正在并行更新所有模块..."
     local scripts_to_update
     scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
-    local all_successful=true
+    
     if [[ -z "$scripts_to_update" ]]; then
-        log_success "所有模块更新完成！";
+        log_success "没有需要更新的模块。";
         return
     fi
-    for script_name in $scripts_to_update; do if ! download_module_to_cache "$script_name" "$force_update"; then all_successful=false; fi; done
-    if [[ "$all_successful" == "true" ]]; then log_success "所有模块更新完成！";
-    else log_warning "部分模块更新失败, 请检查网络或确认文件是否存在于仓库中."; fi
+
+    local pids=()
+    for script_name in $scripts_to_update; do
+        (download_module_to_cache "$script_name" "$force_update") &
+        pids+=($!)
+    done
+
+    local has_error=0
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+            has_error=1
+        fi
+    done
+
+    echo "" # Add a newline after the download statuses
+    if [[ "$has_error" -eq 0 ]]; then
+        log_success "所有模块更新完成！";
+    else
+        log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中.";
+    fi
 }
+
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主脚本更新..."; self_update
@@ -239,13 +276,8 @@ display_menu() {
     for i in $(seq 0 $((menu_len - 1))); do
         local item_json; item_json=$(echo "$menu_items_json" | jq ".[$i]")
         local name; name=$(echo "$item_json" | jq -r ".name")
-        local type; type=$(echo "$item_json" | jq -r ".type")
-        local action; action=$(echo "$item_json" | jq -r ".action")
-        
-        local icon="›" 
-        if [[ "$type" == "submenu" ]]; then icon="→"; fi
-        if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
-        if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
+        # [EXTENSIBILITY] Icons are now data-driven from config.json.
+        local icon; icon=$(echo "$item_json" | jq -r '.icon // "›"')
         
         printf "  ${YELLOW}%2d.${NC} %s %s\n" "$((i+1))" "$icon" "$name"
     done
@@ -287,17 +319,49 @@ main() {
     fi
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出."' EXIT
     
-    export LC_ALL=C.utf8
-    
-    if [[ "${FORCE_REFRESH}" == "true" ]]; then
-        log_info "强制刷新模式: 配置已在启动时更新."
-    fi
-    
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then 
         check_and_install_dependencies
     fi
     load_config
     
+    # [UX] Implemented headless mode for direct command execution (e.g., 'jb update').
+    if [[ $# -gt 0 ]]; then
+        local command="$1"
+        shift
+        
+        case "$command" in
+            update)
+                log_info "正在以 Headless 模式执行强制更新..."
+                force_update_all
+                exit 0
+                ;;
+            uninstall)
+                log_info "正在以 Headless 模式执行卸载..."
+                uninstall_script
+                exit 0
+                ;;
+            *)
+                local action_to_run
+                action_to_run=$(jq -r --arg cmd "$command" '
+                    .menus[][] | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd))) | .action
+                ' "${CONFIG[install_dir]}/config.json" | head -n 1)
+
+                if [[ -n "$action_to_run" ]]; then
+                    local display_name
+                    display_name=$(jq -r --arg act "$action_to_run" '
+                        .menus[][] | select(.action == $act) | .name
+                    ' "${CONFIG[install_dir]}/config.json" | head -n 1)
+                    
+                    log_info "正在以 Headless 模式执行: ${display_name}"
+                    execute_module "$action_to_run" "$display_name" "$@"
+                    exit $?
+                else
+                    log_error "未知命令: $command"
+                fi
+                ;;
+        esac
+    fi
+
     log_info "脚本启动 (${SCRIPT_VERSION})"
     self_update
     
