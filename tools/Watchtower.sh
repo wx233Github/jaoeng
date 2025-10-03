@@ -172,7 +172,8 @@ configure_exclusion_list() {
             *)
                 local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
-                    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "${#all_containers[@]}" ]; then
+                    ### [FIXED] ### 统一使用 [[ ... ]] 条件表达式
+                    if [[ "$index" =~ ^[0-9]+$ && "$index" -ge 1 && "$index" -le ${#all_containers[@]} ]]; then
                         local target="${all_containers[$((index-1))]}"; local found=false; local temp_arr=()
                         for item in "${excluded_arr[@]}"; do if [[ "$item" == "$target" ]]; then found=true; else temp_arr+=("$item"); fi; done
                         if $found; then excluded_arr=("${temp_arr[@]}"); else excluded_arr+=("$target"); fi
@@ -279,7 +280,7 @@ main_menu(){
   done
 }
 
-### [MODIFIED] ### 脚本主入口，增加命令行参数处理
+# 脚本主入口，增加命令行参数处理
 main(){ 
     trap 'echo -e "\n操作被中断。"; exit 10' INT
 
