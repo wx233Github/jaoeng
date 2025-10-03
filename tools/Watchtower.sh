@@ -157,21 +157,16 @@ show_container_info() {
 }
 _prompt_for_interval() { local default_value="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; local formatted_default=$(_format_seconds_to_human "$default_value"); while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, [回车]使用 ${formatted_default}): " input_interval; input_interval=${input_interval:-${default_value}s}; if [[ "$input_interval" =~ ^([0-9]+)s$ ]]; then result_interval=${BASH_REMATCH[1]}; break; elif [[ "$input_interval" =~ ^([0-9]+)h$ ]]; then result_interval=$((${BASH_REMATCH[1]}*3600)); break; elif [[ "$input_interval" =~ ^([0-9]+)d$ ]]; then result_interval=$((${BASH_REMATCH[1]}*86400)); break; elif [[ "$input_interval" =~ ^[0-9]+$ ]]; then result_interval="${input_interval}"; break; else echo -e "${COLOR_RED}❌ 格式错误...${COLOR_RESET}"; fi; done; echo "$result_interval"; }
 
-### [REWRITTEN] ###
-# This function has been completely rewritten for robustness and simplicity.
+# This function has been completely rewritten for robustness and simplicity using an associative array.
 configure_exclusion_list() {
-    # 1. Get all container names into a standard indexed array.
     local all_containers=()
     readarray -t all_containers < <(docker ps --format '{{.Names}}')
     
-    # 2. Use an associative array (hash map) for efficient and robust status tracking.
-    #    Requires Bash 4+.
+    # Use an associative array (hash map) for efficient and robust status tracking.
     declare -A excluded_map
     if [[ -n "$WATCHTOWER_EXCLUDE_LIST" ]]; then
-        # Populate the map from the existing comma-separated string.
         local IFS=','
         for container_name in $WATCHTOWER_EXCLUDE_LIST; do
-            # Trim whitespace just in case
             container_name=$(echo "$container_name" | xargs)
             if [[ -n "$container_name" ]]; then
                 excluded_map["$container_name"]=1
@@ -184,18 +179,15 @@ configure_exclusion_list() {
         if [[ "${JB_ENABLE_AUTO_CLEAR:-}" == "true" ]]; then clear; fi
         _print_header "配置排除列表 (高优先级)"
 
-        # 3. Display the menu. Status is checked directly from the map (O(1) lookup).
         for i in "${!all_containers[@]}"; do
             local container="${all_containers[$i]}"
             local is_excluded=" "
-            # '-v' checks for key existence, safer than checking for value.
             if [[ -v excluded_map["$container"] ]]; then
                 is_excluded="✔"
             fi
             echo -e " ${COLOR_YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_excluded}${COLOR_RESET}] $container"
         done
         
-        # Build the current exclusion list string for display purposes.
         local current_excluded_display=""
         if ((${#excluded_map[@]} > 0)); then
             current_excluded_display=$(IFS=, ; echo "${!excluded_map[*]}")
@@ -210,7 +202,7 @@ configure_exclusion_list() {
         case "$choice" in
             c|C) break ;;
             "") 
-                excluded_map=() # Clear the map, simple and clean.
+                excluded_map=() 
                 log_info "已清空脚本内配置，将使用 config.json 的备用配置。"; sleep 1.5; 
                 break 
                 ;;
@@ -220,18 +212,15 @@ configure_exclusion_list() {
                 
                 local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
-                    # 4. Validate input.
                     if [[ "$index" =~ ^[0-9]+$ && "$index" -ge 1 && "$index" -le ${#all_containers[@]} ]]; then
                         local target_container="${all_containers[$((index-1))]}"
                         
-                        # 5. Toggle status in the map. This is the new, simple, and robust core logic.
                         if [[ -v excluded_map["$target_container"] ]]; then
-                            unset excluded_map["$target_container"] # Remove if exists
+                            unset excluded_map["$target_container"]
                         else
-                            excluded_map["$target_container"]=1 # Add if not exists
+                            excluded_map["$target_container"]=1
                         fi
                     else
-                        # Only flag as invalid if the token is not an empty string (e.g., from "1,2,").
                         if [[ -n "$index" ]]; then
                             has_invalid_input=true
                         fi
@@ -245,10 +234,8 @@ configure_exclusion_list() {
         esac
     done
 
-    # 6. Convert the map keys back to the final comma-separated string to be saved.
     local final_excluded_list=""
     if ((${#excluded_map[@]} > 0)); then
-        # This is a robust way to join array keys with a comma.
         final_excluded_list=$(IFS=,; echo "${!excluded_map[*]}")
     fi
     WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
@@ -256,11 +243,66 @@ configure_exclusion_list() {
 
 
 configure_watchtower(){ 
-    _print_header "🚀 Watchtower 配置"; local current_saved_interval="${WATCHTOWER_CONFIG_INTERVAL}"; local config_json_interval="${WT_CONF_DEFAULT_INTERVAL:-300}"; local prompt_default="${current_saved_interval:-$config_json_interval}"; local prompt_text="请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "$config_json_interval"))"; local WT_INTERVAL_TMP="$(_prompt_for_interval "$prompt_default" "$prompt_text")"; log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1; configure_exclusion_list; read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice; if [[ "$extra_args_choice" =~ ^[Yy]$ ]]; then read -r -p "请输入额外参数: " temp_extra_args; else temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"; fi; read -r -p "是否启用调试模式? (y/N): " debug_choice; local temp_debug_enabled=$([[ "$debug_choice" =~ ^[Yy]$ ]] && echo "true" || echo "false"); 
-    _print_header "配置确认"; printf " 检查间隔: %s\n" "$(_format_seconds_to_human "$WT_INTERVAL_TMP")"; local final_exclude_list=""; local source_msg=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; source_msg="脚本"; else final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}"; source_msg="config.json"; fi; printf " 排除列表 (%s): %s\n" "$source_msg" "${final_exclude_list//,/, }"; printf " 额外参数: %s\n" "${temp_extra_args:-无}"; printf " 调试模式: %s\n" "$temp_debug_enabled"; echo -e "${COLOR_YELLOW}╰$(generate_line)╯${COLOR_RESET}"; read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice
-    if [[ "$confirm_choice" =~ ^[Nn]$ ]]; then log_info "操作已取消。"; return 10; fi
-    WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TMP"; WATCHTOWER_EXTRA_ARGS="$temp_extra_args"; WATCHTOWER_DEBUG_ENABLED="$temp_debug_enabled"; WATCHTOWER_ENABLED="true"; save_config; set +e; docker rm -f watchtower &>/dev/null || true; set -e; if ! _start_watchtower_container_logic "$WT_INTERVAL_TMP" "Watchtower模式"; then echo -e "${COLOR_RED}❌ Watchtower 启动失败。${COLOR_RESET}"; return 1; fi; return 0;
+    _print_header "🚀 Watchtower 配置"
+    local current_saved_interval="${WATCHTOWER_CONFIG_INTERVAL}"
+    local config_json_interval="${WT_CONF_DEFAULT_INTERVAL:-300}"
+    local prompt_default="${current_saved_interval:-$config_json_interval}"
+    local prompt_text="请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "$config_json_interval"))"
+    local WT_INTERVAL_TMP="$(_prompt_for_interval "$prompt_default" "$prompt_text")"
+    
+    log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1
+    
+    configure_exclusion_list
+    
+    read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice
+    local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
+    if [[ "$extra_args_choice" =~ ^[Yy]$ ]]; then
+        read -r -p "请输入额外参数: " temp_extra_args
+    fi
+    
+    read -r -p "是否启用调试模式? (y/N): " debug_choice
+    ### [DEFINITIVE FIX] ###
+    # Replaced the brittle one-liner with a standard, robust if/else block.
+    local temp_debug_enabled="false"
+    if [[ "$debug_choice" =~ ^[Yy]$ ]]; then
+        temp_debug_enabled="true"
+    fi
+
+    _print_header "配置确认"
+    printf " 检查间隔: %s\n" "$(_format_seconds_to_human "$WT_INTERVAL_TMP")"
+    local final_exclude_list=""; local source_msg=""
+    if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
+        final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; source_msg="脚本"
+    else
+        final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}"; source_msg="config.json"
+    fi
+    printf " 排除列表 (%s): %s\n" "$source_msg" "${final_exclude_list//,/, }"
+    printf " 额外参数: %s\n" "${temp_extra_args:-无}"
+    printf " 调试模式: %s\n" "$temp_debug_enabled"
+    echo -e "${COLOR_YELLOW}╰$(generate_line)╯${COLOR_RESET}"
+    
+    read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice
+    if [[ "$confirm_choice" =~ ^[Nn]$ ]]; then
+        log_info "操作已取消。"
+        return 10
+    fi
+    
+    WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TMP"
+    WATCHTOWER_EXTRA_ARGS="$temp_extra_args"
+    WATCHTOWER_DEBUG_ENABLED="$temp_debug_enabled"
+    WATCHTOWER_ENABLED="true"
+    save_config
+    
+    set +e; docker rm -f watchtower &>/dev/null || true; set -e
+    
+    if ! _start_watchtower_container_logic "$WT_INTERVAL_TMP" "Watchtower模式"; then
+        echo -e "${COLOR_RED}❌ Watchtower 启动失败。${COLOR_RESET}"
+        return 1
+    fi
+    
+    return 0
 }
+
 manage_tasks(){ while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "⚙️ 任务管理 ⚙️"; echo " 1. 停止/移除 Watchtower"; echo " 2. 移除 Cron"; echo " 3. 移除 Systemd Timer"; echo " 4. 重启 Watchtower"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "请选择, 或按 Enter 返回: " choice; case "$choice" in 1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then if confirm_action "确定移除 Watchtower？"; then set +e; docker rm -f watchtower &>/dev/null; set -e; WATCHTOWER_ENABLED="false"; save_config; send_notify "🗑️ Watchtower 已移除"; echo -e "${COLOR_GREEN}✅ 已移除。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ Watchtower 未运行。${COLOR_RESET}"; fi; press_enter_to_continue ;; 2) local SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"; if crontab -l 2>/dev/null | grep -q "$SCRIPT"; then if confirm_action "确定移除 Cron？"; then (crontab -l 2>/dev/null | grep -v "$SCRIPT") | crontab -; rm -f "$SCRIPT" 2>/dev/null || true; CRON_TASK_ENABLED="false"; save_config; send_notify "🗑️ Cron 已移除"; echo -e "${COLOR_GREEN}✅ Cron 已移除。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ 未发现 Cron 任务。${COLOR_RESET}"; fi; press_enter_to_continue ;; 3) if systemctl list-timers | grep -q "docker-compose-update.timer"; then if confirm_action "确定移除 Systemd Timer？"; then systemctl disable --now docker-compose-update.timer &>/dev/null; rm -f /etc/systemd/system/docker-compose-update.{service,timer}; systemctl daemon-reload; log_info "Systemd Timer 已移除。"; fi; else echo -e "${COLOR_YELLOW}ℹ️ 未发现 Systemd Timer。${COLOR_RESET}"; fi; press_enter_to_continue ;; 4) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo "正在重启..."; if docker restart watchtower; then send_notify "🔄 Watchtower 已重启"; echo -e "${COLOR_GREEN}✅ 重启成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 重启失败。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ Watchtower 未运行。${COLOR_RESET}"; fi; press_enter_to_continue ;; "") return ;; *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; esac; done; }
 get_watchtower_all_raw_logs(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 1; fi; docker logs --tail 2000 watchtower 2>&1 || true; }
 _extract_interval_from_cmd(){ local cmd_json="$1"; local interval=""; if command -v jq >/dev/null 2>&1; then interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true); else local tokens=( $(echo "$cmd_json" | tr -d '[],"' | xargs) ); local prev=""; for t in "${tokens[@]}"; do if [ "$prev" = "--interval" ]; then interval="$t"; break; fi; prev="$t"; done; fi; interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g'); [ -z "$interval" ] && echo "" || echo "$interval"; }
@@ -299,12 +341,66 @@ view_and_edit_config(){
         if [ "${CRON_TASK_ENABLED:-false}" = "true" ]; then color="${COLOR_GREEN}"; text="是"; else color="${COLOR_RED}"; text="否"; fi; printf "10. Cron 状态: %b%s%b\n" "$color" "$text" "$COLOR_RESET";
         echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "输入编号编辑, 或按 Enter 返回: " choice
         case "$choice" in 
-            1) read -r -p "新 Token: " a; TG_BOT_TOKEN="${a:-$TG_BOT_TOKEN}"; save_config ;; 2) read -r -p "新 Chat ID: " a; TG_CHAT_ID="${a:-$TG_CHAT_ID}"; save_config ;; 3) read -r -p "新 Email: " a; EMAIL_TO="${a:-$EMAIL_TO}"; save_config ;; 4) read -r -p "新额外参数: " a; WATCHTOWER_EXTRA_ARGS="${a:-}"; save_config ;; 5) read -r -p "启用调试？(y/n): " d; WATCHTOWER_DEBUG_ENABLED=$([ "$d" =~ ^[Yy]$ ] && echo "true" || echo "false"); save_config ;; 6) local new_interval=$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-300}" "新间隔"); if [ -n "$new_interval" ]; then WATCHTOWER_CONFIG_INTERVAL="$new_interval"; save_config; fi ;; 7) read -r -p "启用 Watchtower？(y/n): " d; WATCHTOWER_ENABLED=$([ "$d" =~ ^[Yy]$ ] && echo "true" || echo "false"); save_config ;; 8) while true; do read -r -p "新 Cron 小时(0-23): " a; if [ -z "$a" ]; then break; fi; if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 0 ] && [ "$a" -le 23 ]; then CRON_HOUR="$a"; save_config; break; else echo "无效"; fi; done ;; 9) read -r -p "新 Cron 目录: " a; DOCKER_COMPOSE_PROJECT_DIR_CRON="${a:-$DOCKER_COMPOSE_PROJECT_DIR_CRON}"; save_config ;; 10) read -r -p "启用 Cron？(y/n): " d; CRON_TASK_ENABLED=$([ "$d" =~ ^[Yy]$ ] && echo "true" || echo "false"); save_config ;; 
-            "") return ;; *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; 
+            1) read -r -p "新 Token: " a; TG_BOT_TOKEN="${a:-$TG_BOT_TOKEN}"; save_config ;; 
+            2) read -r -p "新 Chat ID: " a; TG_CHAT_ID="${a:-$TG_CHAT_ID}"; save_config ;; 
+            3) read -r -p "新 Email: " a; EMAIL_TO="${a:-$EMAIL_TO}"; save_config ;; 
+            4) read -r -p "新额外参数: " a; WATCHTOWER_EXTRA_ARGS="${a:-}"; save_config ;; 
+            5) 
+                read -r -p "启用调试？(y/n): " d
+                ### [DEFINITIVE FIX] ###
+                if [[ "$d" =~ ^[Yy]$ ]]; then
+                    WATCHTOWER_DEBUG_ENABLED="true"
+                else
+                    WATCHTOWER_DEBUG_ENABLED="false"
+                fi
+                save_config
+                ;; 
+            6) 
+                local new_interval=$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-300}" "新间隔")
+                if [ -n "$new_interval" ]; then
+                    WATCHTOWER_CONFIG_INTERVAL="$new_interval"
+                    save_config
+                fi
+                ;; 
+            7) 
+                read -r -p "启用 Watchtower？(y/n): " d
+                ### [DEFINITIVE FIX] ###
+                if [[ "$d" =~ ^[Yy]$ ]]; then
+                    WATCHTOWER_ENABLED="true"
+                else
+                    WATCHTOWER_ENABLED="false"
+                fi
+                save_config
+                ;; 
+            8) 
+                while true; do 
+                    read -r -p "新 Cron 小时(0-23): " a
+                    if [ -z "$a" ]; then break; fi
+                    if [[ "$a" =~ ^[0-9]+$ && "$a" -ge 0 && "$a" -le 23 ]]; then 
+                        CRON_HOUR="$a"; save_config; break
+                    else 
+                        echo "无效"; 
+                    fi
+                done
+                ;; 
+            9) read -r -p "新 Cron 目录: " a; DOCKER_COMPOSE_PROJECT_DIR_CRON="${a:-$DOCKER_COMPOSE_PROJECT_DIR_CRON}"; save_config ;; 
+            10) 
+                read -r -p "启用 Cron？(y/n): " d
+                ### [DEFINITIVE FIX] ###
+                if [[ "$d" =~ ^[Yy]$ ]]; then
+                    CRON_TASK_ENABLED="true"
+                else
+                    CRON_TASK_ENABLED="false"
+                fi
+                save_config
+                ;; 
+            "") return ;; 
+            *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; 
         esac; 
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le 10 ]; then sleep 0.5; fi; 
     done; 
 }
+
 update_menu(){ while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "选择更新模式"; echo " 1. 🚀 Watchtower (推荐, 名称排除)"; echo " 2. ⚙️ Systemd Timer (Compose 项目)"; echo " 3. 🕑 Cron (Compose 项目)"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "选择或按 Enter 返回: " c; case "$c" in 1) configure_watchtower; break ;; 2) configure_systemd_timer; break ;; 3) configure_cron_task; break ;; "") break ;; *) echo -e "${COLOR_YELLOW}无效选择。${COLOR_RESET}"; sleep 1 ;; esac; done; }
 main_menu(){
   while true; do
