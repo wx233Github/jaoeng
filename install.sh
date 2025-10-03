@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v48.0 - 防御性编程)
+# 🚀 VPS 一键安装入口脚本 (v49.0 - 防御性编程)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -129,9 +129,9 @@ uninstall_script() {
     read -p "$(echo -e "${RED}这是一个不可逆的操作，您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
     if [[ "$choice" == "yes" ]]; then
         log_info "开始卸载..."; release_lock
-        log_info "正在移除安装目录 ${CONFIG[install_dir]}...";
+        log_info "正在移除安装目录 ${CONFIG[install_dir]}..."
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
-        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb...";
+        log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
         if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
         log_info "正在清理锁文件..."; sudo rm -f "${CONFIG[lock_file]}"
         log_success "脚本已成功卸载。"; log_info "再见！";
@@ -145,15 +145,30 @@ execute_module() {
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     
-    # --- [最终修复]: 增加对损坏配置的防御性编程 ---
-    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key) and (.module_configs[$key] | type == "object")' "$config_path" > /dev/null; then
+    # --- [最终修复]: 使用防御性编程，统一处理模块配置 ---
+    local module_config_json
+    module_config_json=$(jq -r --arg key "$module_key" '
+        if has("module_configs") and (.module_configs | has($key)) and (.module_configs[$key] | type == "object") then
+            .module_configs[$key] | tojson
+        else
+            "null"
+        end
+    ' "$config_path")
+
+    if [[ "$module_config_json" != "null" ]]; then
         local exports
-        exports=$(jq -r --arg key "$module_key" '
-            .module_configs[$key] | to_entries | .[] | 
+        exports=$(echo "$module_config_json" | jq -r '
+            to_entries | .[] | 
             select((.key | startswith("comment") | not) and (.value | type | IN("string", "number", "boolean"))) | 
             "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
-        ' "$config_path")
-        env_exports+="$exports"
+        ')
+        if [ -n "$exports" ]; then env_exports+="$exports"; fi
+
+        if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
+            local exclude_list
+            exclude_list=$(echo "$module_config_json" | jq -r '.exclude_containers // [] | select(type=="array") | .[]' | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
+        fi
     elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
         log_warning "在 config.json 中找到模块 '${module_key}' 的配置，但其格式不正确（不是一个对象），已跳过加载。"
     fi
@@ -161,9 +176,6 @@ execute_module() {
     if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
         local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
         if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
-        
-        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | select(type=="array") | .[]' "$config_path" 2>/dev/null || true)
-        if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$(echo "$exclude_list" | tr '\n' ',' | sed 's/,$//')';"; fi
     fi
     
     local exit_code=0
@@ -174,7 +186,7 @@ execute_module() {
 }
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v48.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v49.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -213,7 +225,7 @@ main() {
     
     if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
     load_config
-    log_info "脚本启动 (v48.0 - 防御性编程)"
+    log_info "脚本启动 (v49.0 - 防御性编程)"
     check_and_install_dependencies
     
     self_update
