@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v63.0 - Correct Associative Array Syntax)
+# 🚀 VPS 一键安装入口脚本 (v63.1 - Wide Character UI Fix)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -74,7 +74,6 @@ log_error() { echo -e "$(log_timestamp) ${RED}[错误]${NC} $1" >&2; exit 1; }
 # --- 配置加载 ---
 load_config() {
     export LC_ALL=C.utf8
-    # [FIXED] Restored mandatory ${...} syntax for associative array access.
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"; if [[ -f "$CONFIG_FILE" ]] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do value="${value#\"}"; value="${value%\"}"; CONFIG[$key]="$value"; done < <(jq -r 'to_entries|map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))|map("\(.key)=\(.value)")|.[]' "$CONFIG_FILE")
         CONFIG[dependencies]="$(jq -r '.dependencies.common // ""' "$CONFIG_FILE")"
@@ -137,7 +136,6 @@ confirm_and_force_update() {
 }
 uninstall_script() {
     log_warning "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
-    # [FIXED] Restored mandatory ${...} syntax for associative array access.
     log_warning "将要删除的包括:"; log_warning "  - 安装目录: ${CONFIG[install_dir]}"; log_warning "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
     read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
     if [[ "$choice" == "yes" ]]; then
@@ -196,16 +194,26 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
+    # 1. 组合标题
     local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local full_header="  ${header_text} :: ${sub_header_text}"
 
+    # 2. 测量纯文本长度 (移除颜色代码)
     local plain_header; plain_header=$(echo -e "$full_header" | sed 's/\x1b\[[0-9;]*m//g')
-    local header_len=${#plain_header}
     
-    local separator; separator=$(printf '%*s' "$header_len" | tr ' ' '=')
+    # [FIX] 正确计算包含 CJK/Emoji 等宽字符的显示宽度
+    local total_chars=${#plain_header}
+    local ascii_chars_only; ascii_chars_only=$(echo "$plain_header" | tr -dc '[ -~]')
+    local ascii_count=${#ascii_chars_only}
+    local non_ascii_count=$((total_chars - ascii_count))
+    local display_width=$((ascii_count + non_ascii_count * 2))
 
+    # 3. 生成匹配长度的分隔线
+    local separator; separator=$(printf '%*s' "$display_width" | tr ' ' '=')
+
+    # 4. 渲染
     echo ""
     echo -e "${BLUE}${separator}${NC}"
     echo -e "${full_header}"
@@ -254,7 +262,6 @@ process_menu_selection() {
     esac
 }
 main() {
-    # [FIXED] Restored mandatory ${...} syntax for associative array access.
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
         echo -e "\033[0;33m[警告] 检测到另一实例正在运行."
@@ -272,7 +279,7 @@ main() {
         check_and_install_dependencies
     fi
     load_config
-    log_info "脚本启动 (v63.0 - Correct Associative Array Syntax)"
+    log_info "脚本启动 (v63.1 - Wide Character UI Fix)"
     
     self_update
     
