@@ -22,7 +22,7 @@
   },
 
   "menus": {
-    "comment": "动态菜单配置区。结构已修改，每个菜单都有 title 和 items。",
+    "comment": "动态菜单配置区。每个菜单都有 title 和 items。",
     "MAIN_MENU": {
       "title": "🚀 VPS 一键安装脚本",
       "items": [
