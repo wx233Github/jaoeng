@@ -8,6 +8,7 @@ SCRIPT_VERSION="v69.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
+export LANG=${LANG:-en_US.UTF-8}
 export LC_ALL=C.utf8
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -22,7 +23,7 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     echo_success() { echo -e "${GREEN}[启动器]${NC} $1"; }
     echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
 
-    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [[ "${FORCE_REFRESH}" == "true" ]]; then
+    if [[ ! -f "$FINAL_SCRIPT_PATH" || ! -f "$CONFIG_PATH" || "${FORCE_REFRESH}" == "true" ]]; then
         echo_info "正在执行首次安装或强制刷新..."
         if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
         
@@ -94,7 +95,7 @@ load_config() {
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if (( ${#missing_deps[@]} > 0 )); then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [[ "$pm" == "unknown" ]]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [[ "$pm" == "apt" ]]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
 }
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
@@ -123,12 +124,12 @@ download_module_to_cache() {
     local http_code; http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url")
     local curl_exit_code=$?
 
-    if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then
+    if (( curl_exit_code != 0 || http_code != 200 )) || [[ ! -s "$tmp_file" ]]; then
         log_error "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file"; return 1
     fi
 
-    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
+    if [[ -f "$local_file" ]] && cmp -s "$local_file" "$tmp_file"; then
         rm -f "$tmp_file"; return 0
     else
         log_success "模块 (${script_name}) 已更新。"
@@ -189,8 +190,6 @@ uninstall_script() {
         exit 0
     else log_info "卸载操作已取消."; return 10; fi
 }
-### [ADDED] ###
-# 安全地引用参数以传递给子 shell 的辅助函数
 _quote_args() {
     for arg in "$@"; do
         printf "%q " "$arg"
@@ -198,10 +197,10 @@ _quote_args() {
 }
 execute_module() {
     export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"
-    shift 2 ### [ADDED] ### 移除 script_name 和 display_name，剩下的 $@ 是要传递给模块的额外参数
+    shift 2
     
     local local_path="${CONFIG[install_dir]}/$script_name"
-    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
+    log_info "您选择了 [$display_name]"; if [[ ! -f "$local_path" ]]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -226,37 +225,105 @@ execute_module() {
     fi
 
     local exit_code=0
-    ### [MODIFIED] ### 将额外参数安全地传递给子脚本
-    local extra_args_str=$(_quote_args "$@")
+    local extra_args_str; extra_args_str=$(_quote_args "$@")
     sudo bash -c "$env_exports bash '$local_path' $extra_args_str" < /dev/tty || exit_code=$?
 
-    if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
+    if (( exit_code == 0 )); then log_success "模块 [$display_name] 执行完毕."; elif (( exit_code == 10 )); then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
 generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
+
+### [UI FIX] ###
+# New helper function to accurately calculate the visual width of a string,
+# accounting for multi-byte characters (like Chinese, emojis) and color codes.
+_get_visual_width() {
+    local text="$1"
+    # Remove ANSI escape codes (colors, etc.)
+    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    
+    local width=0
+    local i=0
+    local char
+    
+    # Iterate over the string character by character
+    while (( i < ${#plain_text} )); do
+        char="${plain_text:i:1}"
+        # Check if the character is ASCII (single-byte)
+        if [[ "$char" =~ [/ -~] ]]; then
+            width=$((width + 1))
+        else
+            # Assume non-ASCII characters are double-width
+            width=$((width + 2))
+        fi
+        i=$((i+1))
+    done
+    echo "$width"
+}
+
 display_menu() {
-    export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi;
+    export LANG=${LANG:-en_US.UTF-8}
+    export LC_ALL=C.utf8
+    if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi;
+    
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
-    local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g'); local total_chars=${#plain_title}; local ascii_chars_only; ascii_chars_only=$(echo "$main_title_text" | tr -dc '[ -~]'); local ascii_count=${#ascii_chars_only}; local non_ascii_count=$((total_chars - ascii_count)); local title_width=$((ascii_count + non_ascii_count * 2)); local box_width=$((title_width + 10)); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total=$((box_width - title_width)); local padding_left=$((padding_total / 2));
-    echo ""; echo -e "${CYAN}╭${top_bottom_border}╮${NC}"; local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))"); echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"; echo -e "${CYAN}╰${top_bottom_border}╯${NC}";
+
+    ### [UI FIX] ###
+    # Replaced the old, unreliable width calculation with the new robust function.
+    local title_width; title_width=$(_get_visual_width "$main_title_text")
+    
+    # Calculate box width based on title, items, and a minimum width.
+    local max_item_width=0
+    local item_width
+    while IFS=$'\t' read -r name; do
+        # Item format: "  XX. › Item Name"
+        item_width=$(_get_visual_width "  XX. › ${name}")
+        if (( item_width > max_item_width )); then
+            max_item_width=$item_width
+        fi
+    done < <(echo "$menu_json" | jq -r '.items[] | .name')
+    
+    local box_width=$((title_width > max_item_width ? title_width : max_item_width))
+    box_width=$((box_width + 6)) # Add some padding
+    if (( box_width < 40 )); then box_width=40; fi # Enforce a minimum width
+
+    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
+    local padding_total=$((box_width - title_width))
+    local padding_left=$((padding_total / 2))
+    local left_padding; left_padding=$(printf '%*s' "$padding_left")
+    local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
+    
+    echo ""
+    echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
+    echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
+    echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
+    
     local i=1
     echo "$menu_json" | jq -r '.items[] | [.name, (.icon // "›")] | @tsv' | while IFS=$'\t' read -r name icon; do
         printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$((i+1));
     done
+    
+    local line_separator; line_separator=$(generate_line "$((box_width + 2))")
+    echo -e "${BLUE}${line_separator}${NC}"
+    
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
-    local line_separator; line_separator=$(generate_line "$((box_width + 2))"); echo -e "${BLUE}${line_separator}${NC}";
-    local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi;
+    local exit_hint="退出"; if [[ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]]; then exit_hint="返回"; fi;
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
-    if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
+    
+    if [[ "$AUTO_YES" == "true" ]]; then 
+        choice=""
+        echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
+    else 
+        read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
+    fi
 }
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
-    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
+    if [[ -z "$choice" ]]; then if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    if ! [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "$menu_len" ]]; then log_warning "无效选项."; return 10; fi
     local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
     if [[ -z "$item_json" || "$item_json" == "null" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
@@ -271,10 +338,9 @@ main() {
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then check_and_install_dependencies; fi
     load_config
     
-    if [[ $# -gt 0 ]]; then
+    if (( $# > 0 )); then
         local command="$1"; shift
         case "$command" in
-            ### [MODIFIED] ### 使 update 命令更安全，只更新脚本，不覆盖 config.json
             update)
                 log_info "正在以 Headless 模式安全更新所有脚本 (config.json 不会被覆盖)..."
                 force_update_all
@@ -306,7 +372,7 @@ main() {
         display_menu
         local exit_code=0
         process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ]; then
+        if (( exit_code != 10 )); then
             while read -r -t 0; do :; done
             read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
