@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.6 - Ultimate Compatibility Fix)
+# 🚀 VPS 一键安装入口脚本 (v69.7 - Rollback Syntax Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.6"
+SCRIPT_VERSION="v69.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -92,10 +92,10 @@ load_config() {
         CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
     fi
 }
-# --- 智能依赖处理 ---
+# --- 智能依赖处理 (使用旧版兼容语法) ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
-    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if (( ${#missing_deps[@]} > 0 )); then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [[ "$pm" == "unknown" ]]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [[ "$pm" == "apt" ]]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败."; fi; log_success "依赖安装完成！"; else log_error "用户取消安装."; fi; fi
 }
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
@@ -124,12 +124,12 @@ download_module_to_cache() {
     local http_code; http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url")
     local curl_exit_code=$?
 
-    if (( curl_exit_code != 0 || http_code != 200 )) || [[ ! -s "$tmp_file" ]]; then
+    if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then
         log_error "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file"; return 1
     fi
 
-    if [[ -f "$local_file" ]] && cmp -s "$local_file" "$tmp_file"; then
+    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
         rm -f "$tmp_file"; return 0
     else
         log_success "模块 (${script_name}) 已更新。"
@@ -200,7 +200,7 @@ execute_module() {
     shift 2
     
     local local_path="${CONFIG[install_dir]}/$script_name"
-    log_info "您选择了 [$display_name]"; if [[ ! -f "$local_path" ]]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
+    log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -228,7 +228,7 @@ execute_module() {
     local extra_args_str; extra_args_str=$(_quote_args "$@")
     sudo bash -c "$env_exports bash '$local_path' $extra_args_str" < /dev/tty || exit_code=$?
 
-    if (( exit_code == 0 )); then log_success "模块 [$display_name] 执行完毕."; elif (( exit_code == 10 )); then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
+    if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
 generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
@@ -297,10 +297,10 @@ display_menu() {
     echo -e "${BLUE}${line_separator}${NC}"
     
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
-    local exit_hint="退出"; if [[ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]]; then exit_hint="返回"; fi;
+    local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi;
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     
-    if [[ "$AUTO_YES" == "true" ]]; then 
+    if [ "$AUTO_YES" == "true" ]; then 
         choice=""
         echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
     else 
@@ -309,63 +309,23 @@ display_menu() {
 }
 
 process_menu_selection() {
-    export LC_ALL=C.utf8
-    local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_json
-    menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
-    local menu_len
-    menu_len=$(echo "$menu_json" | jq -r '.items | length')
-
-    if [[ -z "$choice" ]]; then
-        if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then
-            exit 0
-        else
-            CURRENT_MENU_NAME="MAIN_MENU"
-            return 10
-        fi
+    export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
+    local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
+    local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
+    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    
+    ### [ULTIMATE FIX v69.7] ###
+    # This block reverts to the original v69.2 syntax, which is confirmed to work in the user's environment.
+    # We are avoiding any "modern" syntax improvements here to guarantee stability.
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
+        log_warning "无效选项."; 
+        return 10; 
     fi
 
-    ### [ULTIMATE FIX v69.6] ###
-    # This block uses the most compatible and robust syntax to validate user input,
-    # completely avoiding the problematic `[[ ... ]]` for arithmetic checks.
-    local is_valid_choice=false
-    # Use `case` for basic pattern matching, which is POSIX compliant and extremely stable.
-    case "$choice" in
-        # This pattern matches one or more digits.
-        ''|*[!0-9]*)
-            is_valid_choice=false
-            ;;
-        *)
-            # If it's purely digits, then use the safe arithmetic context `((...))` for range checking.
-            # This context handles variables gracefully, even if they were not numbers (though `case` already filtered that).
-            if (( choice >= 1 && choice <= menu_len )); then
-                is_valid_choice=true
-            fi
-            ;;
-    esac
-
-    if [[ "$is_valid_choice" != "true" ]]; then
-        log_warning "无效选项."
-        return 10
-    fi
-    
-    local item_json
-    item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
-    if [[ -z "$item_json" || "$item_json" == "null" ]]; then
-        log_warning "菜单项配置无效或不完整。"
-        return 10
-    fi
-    
-    local type name action
-    type=$(echo "$item_json" | jq -r ".type")
-    name=$(echo "$item_json" | jq -r ".name")
-    action=$(echo "$item_json" | jq -r ".action")
-    
-    case "$type" in
-        item) execute_module "$action" "$name"; return $?;;
-        submenu) CURRENT_MENU_NAME=$action; return 10;;
-        func) "$action"; return $?;;
-    esac
+    local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
+    if [[ -z "$item_json" || "$item_json" == "null" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
+    local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
+    case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac
 }
 
 main() {
@@ -376,7 +336,7 @@ main() {
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then check_and_install_dependencies; fi
     load_config
     
-    if (( $# > 0 )); then
+    if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
             update)
@@ -410,7 +370,7 @@ main() {
         display_menu
         local exit_code=0
         process_menu_selection || exit_code=$?
-        if (( exit_code != 10 )); then
+        if [ "$exit_code" -ne 10 ]; then
             while read -r -t 0; do :; done
             read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
