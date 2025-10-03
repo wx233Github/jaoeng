@@ -4,17 +4,22 @@
 #
 set -euo pipefail
 
+### [UI FIX] ###
+# Force a UTF-8 locale to ensure terminals correctly calculate wide character widths,
+# preventing display glitches and character spacing issues. LC_ALL=C.utf8 is for script
+# internal stability, while LANG/LC_CTYPE helps the terminal render correctly.
+export LANG=${LANG:-en_US.UTF-8}
 export LC_ALL=C.utf8
 
 VERSION="v3.8.5-graduated"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
-if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
+if [[ ! -w "$(dirname "$CONFIG_FILE")" ]]; then
   CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
 
-if [ -t 1 ] || [[ "${FORCE_COLOR:-}" == "true" ]]; then
+if [[ -t 1 || "${FORCE_COLOR:-}" == "true" ]]; then
   COLOR_GREEN="\033[0;32m"; COLOR_RED="\033[0;31m"; COLOR_YELLOW="\033[0;33m"
   COLOR_BLUE="\033[0;34m"; COLOR_CYAN="\033[0;36m"; COLOR_RESET="\033[0m"
 else
@@ -310,7 +315,81 @@ configure_watchtower(){
 manage_tasks(){ while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "⚙️ 任务管理 ⚙️"; echo " 1. 停止/移除 Watchtower"; echo " 2. 移除 Cron"; echo " 3. 移除 Systemd Timer"; echo " 4. 重启 Watchtower"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "请选择, 或按 Enter 返回: " choice; case "$choice" in 1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then if confirm_action "确定移除 Watchtower？"; then set +e; docker rm -f watchtower &>/dev/null; set -e; WATCHTOWER_ENABLED="false"; save_config; send_notify "🗑️ Watchtower 已移除"; echo -e "${COLOR_GREEN}✅ 已移除。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ Watchtower 未运行。${COLOR_RESET}"; fi; press_enter_to_continue ;; 2) local SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"; if crontab -l 2>/dev/null | grep -q "$SCRIPT"; then if confirm_action "确定移除 Cron？"; then (crontab -l 2>/dev/null | grep -v "$SCRIPT") | crontab -; rm -f "$SCRIPT" 2>/dev/null || true; CRON_TASK_ENABLED="false"; save_config; send_notify "🗑️ Cron 已移除"; echo -e "${COLOR_GREEN}✅ Cron 已移除。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ 未发现 Cron 任务。${COLOR_RESET}"; fi; press_enter_to_continue ;; 3) if systemctl list-timers | grep -q "docker-compose-update.timer"; then if confirm_action "确定移除 Systemd Timer？"; then systemctl disable --now docker-compose-update.timer &>/dev/null; rm -f /etc/systemd/system/docker-compose-update.{service,timer}; systemctl daemon-reload; log_info "Systemd Timer 已移除。"; fi; else echo -e "${COLOR_YELLOW}ℹ️ 未发现 Systemd Timer。${COLOR_RESET}"; fi; press_enter_to_continue ;; 4) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo "正在重启..."; if docker restart watchtower; then send_notify "🔄 Watchtower 已重启"; echo -e "${COLOR_GREEN}✅ 重启成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 重启失败。${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}ℹ️ Watchtower 未运行。${COLOR_RESET}"; fi; press_enter_to_continue ;; "") return ;; *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; esac; done; }
 get_watchtower_all_raw_logs(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 1; fi; docker logs --tail 2000 watchtower 2>&1 || true; }
 _extract_interval_from_cmd(){ local cmd_json="$1"; local interval=""; if command -v jq >/dev/null 2>&1; then interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true); else local tokens; read -r -a tokens <<< "$(echo "$cmd_json" | tr -d '[],"')"; local prev=""; for t in "${tokens[@]}"; do if [[ "$prev" == "--interval" ]]; then interval="$t"; break; fi; prev="$t"; done; fi; interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g'); [[ -z "$interval" ]] && echo "" || echo "$interval"; }
-_get_watchtower_remaining_time(){ local int="$1"; local logs="$2"; if [[ -z "$int" || -z "$logs" ]]; then echo -e "${COLOR_YELLOW}N/A${COLOR_RESET}"; return; fi; if ! echo "$logs" | grep -q "Session done"; then if echo "$logs" | grep -q "Scheduling first run"; then local first_run_log; first_run_log=$(echo "$logs" | grep "Scheduling first run" | tail -n 1); local ts; ts=$(_parse_watchtower_timestamp_from_log_line "$first_run_log"); if [[ -n "$ts" ]]; then local epoch; epoch=$(_date_to_epoch "$ts"); if [[ -n "$epoch" ]]; then local rem=$((epoch - $(date +%s))); if (( rem > 0 )); then printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"; else printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"; fi; return; fi; fi; fi; echo -e "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"; return; fi; local log; log=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true); local ts=""; if [[ -n "$log" ]]; then ts=$(_parse_watchtower_timestamp_from_log_line "$log"); fi; if [[ -n "$ts" ]]; then local epoch; epoch=$(_date_to_epoch "$ts"); if [[ -n "$epoch" ]]; then local rem=$((int - ( $(date +%s) - epoch ))); if (( rem > 0 )); then printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"; else printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"; fi; else echo -e "${COLOR_RED}时间解析失败${COLOR_RESET}"; fi; else echo -e "${COLOR_YELLOW}未找到扫描日志${COLOR_RESET}"; fi; }
+
+### [COUNTDOWN FIX] ###
+# This function is enhanced to provide a more accurate countdown, especially
+# right after the container starts, by checking multiple log entry types.
+_get_watchtower_remaining_time(){
+    local int="$1"
+    local logs="$2"
+    if [[ -z "$int" || -z "$logs" ]]; then
+        echo -e "${COLOR_YELLOW}N/A${COLOR_RESET}"
+        return
+    fi
+    
+    local log_line=""
+    local ts=""
+    local epoch=0
+    local rem=0
+
+    # 1. Prioritize "Session done" for highest accuracy after a full cycle.
+    log_line=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true)
+    if [[ -n "$log_line" ]]; then
+        ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+        if [[ -n "$ts" ]]; then
+            epoch=$(_date_to_epoch "$ts")
+            if (( epoch > 0 )); then
+                rem=$((int - ( $(date +%s) - epoch )))
+                if (( rem > 0 )); then
+                    printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"
+                else
+                    printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"
+                fi
+                return
+            fi
+        fi
+    fi
+
+    # 2. Fallback to "Scheduling first run" if the first session hasn't completed.
+    log_line=$(echo "$logs" | grep "Scheduling first run" | tail -n 1 || true)
+    if [[ -n "$log_line" ]]; then
+        ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+        if [[ -n "$ts" ]]; then
+            epoch=$(_date_to_epoch "$ts")
+            if (( epoch > 0 )); then
+                rem=$((epoch - $(date +%s)))
+                if (( rem > 0 )); then
+                    printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"
+                else
+                    printf "%b即将进行%b" "$COLOR_GREEN" "$COLOR_RESET"
+                fi
+                return
+            fi
+        fi
+    fi
+
+    # 3. As a last resort, estimate from the "Starting Watchtower" log.
+    #    Assumes the first check happens almost immediately after startup (e.g., within 5s).
+    log_line=$(echo "$logs" | grep "Starting Watchtower" | tail -n 1 || true)
+    if [[ -n "$log_line" ]]; then
+        ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+        if [[ -n "$ts" ]]; then
+            epoch=$(_date_to_epoch "$ts")
+            # Assume first check runs ~5 seconds after start, then the next is 'int' seconds later.
+            if (( epoch > 0 )); then
+                rem=$(( (epoch + 5 + int) - $(date +%s) ))
+                if (( rem > 0 && rem < int + 10 )); then # Sanity check
+                     printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"
+                     return
+                fi
+            fi
+        fi
+    fi
+    
+    # Default message if no reliable timestamp is found.
+    echo -e "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"
+}
+
 get_watchtower_inspect_summary(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 2; fi; local cmd; cmd=$(docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]"); _extract_interval_from_cmd "$cmd" 2>/dev/null || true; }
 get_last_session_time(){ local logs; logs=$(get_watchtower_all_raw_logs 2>/dev/null || true); if [[ -z "$logs" ]]; then echo ""; return 1; fi; local line=""; local ts=""; if echo "$logs" | grep -qiE "permission denied|cannot connect"; then echo -e "${COLOR_RED}错误:权限不足${COLOR_RESET}"; return 1; fi; line=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true); if [[ -n "$line" ]]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [[ -n "$ts" ]]; then echo "$ts"; return 0; fi; fi; line=$(echo "$logs" | grep -E "Scheduling first run" | tail -n 1 || true); if [[ -n "$line" ]]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [[ -n "$ts" ]]; then echo "$ts (首次)"; return 0; fi; fi; line=$(echo "$logs" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z? INFO' | tail -n 1 || true); if [[ -n "$line" ]]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [[ -n "$ts" ]]; then echo "$ts (活动)"; return 0; fi; fi; echo ""; return 1; }
 get_updates_last_24h(){ 
@@ -350,7 +429,7 @@ view_and_edit_config(){
             3) read -r -p "新 Email: " a; EMAIL_TO="${a:-$EMAIL_TO}"; save_config ;; 
             4) read -r -p "新额外参数: " a; WATCHTOWER_EXTRA_ARGS="${a:-}"; save_config ;; 
             5) read -r -p "启用调试？(y/n): " d; if [[ "$d" =~ ^[Yy]$ ]]; then WATCHTOWER_DEBUG_ENABLED="true"; else WATCHTOWER_DEBUG_ENABLED="false"; fi; save_config ;; 
-            6) local new_interval=$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-300}" "新间隔"); if [[ -n "$new_interval" ]]; then WATCHTOWER_CONFIG_INTERVAL="$new_interval"; save_config; fi ;; 
+            6) local new_interval; new_interval=$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-300}" "新间隔"); if [[ -n "$new_interval" ]]; then WATCHTOWER_CONFIG_INTERVAL="$new_interval"; save_config; fi ;; 
             7) read -r -p "启用 Watchtower？(y/n): " d; if [[ "$d" =~ ^[Yy]$ ]]; then WATCHTOWER_ENABLED="true"; else WATCHTOWER_ENABLED="false"; fi; save_config ;; 
             8) 
                 while true; do 
@@ -392,7 +471,6 @@ main_menu(){
     _print_header "Docker 助手 v${VERSION}"
     local STATUS_COLOR STATUS_RAW COUNTDOWN TOTAL RUNNING STOPPED
     
-    ### [ULTIMATE FIX] Replaced brittle command substitution with a robust if/else block.
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
         STATUS_RAW="已启动"
     else
