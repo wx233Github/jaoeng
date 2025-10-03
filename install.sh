@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v67.3 - Robust Menu Handling)
+# 🚀 VPS 一键安装入口脚本 (v67.4 - Final Robust JQ Queries)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v67.3"
+SCRIPT_VERSION="v67.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,8 +138,8 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    # ROBUST: Handles both old (array) and new (object) menu formats.
-    scripts_to_update=$(jq -r '.menus[] | (if type == "object" then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
+    # FIX: Added 'select(type == "object")' to filter out string comments before iteration.
+    scripts_to_update=$(jq -r '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     
     if [[ -z "$scripts_to_update" ]]; then
         log_success "没有需要更新的模块。";
@@ -238,7 +238,6 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # ROBUST: Handle both old and new config formats to get the title.
     local main_title_text
     main_title_text=$(jq -r --arg menu "$CURRENT_MENU_NAME" '
         if .menus[$menu] | type == "object" then .menus[$menu].title else "🚀 VPS 一键安装脚本" end
@@ -265,7 +264,6 @@ display_menu() {
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
     local i=1
-    # ROBUST: Handle both formats to list menu items.
     jq -r --arg menu "$CURRENT_MENU_NAME" '
         (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[] else empty end |
         if type == "object" and has("name") then
@@ -278,7 +276,6 @@ display_menu() {
         i=$((i+1))
     done
     
-    # ROBUST: Handle both formats to calculate menu length.
     local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
     
     local line_separator; line_separator=$(generate_line "$((box_width + 2))")
@@ -295,7 +292,6 @@ display_menu() {
 
 process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
-    # ROBUST: Handle both formats to calculate menu length.
     local menu_len; menu_len=$(jq --arg menu "$CURRENT_MENU_NAME" '(.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then [ .[] | select(type == "object" and has("name")) ] | length else 0 end' "$config_path")
 
     if [ -z "$choice" ]; then 
@@ -304,7 +300,6 @@ process_menu_selection() {
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
     
-    # ROBUST: Handle both formats to get the selected item.
     local item_json
     item_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" --argjson idx "$((choice - 1))" '
         (.menus[$menu] | if type == "object" then .items else . end) | if type == "array" then .[$idx] else null end |
@@ -358,9 +353,9 @@ main() {
                 ;;
             *)
                 local item_json
-                # ROBUST: Handle both formats to find commands.
+                # FIX: Added 'select(type == "object")' to filter out string comments.
                 item_json=$(jq -r --arg cmd "$command" '
-                    .menus[] | (if type == "object" then .items[] else .[] end) | select(type == "object") |
+                    .menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(type == "object") |
                     select(.type != "submenu") |
                     select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))
                 ' "${CONFIG[install_dir]}/config.json" | head -n 1)
