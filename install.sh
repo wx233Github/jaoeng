@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.7 - Perfected Separator Alignment)
+# 🚀 VPS 一键安装入口脚本 (v65.8 - Final Alignment Polish)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.7"
+SCRIPT_VERSION="v65.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,8 +43,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    # [FIX] Use a separator precisely aligned with the visual width of the main script's startup log line.
-    echo -e "${BLUE}──────────────────────────────────────${NC}"
+    # [FIX] Use a separator precisely aligned with the visual width of the LONGEST initial log line.
+    echo -e "${BLUE}────────────────────────────────────────────${NC}"
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
@@ -247,7 +247,6 @@ display_menu() {
         if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
         if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
         
-        # [FIX] Switched to a "number-first" layout for robust alignment regardless of emoji width.
         printf "  ${YELLOW}%2d.${NC} %s %s\n" "$((i+1))" "$icon" "$name"
     done
     
