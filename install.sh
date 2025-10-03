@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.1 - Perfected UI & Final Release)
+# 🚀 VPS 一键安装入口脚本 (v70.2 - Ultimate UI Compatibility Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.1"
+SCRIPT_VERSION="v70.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -231,7 +231,7 @@ execute_module() {
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
-generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
+generate_line() { local len=$1; local char="─"; local line=""; i=0; while [ $i -lt $len ]; do line="$line$char"; i=$((i+1)); done; echo "$line"; }
 
 _get_visual_width() {
     local text="$1"
@@ -247,11 +247,11 @@ _get_visual_width() {
         char=${plain_text:$i:1}
         byte_count=$(printf "%s" "$char" | wc -c)
         if [ "$byte_count" -eq 1 ]; then
-            width=$((width + 1))
+            width=$(expr $width + 1)
         else
-            width=$((width + 2))
+            width=$(expr $width + 2)
         fi
-        i=$((i+1))
+        i=$(expr $i + 1)
     done
     echo "$width"
 }
@@ -265,8 +265,6 @@ display_menu() {
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
 
-    ### [FINAL UI FIX v70.1] ###
-    # This logic now dynamically adjusts the box width based on both the title and the longest menu item.
     local title_width; title_width=$(_get_visual_width "$main_title_text")
     
     local max_item_width=0
@@ -283,14 +281,14 @@ display_menu() {
         box_width=$max_item_width
     fi
 
-    box_width=$((box_width + 6))
+    box_width=$(expr $box_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
 
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total=$((box_width - title_width))
-    local padding_left=$((padding_total / 2))
+    local padding_total; padding_total=$(expr $box_width - $title_width)
+    local padding_left; padding_left=$(expr $padding_total / 2)
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
+    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
     echo ""
     echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
@@ -299,10 +297,10 @@ display_menu() {
     
     local i=1
     echo "$menu_json" | jq -r '.items[] | [.name, (.icon // "›")] | @tsv' | while IFS=$'\t' read -r name icon; do
-        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$((i+1));
+        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$(expr $i + 1);
     done
     
-    local line_separator; line_separator=$(generate_line "$((box_width + 2))")
+    local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)")
     echo -e "${BLUE}${line_separator}${NC}"
     
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
