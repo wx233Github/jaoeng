@@ -279,9 +279,21 @@ main_menu(){
   done
 }
 
+### [MODIFIED] ### 脚本主入口，增加命令行参数处理
 main(){ 
     trap 'echo -e "\n操作被中断。"; exit 10' INT
-    main_menu;
+
+    # 如果第一个参数是 --run-once，则直接执行一次性更新任务
+    if [[ "${1:-}" == "--run-once" ]]; then
+        run_watchtower_once
+        # 根据执行结果返回退出码
+        exit $?
+    fi
+
+    # 否则，显示主菜单
+    main_menu
     exit 10
 }
-main
+
+# 将所有命令行参数传递给 main 函数
+main "$@"
