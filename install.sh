@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v52.0 - UI美化与智能启动版)
+# 🚀 VPS 一键安装入口脚本 (v53.0 - 终极 UI 修复版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -13,7 +13,6 @@ FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
 
 # 检查当前脚本的执行路径 ($0) 是否是最终安装路径。
-# 如果不是（例如，通过 curl | bash 或 jb 执行），则进入启动器模式。
 if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     
     BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\033[0;32m';
@@ -21,10 +20,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     echo_success() { echo -e "${GREEN}[启动器]${NC} $1"; }
     echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
 
-    # 只有在主脚本或配置文件不存在，或被强制刷新时，才执行完整的安装流程
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [[ "${FORCE_REFRESH}" == "true" ]]; then
         echo_info "正在执行首次安装或强制刷新..."
-        
         if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到，请先安装。"; fi
         
         sudo mkdir -p "$INSTALL_DIR"
@@ -54,7 +51,6 @@ fi
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-
 # --- 默认配置 ---
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -64,11 +60,9 @@ CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
-
 # --- 控制变量定义 ---
 AUTO_YES="false"
 if [[ "${NON_INTERACTIVE:-}" == "true" || "${YES_TO_ALL:-}" == "true" ]]; then AUTO_YES="true"; fi
-
 # --- 辅助函数 & 日志系统 ---
 sudo_preserve_env() { sudo -E "$@"; }
 setup_logging() { :; }
@@ -89,13 +83,11 @@ load_config() {
         CONFIG[timezone]=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
     fi
 }
-
 # --- 智能依赖处理 ---
 check_and_install_dependencies() {
     export LC_ALL=C.utf8
     local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warning "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" == "unknown" ]; then log_error "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; fi; if [[ "$AUTO_YES" == "true" ]]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if [[ "$choice" =~ ^[Yy]$ ]]; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" == "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_error "依赖安装失败。"; fi; log_success "依赖安装完成！"; else log_error "用户取消安装。"; fi; fi
 }
-
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
 self_update() { 
@@ -188,42 +180,45 @@ execute_module() {
     return $exit_code
 }
 
-# --- [UI 优化]: 使用 printf 和美化框线 ---
+# --- [最终修复]: 使用 printf 和美化框线，并移除版本号 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
-    local header_text="🚀 VPS 一键安装脚本 v52.0"
+    local header_text="🚀 VPS 一键安装脚本" # 移除版本号
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     
-    # 计算菜单最大宽度
-    local max_width=${#header_text}
+    # 动态计算菜单最大宽度
+    local max_width=0
+    # 比较标题宽度
+    [[ ${#header_text} -gt $max_width ]] && max_width=${#header_text}
+    [[ ${#sub_header_text} -gt $max_width ]] && max_width=${#sub_header_text}
+    # 比较菜单项宽度
     local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
     while IFS= read -r name; do 
-        # 菜单项宽度 = 缩进 + 序号 + 点 + 空格 + 名字
-        local line_width=$((2 + 2 + 1 + 1 + ${#name}))
+        local line_width=$((2 + 2 + 1 + 1 + ${#name})) # 缩进+序号+点+空格+名字
         if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     done <<< "$names"
-    if [ ${#sub_header_text} -gt $max_width ]; then max_width=${#sub_header_text}; fi
 
-    # 生成边框
-    local border; border=$(printf '%*s' "$((max_width + 4))" | tr ' ' '═')
+    # 生成边框字符串
+    local border; border=$(printf '%*s' "$max_width" | tr ' ' '═')
 
+    # 使用 printf 绘制菜单
     echo ""
-    echo -e "${BLUE}╔${border}╗${NC}"
-    printf "║ %-*s ║\n" "$((max_width + 2))" "$header_text"
-    printf "║ %-*s ║\n" "$((max_width + 2))" "  ${sub_header_text}"
-    echo -e "${BLUE}╠${border}╣${NC}"
+    printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
+    printf "║  %-*s  ║\n" "$max_width" "$header_text"
+    printf "║  %-*s  ║\n" "$max_width" "$sub_header_text"
+    printf "%b╠══%s══╣%b\n" "$BLUE" "$border" "$NC"
     
     for i in $(seq 0 $((menu_len - 1))); do
         local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
-        printf "║  ${YELLOW}%2d.${NC} %-*s ║\n" "$((i+1))" "$max_width" "$name"
+        printf "║  ${YELLOW}%2d.${NC} %-*s  ║\n" "$((i+1))" "$max_width" "$name"
     done
     
-    echo -e "${BLUE}╚${border}╝${NC}"
+    printf "%b╚══%s══╝%b\n" "$BLUE" "$border" "$NC"
     echo ""
     
     local prompt_text; 
@@ -241,7 +236,7 @@ process_menu_selection() {
     export LC_ALL=C.utf8; local config_path="${CONFIG[install_dir]}/config.json"
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
-    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then log_info "已退出脚本。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
+    if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项。"; return 10; fi
     local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice-1))]")
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
@@ -252,35 +247,38 @@ process_menu_selection() {
     esac
 }
 
-main() {
-    (
-        flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2; exit 1; }
-        
-        export LC_ALL=C.utf8
-        
-        # 启动器已处理首次安装的 FORCE_REFRESH
-        if [[ "${FORCE_REFRESH}" == "true" ]]; then
-            log_info "强制刷新模式：配置已在启动时更新。"
+main_logic() {
+    export LC_ALL=C.utf8
+    trap 'log_info "脚本已退出。"' EXIT
+    
+    if [[ "${FORCE_REFRESH}" == "true" ]]; then
+        log_info "强制刷新模式：配置已在启动时更新。"
+    fi
+    
+    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+    load_config
+    log_info "脚本启动 (v53.0 - 终极 UI 修复版)"
+    check_and_install_dependencies
+    
+    self_update
+    
+    CURRENT_MENU_NAME="MAIN_MENU"
+    while true; do
+        display_menu
+        local exit_code=0
+        process_menu_selection || exit_code=$?
+        if [ "$exit_code" -ne 10 ]; then
+            while read -r -t 0; do :; done
+            read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
-        
-        if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
-        load_config
-        log_info "脚本启动 (v52.0 - UI美化与智能启动版)"
-        check_and_install_dependencies
-        
-        self_update
-        
-        CURRENT_MENU_NAME="MAIN_MENU"
-        while true; do
-            display_menu
-            local exit_code=0
-            process_menu_selection || exit_code=$?
-            if [ "$exit_code" -ne 10 ]; then
-                while read -r -t 0; do :; done
-                read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
-            fi
-        done
-    ) 200>"${CONFIG[lock_file]}"
+    done
 }
 
-main "$@"
+# --- [核心改造]: 使用 flock 将主逻辑包裹起来 ---
+(
+    flock -n 200 || {
+        echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2
+        exit 1
+    }
+    main_logic "$@"
+) 200>"${CONFIG[lock_file]}"
