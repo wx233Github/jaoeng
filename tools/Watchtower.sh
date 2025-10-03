@@ -156,62 +156,105 @@ show_container_info() {
     done; 
 }
 _prompt_for_interval() { local default_value="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; local formatted_default=$(_format_seconds_to_human "$default_value"); while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, [回车]使用 ${formatted_default}): " input_interval; input_interval=${input_interval:-${default_value}s}; if [[ "$input_interval" =~ ^([0-9]+)s$ ]]; then result_interval=${BASH_REMATCH[1]}; break; elif [[ "$input_interval" =~ ^([0-9]+)h$ ]]; then result_interval=$((${BASH_REMATCH[1]}*3600)); break; elif [[ "$input_interval" =~ ^([0-9]+)d$ ]]; then result_interval=$((${BASH_REMATCH[1]}*86400)); break; elif [[ "$input_interval" =~ ^[0-9]+$ ]]; then result_interval="${input_interval}"; break; else echo -e "${COLOR_RED}❌ 格式错误...${COLOR_RESET}"; fi; done; echo "$result_interval"; }
+
+### [REWRITTEN] ###
+# This function has been completely rewritten for robustness and simplicity.
 configure_exclusion_list() {
-    local all_containers=(); readarray -t all_containers < <(docker ps --format '{{.Names}}')
-    local excluded_arr=(); if [ -n "$WATCHTOWER_EXCLUDE_LIST" ]; then IFS=',' read -r -a excluded_arr <<< "$WATCHTOWER_EXCLUDE_LIST"; fi
+    # 1. Get all container names into a standard indexed array.
+    local all_containers=()
+    readarray -t all_containers < <(docker ps --format '{{.Names}}')
+    
+    # 2. Use an associative array (hash map) for efficient and robust status tracking.
+    #    Requires Bash 4+.
+    declare -A excluded_map
+    if [[ -n "$WATCHTOWER_EXCLUDE_LIST" ]]; then
+        # Populate the map from the existing comma-separated string.
+        local IFS=','
+        for container_name in $WATCHTOWER_EXCLUDE_LIST; do
+            # Trim whitespace just in case
+            container_name=$(echo "$container_name" | xargs)
+            if [[ -n "$container_name" ]]; then
+                excluded_map["$container_name"]=1
+            fi
+        done
+        unset IFS
+    fi
+
     while true; do
-        if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "配置排除列表 (高优先级)";
+        if [[ "${JB_ENABLE_AUTO_CLEAR:-}" == "true" ]]; then clear; fi
+        _print_header "配置排除列表 (高优先级)"
+
+        # 3. Display the menu. Status is checked directly from the map (O(1) lookup).
         for i in "${!all_containers[@]}"; do
-            local container="${all_containers[$i]}"; local is_excluded=" "; for item in "${excluded_arr[@]}"; do if [[ "$item" == "$container" ]]; then is_excluded="✔"; break; fi; done
+            local container="${all_containers[$i]}"
+            local is_excluded=" "
+            # '-v' checks for key existence, safer than checking for value.
+            if [[ -v excluded_map["$container"] ]]; then
+                is_excluded="✔"
+            fi
             echo -e " ${COLOR_YELLOW}$((i+1)).${COLOR_RESET} [${COLOR_GREEN}${is_excluded}${COLOR_RESET}] $container"
         done
-        echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; echo -e "${COLOR_CYAN}当前排除 (脚本内): ${excluded_arr[*]:-(空, 将使用 config.json)}${COLOR_RESET}"; echo -e "${COLOR_CYAN}备用排除 (config.json): ${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}${COLOR_RESET}"; echo -e "${COLOR_BLUE}操作提示: 输入数字(可用','分隔)切换, 'c'确认, [回车]使用备用配置${COLOR_RESET}"; read -r -p "请选择: " choice
+        
+        # Build the current exclusion list string for display purposes.
+        local current_excluded_display=""
+        if ((${#excluded_map[@]} > 0)); then
+            current_excluded_display=$(IFS=, ; echo "${!excluded_map[*]}")
+        fi
+
+        echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}当前排除 (脚本内): ${current_excluded_display:-(空, 将使用 config.json)}${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}备用排除 (config.json): ${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}${COLOR_RESET}"
+        echo -e "${COLOR_BLUE}操作提示: 输入数字(可用','分隔)切换, 'c'确认, [回车]使用备用配置${COLOR_RESET}"
+        read -r -p "请选择: " choice
+
         case "$choice" in
             c|C) break ;;
-            "") excluded_arr=(); log_info "已清空脚本内配置，将使用 config.json 的备用配置。"; sleep 1.5; break ;;
+            "") 
+                excluded_map=() # Clear the map, simple and clean.
+                log_info "已清空脚本内配置，将使用 config.json 的备用配置。"; sleep 1.5; 
+                break 
+                ;;
             *)
-                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
+                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' ')
+                IFS=',' read -r -a selected_indices <<< "$clean_choice"
+                
+                local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
-                    ### [FIXED & REFACTORED] ###
-                    # 1. 统一使用 [[...]] 表达式进行完整性检查
+                    # 4. Validate input.
                     if [[ "$index" =~ ^[0-9]+$ && "$index" -ge 1 && "$index" -le ${#all_containers[@]} ]]; then
-                        local target="${all_containers[$((index-1))]}"
-                        local found=false
+                        local target_container="${all_containers[$((index-1))]}"
                         
-                        # 2. 明确地检查目标是否已在排除列表中
-                        for item in "${excluded_arr[@]}"; do
-                            if [[ "$item" == "$target" ]]; then
-                                found=true
-                                break
-                            fi
-                        done
-
-                        # 3. 使用更健壮的 [[ "$var" == "true" ]] 进行判断并执行反转操作
-                        if [[ "$found" == "true" ]]; then
-                            # 如果已存在，则移除它 (通过构建一个不含目标的新数组)
-                            local temp_arr=()
-                            for item in "${excluded_arr[@]}"; do
-                                if [[ "$item" != "$target" ]]; then
-                                    temp_arr+=("$item")
-                                fi
-                            done
-                            excluded_arr=("${temp_arr[@]}")
+                        # 5. Toggle status in the map. This is the new, simple, and robust core logic.
+                        if [[ -v excluded_map["$target_container"] ]]; then
+                            unset excluded_map["$target_container"] # Remove if exists
                         else
-                            # 如果不存在，则添加它
-                            excluded_arr+=("$target")
+                            excluded_map["$target_container"]=1 # Add if not exists
                         fi
                     else
-                        has_invalid_input=true
+                        # Only flag as invalid if the token is not an empty string (e.g., from "1,2,").
+                        if [[ -n "$index" ]]; then
+                            has_invalid_input=true
+                        fi
                     fi
                 done
-                if [[ "$has_invalid_input" == "true" ]]; then 
-                    log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; 
+
+                if [[ "$has_invalid_input" == "true" ]]; then
+                    log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5
                 fi
-            ;;
+                ;;
         esac
     done
-    WATCHTOWER_EXCLUDE_LIST=$(IFS=,; echo "${excluded_arr[*]}")
+
+    # 6. Convert the map keys back to the final comma-separated string to be saved.
+    local final_excluded_list=""
+    if ((${#excluded_map[@]} > 0)); then
+        # This is a robust way to join array keys with a comma.
+        final_excluded_list=$(IFS=,; echo "${!excluded_map[*]}")
+    fi
+    WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
+
+
 configure_watchtower(){ 
     _print_header "🚀 Watchtower 配置"; local current_saved_interval="${WATCHTOWER_CONFIG_INTERVAL}"; local config_json_interval="${WT_CONF_DEFAULT_INTERVAL:-300}"; local prompt_default="${current_saved_interval:-$config_json_interval}"; local prompt_text="请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "$config_json_interval"))"; local WT_INTERVAL_TMP="$(_prompt_for_interval "$prompt_default" "$prompt_text")"; log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1; configure_exclusion_list; read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice; if [[ "$extra_args_choice" =~ ^[Yy]$ ]]; then read -r -p "请输入额外参数: " temp_extra_args; else temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"; fi; read -r -p "是否启用调试模式? (y/N): " debug_choice; local temp_debug_enabled=$([[ "$debug_choice" =~ ^[Yy]$ ]] && echo "true" || echo "false"); 
     _print_header "配置确认"; printf " 检查间隔: %s\n" "$(_format_seconds_to_human "$WT_INTERVAL_TMP")"; local final_exclude_list=""; local source_msg=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; source_msg="脚本"; else final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}"; source_msg="config.json"; fi; printf " 排除列表 (%s): %s\n" "$source_msg" "${final_exclude_list//,/, }"; printf " 额外参数: %s\n" "${temp_extra_args:-无}"; printf " 调试模式: %s\n" "$temp_debug_enabled"; echo -e "${COLOR_YELLOW}╰$(generate_line)╯${COLOR_RESET}"; read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice
