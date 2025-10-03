@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.3 - 终极毕业版)
+# Docker 自动更新助手 (v3.8.4 - UI 终极版)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="v3.8.3-final"
+VERSION="v3.8.4-final-ui"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -85,7 +85,8 @@ _start_watchtower_container_logic(){
       log_info "发现排除规则 (来源: ${source_msg}): ${final_exclude_list}"; local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g'); local included_containers; included_containers=$(docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true)
       if [ -n "$included_containers" ]; then readarray -t containers_to_monitor <<< "$included_containers"; log_info "计算后的监控范围: ${containers_to_monitor[*]}"; else log_warn "排除规则导致监控列表为空！"; fi
   else log_info "未发现排除规则，Watchtower 将监控所有容器。"; fi
-  echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"; if [ ${#containers_to_monitor[@]} -gt 0 ]; then cmd_parts+=("${containers_to_monitor[@]}"); fi
+  _print_header "正在启动 $mode_description"
+  if [ ${#containers_to_monitor[@]} -gt 0 ]; then cmd_parts+=("${containers_to_monitor[@]}"); fi
   echo -e "${COLOR_CYAN}执行命令: ${cmd_parts[*]} ${COLOR_RESET}"; set +e; "${cmd_parts[@]}"; local rc=$?; set -e
   if [ "$mode_description" = "一次性更新" ]; then if [ $rc -eq 0 ]; then echo -e "${COLOR_GREEN}✅ $mode_description 完成。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ $mode_description 失败。${COLOR_RESET}"; fi; return $rc
   else sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ $mode_description 启动失败。${COLOR_RESET}"; send_notify "❌ Watchtower 启动失败。"; fi; return 0; fi
@@ -124,20 +125,14 @@ show_container_info() {
             "") return ;; 
             a|A)
                 if confirm_action "确定要启动所有已停止的容器吗?"; then
-                    log_info "正在启动..."
-                    docker start $(docker ps -aq -f status=exited) &>/dev/null || true
-                    log_success "操作完成。"
+                    log_info "正在启动..."; local stopped_containers; stopped_containers=$(docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"
                     press_enter_to_continue
-                else log_info "操作已取消。"; fi
-                ;;
+                else log_info "操作已取消。"; fi ;;
             s|S)
                 if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then
-                    log_info "正在停止..."
-                    docker stop $(docker ps -q) &>/dev/null || true
-                    log_success "操作完成。"
+                    log_info "正在停止..."; local running_containers; running_containers=$(docker ps -q); if [ -n "$running_containers" ]; then docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"
                     press_enter_to_continue
-                else log_info "操作已取消。"; fi
-                ;;
+                else log_info "操作已取消。"; fi ;;
             *) 
                 if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi; 
                 if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue; fi; 
@@ -251,14 +246,14 @@ main_menu(){
     COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
     TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); RUNNING=$(docker ps --format '{{.ID}}' | wc -l); STOPPED=$((TOTAL - RUNNING))
     
-    printf "%-23s: %b\n" " Watchtower 状态" "$STATUS_COLOR (名称排除模式)"
-    printf "%-23s: %b\n" "      下次检查" "$COUNTDOWN"
-    printf "%-23s: 总计 %s (%b运行中%s, %b已停止%s%b)\n" "      容器概览" "${TOTAL}" "${COLOR_GREEN}" "${RUNNING}" "${COLOR_RED}" "${STOPPED}" "${COLOR_RESET}"
+    echo " Watchtower 状态: $STATUS_COLOR (名称排除模式)"
+    echo "      下次检查: $COUNTDOWN"
+    echo "      容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
     
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
-    if [ -n "$FINAL_EXCLUDE_LIST" ]; then printf "%-23s: %b%s%b\n" " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE})" "${COLOR_YELLOW}" "${FINAL_EXCLUDE_LIST//,/, }" "${COLOR_RESET}"; fi
-    local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi; if [[ -n "$EMAIL_TO" ]]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then printf "%-23s: %b%s%b\n" " 🔔 通知已启用" "${COLOR_GREEN}" "${NOTIFY_STATUS}" "${COLOR_RESET}"; fi
+    if [ -n "$FINAL_EXCLUDE_LIST" ]; then echo " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET}"; fi
+    local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then echo " 🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}"; fi
     
     echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
     echo " 主菜单："
