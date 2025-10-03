@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.3 - Robust Headless Mode & Menu Refactor)
+# 🚀 VPS 一键安装入口脚本 (v66.4 - Globally Hardened JQ Queries)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.3"
+SCRIPT_VERSION="v66.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,7 +138,8 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
+    # [FIX] Globally hardened jq query to be robust against non-array/non-object values.
+    scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(type == "object" and .type == "item").action' "${CONFIG[install_dir]}/config.json")
     
     if [[ -z "$scripts_to_update" ]]; then
         log_success "没有需要更新的模块。";
@@ -291,7 +292,10 @@ process_menu_selection() {
         else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; 
     fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warning "无效选项."; return 10; fi
-    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))]")
+    # [FIX] Globally hardened jq query.
+    local item_json; item_json=$(echo "$menu_items_json" | jq ".[$((choice - 1))] | select(type==\"object\")")
+    if [[ -z "$item_json" ]]; then log_warning "无效的菜单项配置."; return 10; fi
+
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in 
         item) execute_module "$action" "$name"; return $?;; 
@@ -327,10 +331,7 @@ main() {
                 exit 0
                 ;;
             *)
-                # [FIX] Made headless mode jq query robust to prevent errors.
-                # 1. It now only iterates over arrays in the .menus object.
-                # 2. It ensures each item is an object before accessing keys.
-                # 3. It will not match 'submenu' type items.
+                # [FIX] Globally hardened jq query.
                 local item_json
                 item_json=$(jq -r --arg cmd "$command" '
                     .menus[] | select(type == "array") | .[] | select(type == "object") |
