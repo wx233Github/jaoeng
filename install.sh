@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.5 - Ultimate Arithmetic Fix)
+# 🚀 VPS 一键安装入口脚本 (v69.6 - Ultimate Compatibility Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.5"
+SCRIPT_VERSION="v69.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -315,7 +315,7 @@ process_menu_selection() {
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len
     menu_len=$(echo "$menu_json" | jq -r '.items | length')
-    
+
     if [[ -z "$choice" ]]; then
         if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then
             exit 0
@@ -324,18 +324,25 @@ process_menu_selection() {
             return 10
         fi
     fi
-    
-    ### [ULTIMATE FIX for install.sh v69.5] ###
-    # This is the final, robust fix for the recurring syntax error.
-    # It separates string pattern matching from arithmetic comparison.
+
+    ### [ULTIMATE FIX v69.6] ###
+    # This block uses the most compatible and robust syntax to validate user input,
+    # completely avoiding the problematic `[[ ... ]]` for arithmetic checks.
     local is_valid_choice=false
-    if [[ "$choice" =~ ^[0-9]+$ ]]; then
-        # Use arithmetic context `((...))` for safe integer comparison.
-        # This handles empty strings gracefully without syntax errors.
-        if (( choice >= 1 && choice <= menu_len )); then
-            is_valid_choice=true
-        fi
-    fi
+    # Use `case` for basic pattern matching, which is POSIX compliant and extremely stable.
+    case "$choice" in
+        # This pattern matches one or more digits.
+        ''|*[!0-9]*)
+            is_valid_choice=false
+            ;;
+        *)
+            # If it's purely digits, then use the safe arithmetic context `((...))` for range checking.
+            # This context handles variables gracefully, even if they were not numbers (though `case` already filtered that).
+            if (( choice >= 1 && choice <= menu_len )); then
+                is_valid_choice=true
+            fi
+            ;;
+    esac
 
     if [[ "$is_valid_choice" != "true" ]]; then
         log_warning "无效选项."
@@ -360,7 +367,6 @@ process_menu_selection() {
         func) "$action"; return $?;;
     esac
 }
-
 
 main() {
     exec 200>"${CONFIG[lock_file]}"
