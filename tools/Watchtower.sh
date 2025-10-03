@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.3.1 - 修复了颜色变量未定义的错误)
+# Docker 自动更新助手 (v3.3.2 - 增强了交互式选择逻辑)
 #
 set -euo pipefail
 
 export LC_ALL=C.utf8
 
-VERSION="3.3.1-variable-fix"
+VERSION="3.3.2-interactive-ux-enhancement"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -116,21 +116,24 @@ _start_watchtower_container_logic(){
     return 0
   fi
 }
+
+# ========= BUG FIX: 修复了未定义的颜色变量 ${NC} =========
 configure_notify() {
     echo -e "${COLOR_YELLOW}⚙️ 通知配置 ⚙️${COLOR_RESET}"; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then
         echo "当前已配置:"; if [ -n "$TG_BOT_TOKEN" ]; then echo "  - Telegram (Token: ...${TG_BOT_TOKEN: -5})"; fi; if [ -n "$EMAIL_TO" ]; then echo "  - Email: $EMAIL_TO"; fi
-        read -p "$(echo -e "${COLOR_YELLOW}是否要覆盖旧的配置？(y 继续, n/回车 取消): ${NC}")" confirm_overwrite; if [[ ! "$confirm_overwrite" =~ ^[Yy]$ ]]; then log_info "操作已取消。"; return; fi
+        read -p "$(echo -e "${COLOR_YELLOW}是否要覆盖旧的配置？(y 继续, n/回车 取消): ${COLOR_RESET}")" confirm_overwrite; if [[ ! "$confirm_overwrite" =~ ^[Yy]$ ]]; then log_info "操作已取消。"; return; fi
     fi
     read -r -p "启用 Telegram 通知？(y/N): " tchoice; if [[ "$tchoice" =~ ^[Yy]$ ]]; then read -r -p "请输入 Bot Token: " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT}"; read -r -p "请输入 Chat ID: " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT}"; else TG_BOT_TOKEN=""; TG_CHAT_ID=""; fi
     read -r -p "启用 Email 通知？(y/N): " echoice; if [[ "$echoice" =~ ^[Yy]$ ]]; then read -r -p "请输入接收邮箱: " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT}"; else EMAIL_TO=""; fi
     save_config; if [[ -n "$TG_BOT_TOKEN" || -n "$EMAIL_TO" ]]; then if confirm_action "配置已保存。是否发送一条测试通知？"; then echo "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${VERSION} 的测试消息。"; log_info "测试通知已发送。"; fi; fi
 }
+
 _parse_watchtower_timestamp_from_log_line() { local log_line="$1"; local timestamp=""; timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true); if [ -n "$timestamp" ]; then echo "$timestamp"; return 0; fi; echo ""; return 1; }
 _date_to_epoch() { local dt="$1"; [ -z "$dt" ] && echo "" && return; if [ "$(date -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""); elif [ "$(command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1 && echo true)" = "true" ]; then gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""); else log_warn "⚠️ 'date' 或 'gdate' 不支持。"; echo ""; fi; }
 show_container_info() { while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; echo -e "${COLOR_YELLOW}📋 容器管理 📋${COLOR_RESET}"; printf "%-5s %-25s %-45s %-20s\n" "编号" "名称" "镜像" "状态"; local containers=(); local i=1; while IFS='|' read -r name image status; do containers+=("$name"); local status_colored="$status"; if [[ "$status" =~ ^Up ]]; then status_colored="${COLOR_GREEN}${status}${COLOR_RESET}"; elif [[ "$status" =~ ^Exited|Created ]]; then status_colored="${COLOR_RED}${status}${COLOR_RESET}"; else status_colored="${COLOR_YELLOW}${status}${COLOR_RESET}"; fi; printf "%-5s %-25s %-45s %b\n" "$i" "$name" "$image" "$status_colored"; i=$((i+1)); done < <(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'); read -r -p "输入编号操作, 或按 Enter 返回: " choice; case "$choice" in "") return ;; *) if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi; if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue; fi; local selected_container="${containers[$((choice-1))]}"; if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; echo -e "${COLOR_CYAN}操作容器: ${selected_container}${COLOR_RESET}"; echo "1. 日志"; echo "2. 重启"; echo "3. 停止"; echo "4. 删除"; echo; read -r -p "请选择, 或按 Enter 返回: " action; case "$action" in 1) echo -e "${COLOR_YELLOW}日志 (Ctrl+C 停止)...${COLOR_RESET}"; docker logs -f --tail 100 "$selected_container" || true; press_enter_to_continue ;; 2) echo "重启中..."; if docker restart "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 3) echo "停止中..."; if docker stop "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1 ;; 4) if confirm_action "警告: 删除 '${selected_container}'？"; then echo "删除中..."; if docker rm -f "$selected_container"; then echo -e "${COLOR_GREEN}✅ 成功。${COLOR_RESET}"; else echo -e "${COLOR_RED}❌ 失败。${COLOR_RESET}"; fi; sleep 1; else echo "已取消。"; fi ;; "") ;; *) echo -e "${COLOR_RED}❌ 无效操作。${COLOR_RESET}"; sleep 1 ;; esac ;; esac; done; }
 _prompt_for_interval() { local current_interval_s="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, 默认 ${current_interval_s}s): " input_interval; input_interval=${input_interval:-${current_interval_s}s}; if [[ "$input_interval" =~ ^([0-9]+)s$ ]]; then result_interval=${BASH_REMATCH[1]}; break; elif [[ "$input_interval" =~ ^([0-9]+)h$ ]]; then result_interval=$((${BASH_REMATCH[1]}*3600)); break; elif [[ "$input_interval" =~ ^([0-9]+)d$ ]]; then result_interval=$((${BASH_REMATCH[1]}*86400)); break; elif [[ "$input_interval" =~ ^[0-9]+$ ]]; then result_interval="${input_interval}"; break; else echo -e "${COLOR_RED}❌ 格式错误...${COLOR_RESET}"; fi; done; echo "$result_interval"; }
 
-# ========= FIX START: 修正函数内所有颜色变量名 =========
+# ========= FIX START: 增强交互式选择逻辑 =========
 configure_exclusion_list() {
     local all_containers=(); readarray -t all_containers < <(docker ps --format '{{.Names}}')
     local excluded_arr=(); if [ -n "$WATCHTOWER_EXCLUDE_LIST" ]; then IFS=',' read -r -a excluded_arr <<< "$WATCHTOWER_EXCLUDE_LIST"; fi
@@ -146,17 +149,33 @@ configure_exclusion_list() {
         echo "---"
         echo -e "${COLOR_CYAN}当前排除 (脚本内): ${excluded_arr[*]:-(空, 将使用 config.json)}${COLOR_RESET}"
         echo -e "${COLOR_CYAN}备用排除 (config.json): ${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}${COLOR_RESET}"
-        read -r -p "输入数字选择/取消, 'x'清空, 'c'确认: " choice
+        echo -e "${COLOR_BLUE}操作提示: 输入数字(可用,分隔多个)切换, 'x'清空, 'c'确认, [回车]使用备用配置${COLOR_RESET}"
+        read -r -p "请选择: " choice
         case "$choice" in
-            c|C|"") break ;;
+            c|C) break ;;
+            "") 
+                excluded_arr=()
+                log_info "已清空脚本内配置，将使用 config.json 的备用配置。"
+                sleep 1
+                break 
+                ;;
             x|X) excluded_arr=() ;;
             *)
-                if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#all_containers[@]}" ]; then
-                    local target="${all_containers[$((choice-1))]}"; local found=false; local temp_arr=()
-                    for item in "${excluded_arr[@]}"; do if [[ "$item" == "$target" ]]; then found=true; else temp_arr+=("$item"); fi; done
-                    if $found; then excluded_arr=("${temp_arr[@]}"); else excluded_arr+=("$target"); fi
-                else
-                    log_warn "无效输入。" && sleep 1
+                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' ')
+                IFS=',' read -r -a selected_indices <<< "$clean_choice"
+                local has_invalid_input=false
+                for index in "${selected_indices[@]}"; do
+                    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le "${#all_containers[@]}" ]; then
+                        local target="${all_containers[$((index-1))]}"; local found=false; local temp_arr=()
+                        for item in "${excluded_arr[@]}"; do if [[ "$item" == "$target" ]]; then found=true; else temp_arr+=("$item"); fi; done
+                        if $found; then excluded_arr=("${temp_arr[@]}"); else excluded_arr+=("$target"); fi
+                    else
+                        has_invalid_input=true
+                    fi
+                done
+                if $has_invalid_input; then
+                    log_warn "输入 '${choice}' 中包含无效选项，已忽略。"
+                    sleep 1.5
                 fi
             ;;
         esac
