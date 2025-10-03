@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.8 - Ultimate UI & Syntax Compatibility Fix)
+# Docker 自动更新助手 (v3.8.9 - Final Dynamic UI & Compatibility Fix)
 #
 set -euo pipefail
 
 export LANG=${LANG:-en_US.UTF-8}
 export LC_ALL=C.utf8
 
-VERSION="v3.8.8"
+VERSION="v3.8.9"
 
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
@@ -205,13 +205,15 @@ configure_exclusion_list() {
         if [ "${JB_ENABLE_AUTO_CLEAR:-}" == "true" ]; then clear; fi
         _print_header "配置排除列表 (高优先级)"
 
-        for i in "${!all_containers[@]}"; do
+        local i=0
+        while [ $i -lt ${#all_containers[@]} ]; do
             local container="${all_containers[$i]}"
             local is_excluded=" "
             if [ -n "${excluded_map[$container]+_}" ]; then # POSIX-compatible check for key existence
                 is_excluded="✔"
             fi
-            echo -e " $(expr $i + 1). [${is_excluded}] $container"
+            printf "  %s. [%s] %s\n" "$(expr $i + 1)" "$is_excluded" "$container"
+            i=$(expr $i + 1)
         done
         
         local current_excluded_display=""
@@ -495,7 +497,6 @@ main_menu(){
     
     local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi
 
-    # Dynamically calculate width before printing anything
     local header_text="Docker 助手 v${VERSION}"
     local line1=" 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)"
     local line2="      ⏳ 下次检查: $COUNTDOWN"
@@ -505,17 +506,16 @@ main_menu(){
     
     local max_width=0
     local line_width
-    max_width=$(_get_visual_width "$header_text")
     
+    line_width=$(_get_visual_width "$header_text"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     line_width=$(_get_visual_width "$line1"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     line_width=$(_get_visual_width "$line2"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     line_width=$(_get_visual_width "$line3"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     line_width=$(_get_visual_width "$line4"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     line_width=$(_get_visual_width "$line5"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
     
-    max_width=$(expr $max_width + 4) # Add padding
+    max_width=$(expr $max_width + 6)
     
-    # Now, print everything with the calculated max_width
     local title=" $header_text "
     local title_width; title_width=$(_get_visual_width "$title")
     local padding_total; padding_total=$(expr $max_width - $title_width)
@@ -557,7 +557,7 @@ main_menu(){
 main(){ 
     trap 'echo -e "\n操作被中断。"; exit 10' INT
 
-    if [ "${1:-}" == "--run-once" ]; then
+    if [ "${1:-}" = "--run-once" ]; then
         run_watchtower_once
         exit $?
     fi
