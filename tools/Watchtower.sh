@@ -134,8 +134,13 @@ show_container_info() {
                     press_enter_to_continue
                 else log_info "操作已取消。"; fi ;;
             *) 
-                if ! [[ "$choice" =~ ^[0-9]+$ ]]; then echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue; fi; 
-                if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#containers[@]}" ]; then echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue; fi; 
+                if ! [[ "$choice" =~ ^[0-9]+$ ]]; then 
+                    echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue;
+                fi
+                ### [PROACTIVE FIX] ### Changed to [[ ... ]] for robustness and consistency.
+                if [[ "$choice" -lt 1 || "$choice" -gt ${#containers[@]} ]]; then 
+                    echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue;
+                fi
                 local selected_container="${containers[$((choice-1))]}"; 
                 if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; 
                 _print_header "操作容器: ${selected_container}"; 
@@ -157,12 +162,11 @@ show_container_info() {
 }
 _prompt_for_interval() { local default_value="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; local formatted_default=$(_format_seconds_to_human "$default_value"); while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, [回车]使用 ${formatted_default}): " input_interval; input_interval=${input_interval:-${default_value}s}; if [[ "$input_interval" =~ ^([0-9]+)s$ ]]; then result_interval=${BASH_REMATCH[1]}; break; elif [[ "$input_interval" =~ ^([0-9]+)h$ ]]; then result_interval=$((${BASH_REMATCH[1]}*3600)); break; elif [[ "$input_interval" =~ ^([0-9]+)d$ ]]; then result_interval=$((${BASH_REMATCH[1]}*86400)); break; elif [[ "$input_interval" =~ ^[0-9]+$ ]]; then result_interval="${input_interval}"; break; else echo -e "${COLOR_RED}❌ 格式错误...${COLOR_RESET}"; fi; done; echo "$result_interval"; }
 
-# This function has been completely rewritten for robustness and simplicity using an associative array.
+# This function uses an associative array for robust state management.
 configure_exclusion_list() {
     local all_containers=()
     readarray -t all_containers < <(docker ps --format '{{.Names}}')
     
-    # Use an associative array (hash map) for efficient and robust status tracking.
     declare -A excluded_map
     if [[ -n "$WATCHTOWER_EXCLUDE_LIST" ]]; then
         local IFS=','
@@ -261,8 +265,6 @@ configure_watchtower(){
     fi
     
     read -r -p "是否启用调试模式? (y/N): " debug_choice
-    ### [DEFINITIVE FIX] ###
-    # Replaced the brittle one-liner with a standard, robust if/else block.
     local temp_debug_enabled="false"
     if [[ "$debug_choice" =~ ^[Yy]$ ]]; then
         temp_debug_enabled="true"
@@ -347,7 +349,6 @@ view_and_edit_config(){
             4) read -r -p "新额外参数: " a; WATCHTOWER_EXTRA_ARGS="${a:-}"; save_config ;; 
             5) 
                 read -r -p "启用调试？(y/n): " d
-                ### [DEFINITIVE FIX] ###
                 if [[ "$d" =~ ^[Yy]$ ]]; then
                     WATCHTOWER_DEBUG_ENABLED="true"
                 else
@@ -364,7 +365,6 @@ view_and_edit_config(){
                 ;; 
             7) 
                 read -r -p "启用 Watchtower？(y/n): " d
-                ### [DEFINITIVE FIX] ###
                 if [[ "$d" =~ ^[Yy]$ ]]; then
                     WATCHTOWER_ENABLED="true"
                 else
@@ -386,7 +386,6 @@ view_and_edit_config(){
             9) read -r -p "新 Cron 目录: " a; DOCKER_COMPOSE_PROJECT_DIR_CRON="${a:-$DOCKER_COMPOSE_PROJECT_DIR_CRON}"; save_config ;; 
             10) 
                 read -r -p "启用 Cron？(y/n): " d
-                ### [DEFINITIVE FIX] ###
                 if [[ "$d" =~ ^[Yy]$ ]]; then
                     CRON_TASK_ENABLED="true"
                 else
@@ -397,8 +396,14 @@ view_and_edit_config(){
             "") return ;; 
             *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; 
         esac; 
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le 10 ]; then sleep 0.5; fi; 
-    done; 
+        
+        ### [ULTIMATE FIX] ###
+        # Replaced the mixed conditional '[[...]] && [...]' with a single, robust '[[...]]'.
+        # This was the root cause of the recurring syntax errors.
+        if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le 10 ]]; then
+            sleep 0.5;
+        fi
+    done
 }
 
 update_menu(){ while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "选择更新模式"; echo " 1. 🚀 Watchtower (推荐, 名称排除)"; echo " 2. ⚙️ Systemd Timer (Compose 项目)"; echo " 3. 🕑 Cron (Compose 项目)"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "选择或按 Enter 返回: " c; case "$c" in 1) configure_watchtower; break ;; 2) configure_systemd_timer; break ;; 3) configure_cron_task; break ;; "") break ;; *) echo -e "${COLOR_YELLOW}无效选择。${COLOR_RESET}"; sleep 1 ;; esac; done; }
