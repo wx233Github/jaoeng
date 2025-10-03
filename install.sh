@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.2 - UI Unification)
+# 🚀 VPS 一键安装入口脚本 (v69.3 - Robustness & UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.2"
+SCRIPT_VERSION="v69.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -233,26 +233,19 @@ execute_module() {
 }
 generate_line() { local len=$1; local char="─"; local line=""; for ((i=0; i<len; i++)); do line+="$char"; done; echo "$line"; }
 
-### [UI FIX] ###
-# New helper function to accurately calculate the visual width of a string,
-# accounting for multi-byte characters (like Chinese, emojis) and color codes.
 _get_visual_width() {
     local text="$1"
-    # Remove ANSI escape codes (colors, etc.)
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     
     local width=0
     local i=0
     local char
     
-    # Iterate over the string character by character
     while (( i < ${#plain_text} )); do
         char="${plain_text:i:1}"
-        # Check if the character is ASCII (single-byte)
         if [[ "$char" =~ [/ -~] ]]; then
             width=$((width + 1))
         else
-            # Assume non-ASCII characters are double-width
             width=$((width + 2))
         fi
         i=$((i+1))
@@ -269,15 +262,11 @@ display_menu() {
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local main_title_text; main_title_text=$(echo "$menu_json" | jq -r '.title // "🚀 VPS 一键安装脚本"')
 
-    ### [UI FIX] ###
-    # Replaced the old, unreliable width calculation with the new robust function.
     local title_width; title_width=$(_get_visual_width "$main_title_text")
     
-    # Calculate box width based on title, items, and a minimum width.
     local max_item_width=0
     local item_width
     while IFS=$'\t' read -r name; do
-        # Item format: "  XX. › Item Name"
         item_width=$(_get_visual_width "  XX. › ${name}")
         if (( item_width > max_item_width )); then
             max_item_width=$item_width
@@ -285,8 +274,8 @@ display_menu() {
     done < <(echo "$menu_json" | jq -r '.items[] | .name')
     
     local box_width=$((title_width > max_item_width ? title_width : max_item_width))
-    box_width=$((box_width + 6)) # Add some padding
-    if (( box_width < 40 )); then box_width=40; fi # Enforce a minimum width
+    box_width=$((box_width + 6))
+    if (( box_width < 40 )); then box_width=40; fi
 
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total=$((box_width - title_width))
@@ -323,7 +312,15 @@ process_menu_selection() {
     local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_json" | jq -r '.items | length')
     if [[ -z "$choice" ]]; then if [[ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
-    if ! [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "$menu_len" ]]; then log_warning "无效选项."; return 10; fi
+    
+    ### [FINAL FIX] ###
+    # This is the line that caused the error (line 252 in previous version).
+    # Replaced the mixed conditional '[[...]] || [...]' with a single, robust '[[...]]'.
+    if ! [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "$menu_len" ]]; then
+        log_warning "无效选项."
+        return 10
+    fi
+    
     local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$((choice - 1))" '.items[$idx]')
     if [[ -z "$item_json" || "$item_json" == "null" ]]; then log_warning "菜单项配置无效或不完整。"; return 10; fi
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
