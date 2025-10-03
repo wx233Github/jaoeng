@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v69.4 - Final Syntax Fix)
+# 🚀 VPS 一键安装入口脚本 (v69.5 - Ultimate Arithmetic Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v69.4"
+SCRIPT_VERSION="v69.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -325,9 +325,19 @@ process_menu_selection() {
         fi
     fi
     
-    ### [ULTIMATE FIX for install.sh] ###
-    # This robust check replaces the previous mixed-syntax conditional that caused errors.
-    if ! [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "$menu_len" ]]; then
+    ### [ULTIMATE FIX for install.sh v69.5] ###
+    # This is the final, robust fix for the recurring syntax error.
+    # It separates string pattern matching from arithmetic comparison.
+    local is_valid_choice=false
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        # Use arithmetic context `((...))` for safe integer comparison.
+        # This handles empty strings gracefully without syntax errors.
+        if (( choice >= 1 && choice <= menu_len )); then
+            is_valid_choice=true
+        fi
+    fi
+
+    if [[ "$is_valid_choice" != "true" ]]; then
         log_warning "无效选项."
         return 10
     fi
