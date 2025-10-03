@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v63.2 - Robust Update & Log Order Fix)
+# 🚀 VPS 一键安装入口脚本 (v63.3 - Prettier Startup)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -42,6 +42,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     
     echo_info "正在启动主程序..."
     echo "--------------------------------------------------"
+    # [FIX] 增加空行以优化视觉分隔
+    echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
@@ -115,10 +117,8 @@ _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在串行更新所有模块..."
     local scripts_to_update
-    # [FIX #1] 修复jq错误: 增加 select(type == "array") 来过滤掉 "comment" 字符串
     scripts_to_update=$(jq -r '.menus[] | select(type == "array") | .[] | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     local all_successful=true
-    # 如果没有可更新的脚本,直接返回成功
     if [[ -z "$scripts_to_update" ]]; then
         log_success "所有模块更新完成！";
         return
@@ -281,9 +281,9 @@ main() {
     fi
     load_config
     
-    # [FIX #2] 调整日志顺序: 先检查更新, 再打印启动信息
+    # [FIX] 调整日志顺序和排版
+    log_info "脚本启动 (v63.3 - Prettier Startup)"
     self_update
-    log_info "脚本启动 (v63.2 - Robust Update & Log Order Fix)"
     
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
