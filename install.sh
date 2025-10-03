@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v59.0 - 固定宽度UI最终版)
+# 🚀 VPS 一键安装入口脚本 (v60.0 - 最终稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -179,61 +179,39 @@ execute_module() {
     return $exit_code
 }
 
-# --- [最终 UI 修复]: 引入全新的“固定宽度渲染”方案 ---
-get_visual_width() {
-    local s="$1"
-    # 移除颜色代码以进行准确的宽度计算
-    local plain_s; plain_s=$(echo "$s" | sed 's/\x1b\[[0-9;]*m//g')
-    # 使用 perl 来处理 Unicode 字符宽度，最可靠
-    echo "$plain_s" | perl -MText::CharWidth=mbswidth -lne 'print mbswidth($_)'
-}
-
-print_padded_line() {
-    local text="$1"
-    local width="$2"
-    local text_width; text_width=$(get_visual_width "$text")
-    local padding_width=$((width - text_width))
-    # 确保 padding 不为负数
-    if [ $padding_width -lt 0 ]; then padding_width=0; fi
-    
-    printf "║ %s%*s ║\n" "$text" "$padding_width" ""
-}
-
+# --- [最终 UI 修复]: 采用极简、健壮的分隔线方案 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # 1. 定义一个固定的、足够宽的菜单宽度
-    local FIXED_WIDTH=50
-
-    # 2. 生成标题和边框
     local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
-    local border; border=$(printf '%*s' "$FIXED_WIDTH" | tr ' ' '═')
     
-    echo ""
-    printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
-    print_padded_line "$header_text" "$FIXED_WIDTH"
-    print_padded_line "  $sub_header_text" "$FIXED_WIDTH"
-    printf "%b╠══%s══╣%b\n" "$BLUE" "$border" "$NC"
+    local separator="=============================================================="
 
-    # 3. 逐行渲染菜单项
+    echo ""
+    echo -e "${BLUE}${separator}${NC}"
+    echo -e "  ${header_text}"
+    echo -e "  ${sub_header_text}"
+    echo -e "${BLUE}${separator}${NC}"
+    
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
+    
     for i in $(seq 0 $((menu_len - 1))); do
         local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
-        local line
-        printf -v line "  ${YELLOW}%2d.${NC} %s" "$((i+1))" "$name"
-        print_padded_line "$line" "$FIXED_WIDTH"
+        printf " ${YELLOW}%2d.${NC} %s\n" "$((i+1))" "$name"
     done
     
-    printf "%b╚══%s══╝%b\n" "$BLUE" "$border" "$NC"
     echo ""
     
     local prompt_text; 
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; 
-    else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
+        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
+    else 
+        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
+    fi
     
     if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]";
     else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
@@ -253,11 +231,11 @@ process_menu_selection() {
         func) "$action"; return $?;; 
     esac
 }
-
 main() {
     # [最终修复]: 使用 flock 内置化，解决自我锁定和双重退出问题
     exec 200>"${CONFIG[lock_file]}"
-    flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2; exit 1; }
+    flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一实例正在运行。"; exit 1; }
+    # 设置 trap，在退出时自动解锁和清理，并打印唯一退出信息
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出。"' EXIT
     
     export LC_ALL=C.utf8
@@ -266,14 +244,10 @@ main() {
         log_info "强制刷新模式：配置已在启动时更新。"
     fi
     
-    # 依赖检查需要提前，因为 flock/perl 可能不存在
-    if ! command -v flock >/dev/null || ! command -v jq >/dev/null || ! command -v perl >/dev/null; then 
-        # 将 perl 添加到依赖列表
-        CONFIG[dependencies]+=' perl'
-        check_and_install_dependencies
-    fi
+    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
     load_config
-    log_info "脚本启动 (v59.0 - 固定宽度UI最终版)"
+    log_info "脚本启动 (v60.0 - 最终稳定版)"
+    check_and_install_dependencies
     
     self_update
     
