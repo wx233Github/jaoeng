@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v57.0 - 双通道渲染最终版)
+# 🚀 VPS 一键安装入口脚本 (v58.0 - 最终完美版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -47,6 +47,7 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
 fi
 
 # --- 主程序逻辑 ---
+
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 # --- 默认配置 ---
@@ -143,7 +144,7 @@ uninstall_script() {
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
         log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
         if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
-        log_info "正在清理锁文件..."; sudo rm -f "${CONFIG[lock_file]}"
+        # 卸载时，锁文件会在 trap 中自动清理
         log_success "脚本已成功卸载。"; log_info "再见！";
         exit 0
     else log_info "卸载操作已取消。"; return 10; fi
@@ -197,7 +198,6 @@ display_menu() {
     
     for i in $(seq 0 $((menu_len - 1))); do
         local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
-        # 使用 sprintf 将格式化后的字符串存入变量，而不是直接打印
         local line
         printf -v line "  ${YELLOW}%2d.${NC} %s" "$((i+1))" "$name"
         menu_lines+=("$line")
@@ -206,9 +206,10 @@ display_menu() {
     # --- 测量阶段：找到最长行的字节长度 ---
     local max_width=0
     for line in "${menu_lines[@]}"; do
-        # `${#line}` 获取的是字节长度，对于包含颜色代码的字符串是可靠的
-        if [[ ${#line} -gt $max_width ]]; then
-            max_width=${#line}
+        # 移除颜色代码后再计算纯文本的字节长度
+        local plain_line; plain_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')
+        if [[ ${#plain_line} -gt $max_width ]]; then
+            max_width=${#plain_line}
         fi
     done
 
@@ -218,10 +219,10 @@ display_menu() {
     echo ""
     printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
     
-    # 渲染每一行
     for line in "${menu_lines[@]}"; do
-        # 使用 printf 和精确的 max_width 进行填充
-        printf "║ %s%*s ║\n" "$line" $((max_width - ${#line})) ""
+        local plain_line; plain_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')
+        local padding=$((max_width - ${#plain_line}))
+        printf "║ %s%*s ║\n" "$line" "$padding" ""
     done
     
     printf "%b╚══%s══╝%b\n" "$BLUE" "$border" "$NC"
@@ -252,17 +253,24 @@ process_menu_selection() {
         func) "$action"; return $?;; 
     esac
 }
-main_logic() {
-    export LC_ALL=C.utf8
-    trap 'log_info "脚本已退出。"' EXIT
+main() {
+    # --- [最终修复]: 使用 flock 将整个 main 函数包裹起来 ---
+    # 200 是一个自定义的文件描述符
+    exec 200>"${CONFIG[lock_file]}"
+    flock -n 200 || { log_warning "检测到另一实例正在运行。"; exit 1; }
+    # 设置 trap，在退出时自动解锁和清理
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出。"' EXIT
     
+    export LC_ALL=C.utf8
+    
+    # 启动器已处理首次安装的 FORCE_REFRESH
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         log_info "强制刷新模式：配置已在启动时更新。"
     fi
     
-    if ! command -v jq >/dev/null; then check_and_install_dependencies; fi
+    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
     load_config
-    log_info "脚本启动 (v57.0 - 双通道渲染最终版)"
+    log_info "脚本启动 (v58.0 - flock 内置最终版)"
     check_and_install_dependencies
     
     self_update
@@ -278,12 +286,5 @@ main_logic() {
         fi
     done
 }
-# --- 脚本启动点 ---
-(
-    # 使用 flock 将主逻辑包裹起来
-    flock -n 200 || {
-        echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2
-        exit 1
-    }
-    main_logic "$@"
-) 200>"${CONFIG[lock_file]}"
+
+main "$@"
