@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.7 - Final Ultimate Stability Release)
+# 🚀 VPS 一键安装入口脚本 (v70.8 - Final Ultimate Stability Release)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.7"
+SCRIPT_VERSION="v70.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -271,11 +271,10 @@ display_menu() {
     local max_width=0
     local line_width
     
-    # 1. Gather all lines to be displayed
-    local title_width; title_width=$(_get_visual_width "$main_title_text")
-    max_width=$title_width
-
-    local item_list; item_list=$(jq -r '.items[] | ((.icon // "›") + " " + .name)' <<< "$menu_json")
+    line_width=$(_get_visual_width "$main_title_text"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    
+    local item_list; item_list=$(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
+    
     local old_ifs=$IFS
     IFS=$'\n'
     for item in $item_list; do
@@ -286,13 +285,11 @@ display_menu() {
     done
     IFS=$old_ifs
 
-    # 2. Determine final box width
     local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
-
     # --- End Dynamic UI Calculation ---
 
-    # Render Header
+    local title_width; title_width=$(_get_visual_width "$main_title_text")
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total; padding_total=$(expr $box_width - $title_width)
     local padding_left; padding_left=$(expr $padding_total / 2)
@@ -304,22 +301,16 @@ display_menu() {
     echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
     echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     
-    # Render Items
     local i=1
-    local icons_str; icons_str=$(jq -r '.items[] | (.icon // "›")' <<< "$menu_json")
-    local names_str; names_str=$(jq -r '.items[] | .name' <<< "$menu_json")
-    
-    # Using arrays is safer for multiline content
-    readarray -t icons <<< "$icons_str"
-    readarray -t names <<< "$names_str"
-    
-    i=0
-    while [ $i -lt ${#names[@]} ]; do
-        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$(expr $i + 1)" "${icons[$i]}" "${names[$i]}"
+    IFS=$'\n'
+    for item in $item_list; do
+        local icon; icon=$(echo "$item" | cut -f1)
+        local name; name=$(echo "$item" | cut -f2)
+        printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"
         i=$(expr $i + 1)
     done
-
-    # Render Footer
+    IFS=$old_ifs
+    
     local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)")
     echo -e "${BLUE}${line_separator}${NC}"
     
@@ -377,7 +368,7 @@ main() {
             *)
                 local item_json; item_json=$(jq -r --arg cmd "$command" '.menus[] | select(type == "object") | (if .items then .items[] else .[] end) | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" | head -n 1)
                 if [ -n "$item_json" ]; then
-                    local action_to_run; action_to_run=$(echo "$item_json" | jq -r '.action'); local display_name; display_name=$(echo "$item_json" | jq -r '.name'); local type; type=$(echo "$item_json" | jq -r '.type')
+                    local action_to_run; action_to_run=$(echo "$item_json" | jq -r '.action'); local display_name; display_name=$(echo "$item_json" | jq -r '.name'); local type; 输入=$(echo "$item_json" | jq -r '.type')
                     log_info "正在以 Headless 模式执行: ${display_name}"
                     if [ "$type" = "func" ]; then "$action_to_run" "$@"; else execute_module "$action_to_run" "$display_name" "$@"; fi
                     exit $?
@@ -396,7 +387,7 @@ main() {
         display_menu
         local exit_code=0
         process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ]; then
+        if [ "$exit_code" -ne 10 ]; 键，然后
             while read -r -t 0; do :; done
             read -p "$(echo -e "${BLUE}按回车键继续...${NC}")" < /dev/tty
         fi
