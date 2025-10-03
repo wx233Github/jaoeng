@@ -98,7 +98,17 @@ notification_menu() {
         if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; _print_header "⚙️ 通知配置 ⚙️"; local tg_status="${COLOR_RED}未配置${COLOR_RESET}"; if [ -n "$TG_BOT_TOKEN" ]; then tg_status="${COLOR_GREEN}已配置${COLOR_RESET}"; fi; local email_status="${COLOR_RED}未配置${COLOR_RESET}"; if [ -n "$EMAIL_TO" ]; then email_status="${COLOR_GREEN}已配置${COLOR_RESET}"; fi; printf " 1. 配置 Telegram  (%b)\n" "$tg_status"; printf " 2. 配置 Email      (%b)\n" "$email_status"; echo " 3. 发送测试通知"; echo " 4. 清空所有通知配置"; echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"; read -r -p "请选择, 或按 Enter 返回: " choice
         case "$choice" in
             1) _configure_telegram; save_config; press_enter_to_continue ;; 2) _configure_email; save_config; press_enter_to_continue ;;
-            3) if [[ -z "$TG_BOT_TOKEN" && -z "$EMAIL_TO" ]]; then log_warn "请先配置至少一种通知方式。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${VERSION} 的*测试消息*。"; log_info "测试通知已发送。"; fi; press_enter_to_continue ;;
+            3)
+                ### [FINAL FIX] Using separate, robust 'if' statements.
+                if [[ -z "$TG_BOT_TOKEN" && -z "$EMAIL_TO" ]]; then
+                    log_warn "请先配置至少一种通知方式。"
+                else
+                    log_info "正在发送测试..."
+                    send_notify "这是一条来自 Docker 助手 v${VERSION} 的*测试消息*。"
+                    log_info "测试通知已发送。"
+                fi
+                press_enter_to_continue
+                ;;
             4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; save_config; log_info "所有通知配置已清空。"; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
@@ -134,13 +144,18 @@ show_container_info() {
                     press_enter_to_continue
                 else log_info "操作已取消。"; fi ;;
             *) 
-                if ! [[ "$choice" =~ ^[0-9]+$ ]]; then 
-                    echo -e "${COLOR_RED}❌ 无效输入。${COLOR_RESET}"; sleep 1; continue;
+                local is_valid_choice=false
+                ### [FINAL FIX] Using nested, simple conditionals for maximum compatibility.
+                if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                    if (( choice >= 1 && choice <= ${#containers[@]} )); then
+                        is_valid_choice=true
+                    fi
                 fi
-                ### [PROACTIVE FIX] ### Changed to [[ ... ]] for robustness and consistency.
-                if [[ "$choice" -lt 1 || "$choice" -gt ${#containers[@]} ]]; then 
-                    echo -e "${COLOR_RED}❌ 编号超范围。${COLOR_RESET}"; sleep 1; continue;
+
+                if [[ "$is_valid_choice" != "true" ]]; then
+                    echo -e "${COLOR_RED}❌ 无效输入或编号超范围。${COLOR_RESET}"; sleep 1; continue;
                 fi
+
                 local selected_container="${containers[$((choice-1))]}"; 
                 if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; then clear; fi; 
                 _print_header "操作容器: ${selected_container}"; 
@@ -216,7 +231,15 @@ configure_exclusion_list() {
                 
                 local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
-                    if [[ "$index" =~ ^[0-9]+$ && "$index" -ge 1 && "$index" -le ${#all_containers[@]} ]]; then
+                    local is_valid_index=false
+                    ### [FINAL FIX] Using nested, simple conditionals for maximum compatibility.
+                    if [[ "$index" =~ ^[0-9]+$ ]]; then
+                        if (( index >= 1 && index <= ${#all_containers[@]} )); then
+                            is_valid_index=true
+                        fi
+                    fi
+
+                    if [[ "$is_valid_index" == "true" ]]; then
                         local target_container="${all_containers[$((index-1))]}"
                         
                         if [[ -v excluded_map["$target_container"] ]]; then
@@ -376,7 +399,16 @@ view_and_edit_config(){
                 while true; do 
                     read -r -p "新 Cron 小时(0-23): " a
                     if [ -z "$a" ]; then break; fi
-                    if [[ "$a" =~ ^[0-9]+$ && "$a" -ge 0 && "$a" -le 23 ]]; then 
+                    
+                    local is_valid_hour=false
+                    ### [FINAL FIX] Using nested, simple conditionals for maximum compatibility.
+                    if [[ "$a" =~ ^[0-9]+$ ]]; then
+                        if (( a >= 0 && a <= 23 )); then
+                            is_valid_hour=true
+                        fi
+                    fi
+
+                    if [[ "$is_valid_hour" == "true" ]]; then 
                         CRON_HOUR="$a"; save_config; break
                     else 
                         echo "无效"; 
@@ -397,11 +429,12 @@ view_and_edit_config(){
             *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; 
         esac; 
         
-        ### [ULTIMATE FIX] ###
-        # Replaced the mixed conditional '[[...]] && [...]' with a single, robust '[[...]]'.
-        # This was the root cause of the recurring syntax errors.
-        if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le 10 ]]; then
-            sleep 0.5;
+        ### [FINAL FIX] This is the line that caused the error (line 428 in previous version).
+        # Replaced the problematic compound conditional with a universally compatible nested one.
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            if (( choice >= 1 && choice <= 10 )); then
+                sleep 0.5;
+            fi
         fi
     done
 }
