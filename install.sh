@@ -189,8 +189,18 @@ uninstall_script() {
         exit 0
     else log_info "卸载操作已取消."; return 10; fi
 }
+### [ADDED] ###
+# 安全地引用参数以传递给子 shell 的辅助函数
+_quote_args() {
+    for arg in "$@"; do
+        printf "%q " "$arg"
+    done
+}
 execute_module() {
-    export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"
+    export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"
+    shift 2 ### [ADDED] ### 移除 script_name 和 display_name，剩下的 $@ 是要传递给模块的额外参数
+    
+    local local_path="${CONFIG[install_dir]}/$script_name"
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
@@ -216,7 +226,10 @@ execute_module() {
     fi
 
     local exit_code=0
-    sudo bash -c "$env_exports bash '$local_path'" < /dev/tty || exit_code=$?
+    ### [MODIFIED] ### 将额外参数安全地传递给子脚本
+    local extra_args_str=$(_quote_args "$@")
+    sudo bash -c "$env_exports bash '$local_path' $extra_args_str" < /dev/tty || exit_code=$?
+
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
@@ -261,17 +274,12 @@ main() {
     if [[ $# -gt 0 ]]; then
         local command="$1"; shift
         case "$command" in
+            ### [MODIFIED] ### 使 update 命令更安全，只更新脚本，不覆盖 config.json
             update)
-                log_info "正在执行强制重置 (更新脚本+恢复配置)..."
-                local temp_config="/tmp/config.json.$$"
-                log_info "正在强制更新 config.json..."
-                local config_url="${CONFIG[base_url]}/config.json?_=$(date +%s)"
-                if ! curl -fsSL "$config_url" -o "$temp_config"; then log_error "下载最新的 config.json 失败。"; fi
-                sudo mv "$temp_config" "${CONFIG[install_dir]}/config.json"
-                log_success "config.json 已重置为最新版本。"
-                log_info "正在重新加载配置..."; load_config
+                log_info "正在以 Headless 模式安全更新所有脚本 (config.json 不会被覆盖)..."
                 force_update_all
-                log_info "强制重置完成，即将进入主菜单..."; sleep 1
+                log_success "所有脚本更新检查完成。"
+                exit 0
                 ;;
             uninstall)
                 log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0
@@ -281,7 +289,7 @@ main() {
                 if [[ -n "$item_json" ]]; then
                     local action_to_run; action_to_run=$(echo "$item_json" | jq -r '.action'); local display_name; display_name=$(echo "$item_json" | jq -r '.name'); local type; type=$(echo "$item_json" | jq -r '.type')
                     log_info "正在以 Headless 模式执行: ${display_name}"
-                    if [[ "$type" == "func" ]]; then "$action_to_run"; else execute_module "$action_to_run" "$display_name" "$@"; fi
+                    if [[ "$type" == "func" ]]; then "$action_to_run" "$@"; else execute_module "$action_to_run" "$display_name" "$@"; fi
                     exit $?
                 else
                     log_error "未知命令: $command"; fi
