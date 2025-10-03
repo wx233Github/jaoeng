@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v60.0 - 最终稳定版)
+# 🚀 VPS 一键安装入口脚本 (v61.0 - 动态分隔线最终版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -179,21 +179,28 @@ execute_module() {
     return $exit_code
 }
 
-# --- [最终 UI 修复]: 采用极简、健壮的分隔线方案 ---
+# --- [最终 UI 修复]: 采用全新的“动态分隔线”方案 ---
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
-    
+
+    # 1. 组合标题
     local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
-    
-    local separator="=============================================================="
+    local full_header="${header_text} :: ${sub_header_text}"
 
+    # 2. 测量纯文本长度
+    local plain_header; plain_header=$(echo -e "$full_header" | sed 's/\x1b\[[0-9;]*m//g')
+    local header_len=${#plain_header}
+    
+    # 3. 生成匹配长度的分隔线
+    local separator; separator=$(printf '%*s' "$((header_len + 4))" | tr ' ' '=')
+
+    # 4. 渲染
     echo ""
     echo -e "${BLUE}${separator}${NC}"
-    echo -e "  ${header_text}"
-    echo -e "  ${sub_header_text}"
+    echo -e "  ${full_header}"
     echo -e "${BLUE}${separator}${NC}"
     
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
@@ -207,11 +214,8 @@ display_menu() {
     echo ""
     
     local prompt_text; 
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
-    else 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
-    fi
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; 
+    else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
     
     if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]";
     else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
@@ -235,7 +239,6 @@ main() {
     # [最终修复]: 使用 flock 内置化，解决自我锁定和双重退出问题
     exec 200>"${CONFIG[lock_file]}"
     flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一实例正在运行。"; exit 1; }
-    # 设置 trap，在退出时自动解锁和清理，并打印唯一退出信息
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出。"' EXIT
     
     export LC_ALL=C.utf8
@@ -244,9 +247,9 @@ main() {
         log_info "强制刷新模式：配置已在启动时更新。"
     fi
     
-    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+    if ! command -v jq >/dev/null; then check_and_install_dependencies; fi
     load_config
-    log_info "脚本启动 (v60.0 - 最终稳定版)"
+    log_info "脚本启动 (v61.0 - 动态分隔线最终版)"
     check_and_install_dependencies
     
     self_update
