@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.4 - Perfected UI Alignment)
+# 🚀 VPS 一键安装入口脚本 (v65.5 - Final UI Polish)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.4"
+SCRIPT_VERSION="v65.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,8 +43,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    # [FIX] Use a longer, more deliberate separator for better visual consistency.
-    echo -e "${BLUE}────────────────────────────────────────────────────────────${NC}"
+    # [FIX] Use a refined separator length that is aesthetically pleasing and slightly longer than the log lines.
+    echo -e "${BLUE}────────────────────────────────────────────────────${NC}"
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
@@ -211,7 +211,6 @@ display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # [FIX] Removed version number from the visual title for a cleaner look.
     local main_title_text="🚀 VPS 一键安装脚本"
     
     local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
@@ -248,10 +247,10 @@ display_menu() {
         if [[ "$action" == "confirm_and_force_update" ]]; then icon="⚙️"; fi
         if [[ "$action" == "uninstall_script" ]]; then icon="🗑️"; fi
         
-        # [FIX] Use conditional spacing to perfectly align single-width and double-width icons.
-        local spacing=" "
-        if [[ "$icon" != "⚙️" && "$icon" != "🗑️" ]]; then
-            spacing="  "
+        # [FIX] Use correct conditional logic for perfect alignment of all icons.
+        local spacing="  " # Default: two spaces for single-width characters
+        if [[ "$icon" == "⚙️" || "$icon" == "🗑️" ]]; then
+            spacing=" " # Override: one space for double-width characters
         fi
         
         printf " %s%s${YELLOW}%d.${NC} %s\n" "$icon" "$spacing" "$((i+1))" "$name"
