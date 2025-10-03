@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.2 - Ultimate UI Compatibility Fix)
+# 🚀 VPS 一键安装入口脚本 (v70.3 - Final Dynamic UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.2"
+SCRIPT_VERSION="v70.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -231,7 +231,7 @@ execute_module() {
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
-generate_line() { local len=$1; local char="─"; local line=""; i=0; while [ $i -lt $len ]; do line="$line$char"; i=$((i+1)); done; echo "$line"; }
+generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
 _get_visual_width() {
     local text="$1"
