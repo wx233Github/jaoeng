@@ -1,68 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v41.0 - 原子安装器版)
+# 🚀 VPS 一键安装入口脚本 (v42.0 - 原子更新稳定版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LC_ALL=C.utf8
-
-# --- [核心改造]: 原子安装启动器 (Atomic Installer) ---
-# 检查一个特殊环境变量，如果未设置，则执行安装与引导逻辑
-if [[ -z "$_JAE_MAIN_EXECUTED" ]]; then
-    
-    # 设置环境变量，防止无限循环
-    export _JAE_MAIN_EXECUTED=true
-
-    # --- 配置 (硬编码在启动器中，以实现独立) ---
-    INSTALL_DIR="/opt/vps_install_modules"
-    BIN_DIR="/usr/local/bin"
-    BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-    
-    # 简单的颜色定义，用于启动过程
-    BLUE='\033[0;34m'; NC='\033[0m'
-    echo_info() { echo -e "${BLUE}[启动器]${NC} $1"; }
-    echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
-
-    # 确保 curl 存在
-    if ! command -v curl &> /dev/null; then
-        echo_error "curl 命令未找到，无法继续。请先安装 curl。"
-    fi
-    
-    echo_info "正在准备安装环境..."
-    sudo mkdir -p "$INSTALL_DIR"
-    
-    # 1. 原子化地下载最新、最完整的脚本自身
-    echo_info "正在下载最新的主程序..."
-    MAIN_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
-    if ! sudo curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$MAIN_SCRIPT_PATH"; then
-        echo_error "下载主程序失败，请检查网络连接。"
-    fi
-    sudo chmod +x "$MAIN_SCRIPT_PATH"
-    
-    # 2. 如果 FORCE_REFRESH=true，则确保 config.json 也被强制刷新
-    CONFIG_PATH="${INSTALL_DIR}/config.json"
-    if [[ "${FORCE_REFRESH}" == "true" ]]; then
-        echo_info "强制刷新模式：正在下载最新的配置文件..."
-        if ! sudo curl -fsSL "${BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_PATH"; then
-            echo_error "下载配置文件失败。"
-        fi
-    fi
-    
-    # 3. 创建快捷方式
-    echo_info "正在创建快捷指令 'jb'..."
-    sudo ln -sf "$MAIN_SCRIPT_PATH" "${BIN_DIR}/jb"
-    
-    # 4. 交接执行权
-    echo_info "环境准备完毕，正在启动主程序..."
-    echo "--------------------------------------------------"
-    
-    # 使用 exec sudo -E 将控制权完全交接给磁盘上的、绝对正确的脚本
-    exec sudo -E bash "$MAIN_SCRIPT_PATH" "$@"
-
-fi
-# --- 原子安装器结束。从这里开始，是运行在稳定环境中的主程序逻辑 ---
-
 
 # --- 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -128,34 +71,39 @@ check_and_install_dependencies() {
 
 # --- 核心功能 ---
 _download_self() { curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/install.sh?_=$(date +%s)" -o "$1"; }
-# save_entry_script 现在只在极少数边缘情况下被调用，例如手动从文件执行但 install_dir 为空
 save_entry_script() { 
-    export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
-    if [ ! -f "$SCRIPT_PATH" ]; then
-      log_info "正在保存入口脚本..."; 
-      sudo cp "$0" "$SCRIPT_PATH";
-      sudo chmod +x "$SCRIPT_PATH"; 
+    export LC_ALL=C.utf8; sudo mkdir -p "${CONFIG[install_dir]}"; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; log_info "正在保存入口脚本..."; 
+    local temp_path="/tmp/install.sh.self"; 
+    if ! _download_self "$temp_path"; then 
+        log_error "无法从 GitHub 下载主脚本。请检查您的网络连接或 DNS 设置。";
     fi
+    sudo mv "$temp_path" "$SCRIPT_PATH"; 
+    sudo chmod +x "$SCRIPT_PATH"; 
 }
+
 setup_shortcut() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; local BIN_DIR="${CONFIG[bin_dir]}"; 
     if [ ! -L "$BIN_DIR/jb" ] || [ "$(readlink "$BIN_DIR/jb")" != "$SCRIPT_PATH" ]; then 
-        sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建/更新。"; 
+        sudo ln -sf "$SCRIPT_PATH" "$BIN_DIR/jb"; log_success "快捷指令 'jb' 已创建。"; 
     fi; 
 }
+
+# --- [最终修复]: 让自我更新变得“原子化” ---
 self_update() { 
     export LC_ALL=C.utf8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; 
+    # 只在通过 jb 命令执行（即 $0 为标准路径）时，才进行自动更新检查
     if [[ "$0" != "$SCRIPT_PATH" ]]; then return; fi; 
     log_info "检查主脚本更新..."; 
     local temp_script="/tmp/install.sh.tmp"; if _download_self "$temp_script"; then 
         if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
             log_info "检测到新版本..."; sudo mv "$temp_script" "$SCRIPT_PATH"; sudo chmod +x "$SCRIPT_PATH"; 
-            log_success "主脚本更新成功！正在重启..."; 
-            # 在重启时，强制注入 FORCE_REFRESH=true，确保 config.json 也被同步更新
+            log_success "主脚本更新成功！正在重启以同步所有配置..."; 
+            # 关键修复: 在重启时，强制注入 FORCE_REFRESH=true，确保 config.json 也被更新
             exec sudo -E env FORCE_REFRESH=true bash "$SCRIPT_PATH" "$@"
         fi; rm -f "$temp_script"; 
     else log_warning "无法连接 GitHub 检查更新。"; fi; 
 }
+
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; local local_file="${CONFIG[install_dir]}/$script_name"; 
@@ -276,7 +224,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v41.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装入口 (v42.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -345,20 +293,17 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v41.0 - 原子安装器版)"
+    log_info "脚本启动 (v42.0 - 原子更新稳定版)"
     
     check_and_install_dependencies
     
-    # Bootstrap 逻辑确保了脚本已在正确位置，这里仅做验证和快捷方式创建
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ ! -f "$SCRIPT_PATH" ]; then
-        # 这是一个边缘情况，理论上不会发生，但作为保险
         save_entry_script
     fi
     
     setup_shortcut
     
-    # 恢复安全的自动更新检查
     self_update
     
     CURRENT_MENU_NAME="MAIN_MENU"
