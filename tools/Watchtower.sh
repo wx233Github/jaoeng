@@ -172,14 +172,41 @@ configure_exclusion_list() {
             *)
                 local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
-                    ### [FIXED] ### 统一使用 [[ ... ]] 条件表达式
+                    ### [FIXED & REFACTORED] ###
+                    # 1. 统一使用 [[...]] 表达式进行完整性检查
                     if [[ "$index" =~ ^[0-9]+$ && "$index" -ge 1 && "$index" -le ${#all_containers[@]} ]]; then
-                        local target="${all_containers[$((index-1))]}"; local found=false; local temp_arr=()
-                        for item in "${excluded_arr[@]}"; do if [[ "$item" == "$target" ]]; then found=true; else temp_arr+=("$item"); fi; done
-                        if $found; then excluded_arr=("${temp_arr[@]}"); else excluded_arr+=("$target"); fi
-                    else has_invalid_input=true; fi
+                        local target="${all_containers[$((index-1))]}"
+                        local found=false
+                        
+                        # 2. 明确地检查目标是否已在排除列表中
+                        for item in "${excluded_arr[@]}"; do
+                            if [[ "$item" == "$target" ]]; then
+                                found=true
+                                break
+                            fi
+                        done
+
+                        # 3. 使用更健壮的 [[ "$var" == "true" ]] 进行判断并执行反转操作
+                        if [[ "$found" == "true" ]]; then
+                            # 如果已存在，则移除它 (通过构建一个不含目标的新数组)
+                            local temp_arr=()
+                            for item in "${excluded_arr[@]}"; do
+                                if [[ "$item" != "$target" ]]; then
+                                    temp_arr+=("$item")
+                                fi
+                            done
+                            excluded_arr=("${temp_arr[@]}")
+                        else
+                            # 如果不存在，则添加它
+                            excluded_arr+=("$target")
+                        fi
+                    else
+                        has_invalid_input=true
+                    fi
                 done
-                if $has_invalid_input; then log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; fi
+                if [[ "$has_invalid_input" == "true" ]]; then 
+                    log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; 
+                fi
             ;;
         esac
     done
