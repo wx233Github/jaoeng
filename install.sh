@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v58.0 - 最终完美版)
+# 🚀 VPS 一键安装入口脚本 (v59.0 - 固定宽度UI最终版)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -144,7 +144,7 @@ uninstall_script() {
         if sudo rm -rf "${CONFIG[install_dir]}"; then log_success "安装目录已移除。"; else log_error "移除安装目录失败。"; fi
         log_info "正在移除快捷方式 ${CONFIG[bin_dir]}/jb..."
         if sudo rm -f "${CONFIG[bin_dir]}/jb"; then log_success "快捷方式已移除。"; else log_error "移除快捷方式失败。"; fi
-        # 卸载时，锁文件会在 trap 中自动清理
+        # 锁文件会在 trap 中自动清理
         log_success "脚本已成功卸载。"; log_info "再见！";
         exit 0
     else log_info "卸载操作已取消。"; return 10; fi
@@ -179,61 +179,61 @@ execute_module() {
     return $exit_code
 }
 
-# --- [最终 UI 修复]: 使用“双通道渲染”技术，彻底解决对齐问题 ---
+# --- [最终 UI 修复]: 引入全新的“固定宽度渲染”方案 ---
+get_visual_width() {
+    local s="$1"
+    # 移除颜色代码以进行准确的宽度计算
+    local plain_s; plain_s=$(echo "$s" | sed 's/\x1b\[[0-9;]*m//g')
+    # 使用 perl 来处理 Unicode 字符宽度，最可靠
+    echo "$plain_s" | perl -MText::CharWidth=mbswidth -lne 'print mbswidth($_)'
+}
+
+print_padded_line() {
+    local text="$1"
+    local width="$2"
+    local text_width; text_width=$(get_visual_width "$text")
+    local padding_width=$((width - text_width))
+    # 确保 padding 不为负数
+    if [ $padding_width -lt 0 ]; then padding_width=0; fi
+    
+    printf "║ %s%*s ║\n" "$text" "$padding_width" ""
+}
+
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"; 
     
-    # --- 第一通道：生成无边框内容到数组 ---
-    local -a menu_lines=()
+    # 1. 定义一个固定的、足够宽的菜单宽度
+    local FIXED_WIDTH=50
+
+    # 2. 生成标题和边框
     local header_text="🚀 VPS 一键安装脚本"
     local sub_header_text
     if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then sub_header_text="主菜单"; else sub_header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local border; border=$(printf '%*s' "$FIXED_WIDTH" | tr ' ' '═')
     
-    menu_lines+=("$header_text")
-    menu_lines+=("  $sub_header_text")
+    echo ""
+    printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
+    print_padded_line "$header_text" "$FIXED_WIDTH"
+    print_padded_line "  $sub_header_text" "$FIXED_WIDTH"
+    printf "%b╠══%s══╣%b\n" "$BLUE" "$border" "$NC"
 
+    # 3. 逐行渲染菜单项
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
-    
     for i in $(seq 0 $((menu_len - 1))); do
         local name; name=$(echo "$menu_items_json" | jq -r ".[$i].name");
         local line
         printf -v line "  ${YELLOW}%2d.${NC} %s" "$((i+1))" "$name"
-        menu_lines+=("$line")
-    done
-
-    # --- 测量阶段：找到最长行的字节长度 ---
-    local max_width=0
-    for line in "${menu_lines[@]}"; do
-        # 移除颜色代码后再计算纯文本的字节长度
-        local plain_line; plain_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')
-        if [[ ${#plain_line} -gt $max_width ]]; then
-            max_width=${#plain_line}
-        fi
-    done
-
-    # --- 第二通道：根据精确宽度，绘制带边框的菜单 ---
-    local border; border=$(printf '%*s' "$max_width" | tr ' ' '═')
-
-    echo ""
-    printf "%b╔══%s══╗%b\n" "$BLUE" "$border" "$NC"
-    
-    for line in "${menu_lines[@]}"; do
-        local plain_line; plain_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')
-        local padding=$((max_width - ${#plain_line}))
-        printf "║ %s%*s ║\n" "$line" "$padding" ""
+        print_padded_line "$line" "$FIXED_WIDTH"
     done
     
     printf "%b╚══%s══╝%b\n" "$BLUE" "$border" "$NC"
     echo ""
     
     local prompt_text; 
-    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"
-    else 
-        prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"
-    fi
+    if [ "$CURRENT_MENU_NAME" == "MAIN_MENU" ]; then prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 退出:"; 
+    else prompt_text="请选择操作 (1-${menu_len}) 或按 Enter 返回:"; fi
     
     if [ "$AUTO_YES" == "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式，自动选择默认选项]";
     else read -p "$(echo -e "${BLUE}${prompt_text}${NC} ")" choice < /dev/tty; fi
@@ -253,25 +253,27 @@ process_menu_selection() {
         func) "$action"; return $?;; 
     esac
 }
+
 main() {
-    # --- [最终修复]: 使用 flock 将整个 main 函数包裹起来 ---
-    # 200 是一个自定义的文件描述符
+    # [最终修复]: 使用 flock 内置化，解决自我锁定和双重退出问题
     exec 200>"${CONFIG[lock_file]}"
-    flock -n 200 || { log_warning "检测到另一实例正在运行。"; exit 1; }
-    # 设置 trap，在退出时自动解锁和清理
+    flock -n 200 || { echo -e "\033[0;33m[警告]\033[0m 检测到另一脚本实例正在运行，退出。" >&2; exit 1; }
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出。"' EXIT
     
     export LC_ALL=C.utf8
     
-    # 启动器已处理首次安装的 FORCE_REFRESH
     if [[ "${FORCE_REFRESH}" == "true" ]]; then
         log_info "强制刷新模式：配置已在启动时更新。"
     fi
     
-    if ! command -v jq &>/dev/null; then check_and_install_dependencies; fi
+    # 依赖检查需要提前，因为 flock/perl 可能不存在
+    if ! command -v flock >/dev/null || ! command -v jq >/dev/null || ! command -v perl >/dev/null; then 
+        # 将 perl 添加到依赖列表
+        CONFIG[dependencies]+=' perl'
+        check_and_install_dependencies
+    fi
     load_config
-    log_info "脚本启动 (v58.0 - flock 内置最终版)"
-    check_and_install_dependencies
+    log_info "脚本启动 (v59.0 - 固定宽度UI最终版)"
     
     self_update
     
