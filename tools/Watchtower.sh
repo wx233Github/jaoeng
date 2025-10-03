@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Docker 自动更新助手 (v3.8.4 - 终极毕业版)
+# Docker 自动更新助手 (v3.8.4 - 最终毕业版)
 #
 set -euo pipefail
 
@@ -246,14 +246,14 @@ main_menu(){
     COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
     TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); RUNNING=$(docker ps --format '{{.ID}}' | wc -l); STOPPED=$((TOTAL - RUNNING))
     
-    echo " Watchtower 状态: $STATUS_COLOR (名称排除模式)"
-    echo "      下次检查: $COUNTDOWN"
-    echo -e "      容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
+    echo -e " 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)"
+    echo -e "      ⏳ 下次检查: $COUNTDOWN"
+    echo -e "      📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
     
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then echo -e " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET}"; fi
-    local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then echo -e " 🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}"; fi
+    local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [ -n "$NOTIFY_STATUS" ]; then echo -e " 🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}"; fi
     
     echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
     echo " 主菜单："
