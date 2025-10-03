@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v65.2 - Fix ANSI Title Rendering)
+# 🚀 VPS 一键安装入口脚本 (v65.3 - Minimalist Separator)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v65.2"
+SCRIPT_VERSION="v65.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,8 +43,8 @@ if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
         echo_success "安装/更新完成！"
     fi
     
-    echo_info "正在启动主程序..."
-    echo "--------------------------------------------------"
+    # [UI] Replaced the startup message with a single, clean separator line.
+    echo -e "${BLUE}──────${NC}"
     echo ""
     
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
@@ -233,9 +233,6 @@ display_menu() {
     
     echo ""
     echo -e "${CYAN}╭${top_bottom_border}╮${NC}"
-    # [FIX] Re-engineer title line rendering for maximum compatibility.
-    # The previous 'printf' command failed to interpret ANSI color codes on some systems.
-    # This new approach builds the string first, then prints with 'echo -e'.
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$((padding_total - padding_left))")
     local title_line="${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"
