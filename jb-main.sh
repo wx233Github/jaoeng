@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装主程序 (v45.1 - 防御性编程)
+# 🚀 VPS 一键安装主程序 (v46.0 - 防御性编程)
 # =============================================================
 
 # --- 严格模式与环境设定 ---
@@ -165,6 +165,7 @@ uninstall_script() {
     fi
 }
 
+# --- [最终修复]: 使用防御性编程，统一处理模块配置 ---
 execute_module() {
     export LC_ALL=C.utf8; local script_name="$1"; local display_name="$2"; local local_path="${CONFIG[install_dir]}/$script_name"; local config_path="${CONFIG[install_dir]}/config.json";
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败。"; return 1; fi; fi
@@ -173,32 +174,51 @@ execute_module() {
     local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}';"
     local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     
-    # --- [最终修复]: 增加对损坏配置的防御性编程 ---
-    # 检查模块配置是否存在，并且是一个对象
-    if jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key) and (.module_configs[$key] | type == "object")' "$config_path" > /dev/null; then
+    # 1. 一次性、安全地提取出当前模块的配置对象
+    local module_config_json
+    module_config_json=$(jq -r --arg key "$module_key" '
+        if has("module_configs") and (.module_configs | has($key)) and (.module_configs[$key] | type == "object") then
+            .module_configs[$key] | tojson
+        else
+            "null"
+        end
+    ' "$config_path")
+
+    # 2. 检查提取是否成功，并且是一个有效的对象
+    if [[ "$module_config_json" != "null" ]]; then
+        # 3. 在这个安全的小对象上，进行所有后续解析
+        
+        # 解析简单键值对
         local exports
-        exports=$(jq -r --arg key "$module_key" '
-            .module_configs[$key] | to_entries | .[] | 
+        exports=$(echo "$module_config_json" | jq -r '
+            to_entries | .[] | 
             select(
                 (.key | startswith("comment") | not) and 
                 (.value | type | IN("string", "number", "boolean"))
             ) | 
             "export WT_CONF_\(.key | ascii_upcase)=\(.value|@sh);"
-        ' "$config_path")
-        env_exports+="$exports"
+        ')
+        if [ -n "$exports" ]; then
+            env_exports+="$exports"
+        fi
+
+        # 特殊处理 Watchtower 的 exclude_containers
+        if [[ "$script_name" == "tools/Watchtower.sh" ]]; then
+            local exclude_list
+            exclude_list=$(echo "$module_config_json" | jq -r '.exclude_containers // [] | select(type=="array") | .[]' | tr '\n' ',' | sed 's/,$//')
+            if [ -n "$exclude_list" ]; then
+                env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"
+            fi
+        fi
     elif jq -e --arg key "$module_key" 'has("module_configs") and .module_configs | has($key)' "$config_path" > /dev/null; then
-        # 如果配置存在但不是对象，则打印警告
+        # 如果配置存在但格式不正确，则打印警告
         log_warning "在 config.json 中找到模块 '${module_key}' 的配置，但其格式不正确（不是一个对象），已跳过加载。"
     fi
-    # --- 修复结束 ---
     
+    # 注入通用的 WT_AVAILABLE_LABELS
     if [[ "$script_name" == "tools/Watchtower.sh" ]] && command -v docker &>/dev/null && docker ps -q &>/dev/null; then
         local all_labels; all_labels=$(docker inspect $(docker ps -q) --format '{{json .Config.Labels}}' 2>/dev/null | jq -s 'add | keys_unsorted | unique | .[]' | tr '\n' ',' | sed 's/,$//')
         if [ -n "$all_labels" ]; then env_exports+="export WT_AVAILABLE_LABELS='$all_labels';"; fi
-        
-        # 即使通用配置加载失败，也尝试加载专门的数组配置
-        local exclude_list; exclude_list=$(jq -r '.module_configs.watchtower.exclude_containers // [] | select(type=="array") | .[]' "$config_path" | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$exclude_list" ]; then env_exports+="export WT_EXCLUDE_CONTAINERS='$exclude_list';"; fi
     fi
     
     local exit_code=0
@@ -210,7 +230,7 @@ execute_module() {
 
 display_menu() {
     export LC_ALL=C.utf8; if [[ "${CONFIG[enable_auto_clear]}" == "true" ]]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装主程序 (v45.1)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
+    local config_path="${CONFIG[install_dir]}/config.json"; local header_text="🚀 VPS 一键安装主程序 (v46.0)"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then header_text="🛠️ ${CURRENT_MENU_NAME//_/ }"; fi
     local menu_items_json; menu_items_json=$(jq --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path")
     local menu_len; menu_len=$(echo "$menu_items_json" | jq 'length')
     local max_width=${#header_text}; local names; names=$(echo "$menu_items_json" | jq -r '.[].name');
@@ -252,7 +272,7 @@ main() {
     setup_logging
     
     acquire_lock
-    trap 'release_lock; log_info "脚本已退出。"' EXIT HUP INT QUIT TERM
+    trap 'release_lock; log_info "脚本已退出。";' EXIT
     
     sudo mkdir -p "${CONFIG[install_dir]}"
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -266,7 +286,7 @@ main() {
     
     load_config
     
-    log_info "脚本启动 (v45.1 - 主程序)"
+    log_info "脚本启动 (v46.0 - 主程序)"
     
     check_and_install_dependencies
     
