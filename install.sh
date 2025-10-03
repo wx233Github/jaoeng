@@ -14,7 +14,7 @@ CONFIG_PATH="${INSTALL_DIR}/config.json"
 
 if [[ "$0" != "$FINAL_SCRIPT_PATH" ]]; then
     
-    BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\03g;32m';
+    BLUE='\033[0;34m'; NC='\033[0m'; GREEN='\033[0;32m';
     echo_info() { echo -e "${BLUE}[启动器]${NC} $1"; }
     echo_success() { echo -e "${GREEN}[启动器]${NC} $1"; }
     echo_error() { echo -e "\033[0;31m[启动器错误]\033[0m $1" >&2; exit 1; }
