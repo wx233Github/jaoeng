@@ -4,10 +4,6 @@
 #
 set -euo pipefail
 
-### [UI FIX] ###
-# Force a UTF-8 locale to ensure terminals correctly calculate wide character widths,
-# preventing display glitches and character spacing issues. LC_ALL=C.utf8 is for script
-# internal stability, while LANG/LC_CTYPE helps the terminal render correctly.
 export LANG=${LANG:-en_US.UTF-8}
 export LC_ALL=C.utf8
 
@@ -46,14 +42,39 @@ generate_line() {
     local len=${1:-62}; local char="─"; printf '%*s' "$len" | tr ' ' "$char"
 }
 
-_print_header() {
-    local title=" $1 "; local total_width=62
-    local title_len; title_len=$(echo -n "$title" | wc -m)
-    local padding_total=$((total_width - title_len))
-    if (( padding_total < 0 )); then padding_total=0; fi
-    local padding_left=$((padding_total / 2))
-    echo; echo -e "${COLOR_YELLOW}╭$(generate_line $padding_left)${title}$(generate_line $((padding_total - padding_left)))╮${COLOR_RESET}"
+### [UI FIX] ###
+# New helper function to accurately calculate the visual width of a string.
+_get_visual_width() {
+    local text="$1"
+    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local width=0
+    local i=0
+    local char
+    while (( i < ${#plain_text} )); do
+        char="${plain_text:i:1}"
+        if [[ "$char" =~ [/ -~] ]]; then
+            width=$((width + 1))
+        else
+            width=$((width + 2))
+        fi
+        i=$((i+1))
+    done
+    echo "$width"
 }
+
+_print_header() {
+    local title=" $1 "
+    local title_width; title_width=$(_get_visual_width "$title")
+    local box_width=$(( title_width + 4 ))
+    if (( box_width < 62 )); then box_width=62; fi
+
+    local padding_total=$((box_width - title_width))
+    local padding_left=$((padding_total / 2))
+    
+    echo
+    echo -e "${COLOR_YELLOW}╭$(generate_line $padding_left)${title}$(generate_line $((padding_total - padding_left)))╮${COLOR_RESET}"
+}
+
 
 save_config(){
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
@@ -316,9 +337,24 @@ manage_tasks(){ while true; do if [[ "${JB_ENABLE_AUTO_CLEAR}" == "true" ]]; the
 get_watchtower_all_raw_logs(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 1; fi; docker logs --tail 2000 watchtower 2>&1 || true; }
 _extract_interval_from_cmd(){ local cmd_json="$1"; local interval=""; if command -v jq >/dev/null 2>&1; then interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true); else local tokens; read -r -a tokens <<< "$(echo "$cmd_json" | tr -d '[],"')"; local prev=""; for t in "${tokens[@]}"; do if [[ "$prev" == "--interval" ]]; then interval="$t"; break; fi; prev="$t"; done; fi; interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g'); [[ -z "$interval" ]] && echo "" || echo "$interval"; }
 
-### [COUNTDOWN FIX] ###
-# This function is enhanced to provide a more accurate countdown, especially
-# right after the container starts, by checking multiple log entry types.
+_get_visual_width() {
+    local text="$1"
+    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local width=0
+    local i=0
+    local char
+    while (( i < ${#plain_text} )); do
+        char="${plain_text:i:1}"
+        if [[ "$char" =~ [/ -~] ]]; then
+            width=$((width + 1))
+        else
+            width=$((width + 2))
+        fi
+        i=$((i+1))
+    done
+    echo "$width"
+}
+
 _get_watchtower_remaining_time(){
     local int="$1"
     local logs="$2"
@@ -332,7 +368,6 @@ _get_watchtower_remaining_time(){
     local epoch=0
     local rem=0
 
-    # 1. Prioritize "Session done" for highest accuracy after a full cycle.
     log_line=$(echo "$logs" | grep -E "Session done" | tail -n 1 || true)
     if [[ -n "$log_line" ]]; then
         ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
@@ -350,7 +385,6 @@ _get_watchtower_remaining_time(){
         fi
     fi
 
-    # 2. Fallback to "Scheduling first run" if the first session hasn't completed.
     log_line=$(echo "$logs" | grep "Scheduling first run" | tail -n 1 || true)
     if [[ -n "$log_line" ]]; then
         ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
@@ -368,17 +402,14 @@ _get_watchtower_remaining_time(){
         fi
     fi
 
-    # 3. As a last resort, estimate from the "Starting Watchtower" log.
-    #    Assumes the first check happens almost immediately after startup (e.g., within 5s).
     log_line=$(echo "$logs" | grep "Starting Watchtower" | tail -n 1 || true)
     if [[ -n "$log_line" ]]; then
         ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
         if [[ -n "$ts" ]]; then
             epoch=$(_date_to_epoch "$ts")
-            # Assume first check runs ~5 seconds after start, then the next is 'int' seconds later.
             if (( epoch > 0 )); then
                 rem=$(( (epoch + 5 + int) - $(date +%s) ))
-                if (( rem > 0 && rem < int + 10 )); then # Sanity check
+                if (( rem > 0 && rem < int + 10 )); then
                      printf "%b%02d时%02d分%02d秒%b" "$COLOR_GREEN" $((rem/3600)) $(((rem%3600)/60)) $((rem%60)) "$COLOR_RESET"
                      return
                 fi
@@ -386,7 +417,6 @@ _get_watchtower_remaining_time(){
         fi
     fi
     
-    # Default message if no reliable timestamp is found.
     echo -e "${COLOR_YELLOW}等待首次扫描...${COLOR_RESET}"
 }
 
@@ -435,15 +465,7 @@ view_and_edit_config(){
                 while true; do 
                     read -r -p "新 Cron 小时(0-23): " a
                     if [[ -z "$a" ]]; then break; fi
-                    
-                    local is_valid_hour=false
-                    if [[ "$a" =~ ^[0-9]+$ ]]; then
-                        if (( a >= 0 && a <= 23 )); then
-                            is_valid_hour=true
-                        fi
-                    fi
-
-                    if [[ "$is_valid_hour" == "true" ]]; then 
+                    if [[ "$a" =~ ^[0-9]+$ && "$a" -ge 0 && "$a" -le 23 ]]; then 
                         CRON_HOUR="$a"; save_config; break
                     else 
                         echo "无效"; 
@@ -456,10 +478,8 @@ view_and_edit_config(){
             *) echo -e "${COLOR_RED}❌ 无效选项。${COLOR_RESET}"; sleep 1 ;; 
         esac; 
         
-        if [[ "$choice" =~ ^[0-9]+$ ]]; then
-            if (( choice >= 1 && choice <= 10 )); then
-                sleep 0.5;
-            fi
+        if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le 10 ]]; then
+            sleep 0.5;
         fi
     done
 }
@@ -498,7 +518,30 @@ main_menu(){
     if [[ -n "$FINAL_EXCLUDE_LIST" ]]; then echo -e " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET}"; fi
     local NOTIFY_STATUS=""; if [[ -n "$TG_BOT_TOKEN" && -n "$TG_CHAT_ID" ]]; then NOTIFY_STATUS="Telegram"; fi; if [[ -n "$EMAIL_TO" ]]; then if [[ -n "$NOTIFY_STATUS" ]]; then NOTIFY_STATUS+=", Email"; else NOTIFY_STATUS="Email"; fi; fi; if [[ -n "$NOTIFY_STATUS" ]]; then echo -e " 🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}"; fi
     
-    echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
+    # Dynamically determine the max width for the bottom line to align everything.
+    local max_width=0
+    local line_width
+    while IFS= read -r line; do
+        line_width=$(_get_visual_width "$line")
+        if (( line_width > max_width )); then
+            max_width=$line_width
+        fi
+    done <<< "$(
+        echo " 🕝 Watchtower 状态: $STATUS_COLOR (名称排除模式)"
+        echo "      ⏳ 下次检查: $COUNTDOWN"
+        echo "      📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})"
+        if [[ -n "$FINAL_EXCLUDE_LIST" ]]; then echo " 🚫 排除列表 (${FINAL_EXCLUDE_SOURCE}): ${FINAL_EXCLUDE_LIST//,/, }"; fi
+        if [[ -n "$NOTIFY_STATUS" ]]; then echo " 🔔 通知已启用: ${NOTIFY_STATUS}"; fi
+    )"
+
+    local bottom_line_len;
+    if (( max_width > 62 )); then
+        bottom_line_len=$max_width
+    else
+        bottom_line_len=62
+    fi
+
+    echo -e "${COLOR_BLUE}$(generate_line $bottom_line_len)${COLOR_RESET}"
     echo " 主菜单："
     echo " 1. 配置 Watchtower"
     echo " 2. 配置通知"
@@ -506,7 +549,7 @@ main_menu(){
     echo " 4. 查看/编辑配置 (底层)"
     echo " 5. 手动更新所有容器"
     echo " 6. 详情与管理"
-    echo -e "${COLOR_BLUE}$(generate_line)${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}$(generate_line $bottom_line_len)${COLOR_RESET}"
     read -r -p "输入选项 [1-6] 或按 Enter 返回: " choice
     
     case "$choice" in
