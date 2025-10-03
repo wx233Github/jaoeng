@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v66.0 - All Optimizations Implemented)
+# 🚀 VPS 一键安装入口脚本 (v66.1 - Security Hardened)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v66.0"
+SCRIPT_VERSION="v66.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -108,7 +108,6 @@ self_update() {
         exec sudo -E bash "$SCRIPT_PATH" "$@"
     fi; rm -f "$temp_script"; 
 }
-# [ROBUSTNESS] Implemented atomic downloads to prevent corrupted script files.
 download_module_to_cache() { 
     export LC_ALL=C.utf8; sudo mkdir -p "$(dirname "${CONFIG[install_dir]}/$1")"; 
     local script_name="$1"; local force_update="${2:-false}"; 
@@ -118,7 +117,7 @@ download_module_to_cache() {
 
     if [ "$force_update" = "true" ]; then 
         url="${url}?_=$(date +%s)"; 
-        echo -n -e "  ↳ 强制刷新: $script_name ... "; # Use echo -n for single-line status
+        echo -n -e "  ↳ 强制刷新: $script_name ... ";
     fi
 
     local http_code
@@ -135,8 +134,6 @@ download_module_to_cache() {
         return 1; 
     fi; 
 }
-
-# [PERFORMANCE] Implemented parallel downloads for faster updates.
 _update_all_modules() {
     export LC_ALL=C.utf8; local force_update="${1:-false}"; 
     log_info "正在并行更新所有模块..."
@@ -161,14 +158,13 @@ _update_all_modules() {
         fi
     done
 
-    echo "" # Add a newline after the download statuses
+    echo ""
     if [[ "$has_error" -eq 0 ]]; then
         log_success "所有模块更新完成！";
     else
         log_warning "部分模块更新失败，请检查网络或确认文件是否存在于仓库中.";
     fi
 }
-
 force_update_all() {
     export LC_ALL=C.utf8; log_info "开始强制更新流程..."; 
     log_info "步骤 1: 检查主脚本更新..."; self_update
@@ -228,6 +224,8 @@ execute_module() {
     fi
 
     local exit_code=0
+    # [SECURITY] This executes the module in a clean sudo environment (no -E), 
+    # only passing explicitly defined variables via '$env_exports'.
     sudo bash -c "$env_exports bash $local_path" < /dev/tty || exit_code=$?
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warning "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
@@ -252,7 +250,7 @@ display_menu() {
     
     local plain_title; plain_title=$(echo -e "$main_title_text" | sed 's/\x1b\[[0-9;]*m//g')
     local total_chars=${#plain_title}
-    local ascii_chars_only; ascii_chars_only=$(echo "$plain_title" | tr -dc '[ -~]')
+    local ascii_chars_only; ascii_chars_only=$(echo "$main_title_text" | tr -dc '[ -~]')
     local ascii_count=${#ascii_chars_only}
     local non_ascii_count=$((total_chars - ascii_count))
     local title_width=$((ascii_count + non_ascii_count * 2))
@@ -276,7 +274,6 @@ display_menu() {
     for i in $(seq 0 $((menu_len - 1))); do
         local item_json; item_json=$(echo "$menu_items_json" | jq ".[$i]")
         local name; name=$(echo "$item_json" | jq -r ".name")
-        # [EXTENSIBILITY] Icons are now data-driven from config.json.
         local icon; icon=$(echo "$item_json" | jq -r '.icon // "›"')
         
         printf "  ${YELLOW}%2d.${NC} %s %s\n" "$((i+1))" "$icon" "$name"
@@ -324,11 +321,9 @@ main() {
     fi
     load_config
     
-    # [UX] Implemented headless mode for direct command execution (e.g., 'jb update').
     if [[ $# -gt 0 ]]; then
         local command="$1"
         shift
-        
         case "$command" in
             update)
                 log_info "正在以 Headless 模式执行强制更新..."
@@ -345,13 +340,11 @@ main() {
                 action_to_run=$(jq -r --arg cmd "$command" '
                     .menus[][] | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd))) | .action
                 ' "${CONFIG[install_dir]}/config.json" | head -n 1)
-
                 if [[ -n "$action_to_run" ]]; then
                     local display_name
                     display_name=$(jq -r --arg act "$action_to_run" '
                         .menus[][] | select(.action == $act) | .name
                     ' "${CONFIG[install_dir]}/config.json" | head -n 1)
-                    
                     log_info "正在以 Headless 模式执行: ${display_name}"
                     execute_module "$action_to_run" "$display_name" "$@"
                     exit $?
