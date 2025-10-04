@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v70.8 - Final Syntax & UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.0 - UI Alignment Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v70.8"
+SCRIPT_VERSION="v71.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -237,28 +237,22 @@ execute_module() {
 }
 generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
+# =============================================================
+# START: Patched _get_visual_width function
+# =============================================================
 _get_visual_width() {
     local text="$1"
-    local plain_text
-    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    
-    local width=0
-    local i=0
-    local char
-    local byte_count
-
-    while [ $i -lt ${#plain_text} ]; do
-        char=${plain_text:$i:1}
-        byte_count=$(printf "%s" "$char" | wc -c)
-        if [ "$byte_count" -eq 1 ]; then
-            width=$(expr $width + 1)
-        else
-            width=$(expr $width + 2)
-        fi
-        i=$(expr $i + 1)
-    done
-    echo "$width"
+    # 移除所有 ANSI 转义序列 (颜色代码)
+    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    # 将所有 ASCII 字符替换为单个 'a'
+    # 将所有非 ASCII (多字节) 字符替换为两个 'bb'
+    # 计算最终字符串的长度，从而得到视觉宽度
+    local visual_width; visual_width=$(echo -n "$plain_text" | sed 's/[[:ascii:]]/a/g; s/[^a]/bb/g' | wc -c)
+    echo "$visual_width"
 }
+# =============================================================
+# END: Patched _get_visual_width function
+# =============================================================
 
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
@@ -278,6 +272,7 @@ display_menu() {
     local old_ifs=$IFS
     IFS=$'\n'
     for item in $item_list; do
+        # 模拟菜单项的完整格式来进行宽度计算
         line_width=$(_get_visual_width "  XX. › ${item}")
         if [ $line_width -gt $max_width ]; then
             max_width=$line_width
@@ -286,7 +281,9 @@ display_menu() {
     IFS=$old_ifs
 
     local box_width=$max_width
+    # 增加一些额外的填充
     box_width=$(expr $box_width + 6)
+    # 设置一个最小宽度
     if [ $box_width -lt 40 ]; then box_width=40; fi
     # --- End Dynamic UI Calculation ---
 
@@ -330,17 +327,9 @@ process_menu_selection() {
     
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     
-    # ULTIMATE FIX: Use grep and POSIX test `[` for maximum compatibility
-    local is_valid_choice=false
-    if echo "$choice" | grep -qE '^[0-9]+$'; then
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "$menu_len" ]; then
-            is_valid_choice=true
-        fi
-    fi
-
-    if [ "$is_valid_choice" != "true" ]; then
-        log_warning "无效选项."
-        return 10
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then 
+        log_warning "无效选项."; 
+        return 10; 
     fi
 
     local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]')
