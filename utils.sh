@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.13 - Final Minimalist UI)
+# 🚀 通用工具函数库 (v2.13 - Dynamic Width Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -33,18 +33,24 @@ _get_visual_width() {
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
+# =============================================================
+# 关键修复: 彻底实现动态宽度，并采用指定的UI字符
+# =============================================================
 _render_menu() {
     local title="$1"; shift
     
     local max_width=0; local line_width
+
+    # Step 1: 计算最大宽度
     line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
-    for line in "$@"; do line_width=$(_get_visual_width "$line"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi; done
+    for line in "$@"; do line_width=$(_get_visual_width "$line"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_len; fi; done
     
-    local line_len=$((max_width > 40 ? max_width : 40))
-
+    # UI宽度 = 最大内容宽度 (包括标题和选项) + 2个空格边距
+    local line_len=$((max_width + 2))
+    
     # 顶部重型分隔符
-    echo ""; echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}" # 使用重型字符
-
+    echo ""; echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}"
+    
     # 标题
     if [ -n "$title" ]; then
         local title_width; title_width=$(_get_visual_width "$title")
@@ -55,12 +61,12 @@ _render_menu() {
     fi
     
     # 标题下方的轻型分隔符
-    echo -e "${BLUE}$(generate_line "$line_len" "──────")${NC}" # 使用轻型字符
+    echo -e "${BLUE}$(generate_line "$line_len" "──────")${NC}"
 
     # 选项
     for line in "$@"; do echo -e "$line"; done
 
     # 底部重型分隔符
-    echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}" # 使用重型字符
+    echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
