@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.8 - Final UI Character Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.8 - Ultimate Emoji UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -138,17 +138,20 @@ generate_line() { local len=$1; local char="─"; local i=0; local line=""; whil
 # =============================================================
 _get_visual_width() {
     local text="$1"
+    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除 Emoji 的零宽度变体选择器
+    # 移除 Emoji 的零宽度变体选择器，这是导致计算错误的关键
+    # Bash/sed in some systems need the $'' syntax for unicode
     local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
     local width=0
     local i=0
     while [ $i -lt ${#processed_text} ]; do
         char=${processed_text:$i:1}
-        # Special case for '›' which can be single-width
+        # Special case for '›' which can be single-width in some terminals
         if [[ "$char" == "›" ]]; then
             width=$((width + 1))
+        # Check byte length of the character for multi-byte detection
         elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
