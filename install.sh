@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.5 - Ultimate UI & Env Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.6 - Final UI Alignment Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.5"
+SCRIPT_VERSION="v71.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -45,6 +45,9 @@ fi
 
 # --- 主程序逻辑 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+# ... (rest of the script is unchanged)
+# I will paste the whole file for completeness
+
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
@@ -134,19 +137,17 @@ execute_module() {
 generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
 # =============================================================
-# START: Final _get_visual_width function
+# START: Final _get_visual_width function (FIXED)
 # =============================================================
 _get_visual_width() {
     local text="$1"
     # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除环境可能注入的空格
-    local processed_text; processed_text=$(echo "$plain_text" | sed 's/ //g')
     
     local width=0
     local i=0
-    while [ $i -lt ${#processed_text} ]; do
-        char=${processed_text:$i:1}
+    while [ $i -lt ${#plain_text} ]; do
+        char=${plain_text:$i:1}
         # Check byte length of the character
         if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
