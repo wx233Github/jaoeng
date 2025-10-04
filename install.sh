@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v72.2 - GitHub Integration Fix)
+# 🚀 VPS 一键安装入口脚本 (v72.3 - Force Reset Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v72.2"
+SCRIPT_VERSION="v72.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -18,21 +18,16 @@ CONFIG_PATH="${INSTALL_DIR}/config.json"
 UTILS_PATH="${INSTALL_DIR}/utils.sh"
 
 if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
-    # 启动器内的临时颜色和日志，因为 utils.sh 可能还未下载
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m';
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
     
-    # 检查核心文件是否存在，任何一个不存在或强制刷新时，都执行下载
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
         if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
         sudo mkdir -p "$INSTALL_DIR"
         
-        # =================================================================
-        # 关键改动: 从您的 GitHub 仓库拉取所有必需的核心文件
-        # =================================================================
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
         
         declare -A core_files=(
@@ -64,12 +59,10 @@ fi
 
 # --- 主程序逻辑 ---
 
-# 加载通用工具函数库
 if [ -f "$UTILS_PATH" ]; then
     source "$UTILS_PATH"
 else
-    echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2
-    exit 1
+    echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2; exit 1;
 fi
 
 declare -A CONFIG
@@ -118,7 +111,6 @@ download_module_to_cache() {
     export LC_ALL=C.UTF-8; local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local tmp_file="/tmp/$(basename "$script_name").$$"; local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"; local http_code; http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url"); local curl_exit_code=$?; if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"; rm -f "$tmp_file"; return 1; fi
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then rm -f "$tmp_file"; return 0; else log_success "模块 (${script_name}) 已更新。"; sudo mkdir -p "$(dirname "$local_file")"; sudo mv "$tmp_file" "$local_file"; return 0; fi
 }
-
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if _download_file "utils.sh" "$temp_utils"; then
@@ -132,7 +124,6 @@ _update_core_files() {
         log_warn "核心工具库 (utils.sh) 更新检查失败。"
     fi
 }
-
 _update_all_modules() {
     export LC_ALL=C.UTF-8
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | select(type == "object") | .items[]? | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
@@ -142,19 +133,57 @@ _update_all_modules() {
 }
 force_update_all() { 
     export LC_ALL=C.UTF-8
-    self_update # 更新 install.sh 自身
-    _update_core_files # 更新 utils.sh 等核心文件
-    _update_all_modules # 更新所有模块
+    self_update
+    _update_core_files
+    _update_all_modules
     log_success "所有组件更新检查完成！"
 }
+
+# =============================================================
+# 关键修复: 重构 "强制重置" 函数，确保无条件下载所有核心文件
+# =============================================================
 confirm_and_force_update() {
-    export LC_ALL=C.UTF-8; log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"; log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"; read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    export LC_ALL=C.UTF-8; 
+    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"; 
+    log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"; 
+    read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "开始强制完全重置..."; local temp_config="/tmp/config.json.$$"
-        log_info "正在强制更新 config.json..."; if ! _download_file "config.json" "$temp_config"; then log_err "下载最新的 config.json 失败。"; exit 1; fi
-        sudo mv "$temp_config" "${CONFIG[install_dir]}/config.json"; log_success "config.json 已重置为最新版本。"; log_info "正在重新加载配置..."; load_config; force_update_all
-    else log_info "操作已取消."; fi; return 10 
+        log_info "开始强制完全重置..."
+        
+        # 定义需要无条件更新的核心文件
+        declare -A core_files_to_reset=(
+            ["配置文件"]="config.json"
+            ["主程序"]="install.sh"
+            ["工具库"]="utils.sh"
+        )
+        
+        # 循环下载，确保每个文件都更新到最新
+        for name in "${!core_files_to_reset[@]}"; do
+            local file_path="${core_files_to_reset[$name]}"
+            log_info "正在强制更新 ${name}..."
+            local temp_file="/tmp/$(basename "$file_path").tmp.$$"
+            if ! _download_file "$file_path" "$temp_file"; then
+                log_err "下载最新的 ${name} 失败。"
+                # 即使失败也继续尝试更新其他文件
+                continue
+            fi
+            sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
+            log_success "${name} 已重置为最新版本。"
+        done
+        
+        log_info "正在重新加载配置并检查所有模块更新..."
+        load_config
+        _update_all_modules # 检查并更新所有其他模块
+        log_success "强制重置完成！"
+        log_info "脚本将在3秒后自动重启以应用所有更新..."
+        sleep 3
+        exec sudo -E bash "$FINAL_SCRIPT_PATH"
+    else 
+        log_info "操作已取消."; 
+    fi; 
+    return 10 
 }
+
 uninstall_script() {
     log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"; log_warn "  - 安装目录: ${CONFIG[install_dir]}"; log_warn "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
     read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
@@ -177,22 +206,19 @@ execute_module() {
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warn "模块 [$display_name] 执行出错 (码: $exit_code)."; fi
     return $exit_code
 }
-
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
-    local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json")
-    local items_str=""; local i=1
+    local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json"); local items_str=(); local i=1
     while IFS=$'\t' read -r icon name; do
-        items_str+=$(printf "\n  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")
+        items_str+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
         i=$(expr $i + 1)
     done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
     
-    _render_menu "$main_title_text" "$items_str"
+    _render_menu "$main_title_text" "${items_str[@]}"
 
     local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     if [ "$AUTO_YES" = "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
 }
-
 process_menu_selection() {
     export LC_ALL=C.UTF-8; local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
@@ -201,7 +227,6 @@ process_menu_selection() {
     local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action")
     case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac
 }
-
 main() {
     exec 200>"${CONFIG[lock_file]}"; if ! flock -n 200; then echo -e "\033[0;33m[警告] 检测到另一实例正在运行."; exit 1; fi
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出."' EXIT
