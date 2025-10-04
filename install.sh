@@ -141,6 +141,7 @@ _get_visual_width() {
     # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     # 移除 Emoji 的零宽度变体选择器，这是导致计算错误的关键
+    # Bash/sed in some systems need the $'' syntax for unicode
     local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
     local width=0
