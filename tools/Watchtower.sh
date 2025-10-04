@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.5 - 语法修正版)
-# - 修正了配置加载部分因单行写法导致的语法错误
+# 🚀 Docker 自动更新助手 (v4.5.6 - 最终语法修正版)
+# - 将所有易错的单行长命令重构为多行，彻底解决语法解析问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.5.5"
+SCRIPT_VERSION="v4.5.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -13,13 +13,20 @@ export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
 # --- 加载通用工具函数库 ---
-UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具函数库 $UTILS_PATH 未找到！"; exit 1; fi
+UTILS_PATH="/opt/vps_install_modules/utils.sh"
+if [ -f "$UTILS_PATH" ]; then
+    source "$UTILS_PATH"
+else
+    log_err() { echo "[错误] $*" >&2; }
+    log_err "致命错误: 通用工具函数库 $UTILS_PATH 未找到！"
+    exit 1
+fi
 
 # --- 脚本依赖检查 ---
 if ! command -v docker >/dev/null 2>&1; then log_err "❌ 错误: 未检测到 'docker' 命令。"; exit 1; fi
 if ! docker ps -q >/dev/null 2>&1; then log_err "❌ 错误:无法连接到 Docker。"; exit 1; fi
 
-# --- 配置加载 (修正部分) ---
+# --- 配置加载 (已重构为健壮的多行格式) ---
 # 从主脚本 config.json 继承的环境变量
 WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
 WT_CONF_DEFAULT_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
@@ -33,13 +40,28 @@ if ! [ -w "$(dirname "$CONFIG_FILE")" ]; then
 fi
 
 # 加载本地配置文件 (如果存在)
-load_config(){ if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE" &>/dev/null || true; fi; }; load_config
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE" &>/dev/null || true
+    fi
+}
+load_config
 
-# 为本地配置变量设置默认值
-TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"; TG_CHAT_ID="${TG_CHAT_ID:-}"; EMAIL_TO="${EMAIL_TO:-}"; WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"; WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"; WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"; WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"; DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"; CRON_HOUR="${CRON_HOUR:-4}"; CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"; WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
+# 为本地配置变量设置默认值 (已重构为多行)
+TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+TG_CHAT_ID="${TG_CHAT_ID:-}"
+EMAIL_TO="${EMAIL_TO:-}"
+WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
+WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
+WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"
+WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"
+CRON_HOUR="${CRON_HOUR:-4}"
+CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
+WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 # --- 配置加载结束 ---
 
-# --- 模块专属函数 ---
+# --- 模块专属函数 (内容未变，保持原样) ---
 send_notify() { local message="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &; fi; }
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$((seconds / 3600)); echo "${hours}h"; fi; }
 save_config(){ mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
