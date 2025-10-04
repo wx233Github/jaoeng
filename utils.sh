@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.1 - UI & Color Fix)
+# 🚀 通用工具函数库 (v1.2 - Robust Line Handling Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -8,7 +8,6 @@
 set -eo pipefail
 
 # --- 颜色定义 ---
-# 仅当在终端中运行时才启用颜色
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m' # No Color
@@ -17,7 +16,6 @@ else
 fi
 
 # --- 日志系统 ---
-# 提供了带时间戳和颜色分类的日志输出
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
@@ -25,12 +23,10 @@ log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 
 # --- 用户交互函数 ---
-# 等待用户按 Enter 继续
 press_enter_to_continue() { 
     read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"
 }
 
-# 询问用户确认操作
 confirm_action() {
     read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice
     case "$choice" in
@@ -39,33 +35,18 @@ confirm_action() {
     esac
 }
 
-
 # --- UI 渲染 & 字符串处理 ---
 
-# 生成指定长度的横线
 generate_line() {
     local len=${1:-62}
     local char="─"
-    local line=""
-    local i=0
-    while [ $i -lt $len ]; do
-        line="$line$char"
-        i=$(expr $i + 1)
-    done
-    echo "$line"
+    printf "%*s" "$len" | tr ' ' "$char"
 }
 
-# =============================================================
-# 关键修复: 采用更健壮的 awk 方法计算可视宽度，以正确处理 Emoji
-# =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色控制代码
     local plain_text
     plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-
-    # 使用 awk 计算宽度。这个方法对于多字节字符（如中文、Emoji）的处理比纯 shell 循环更可靠。
-    # 它将每个字符分割出来，检查其字节长度。如果字节长度大于1，通常意味着它是一个宽字符，占2个显示列。
     echo "$plain_text" | awk '{
         split($0, chars, "");
         width = 0;
@@ -81,24 +62,23 @@ _get_visual_width() {
 }
 
 # =============================================================
-# 关键修复: 将 UI 边框颜色从 YELLOW 修改为 GREEN
+# 关键修复: 采用更健壮的循环方式处理传入的参数，防止 "too many arguments" 错误
 # =============================================================
-# 渲染一个带标题和内容的静态菜单
 _render_menu() {
     local title="$1"; shift
-    local lines_str="$@"
     local max_width=0
+    
+    # 计算标题宽度
     local line_width
-    
     line_width=$(_get_visual_width "$title")
-    if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+    if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    local old_ifs=$IFS; IFS=$'\n'
-    for line in $lines_str; do
+    # 关键修复点 1: 直接遍历位置参数 "$@", 这是处理包含空格的参数的最安全方式
+    # shift 命令已经移除了标题，所以 "$@" 现在只包含菜单行
+    for line in "$@"; do
         line_width=$(_get_visual_width "$line")
-        if [ $line_width -gt $max_width ]; then max_width=$line_width; fi
+        if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
-    IFS=$old_ifs
     
     local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
@@ -114,15 +94,14 @@ _render_menu() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    IFS=$'\n'
-    for line in $lines_str; do
+    # 关键修复点 2: 同样使用健壮的循环来打印每一行
+    for line in "$@"; do
         echo -e "$line"
     done
-    IFS=$old_ifs
+    
     echo -e "${BLUE}$(generate_line $(expr $box_width + 2))${NC}"
 }
 
-# 渲染一个根据内容自动调整宽度的动态盒子
 _render_dynamic_box() {
     local title="$1"; local box_width="$2"; shift 2
     local content_str="$@"
@@ -139,6 +118,7 @@ _render_dynamic_box() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
+    # 这里使用 IFS 的方式是安全的，因为 content_str 是一个单独的变量
     local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do
         echo -e "$line"
