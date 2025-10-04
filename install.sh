@@ -1,15 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.4 - Ultimate UI & Portability Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.5 - Ultimate UI & Env Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.4"
+SCRIPT_VERSION="v71.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF-8}
-# FINAL FIX: 强制设置 locale, 解决全局中文字符间距问题
 export LC_ALL=C.UTF-8
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -139,12 +138,16 @@ generate_line() { local len=$1; local char="─"; local i=0; local line=""; whil
 # =============================================================
 _get_visual_width() {
     local text="$1"
+    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    # 移除环境可能注入的空格
+    local processed_text; processed_text=$(echo "$plain_text" | sed 's/ //g')
+    
     local width=0
     local i=0
-    while [ $i -lt ${#plain_text} ]; do
-        char=${plain_text:$i:1}
-        # Check byte length of the character, most portable method
+    while [ $i -lt ${#processed_text} ]; do
+        char=${processed_text:$i:1}
+        # Check byte length of the character
         if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
