@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v72.8 - Final Quoting Fix)
+# 🚀 VPS 一键安装入口脚本 (v72.9 - Final UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v72.8"
+SCRIPT_VERSION="v72.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
-export LANG=${LANG:-en_US.UTF-8}
+export LANG=${LANG:-en_US.UTF_8}
 if locale -a | grep -q "C.UTF-8"; then
     export LC_ALL=C.UTF-8
 else
@@ -113,9 +113,9 @@ display_menu() {
     while IFS=$'\t' read -r icon name; do menu_content_str+=$(printf "\n  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name"); i=$((i + 1)); done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
     
     # =============================================================
-    # 关键修复: 去掉双引号，让参数扩展正常工作
+    # 关键修复: 必须用双引号包裹变量，以保留换行符并作为一个整体传递
     # =============================================================
-    _render_menu "$main_title_text" ${menu_content_str#\\n}
+    _render_menu "$main_title_text" "${menu_content_str#\\n}"
 
     local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     if [ "$AUTO_YES" = "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
