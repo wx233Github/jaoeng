@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.3.4 - Table UI Fix)
+# 🚀 Docker 自动更新助手 (v4.3.5 - Final Syntax & UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.4"
+SCRIPT_VERSION="v4.3.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -95,14 +95,15 @@ _parse_watchtower_timestamp_from_log_line() { local log_line="$1"; local timesta
 _date_to_epoch() { local dt="$1"; [ -z "$dt" ] && echo "" && return; if date -d "now" >/dev/null 2>&1; then date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""); elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""); else log_warn "⚠️ 'date' 或 'gdate' 不支持。"; echo ""; fi; }
 
 # =============================================================
-# 关键修复: 使用数组分别存储每一行，并正确传递给 _render_menu
+# 关键修复: 重构函数，使用数组传递参数，并修复 case 语法错误
 # =============================================================
 show_container_info() { 
     while true; do 
-        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; 
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         
         local -a content_lines_array=()
-        local header_line; header_line=$(printf "%-5s %-25s %-45s %-20s" "编号" "名称" "镜像" "状态")
+        local header_line
+        header_line=$(printf "%-5s %-25s %-45s %-20s" "编号" "名称" "镜像" "状态")
         content_lines_array+=("$header_line")
         
         local -a containers=()
@@ -110,7 +111,13 @@ show_container_info() {
         while IFS='|' read -r name image status; do 
             containers+=("$name")
             local status_colored="$status"
-            if echo "$status" | grep -qE '^Up'; then status_colored="${GREEN}运行中${NC}"; elif echo "$status" | grep -qE '^Exited|Created'; then status_colored="${RED}已退出${NC}"; else status_colored="${YELLOW}${status}${NC}"; fi; 
+            if echo "$status" | grep -qE '^Up'; then 
+                status_colored="${GREEN}运行中${NC}"
+            elif echo "$status" | grep -qE '^Exited|Created'; then 
+                status_colored="${RED}已退出${NC}"
+            else 
+                status_colored="${YELLOW}${status}${NC}"
+            fi
             content_lines_array+=("$(printf "%-5s %-25.25s %-45.45s %b" "$i" "$name" "$image" "$status_colored")")
             i=$((i + 1))
         done < <(docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
@@ -120,27 +127,50 @@ show_container_info() {
         
         _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"
         
-        read -r -p " └──> 输入编号管理, 'a'/'s' 批量操作, 或按 Enter 返回: " choice; 
+        read -r -p " └──> 输入编号管理, 'a'/'s' 批量操作, 或按 Enter 返回: " choice
         case "$choice" in 
             "") return ;; 
-            a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
-            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(docker ps -q); if [ -n "$running_containers" ]; then docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; else log_info "操作已取消。"; fi ;; 
-            *) if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi; 
-               local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; 
-               local action_items="  1. › 查看日志 (Logs)\n  2. › 重启 (Restart)\n  3. › 停止 (Stop)\n  4. › 删除 (Remove)\n  5. › 查看详情 (Inspect)\n  6. › 进入容器 (Exec)"
-               _render_menu "操作容器: ${selected_container}" "$action_items"; 
-               read -r -p " └──> 请选择, 或按 Enter 返回: " action; 
-               case "$action" in 
-                   1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;; 
-                   2) echo "重启中..."; if docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
-                   3) echo "停止中..."; if docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
-                   4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;; 
-                   5) _print_header "容器详情: ${selected_container}"; (docker inspect "$selected_container" | jq '.' 2>/dev/null || docker inspect "$selected_container") | less -R; ;; 
-                   6) if [ "$(docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
-                   *) ;; 
-               esac ;; 
-        esac; 
-    done; 
+            a|A) 
+                if confirm_action "确定要启动所有已停止的容器吗?"; then 
+                    log_info "正在启动..."; local stopped_containers
+                    stopped_containers=$(docker ps -aq -f status=exited)
+                    if [ -n "$stopped_containers" ]; then docker start $stopped_containers &>/dev/null || true; fi
+                    log_success "操作完成。"; press_enter_to_continue
+                else 
+                    log_info "操作已取消。"
+                fi 
+                ;; 
+            s|S) 
+                if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then 
+                    log_info "正在停止..."; local running_containers
+                    running_containers=$(docker ps -q)
+                    if [ -n "$running_containers" ]; then docker stop $running_containers &>/dev/null || true; fi
+                    log_success "操作完成。"
+                else 
+                    log_info "操作已取消。"
+                fi 
+                ;; 
+            *) 
+                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then 
+                    log_warn "无效输入或编号超范围。"; sleep 1; continue
+                fi
+                local selected_container="${containers[$((choice - 1))]}"
+                if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+                local action_items="  1. › 查看日志 (Logs)\n  2. › 重启 (Restart)\n  3. › 停止 (Stop)\n  4. › 删除 (Remove)\n  5. › 查看详情 (Inspect)\n  6. › 进入容器 (Exec)"
+                _render_menu "操作容器: ${selected_container}" "$action_items"
+                read -r -p " └──> 请选择, 或按 Enter 返回: " action
+                case "$action" in 
+                    1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;; 
+                    2) echo "重启中..."; if docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    3) echo "停止中..."; if docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;; 
+                    5) _print_header "容器详情: ${selected_container}"; (docker inspect "$selected_container" | jq '.' 2>/dev/null || docker inspect "$selected_container") | less -R; ;; 
+                    6) if [ "$(docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
+                    *) ;; 
+                esac 
+                ;; # 关键修复：补上这个遗漏的 case 终止符
+        esac
+    done
 }
 
 _prompt_for_interval() { local default_value="$1"; local prompt_msg="$2"; local input_interval=""; local result_interval=""; local formatted_default=$(_format_seconds_to_human "$default_value"); while true; do read -r -p "$prompt_msg (例: 300s/2h/1d, [回车]使用 ${formatted_default}): " input_interval; input_interval=${input_interval:-${default_value}s}; if echo "$input_interval" | grep -qE '^([0-9]+)s$'; then result_interval=$(echo "$input_interval" | sed 's/s//'); break; elif echo "$input_interval" | grep -qE '^([0-9]+)h$'; then result_interval=$(( $(echo "$input_interval" | sed 's/h//') * 3600 )); break; elif echo "$input_interval" | grep -qE '^([0-9]+)d$'; then result_interval=$(( $(echo "$input_interval" | sed 's/d//') * 86400 )); break; elif echo "$input_interval" | grep -qE '^[0-9]+$'; then result_interval="${input_interval}"; break; else echo -e "${RED}❌ 格式错误...${NC}"; fi; done; echo "$result_interval"; }
@@ -212,4 +242,4 @@ main(){
     exit 10
 }
 
-main "$@"```
+main "$@"
