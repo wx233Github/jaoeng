@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.0 - Perfect Centering Fix)
+# 🚀 通用工具函数库 (v2.1 - Perfect Centering Final)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -45,9 +45,15 @@ _get_visual_width() {
 # 关键修复: 采用更精确的左右边距计算方法，确保完美居中
 # =============================================================
 _render_menu() {
-    local title="$1"; local content_str="$2"; local max_width=0; local line_width
+    local title="$1"
+    # 将所有剩余参数（即使它们是分开的）合并成一个单一的多行字符串
+    shift
+    local content_str="$*"
+    local max_width=0
+    local line_width
 
-    line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "$title")
+    if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
     local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do
