@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.14 - Final Aesthetic UI)
+# 🚀 通用工具函数库 (v2.15 - Final Alignment Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -33,9 +33,6 @@ _get_visual_width() {
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
-# =============================================================
-# 关键修复: 实现最终的、美观的、动态宽度的盒子UI
-# =============================================================
 _render_menu() {
     local title="$1"; shift
     
@@ -48,7 +45,8 @@ _render_menu() {
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
     
-    local box_width=$((max_width + 4)) # 左右各2个空格的内边距
+    local box_width=$((max_width + 4))
+    if [ $box_width -lt 40 ]; then box_width=$((40 > max_width + 4 ? 40 : max_width + 4)); fi
 
     # 顶部
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
@@ -66,8 +64,8 @@ _render_menu() {
     # 选项
     for line in "$@"; do
         local line_width=$(_get_visual_width "$line")
-        local padding_right=$((box_width - line_width))
-        echo -e "${GREEN}│${NC} ${line}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        local padding_right=$((box_width - line_width - 2)) # 减去 좌측 │ 와 우측 │ 사이의 공백 2개
+        echo -e "${GREEN}│${NC} ${line}$(printf '%*s' $padding_right)${GREEN}│${NC}"
     done
 
     # 底部
