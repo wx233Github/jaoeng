@@ -1,15 +1,17 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.1.0 - Ultimate UI & Logic Refactor)
+# 🚀 Docker 自动更新助手 (v4.2.0 - Ultimate UI & Layout Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.1.0"
+SCRIPT_VERSION="v4.2.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF-8}
-export LC_ALL=C.utf8
+# 强制重置 locale 设置，避免中文字符间距异常
+export LC_ALL=C.UTF-8
+unset LC_CTYPE
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -56,6 +58,7 @@ _get_visual_width() {
     local i=0
     while [ $i -lt ${#plain_text} ]; do
         char=${plain_text:$i:1}
+        # Check byte length of the character
         if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
@@ -99,22 +102,20 @@ EOF
   chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。";
 }
 press_enter_to_continue() { read -r -p "$(echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}")"; }
-_render_aligned_lines() {
-    local indent="$1"; shift; local lines=("$@"); local max_label_width=0
+
+# =============================================================
+# START: Reverted to simple layout (no vertical alignment)
+# =============================================================
+_render_simple_lines() {
+    local indent="$1"; shift; local lines=("$@")
     for line in "${lines[@]}"; do
-        local label; label=$(echo "$line" | cut -d':' -f1)
-        local width; width=$(_get_visual_width "$label")
-        if [ "$width" -gt "$max_label_width" ]; then max_label_width=$width; fi
-    done
-    for line in "${lines[@]}"; do
-        local label; label=$(echo "$line" | cut -d':' -f1)
-        local value; value=$(echo "$line" | cut -d':' -f2-)
-        local current_label_width; current_label_width=$(_get_visual_width "$label")
-        local padding_needed; padding_needed=$(expr $max_label_width - $current_label_width)
-        local padding; padding=$(printf '%*s' "$padding_needed")
-        echo -e "${indent}${label}${padding} :${value}"
+        echo -e "${indent}${line}"
     done
 }
+# =============================================================
+# END: Simple layout function
+# =============================================================
+
 confirm_action() { read -r -p "$(echo -e "${COLOR_YELLOW}$1 ([y]/n): ${COLOR_RESET}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # ... All other functions are inserted here without change ...
@@ -202,23 +203,24 @@ main_menu(){
     local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
     local header_text="Docker 助手 v${SCRIPT_VERSION}"
     
-    local -a status_lines_to_align
-    status_lines_to_align+=("🕝 Watchtower 状态:${STATUS_COLOR} (名称排除模式)"); status_lines_to_align+=("⏳ 下次检查:${COUNTDOWN}"); status_lines_to_align+=("📦 容器概览:总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})")
+    local -a status_lines
+    status_lines+=("🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)")
+    status_lines+=("⏳ 下次检查: ${COUNTDOWN}")
+    status_lines+=("📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})")
     
-    # New formatting for exclude list
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then 
-        status_lines_to_align+=("🚫 排除列表:${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET} (${COLOR_CYAN}${FINAL_EXCLUDE_SOURCE}${COLOR_RESET})")
+        status_lines+=("🚫 排除列表: ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET} (${COLOR_CYAN}${FINAL_EXCLUDE_SOURCE}${COLOR_RESET})")
     fi
     if [ -n "$NOTIFY_STATUS" ]; then 
-        status_lines_to_align+=("🔔 通知已启用:${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}")
+        status_lines+=("🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}")
     fi
     
-    local aligned_status_block; aligned_status_block=$(_render_aligned_lines " " "${status_lines_to_align[@]}")
+    local simple_status_block; simple_status_block=$(_render_simple_lines " " "${status_lines[@]}")
     
     local -a menu_options
     menu_options+=(" "); menu_options+=("主菜单："); menu_options+=("  1. › 配置 Watchtower"); menu_options+=("  2. › 配置通知"); menu_options+=("  3. › 任务管理"); menu_options+=("  4. › 查看/编辑配置 (底层)"); menu_options+=("  5. › 手动更新所有容器"); menu_options+=("  6. › 详情与管理")
     
-    printf -v content_str '%s\n' "$aligned_status_block" "${menu_options[@]}"
+    printf -v content_str '%s\n' "$simple_status_block" "${menu_options[@]}"
     _render_menu "$header_text" "$content_str"
     
     read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
