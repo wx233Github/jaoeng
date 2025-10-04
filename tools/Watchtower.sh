@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.3.6 - Final Comprehensive UI Fix)
+# 🚀 Docker 自动更新助手 (v4.3.7 - Final Syntax Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.6"
+SCRIPT_VERSION="v4.3.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -24,10 +24,23 @@ WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"; WT_
 load_config(){ if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE" &>/dev/null || true; fi; }; load_config
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"; TG_CHAT_ID="${TG_CHAT_ID:-}"; EMAIL_TO="${EMAIL_TO:-}"; WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"; WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"; WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"; WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"; DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"; CRON_HOUR="${CRON_HOUR:-4}"; CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"; WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 
-# --- 模块专属函数 ---
-send_notify() { local message="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &; fi; }
-_format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$((seconds / 3600)); echo "${hours}h"; fi; }
-save_config(){ mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
+# =============================================================
+# 关键修复: 移除多余的分号，修正语法错误
+# =============================================================
+send_notify() {
+    local message="$1"
+    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &
+    fi
+}
+
+_format_seconds_to_human() { 
+    local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi
+    if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$((seconds / 3600)); echo "${hours}h"; fi
+}
+save_config(){
+  mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
 TG_CHAT_ID="${TG_CHAT_ID}"
 EMAIL_TO="${EMAIL_TO}"
@@ -40,7 +53,8 @@ DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON}"
 CRON_HOUR="${CRON_HOUR}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
 EOF
-chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"; }
+  chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。";
+}
 _start_watchtower_container_logic(){
   local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
   local timezone="${JB_TIMEZONE:-Asia/Shanghai}"; local cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-300}"); if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); fi
@@ -55,8 +69,6 @@ _start_watchtower_container_logic(){
   if [ "$mode_description" = "一次性更新" ]; then if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi; return $rc
   else sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi; return 0; fi
 }
-_configure_telegram() { read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"; read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"; log_info "Telegram 配置已更新。"; }
-_configure_email() { read -r -p "请输入接收邮箱 (当前: ${EMAIL_TO}): " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT:-$EMAIL_TO}"; log_info "Email 配置已更新。"; }
 notification_menu() {
     while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         local tg_status="${RED}未配置${NC}"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then tg_status="${GREEN}已配置${NC}"; fi; local email_status="${RED}未配置${NC}"; if [ -n "$EMAIL_TO" ]; then email_status="${GREEN}已配置${NC}"; fi
