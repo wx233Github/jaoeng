@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v73.0 - Final UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v73.1 - Final Unified Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v73.0"
+SCRIPT_VERSION="v73.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL=C; fi
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
