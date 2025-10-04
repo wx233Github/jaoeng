@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.13 - Final Minimalist UI)
+# 🚀 通用工具函数库 (v2.14 - Final Dynamic Width)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -28,26 +28,39 @@ confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; 
 
 # --- UI 渲染 & 字符串处理 ---
 generate_line() { local len=${1:-40}; local char=${2:-"─"}; local line=""; local i=0; while [ $i -lt $len ]; do line="${line}${char}"; i=$((i + 1)); done; echo "$line"; }
+
+# 核心：精准计算可视宽度，即使为空也返回 0
 _get_visual_width() {
-    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g'); local width=0; local i=1
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g');
+    if [ -z "$plain_text" ]; then echo 0; return; fi
+    local width=0; local i=1
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
 _render_menu() {
     local title="$1"; shift
     
-    local max_width=0; local line_width
-    line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
-    for line in "$@"; do line_width=$(_get_visual_width "$line"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi; done
+    local max_width=0
     
-    local line_len=$((max_width + 4)) # 最小边距为 40，内容加上边距后超过 40 则使用内容宽度
+    # Step 1: 安全计算标题和菜单项的最大宽度
+    local title_width=$(_get_visual_width "$title")
+    if (( title_width > max_width )); then max_width=$title_width; fi
+
+    for line in "$@"; do
+        local line_width=$(_get_visual_width "$line")
+        if (( line_width > max_width )); then max_width=$line_width; fi
+    done
+    
+    # 宽度设定：最小宽度40，或者 max_width + 4 个空格 (2个在左，2个在右)
+    local min_width=40
+    local content_width=$((max_width + 4))
+    local line_len=$((content_width > min_width ? content_width : min_width))
 
     # 顶部重型分隔符
     echo ""; echo -e "${BLUE}$(generate_line "$line_len" "━")${NC}"
     
     # 标题
     if [ -n "$title" ]; then
-        local title_width; title_width=$(_get_visual_width "$title")
         local padding_total=$((line_len - title_width))
         local padding_left=$((padding_total / 2))
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
