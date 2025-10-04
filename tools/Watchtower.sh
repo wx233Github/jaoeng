@@ -1,12 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.3 - 最终修正版)
-# - [最终修正] 采用正确的 Telegram 通知 URL 格式，彻底解决通知失败问题
-# - [最终修正] 增加错误日志截断功能，修复因日志过长导致的UI排版错乱
+# 🚀 Docker 自动更新助手 (v4.6.4 - 最终修正版)
+# - [最终修正] 增加模板判断，彻底解决 TG 通知模板错误
+# - [最终修正] 优化日志截断与UI排版，适配移动终端
+# - [优化] 精确化“下次检查”的超时时间显示
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.3"
+SCRIPT_VERSION="v4.6.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -100,12 +101,12 @@ _start_watchtower_container_logic(){
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "检测到 Telegram 配置，将为 Watchtower 启用通知。"
-        # [最终修正] 采用正确的 Shoutrrr Telegram URL 格式
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT=true)
         fi
-        local NOTIFICATION_TEMPLATE='🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Report.Time.Format "2006-01-02 15:04:05"}}`'
+        # [最终修正] 增加 {{if .Report}} 判断，避免模板在非报告数据上执行出错
+        local NOTIFICATION_TEMPLATE='{{if .Report}}🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Report.Time.Format "2006-01-02 15:04:05"}}`{{end}}'
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE}")
     fi
 
@@ -189,7 +190,7 @@ _prompt_and_rebuild_watchtower_if_needed() {
     fi
 }
 
-# [最终修正] 增加日志截断功能，修复UI
+# [最终修正] 优化日志截断，适配移动端UI
 _format_and_highlight_log_line(){
     local line="$1"
     local ts
@@ -225,15 +226,19 @@ _format_and_highlight_log_line(){
         *)
             if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request"; then
                 local msg
-                msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
+                # 优先提取 error="xxx" 中的内容
+                msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
+                if [ -z "$msg" ]; then
+                    msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
+                fi
                 if [ -z "$msg" ]; then
                     msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info|fatal)|time="[^"]*")\s*//g' | tr -d '\n')
                 fi
                 # 截断过长的消息
                 local full_msg="${msg:-$line}"
                 local truncated_msg
-                if [ ${#full_msg} -gt 80 ]; then
-                    truncated_msg="${full_msg:0:77}..."
+                if [ ${#full_msg} -gt 50 ]; then # 缩短截断长度以适应移动端
+                    truncated_msg="${full_msg:0:47}..."
                 else
                     truncated_msg="$full_msg"
                 fi
@@ -241,6 +246,35 @@ _format_and_highlight_log_line(){
             fi
             ;;
     esac
+}
+
+# [优化] 精确化超时时间显示
+_get_watchtower_remaining_time(){
+    local int="$1"
+    local logs="$2"
+    if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${YELLOW}N/A${NC}"; return; fi
+    local log_line ts epoch rem
+    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+    epoch=$(_date_to_epoch "$ts")
+    if [ "$epoch" -gt 0 ]; then
+        if [[ "$log_line" == *"Session done"* ]]; then
+            rem=$((int - ($(date +%s) - epoch) ))
+        elif [[ "$log_line" == *"Scheduling first run"* ]]; then
+            rem=$((epoch - $(date +%s)))
+        elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
+            rem=$(( (epoch + 5 + int) - $(date +%s) ))
+        fi
+        if [ "$rem" -gt 0 ]; then
+            printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
+        else
+            local overdue=$(( -rem ))
+            printf "%b已超时 %02d分%02d秒, 等待扫描...%b" "$YELLOW" $((overdue / 60)) $((overdue % 60)) "$NC"
+        fi
+    else
+        echo -e "${YELLOW}计算中...${NC}"
+    fi
 }
 
 # ... [此处到 main_menu 之间的所有函数都保持不变] ...
@@ -540,32 +574,6 @@ _extract_interval_from_cmd(){
         echo ""
     else
         echo "$interval"
-    fi
-}
-_get_watchtower_remaining_time(){
-    local int="$1"
-    local logs="$2"
-    if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${YELLOW}N/A${NC}"; return; fi
-    local log_line ts epoch rem
-    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
-    epoch=$(_date_to_epoch "$ts")
-    if [ "$epoch" -gt 0 ]; then
-        if [[ "$log_line" == *"Session done"* ]]; then
-            rem=$((int - ($(date +%s) - epoch) ))
-        elif [[ "$log_line" == *"Scheduling first run"* ]]; then
-            rem=$((epoch - $(date +%s)))
-        elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
-            rem=$(( (epoch + 5 + int) - $(date +%s) ))
-        fi
-        if [ "$rem" -gt 0 ]; then
-            printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
-        else
-            printf "%b已超时, 等待扫描...%b" "$YELLOW" "$NC"
-        fi
-    else
-        echo -e "${YELLOW}计算中...${NC}"
     fi
 }
 get_watchtower_inspect_summary(){
