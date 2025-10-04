@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.4 - Final Corrected Version)
+# 🚀 Docker 自动更新助手 (v4.5.4 - Final Logic & UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -12,7 +12,7 @@ export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
 # --- 加载通用工具函数库 ---
-UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
+UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具函数库 $UTILS_PATH 未找到！"; exit 1; fi
 
 # --- 脚本依赖检查 ---
 if ! command -v docker >/dev/null 2>&1; then log_err "❌ 错误: 未检测到 'docker' 命令。"; exit 1; fi
@@ -24,13 +24,7 @@ load_config(){ if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE" &>/dev/null 
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"; TG_CHAT_ID="${TG_CHAT_ID:-}"; EMAIL_TO="${EMAIL_TO:-}"; WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"; WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"; WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"; WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"; DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"; CRON_HOUR="${CRON_HOUR:-4}"; CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"; WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 
 # --- 模块专属函数 ---
-send_notify() {
-    local message="$1"
-    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &
-    fi
-}
+send_notify() { local message="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &; fi; }
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$((seconds / 3600)); echo "${hours}h"; fi; }
 save_config(){ mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
@@ -54,6 +48,7 @@ _start_watchtower_container_logic(){
   local container_names=()
 
   if [ "$mode_description" = "一次性更新" ]; then
+      if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 1; fi
       cmd_base+=(--rm --name watchtower-once)
       wt_args+=(--run-once)
   else
@@ -177,7 +172,7 @@ show_watchtower_details(){
     done
 }
 run_watchtower_once(){ 
-    if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 0; fi
+    if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 1; fi
     echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"; if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi; return 0;
 }
 view_and_edit_config(){ local -a config_items; config_items=( "TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string" "Cron 任务启用状态|CRON_TASK_ENABLED|bool" ); while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config; local -a content_lines_array=(); local i; for i in "${!config_items[@]}"; do local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"; case "$type" in string) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;; bool) if [ "$current_value" = "true" ]; then color="${GREEN}"; display_text="是"; else color="${CYAN}"; display_text="否"; fi ;; interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;; number_range) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;; esac; content_lines_array+=("$(printf " %2d. %-20s: %b%s%b" "$((i + 1))" "$label" "$color" "$display_text" "$NC")"); done; _render_menu "⚙️ 配置查看与编辑 ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice; if [ -z "$choice" ]; then return; fi; if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi; local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""; case "$type" in string) read -r -p "请输入新的 '$label' (当前: $current_value): " new_value; declare "$var_name"="${new_value:-$current_value}" ;; bool) read -r -p "是否启用 '$label'? (y/N): " new_value; if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;; interval) new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;; number_range) local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2); while true; do read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value; if [ -z "$new_value" ]; then break; fi; if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then declare "$var_name"="$new_value"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi; done ;; esac; save_config; log_info "'$label' 已更新."; sleep 1; done; }
@@ -189,7 +184,7 @@ main_menu(){
     local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}"); local TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); local RUNNING=$(docker ps --format '{{.ID}}' | wc -l); local STOPPED=$((TOTAL - RUNNING))
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
     local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
-    local header_text="Docker 助手 ${SCRIPT_VERSION}"
+    local header_text="Docker 助手 v${SCRIPT_VERSION}"
     
     local -a content_array=(" 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" " ⏳ 下次检查: ${COUNTDOWN}" " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})")
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
