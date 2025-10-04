@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.5 - Simplified & Robust)
+# 🚀 通用工具函数库 (v1.6 - Final Polish)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -10,7 +10,7 @@ set -eo pipefail
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
-  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m' # No Color
+  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 else
   RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
 fi
@@ -23,97 +23,50 @@ log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 
 # --- 用户交互函数 ---
-press_enter_to_continue() { 
-    read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"
-}
-
-confirm_action() {
-    read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice
-    case "$choice" in
-        n|N ) return 1 ;;
-        * ) return 0 ;;
-    esac
-}
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"; }
+confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
-generate_line() {
-    local len=${1:-62}; local char="─"
-    printf "%*s" "$len" | tr ' ' "$char"
-}
-
+generate_line() { local len=${1:-62}; local char="─"; printf "%*s" "$len" | tr ' ' "$char"; }
 _get_visual_width() {
-    local text="$1"; local plain_text
-    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    echo "$plain_text" | awk '{
-        split($0, chars, "");
-        width = 0;
-        for (i in chars) {
-            if (length(chars[i]) > 1) { width += 2; } else { width += 1; }
-        }
-        print width;
-    }'
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    echo "$plain_text" | awk '{ split($0, chars, ""); width = 0; for (i in chars) { if (length(chars[i]) > 1) { width += 2; } else { width += 1; } } print width; }'
 }
-
-# ==============================================================================
-# 关键修复: 简化函数，只处理单一多行字符串参数，使用经典 IFS 方法
-# ==============================================================================
 _render_menu() {
-    local title="$1"; shift
-    local content_str="$*" # 将所有剩余参数视为一个单一字符串
-    local max_width=0; local line_width
-
-    line_width=$(_get_visual_width "$title")
-    if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    local title="$1"; shift; local content_str="$*"; local max_width=0; local line_width
+    line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
     local old_ifs=$IFS; IFS=$'\n'
+    # =============================================================
+    # 关键修复: 增加一个判断，避免空行影响宽度计算
+    # =============================================================
     for line in $content_str; do
-        line_width=$(_get_visual_width "$line")
-        if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+        if [ -n "$line" ]; then # 只有在行不为空时才计算宽度
+            line_width=$(_get_visual_width "$line")
+            if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+        fi
     done
     IFS=$old_ifs
     
-    local box_width; box_width=$(expr $max_width + 6)
-    if [ $box_width -lt 40 ]; then box_width=40; fi
-    
-    local title_width; title_width=$(_get_visual_width "$title")
-    local padding_total; padding_total=$(expr $box_width - $title_width)
-    local padding_left; padding_left=$(expr $padding_total / 2)
-    local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    local box_width; box_width=$(expr $max_width + 6); if [ $box_width -lt 40 ]; then box_width=40; fi
+    local title_width; title_width=$(_get_visual_width "$title"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
     IFS=$'\n'
-    for line in $content_str; do
-        echo -e "$line"
-    done
+    for line in $content_str; do echo -e "$line"; done
     IFS=$old_ifs
     
     echo -e "${BLUE}$(generate_line $(expr $box_width + 2))${NC}"
 }
-
 _render_dynamic_box() {
     local title="$1"; local box_width="$2"; shift 2; local content_str="$@"
-    local title_width; title_width=$(_get_visual_width "$title")
-    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total; padding_total=$(expr $box_width - $title_width)
-    local padding_left; padding_left=$(expr $padding_total / 2)
-    local left_padding; left_padding=$(printf '%*s' "$padding_left")
-    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    local title_width; title_width=$(_get_visual_width "$title"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
-    echo ""; echo -e "${GREEN}╭${top_bottom_border}╮${NC}"
-    echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
+    echo ""; echo -e "${GREEN}╭${top_bottom_border}╮${NC}"; echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"; echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    local old_ifs=$IFS; IFS=$'\n'
-    for line in $content_str; do
-        echo -e "$line"
-    done
-    IFS=$old_ifs
+    local old_ifs=$IFS; IFS=$'\n'; for line in $content_str; do echo -e "$line"; done; IFS=$old_ifs
 }
-
-_print_header() {
-    _render_menu "$1" ""
-}
+_print_header() { _render_menu "$1" ""; }
