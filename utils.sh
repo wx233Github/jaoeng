@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.7 - Final UI Fix)
+# 🚀 通用工具函数库 (v1.8 - Ultimate Compatibility Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -27,28 +27,39 @@ press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继�
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
-generate_line() { local len=${1:-62}; local char="─"; printf "%*s" "$len" | tr ' ' "$char"; }
+
+# =============================================================
+# 关键修复: 还原为最兼容的循环实现，避免 tr 的兼容性问题
+# =============================================================
+generate_line() {
+    local len=${1:-62}
+    local char="─"
+    local line=""
+    local i=0
+    # 使用简单的循环，确保在任何环境下都能正确生成线条
+    while [ $i -lt $len ]; do
+        line="${line}${char}"
+        i=$((i + 1))
+    done
+    echo "$line"
+}
+
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     echo "$plain_text" | awk '{ split($0, chars, ""); width = 0; for (i in chars) { if (length(chars[i]) > 1) { width += 2; } else { width += 1; } } print width; }'
 }
 
-# =============================================================
-# 关键修复: 函数明确只接收2个参数，并用最可靠的方式处理
-# =============================================================
 _render_menu() {
     local title="$1"
-    local content_str="$2" # 第二个参数是包含所有内容的多行字符串
+    local content_str="$2"
     local max_width=0
     local line_width
 
     line_width=$(_get_visual_width "$title")
     if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    local old_ifs=$IFS
-    IFS=$'\n'
+    local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do
-        # 只有在行不为空时才计算宽度
         if [ -n "$line" ]; then
             line_width=$(_get_visual_width "$line")
             if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
