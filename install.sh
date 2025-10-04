@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.7 - Ultimate Emoji UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.8 - Final UI Character Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.7"
+SCRIPT_VERSION="v71.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,17 +138,18 @@ generate_line() { local len=$1; local char="─"; local i=0; local line=""; whil
 # =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除 Emoji 的零宽度变体选择器，这是导致计算错误的关键
+    # 移除 Emoji 的零宽度变体选择器
     local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
     local width=0
     local i=0
     while [ $i -lt ${#processed_text} ]; do
         char=${processed_text:$i:1}
-        # Check byte length of the character
-        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
+        # Special case for '›' which can be single-width
+        if [[ "$char" == "›" ]]; then
+            width=$((width + 1))
+        elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
             width=$((width + 1))
