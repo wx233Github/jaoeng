@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.9 - Ultimate UI Character Fix)
+# 🚀 VPS 一键安装入口脚本 (v72.0 - Ultimate UI Final Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.9"
+SCRIPT_VERSION="v72.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -132,26 +132,23 @@ execute_module() {
     return $exit_code
 }
 generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
+generate_spaces() { local len=$1; local i=0; local spaces=""; while [ $i -lt $len ]; do spaces="${spaces} "; i=$(expr $i + 1); done; echo "$spaces"; }
 
 # =============================================================
 # START: Ultimate _get_visual_width function
 # =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除 Emoji 的零宽度变体选择器，这是导致计算错误的关键
-    # Bash/sed in some systems need the $'' syntax for unicode
+    # 移除 Emoji 的零宽度变体选择器
     local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
     local width=0
     local i=0
     while [ $i -lt ${#processed_text} ]; do
         char=${processed_text:$i:1}
-        # Special case for '›' which can be single-width
         if [[ "$char" == "›" ]]; then
             width=$((width + 1))
-        # Check byte length of the character for multi-byte detection
         elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
@@ -173,7 +170,17 @@ display_menu() {
     for item in $item_list; do line_width=$(_get_visual_width "  XX. › ${item}"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi; done
     IFS=$old_ifs
     local box_width=$max_width; box_width=$(expr $box_width + 6); if [ $box_width -lt 40 ]; then box_width=40; fi
-    local title_width; title_width=$(_get_visual_width "$main_title_text"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    
+    # --- Start Manual Padding ---
+    local title_width; title_width=$(_get_visual_width "$main_title_text")
+    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
+    local padding_total; padding_total=$(expr $box_width - $title_width)
+    local padding_left; padding_left=$(expr $padding_total / 2)
+    local padding_right; padding_right=$(expr $padding_total - $padding_left)
+    local left_padding; left_padding=$(generate_spaces "$padding_left")
+    local right_padding; right_padding=$(generate_spaces "$padding_right")
+    # --- End Manual Padding ---
+
     echo ""; echo -e "${CYAN}╭${top_bottom_border}╮${NC}"; echo -e "${CYAN}│${left_padding}${main_title_text}${right_padding}${CYAN}│${NC}"; echo -e "${CYAN}╰${top_bottom_border}╯${NC}"
     local i=1; while IFS=$'\t' read -r icon name; do printf "  ${YELLOW}%2d.${NC} %s %s\n" "$i" "$icon" "$name"; i=$(expr $i + 1); done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
     local line_separator; line_separator=$(generate_line "$(expr $box_width + 2)"); echo -e "${BLUE}${line_separator}${NC}"; local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
