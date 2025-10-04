@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.9 - Ultimate UI Final Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.9 - Ultimate Portability UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -134,28 +134,41 @@ execute_module() {
 generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
 # =============================================================
-# START: Ultimate _get_visual_width function
+# START: Ultimate Portable _get_visual_width function
 # =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除 Emoji 的零宽度变体选择器
-    local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
-    # 使用正则表达式计算单字节和多字节字符的数量
-    local single_byte; single_byte=$(echo -n "$processed_text" | sed 's/[^[:ascii:]]//g' | wc -c)
-    local multi_byte; multi_byte=$(echo -n "$processed_text" | sed 's/[[:ascii:]]//g' | wc -m)
-    
-    # 特例处理 '›' 符号，通常它虽然是多字节，但只占一个字符宽度
-    local arrow_count; arrow_count=$(echo -n "$processed_text" | grep -o '›' | wc -l)
-
-    # 总宽度 = (多字节字符数 - '›'符号数) * 2 + (单字节字符数 + '›'符号数)
-    local width=$(( (multi_byte - arrow_count) * 2 + single_byte + arrow_count ))
+    local width=0
+    local i=0
+    while [ $i -lt ${#plain_text} ]; do
+        char=${plain_text:$i:1}
+        
+        # 使用 printf 获取字符的 Unicode 码点
+        local char_code
+        char_code=$(printf '%d' "'$char" 2>/dev/null)
+        
+        # 特例处理 '›' 符号 (码点 8250)，强制为单宽度
+        if [ "$char_code" -eq 8250 ]; then
+            width=$((width + 1))
+        # 特例处理零宽度变体选择器 (码点 65039)，宽度为0
+        elif [ "$char_code" -eq 65039 ]; then
+            width=$((width + 0))
+        # ASCII 字符 (码点 <= 127) 宽度为1
+        elif [ "$char_code" -le 127 ]; then
+            width=$((width + 1))
+        # 其他多字节字符宽度为2
+        else
+            width=$((width + 2))
+        fi
+        
+        i=$((i + 1))
+    done
     echo $width
 }
 # =============================================================
-# END: Ultimate _get_visual_width function
+# END: Ultimate Portable _get_visual_width function
 # =============================================================
 
 display_menu() {
