@@ -33,9 +33,6 @@ _get_visual_width() {
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
-# =============================================================
-# 关键修复: 统一接口，只接受数组展开，并精确居中
-# =============================================================
 _render_menu() {
     local title="$1"; shift
     local max_width=0; local line_width
@@ -43,7 +40,6 @@ _render_menu() {
     line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
     for line in "$@"; do
-        # 即使是空字符串也安全处理
         line_width=$(_get_visual_width "$line")
         if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
