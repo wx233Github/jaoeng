@@ -24,28 +24,28 @@
   "menus": {
     "comment": "动态菜单配置区。每个菜单都有 title 和 items。",
     "MAIN_MENU": {
-      "title": "🚀 VPS 一键安装脚本",
+      "title": "🖥️ VPS 一键安装脚本",
       "items": [
         {
-          "name": "安装 Docker",
+          "name": "Docker",
           "type": "item",
           "action": "docker.sh",
           "icon": "›"
         },
         {
-          "name": "安装 Nginx",
+          "name": "Nginx",
           "type": "item",
           "action": "nginx.sh",
           "icon": "›"
         },
         {
-          "name": "🛠️ 常用工具",
+          "name": "🔧 常用工具",
           "type": "submenu",
           "action": "TOOLS_MENU",
           "icon": "→"
         },
         {
-          "name": "证书申请 (Cert)",
+          "name": "📕 证书申请",
           "type": "submenu",
           "action": "CERT_MENU",
           "icon": "→"
@@ -66,14 +66,14 @@
     },
 
     "TOOLS_MENU": {
-      "title": "🛠️ 常用工具",
+      "title": "🔧 常用工具",
       "items": [
         { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh", "icon": "›" }
       ]
     },
 
     "CERT_MENU": {
-      "title": "证书申请 (Cert)",
+      "title": "📕 证书申请",
       "items": [
         { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh", "icon": "›" }
       ]
