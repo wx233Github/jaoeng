@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.12 - Final Minimalist UI)
+# 🚀 通用工具函数库 (v2.13 - Final Minimalist UI)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -42,8 +42,10 @@ _render_menu() {
     
     local line_len=$((max_width > 40 ? max_width : 40))
 
-    echo ""; echo -e "${CYAN}$(generate_line "$line_len" "﹌")${NC}"
-    
+    # 顶部重型分隔符
+    echo ""; echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}" # 使用重型字符
+
+    # 标题
     if [ -n "$title" ]; then
         local title_width; title_width=$(_get_visual_width "$title")
         local padding_total=$((line_len - title_width))
@@ -52,10 +54,13 @@ _render_menu() {
         echo -e "${left_padding}${title}"
     fi
     
-    echo -e "${BLUE}$(generate_line "$line_len" "╌")${NC}"
+    # 标题下方的轻型分隔符
+    echo -e "${BLUE}$(generate_line "$line_len" "──────")${NC}" # 使用轻型字符
 
+    # 选项
     for line in "$@"; do echo -e "$line"; done
 
-    echo -e "${GREEN}$(generate_line "$line_len" "═")${NC}"
+    # 底部重型分隔符
+    echo -e "${BLUE}$(generate_line "$line_len" "━━━━━━")${NC}" # 使用重型字符
 }
 _print_header() { _render_menu "$1" ""; }
