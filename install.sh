@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v72.3 - Force Reset Fix)
+# 🚀 VPS 一键安装入口脚本 (v72.5 - Safe Auto-Restart)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v72.3"
+SCRIPT_VERSION="v72.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -77,7 +77,7 @@ AUTO_YES="false"
 if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then AUTO_YES="true"; fi
 
 load_config() {
-    export LC_ALL=C.UTF-8
+    export LC_ALL=C.UTF_8
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do
@@ -140,7 +140,7 @@ force_update_all() {
 }
 
 # =============================================================
-# 关键修复: 重构 "强制重置" 函数，确保无条件下载所有核心文件
+# 关键修复: 恢复权限 + 安全自动重启
 # =============================================================
 confirm_and_force_update() {
     export LC_ALL=C.UTF-8; 
@@ -150,33 +150,38 @@ confirm_and_force_update() {
     if [ "$choice" = "yes" ]; then
         log_info "开始强制完全重置..."
         
-        # 定义需要无条件更新的核心文件
         declare -A core_files_to_reset=(
-            ["配置文件"]="config.json"
             ["主程序"]="install.sh"
             ["工具库"]="utils.sh"
+            ["配置文件"]="config.json"
         )
         
-        # 循环下载，确保每个文件都更新到最新
         for name in "${!core_files_to_reset[@]}"; do
             local file_path="${core_files_to_reset[$name]}"
             log_info "正在强制更新 ${name}..."
             local temp_file="/tmp/$(basename "$file_path").tmp.$$"
             if ! _download_file "$file_path" "$temp_file"; then
-                log_err "下载最新的 ${name} 失败。"
-                # 即使失败也继续尝试更新其他文件
-                continue
+                log_err "下载最新的 ${name} 失败。"; continue
             fi
             sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
             log_success "${name} 已重置为最新版本。"
         done
         
-        log_info "正在重新加载配置并检查所有模块更新..."
-        load_config
-        _update_all_modules # 检查并更新所有其他模块
+        log_info "正在恢复核心脚本执行权限..."
+        sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh"
+        log_success "权限已恢复。"
+
+        _update_all_modules
         log_success "强制重置完成！"
-        log_info "脚本将在3秒后自动重启以应用所有更新..."
-        sleep 3
+        
+        log_info "脚本将在2秒后自动重启以应用所有更新..."
+        sleep 2
+        
+        # 关键修复: 在 exec 替换进程前，手动释放文件锁，避免冲突
+        flock -u 200
+        rm -f "${CONFIG[lock_file]}"
+        
+        # trap 将不会被 exec 触发，因此手动释放锁是必须的
         exec sudo -E bash "$FINAL_SCRIPT_PATH"
     else 
         log_info "操作已取消."; 
@@ -208,7 +213,7 @@ execute_module() {
 }
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
-    local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json"); local items_str=(); local i=1
+    local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json"); local -a items_str=(); local i=1
     while IFS=$'\t' read -r icon name; do
         items_str+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
         i=$(expr $i + 1)
