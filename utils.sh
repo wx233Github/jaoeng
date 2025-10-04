@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.28 - 最终对齐修正版)
-# - [最终修正] 采用真正计算视觉宽度（中文=2）的 _get_visual_width 函数
+# 🚀 通用工具函数库 (v2.29 - 最终UI修正版)
+# - [最终修正] 增加菜单内部边距，适配移动终端UI
 # =============================================================
 
 # --- 严格模式 ---
@@ -39,7 +39,6 @@ generate_line() {
     echo "$line"
 }
 
-# [最终修正] 采用真正计算视觉宽度的函数
 _get_visual_width() {
     local text="$1"
     local plain_text
@@ -54,20 +53,23 @@ _get_visual_width() {
     echo $(( (bytes + chars) / 2 ))
 }
 
+# [最终UI修正] 增加内部边距，适配移动终端
 _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
     
     local max_width=0
-    local title_width=$(_get_visual_width "$title")
+    # 为标题也增加左右各一个空格的边距
+    local title_width=$(( $(_get_visual_width "$title") + 2 ))
     if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
-        local line_width=$(_get_visual_width "$line")
+        # 为每行内容都增加左右各一个空格的边距
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
     
-    local box_width=$((max_width + 4))
+    local box_width=$((max_width + 2)) # 左右边框各占1
     if [ $box_width -lt 40 ]; then box_width=40; fi
 
     # 顶部
@@ -80,15 +82,15 @@ _render_menu() {
         local padding_right=$((padding_total - padding_left))
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding}${title}${right_padding}│${NC}"
+        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
     fi
     
     # 选项
     for line in "${lines[@]}"; do
-        local line_width=$(_get_visual_width "$line")
-        local padding_right=$((box_width - line_width - 1))
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        local padding_right=$((box_width - line_width))
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC}${line}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
     # 底部
