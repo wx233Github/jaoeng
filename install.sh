@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v73.9 - 最终对齐修正版)
-# - [最终修正] 采用真正计算视觉宽度（中文=2）的 _get_visual_width 函数
+# 🚀 VPS 一键安装入口脚本 (v74.0 - 最终UI修正版)
+# - [最终修正] 增加菜单内部边距，适配移动终端UI
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v73.9"
+SCRIPT_VERSION="v74.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -47,16 +47,14 @@ fi
 
 # --- 主程序逻辑 ---
 
-# 引入 utils（若不存在则报错退出）
+# 引入 utils
 if [ -f "$UTILS_PATH" ]; then
-    # shellcheck source=/dev/null
     source "$UTILS_PATH"
 else
     echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2
     exit 1
 fi
 
-# 默认 CONFIG（会被 load_config 覆盖）
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
@@ -71,38 +69,16 @@ if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then
     AUTO_YES="true"
 fi
 
-# ---------- Helper functions & 改进实现 ----------
-
-# [最终修正] 采用真正计算视觉宽度的函数
-_get_visual_width() {
-    local text="$1"
-    local plain_text
-    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    if [ -z "$plain_text" ]; then
-        echo 0
-        return
-    fi
-    local bytes chars
-    bytes=$(echo -n "$plain_text" | wc -c)
-    chars=$(echo -n "$plain_text" | wc -m)
-    echo $(( (bytes + chars) / 2 ))
-}
-
-# ---------- 配置加载：修复与稳健读取 ----------
 load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        # 读取非复杂键（排除 menus 和 dependencies 和注释键）
         while IFS='=' read -r key value; do
-            # 去掉外层可能的双引号
             value=$(printf '%s' "$value" | sed 's/^"\(.*\)"$/\1/')
             CONFIG[$key]="$value"
         done < <(jq -r 'to_entries
             | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
             | map("\(.key)=\(.value)")
             | .[]' "$CONFIG_FILE" 2>/dev/null || true)
-
-        # 显式读取几项可能包含空格或是复杂字符串的配置
         CONFIG[dependencies]="$(jq -r '.dependencies.common // "curl cmp ln dirname flock jq"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[dependencies]}")"
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
@@ -110,11 +86,6 @@ load_config() {
     fi
 }
 
-# ... [文件剩余部分无需修改，保持原样即可] ...
-# 为了简洁，此处省略了从 check_and_install_dependencies 到 main 函数的所有内容，它们都是正确的。
-# 您只需复制此代码块的全部内容并覆盖 install.sh 即可。
-
-# ---------- 依赖检查与安装 ----------
 check_and_install_dependencies() {
     local missing_deps=()
     local deps=(${CONFIG[dependencies]})
@@ -152,19 +123,16 @@ check_and_install_dependencies() {
     fi
 }
 
-# ---------- 下载工具：更强鲁棒性（重试） ----------
 _download_file() {
     local relpath="$1"
     local dest="$2"
     local url="${CONFIG[base_url]}/${relpath}?_=$(date +%s)"
-    # curl 带重试与超时
     if ! curl -fsSL --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 "$url" -o "$dest"; then
         return 1
     fi
     return 0
 }
 
-# ---------- 自更新（保留原流程） ----------
 self_update() {
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
     if [ "$0" != "$SCRIPT_PATH" ]; then
@@ -188,13 +156,11 @@ self_update() {
     rm -f "$temp_script" 2>/dev/null || true
 }
 
-# ---------- 下载模块到缓存（带重试与更友好日志） ----------
 download_module_to_cache() {
     local script_name="$1"
     local local_file="${CONFIG[install_dir]}/$script_name"
     local tmp_file="/tmp/$(basename "$script_name").$$"
     local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"
-    # 使用 curl 输出 http code
     local http_code
     http_code=$(curl -sS --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 -w "%{http_code}" -o "$tmp_file" "$url" 2>/dev/null) || true
     local curl_exit_code=$?
@@ -214,7 +180,6 @@ download_module_to_cache() {
     fi
 }
 
-# ---------- 更新核心 utils ----------
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if _download_file "utils.sh" "$temp_utils"; then
@@ -230,15 +195,12 @@ _update_core_files() {
     fi
 }
 
-# ---------- 更稳健的批量更新模块 ----------
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
         log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
         return
     fi
-
-    # 提取所有 item 类型为 item 的 action 字段（防空）
     local scripts_to_update
     scripts_to_update=$(jq -r '
         .menus // {} |
@@ -247,12 +209,10 @@ _update_all_modules() {
         select(.type == "item") |
         .action
     ' "$cfg" 2>/dev/null || true)
-
     if [ -z "$scripts_to_update" ]; then
         log_info "未检测到可更新的模块。"
         return
     fi
-
     local pids=()
     for script_name in $scripts_to_update; do
         download_module_to_cache "$script_name" & pids+=($!)
@@ -262,7 +222,6 @@ _update_all_modules() {
     done
 }
 
-# ---------- 强制更新所有（保留原意） ----------
 force_update_all() {
     self_update
     _update_core_files
@@ -270,7 +229,6 @@ force_update_all() {
     log_success "所有组件更新检查完成！"
 }
 
-# ---------- 强制重置（保留原有交互） ----------
 confirm_and_force_update() {
     log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
     log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
@@ -305,7 +263,6 @@ confirm_and_force_update() {
     return 10
 }
 
-# ---------- 卸载脚本 ----------
 uninstall_script() {
     log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
     log_warn "  - 安装目录: ${CONFIG[install_dir]}"
@@ -326,12 +283,10 @@ uninstall_script() {
     fi
 }
 
-# ---------- 引号安全打印参数辅助 ----------
 _quote_args() {
     for arg in "$@"; do printf "%q " "$arg"; done
 }
 
-# ---------- 执行模块（改为使用临时 runner 文件以避免转义问题） ----------
 execute_module() {
     local script_name="$1"
     local display_name="$2"
@@ -347,15 +302,12 @@ execute_module() {
         fi
     fi
 
-    # 设置环境变量导出（注意：后续写入临时 runner 文件）
     local env_exports="export IS_NESTED_CALL=true
 export FORCE_COLOR=true
 export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'
 export JB_TIMEZONE='${CONFIG[timezone]}'
 export LC_ALL=${LC_ALL}
 "
-
-    # 如果存在 module-specific config，则转成环境变量
     local module_key
     module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -364,7 +316,6 @@ export LC_ALL=${LC_ALL}
         module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // "null"' "$config_path" 2>/dev/null || echo "null")
     fi
     if [ "$module_config_json" != "null" ] && [ -n "$module_config_json" ]; then
-        # 将 module 配置逐项导出为 ENV（排除 comment 开头的键）
         local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | 
             if ($v|type) == "array" then [$k, ($v|join(","))] 
             elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] 
@@ -373,7 +324,6 @@ export LC_ALL=${LC_ALL}
             if [ -n "$key" ]; then
                 local key_upper
                 key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
-                # 将值进行简单转义：替换单引号为 '\'' 以便 embed 在单引号字符串中
                 value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
                 env_exports+=$(printf "export %s_CONF_%s='%s'\n" "$(echo "$module_key" | tr '[:lower:]' '[:upper:]')" "$key_upper" "$value")
             fi
@@ -382,15 +332,11 @@ export LC_ALL=${LC_ALL}
 
     local extra_args_str
     extra_args_str=$(_quote_args "$@")
-
-    # 创建临时 runner 文件，避免复杂转义问题
     local tmp_runner="/tmp/jb_runner.$$"
     cat > "$tmp_runner" <<EOF
 #!/bin/bash
 set -e
-# environment exports
 $env_exports
-# exec module with original args
 exec bash '$local_path' $extra_args_str
 EOF
     sudo bash "$tmp_runner" < /dev/tty || local exit_code=$?
@@ -407,46 +353,40 @@ EOF
     return ${exit_code:-0}
 }
 
-# ---------- 菜单显示逻辑（保留原样，但加强容错） ----------
 _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
 
     local max_width=0
-    local title_width=$(_get_visual_width "$title")
+    local title_width=$(( $(_get_visual_width "$title") + 2 ))
     if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
-        local line_width=$(_get_visual_width "$line")
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
 
-    local box_width=$((max_width + 4))
+    local box_width=$((max_width + 2))
     if [ $box_width -lt 40 ]; then box_width=40; fi
 
-    # 顶部
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
 
-    # 标题
     if [ -n "$title" ]; then
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding}${title}${right_padding}│${NC}"
+        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
     fi
 
-    # 选项
     for line in "${lines[@]}"; do
-        local line_width=$(_get_visual_width "$line")
-        local padding_right=$((box_width - line_width - 1))
-        # 保护 printf 参数，若 padding_right 负数则置为 0
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        local padding_right=$((box_width - line_width))
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC}${line}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
-    # 底部
     echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
 }
 
@@ -548,7 +488,6 @@ process_menu_selection() {
     esac
 }
 
-# ---------- 主循环 ----------
 main() {
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
@@ -613,7 +552,6 @@ main() {
         local exit_code=0
         process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ]; then
-            # 清空 stdin 缓冲
             while read -r -t 0; do :; done
             press_enter_to_continue < /dev/tty
         fi
