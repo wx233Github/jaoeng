@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.0)
+# 🚀 通用工具函数库 (v1.1 - UI & Color Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -55,28 +55,34 @@ generate_line() {
     echo "$line"
 }
 
-# 计算字符串的可视宽度（处理中文字符和颜色代码）
+# =============================================================
+# 关键修复: 采用更健壮的 awk 方法计算可视宽度，以正确处理 Emoji
+# =============================================================
 _get_visual_width() {
     local text="$1"
-    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
-    
-    local width=0
-    local i=0
-    while [ $i -lt ${#processed_text} ]; do
-        char=${processed_text:$i:1}
-        if [[ "$char" == "›" ]]; then
-            width=$((width + 1))
-        elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
-            width=$((width + 2))
-        else
-            width=$((width + 1))
-        fi
-        i=$((i + 1))
-    done
-    echo $width
+    # 移除颜色控制代码
+    local plain_text
+    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # 使用 awk 计算宽度。这个方法对于多字节字符（如中文、Emoji）的处理比纯 shell 循环更可靠。
+    # 它将每个字符分割出来，检查其字节长度。如果字节长度大于1，通常意味着它是一个宽字符，占2个显示列。
+    echo "$plain_text" | awk '{
+        split($0, chars, "");
+        width = 0;
+        for (i in chars) {
+            if (length(chars[i]) > 1) {
+                width += 2;
+            } else {
+                width += 1;
+            }
+        }
+        print width;
+    }'
 }
 
+# =============================================================
+# 关键修复: 将 UI 边框颜色从 YELLOW 修改为 GREEN
+# =============================================================
 # 渲染一个带标题和内容的静态菜单
 _render_menu() {
     local title="$1"; shift
@@ -104,9 +110,9 @@ _render_menu() {
     local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
     echo ""
-    echo -e "${YELLOW}╭$(generate_line "$box_width")╮${NC}"
-    echo -e "${YELLOW}│${left_padding}${title}${right_padding}${YELLOW}│${NC}"
-    echo -e "${YELLOW}╰$(generate_line "$box_width")╯${NC}"
+    echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
+    echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
     IFS=$'\n'
     for line in $lines_str; do
@@ -129,9 +135,9 @@ _render_dynamic_box() {
     local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
     echo ""
-    echo -e "${YELLOW}╭${top_bottom_border}╮${NC}"
-    echo -e "${YELLOW}│${left_padding}${title}${right_padding}${YELLOW}│${NC}"
-    echo -e "${YELLOW}╰$(generate_line "$box_width")╯${NC}"
+    echo -e "${GREEN}╭${top_bottom_border}╮${NC}"
+    echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
     local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do
