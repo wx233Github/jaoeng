@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.4 - Final Locale & UI Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.4 - Ultimate UI & Portability Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -9,9 +9,8 @@ SCRIPT_VERSION="v71.4"
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF-8}
-# 强制重置 locale 设置，避免中文字符间距异常
+# FINAL FIX: 强制设置 locale, 解决全局中文字符间距问题
 export LC_ALL=C.UTF-8
-unset LC_CTYPE
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
@@ -120,7 +119,7 @@ _quote_args() { for arg in "$@"; do printf "%q " "$arg"; done; }
 execute_module() {
     export LC_ALL=C.UTF-8; local script_name="$1"; local display_name="$2"; shift 2; local local_path="${CONFIG[install_dir]}/$script_name"
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_error "下载失败."; return 1; fi; fi
-    local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}'; export LC_ALL=C.UTF-8; unset LC_CTYPE;"; local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]'); local config_path="${CONFIG[install_dir]}/config.json"
+    local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}'; export LC_ALL=C.UTF-8;"; local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]'); local config_path="${CONFIG[install_dir]}/config.json"
     local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // null' "$config_path")
     if [ "$module_config_json" != "null" ]; then
         local prefix; prefix=$(basename "$script_name" .sh | tr '[:lower:]' '[:upper:]')
@@ -145,7 +144,7 @@ _get_visual_width() {
     local i=0
     while [ $i -lt ${#plain_text} ]; do
         char=${plain_text:$i:1}
-        # Check byte length of the character
+        # Check byte length of the character, most portable method
         if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
