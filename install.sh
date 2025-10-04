@@ -45,9 +45,6 @@ fi
 
 # --- 主程序逻辑 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
-# ... (rest of the script is unchanged)
-# I will paste the whole file for completeness
-
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 CONFIG[install_dir]="/opt/vps_install_modules"
@@ -141,7 +138,6 @@ generate_line() { local len=$1; local char="─"; local i=0; local line=""; whil
 # =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     
     local width=0
