@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.9 - New Minimalist UI)
+# 🚀 通用工具函数库 (v2.10 - Final Minimalist UI)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -33,9 +33,6 @@ _get_visual_width() {
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
-# =============================================================
-# 关键修复: 实现全新的极简UI模板
-# =============================================================
 _render_menu() {
     local title="$1"; shift
     
@@ -45,10 +42,8 @@ _render_menu() {
     
     local line_len=$((max_width > 40 ? max_width : 40))
 
-    # 顶部
     echo ""; echo -e "${CYAN}$(generate_line "$line_len" "﹌")${NC}"
     
-    # 标题
     if [ -n "$title" ]; then
         local title_width; title_width=$(_get_visual_width "$title")
         local padding_total=$((line_len - title_width))
@@ -57,13 +52,10 @@ _render_menu() {
         echo -e "${left_padding}${title}"
     fi
     
-    # 中部分隔线
     echo -e "${BLUE}$(generate_line "$line_len" "╌")${NC}"
 
-    # 选项
     for line in "$@"; do echo -e "$line"; done
 
-    # 底部
     echo -e "${GREEN}$(generate_line "$line_len" "═")${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
