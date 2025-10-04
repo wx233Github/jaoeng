@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.5 - Separator UI)
+# 🚀 通用工具函数库 (v2.6 - New Unified UI Charset)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -34,27 +34,35 @@ _get_visual_width() {
 }
 
 # =============================================================
-# 关键修复: UI不再包裹标题，改为简单的分隔线样式
+# 关键修复: 替换UI字符集为新的模板样式
 # =============================================================
 _render_menu() {
     local title="$1"; shift
+    local max_width=0; local line_width
+
+    line_width=$(_get_visual_width "● ${title} ●"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    # 如果标题不为空，则渲染带分隔线的标题
+    for line in "$@"; do
+        line_width=$(_get_visual_width "$line")
+        if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    done
+    
+    local box_width; box_width=$((max_width + 4)); if [ $box_width -lt 40 ]; then box_width=40; fi
+    
+    echo ""; echo -e "${CYAN}◌$(generate_line "$box_width" "─")◌${NC}"
+    
     if [ -n "$title" ]; then
-        local title_width; title_width=$(_get_visual_width "$title")
-        local line_len=$((title_width > 40 ? title_width : 40))
-        
-        echo ""; echo -e "${GREEN}$(generate_line "$line_len" "─")${NC}"
-        # 居中打印标题
-        local padding_total=$((line_len - title_width))
+        local title_width; title_width=$(_get_visual_width "● ${title}")
+        local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        echo -e "${left_padding}${title}"
-        echo -e "${GREEN}$(generate_line "$line_len" "─")${NC}"
+        echo -e "${left_padding}● ${title}"
+        echo -e "${CYAN}◌$(generate_line "$box_width" "─")◌${NC}"
     fi
     
-    # 打印菜单项
     for line in "$@"; do echo -e "$line"; done
+    
+    echo -e "${CYAN}◌$(generate_line "$box_width" "─")◌${NC}"
 }
 
 _print_header() { _render_menu "$1" ""; }
