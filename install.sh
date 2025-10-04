@@ -1,15 +1,26 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v72.5 - Safe Auto-Restart)
+# 🚀 VPS 一键安装入口脚本 (v72.6 - Locale Fallback Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v72.5"
+SCRIPT_VERSION="v72.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
-export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=C.UTF-8
+export LANG=${LANG:-en_US.UTF-8}
+
+# =============================================================
+# 关键修复: 检查 locale 是否存在，如果不存在则优雅地回退
+# =============================================================
+if locale -a | grep -q "C.UTF-8"; then
+    export LC_ALL=C.UTF-8
+else
+    export LC_ALL=C
+    # 如果您想在回退时看到提示，可以取消下面这行的注释
+    # echo "[警告] 系统不支持 C.UTF-8, 已回退到 C locale。可能会影响部分字符显示。" >&2
+fi
+
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
@@ -77,7 +88,6 @@ AUTO_YES="false"
 if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then AUTO_YES="true"; fi
 
 load_config() {
-    export LC_ALL=C.UTF_8
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do
@@ -90,7 +100,7 @@ load_config() {
     fi
 }
 check_and_install_dependencies() {
-    export LC_ALL=C.UTF-8; local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warn "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" = "unknown" ]; then log_err "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; exit 1; fi; if [ "$AUTO_YES" = "true" ]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if echo "$choice" | grep -qE '^[Yy]$'; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" = "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_err "依赖安装失败."; exit 1; fi; log_success "依赖安装完成！"; else log_err "用户取消安装."; exit 1; fi; fi
+    local missing_deps=(); local deps=(${CONFIG[dependencies]}); for cmd in "${deps[@]}"; do if ! command -v "$cmd" &>/dev/null; then missing_deps+=("$cmd"); fi; done; if [ ${#missing_deps[@]} -gt 0 ]; then log_warn "缺少核心依赖: ${missing_deps[*]}"; local pm; pm=$(command -v apt-get &>/dev/null && echo "apt" || (command -v dnf &>/dev/null && echo "dnf" || (command -v yum &>/dev/null && echo "yum" || echo "unknown"))); if [ "$pm" = "unknown" ]; then log_err "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"; exit 1; fi; if [ "$AUTO_YES" = "true" ]; then choice="y"; else read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty; fi; if echo "$choice" | grep -qE '^[Yy]$'; then log_info "正在使用 $pm 安装..."; local update_cmd=""; if [ "$pm" = "apt" ]; then update_cmd="sudo apt-get update"; fi; if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then log_err "依赖安装失败."; exit 1; fi; log_success "依赖安装完成！"; else log_err "用户取消安装."; exit 1; fi; fi
 }
 _download_file() { 
     local remote_path="$1"
@@ -98,7 +108,7 @@ _download_file() {
     curl -fsSL --connect-timeout 5 --max-time 30 "${CONFIG[base_url]}/${remote_path}?_=$(date +%s)" -o "$local_path";
 }
 self_update() { 
-    export LC_ALL=C.UTF-8; local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [ "$0" != "$SCRIPT_PATH" ]; then return; fi
+    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"; if [ "$0" != "$SCRIPT_PATH" ]; then return; fi
     local temp_script="/tmp/install.sh.tmp.$$"; if ! _download_file "install.sh" "$temp_script"; then log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"; rm -f "$temp_script"; return; fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then 
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
@@ -108,15 +118,15 @@ self_update() {
     fi; rm -f "$temp_script"; 
 }
 download_module_to_cache() { 
-    export LC_ALL=C.UTF-8; local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local tmp_file="/tmp/$(basename "$script_name").$$"; local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"; local http_code; http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url"); local curl_exit_code=$?; if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"; rm -f "$tmp_file"; return 1; fi
+    local script_name="$1"; local local_file="${CONFIG[install_dir]}/$script_name"; local tmp_file="/tmp/$(basename "$script_name").$$"; local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"; local http_code; http_code=$(curl -fsSL --connect-timeout 5 --max-time 60 -w "%{http_code}" -o "$tmp_file" "$url"); local curl_exit_code=$?; if [ "$curl_exit_code" -ne 0 ] || [ "$http_code" -ne 200 ] || [ ! -s "$tmp_file" ]; then log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"; rm -f "$tmp_file"; return 1; fi
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then rm -f "$tmp_file"; return 0; else log_success "模块 (${script_name}) 已更新。"; sudo mkdir -p "$(dirname "$local_file")"; sudo mv "$tmp_file" "$local_file"; return 0; fi
 }
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if _download_file "utils.sh" "$temp_utils"; then
-        if ! cmp -s "$UTILS_PATH" "$temp_utils"; then
+        if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
             log_success "核心工具库 (utils.sh) 已更新。"
-            sudo mv "$temp_utils" "$UTILS_PATH"
+            sudo mv "$temp_utils" "$UTILS_PATH"; sudo chmod +x "$UTILS_PATH"
         else
             rm -f "$temp_utils"
         fi
@@ -125,25 +135,19 @@ _update_core_files() {
     fi
 }
 _update_all_modules() {
-    export LC_ALL=C.UTF-8
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | select(type == "object") | .items[]? | select(.type == "item").action' "${CONFIG[install_dir]}/config.json")
     if [ -z "$scripts_to_update" ]; then return; fi
     local pids=(); for script_name in $scripts_to_update; do download_module_to_cache "$script_name" & pids+=($!); done
     for pid in "${pids[@]}"; do wait "$pid" || true; done
 }
 force_update_all() { 
-    export LC_ALL=C.UTF-8
     self_update
     _update_core_files
     _update_all_modules
     log_success "所有组件更新检查完成！"
 }
 
-# =============================================================
-# 关键修复: 恢复权限 + 安全自动重启
-# =============================================================
 confirm_and_force_update() {
-    export LC_ALL=C.UTF-8; 
     log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"; 
     log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"; 
     read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
@@ -177,11 +181,9 @@ confirm_and_force_update() {
         log_info "脚本将在2秒后自动重启以应用所有更新..."
         sleep 2
         
-        # 关键修复: 在 exec 替换进程前，手动释放文件锁，避免冲突
         flock -u 200
         rm -f "${CONFIG[lock_file]}"
         
-        # trap 将不会被 exec 触发，因此手动释放锁是必须的
         exec sudo -E bash "$FINAL_SCRIPT_PATH"
     else 
         log_info "操作已取消."; 
@@ -196,9 +198,9 @@ uninstall_script() {
 }
 _quote_args() { for arg in "$@"; do printf "%q " "$arg"; done; }
 execute_module() {
-    export LC_ALL=C.UTF-8; local script_name="$1"; local display_name="$2"; shift 2; local local_path="${CONFIG[install_dir]}/$script_name"
+    local script_name="$1"; local display_name="$2"; shift 2; local local_path="${CONFIG[install_dir]}/$script_name"
     log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_err "下载失败."; return 1; fi; fi
-    local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}'; export LC_ALL=C.UTF-8;"; local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]'); local config_path="${CONFIG[install_dir]}/config.json"
+    local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}'; export LC_ALL=${LC_ALL};"; local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]'); local config_path="${CONFIG[install_dir]}/config.json"
     local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // null' "$config_path")
     if [ "$module_config_json" != "null" ]; then
         local prefix; prefix=$(basename "$script_name" .sh | tr '[:lower:]' '[:upper:]')
@@ -225,7 +227,7 @@ display_menu() {
     if [ "$AUTO_YES" = "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
 }
 process_menu_selection() {
-    export LC_ALL=C.UTF-8; local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
+    local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json")
     if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warn "无效选项."; return 10; fi
     local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]'); if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then log_warn "菜单项配置无效或不完整。"; return 10; fi
