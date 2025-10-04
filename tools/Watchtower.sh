@@ -46,18 +46,31 @@ send_notify() {
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$(expr $seconds / 3600); echo "${hours}h"; fi; }
 generate_line() { local len=${1:-62}; local char="─"; local line=""; local i=0; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
+# =============================================================
+# START: Final _get_visual_width function (FIXED)
+# =============================================================
 _get_visual_width() {
     local text="$1"
+    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    local processed_text; processed_text=$(echo "$plain_text" | sed 's/ //g')
-    local width=0; local i=0
-    while [ $i -lt ${#processed_text} ]; do
-        char=${processed_text:$i:1}
-        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi
+    
+    local width=0
+    local i=0
+    while [ $i -lt ${#plain_text} ]; do
+        char=${plain_text:$i:1}
+        # Check byte length of the character
+        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
+            width=$((width + 2))
+        else
+            width=$((width + 1))
+        fi
         i=$((i + 1))
     done
     echo $width
 }
+# =============================================================
+# END: Final _get_visual_width function
+# =============================================================
 
 _render_menu() {
     local title="$1"; shift; local lines_str="$@"; local max_width=0; local line_width
@@ -128,8 +141,8 @@ _render_simple_lines() {
 }
 confirm_action() { read -r -p "$(echo -e "${COLOR_YELLOW}$1 ([y]/n): ${COLOR_RESET}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
-# ... All functions from _start_watchtower_container_logic to just before show_watchtower_details are unchanged ...
-# (Pasting them for completeness)
+# ... Omitted unchanged functions for brevity ...
+# All functions from _start_watchtower_container_logic to just before show_watchtower_details are identical.
 _start_watchtower_container_logic(){
   local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
   local timezone="${JB_TIMEZONE:-Asia/Shanghai}"; local cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-300}"); if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); fi
@@ -237,10 +250,8 @@ show_watchtower_details(){
         
         local box_width; box_width=$(expr $max_width + 6)
         
-        # Build the final content string
         printf -v content_str '%s\n' "${content_lines_array[@]}"
         
-        # Use the new dedicated renderer
         _render_dynamic_box "$title" "$box_width" "$content_str"
         echo -e "${COLOR_BLUE}$(generate_line $(expr $box_width + 2))${COLOR_RESET}"
         
@@ -261,7 +272,6 @@ show_watchtower_details(){
 run_watchtower_once(){ echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower${COLOR_RESET}"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${COLOR_YELLOW}⚠️ Watchtower 正在后台运行。${COLOR_RESET}"; if ! confirm_action "是否继续？"; then echo -e "${COLOR_YELLOW}已取消。${COLOR_RESET}"; return 0; fi; fi; if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi; return 0; }
 view_and_edit_config(){ local -a config_items; config_items=( "TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string" "Cron 任务启用状态|CRON_TASK_ENABLED|bool" ); while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config; local content_lines=""; local i; for i in "${!config_items[@]}"; do local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${COLOR_CYAN}"; case "$type" in string) if [ -n "$current_value" ]; then color="${COLOR_GREEN}"; display_text="$current_value"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; bool) if [ "$current_value" = "true" ]; then color="${COLOR_GREEN}"; display_text="是"; else color="${COLOR_CYAN}"; display_text="否"; fi ;; interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ]; then color="${COLOR_GREEN}"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; number_range) if [ -n "$current_value" ]; then color="${COLOR_GREEN}"; display_text="$current_value"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; esac; content_lines+=$(printf "\n %2d. %-20s: %b%s%b" "$(expr $i + 1)" "$label" "$color" "$display_text" "$COLOR_RESET"); done; _render_menu "⚙️ 配置查看与编辑 ⚙️" "$content_lines"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice; if [ -z "$choice" ]; then return; fi; if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi; local selected_index=$(expr $choice - 1); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""; case "$type" in string) read -r -p "请输入新的 '$label' (当前: $current_value): " new_value; declare "$var_name"="${new_value:-$current_value}" ;; bool) read -r -p "是否启用 '$label'? (y/N): " new_value; if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;; interval) new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;; number_range) local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2); while true; do read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value; if [ -z "$new_value" ]; then break; fi; if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then declare "$var_name"="$new_value"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi; done ;; esac; save_config; log_info "'$label' 已更新."; sleep 1; done; }
 update_menu(){ while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; local items="  1. › 🚀 Watchtower (推荐, 名称排除)\n  2. › ⚙️ Systemd Timer (Compose 项目)\n  3. › 🕑 Cron (Compose 项目)"; _render_menu "选择更新模式" "$items"; read -r -p " └──> 选择或按 Enter 返回: " c; case "$c" in 1) configure_watchtower; break ;; *) if [ -z "$c" ]; then break; else log_warn "无效选择。"; sleep 1; fi;; esac; done; }
-
 main_menu(){
     if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config
     local STATUS_RAW="未运行"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
