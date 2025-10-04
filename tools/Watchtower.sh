@@ -45,7 +45,6 @@ send_notify() {
 
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$(expr $seconds / 3600); echo "${hours}h"; fi; }
 generate_line() { local len=${1:-62}; local char="─"; local line=""; local i=0; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
-generate_spaces() { local len=$1; local i=0; local spaces=""; while [ $i -lt $len ]; do spaces="${spaces} "; i=$(expr $i + 1); done; echo "$spaces"; }
 
 # =============================================================
 # START: Ultimate _get_visual_width function
@@ -81,23 +80,15 @@ _render_menu() {
     for line in $lines_str; do line_width=$(_get_visual_width "$line"); if [ $line_width -gt $max_width ]; then max_width=$line_width; fi; done
     IFS=$old_ifs
     local box_width; box_width=$(expr $max_width + 6); if [ $box_width -lt 40 ]; then box_width=40; fi
-    
-    local title_width; title_width=$(_get_visual_width "$title");
-    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total; padding_total=$(expr $box_width - $title_width)
-    local padding_left; padding_left=$(expr $padding_total / 2)
-    local padding_right; padding_right=$(expr $padding_total - $padding_left)
-    local left_padding; left_padding=$(generate_spaces "$padding_left")
-    local right_padding; right_padding=$(generate_spaces "$padding_right")
-
-    echo ""; echo -e "${COLOR_YELLOW}╭${top_bottom_border}╮${COLOR_RESET}"; echo -e "${COLOR_YELLOW}│${left_padding}${title}${right_padding}${COLOR_YELLOW}│${COLOR_RESET}"; echo -e "${COLOR_YELLOW}╰$(generate_line "$box_width")╯${COLOR_RESET}"
+    local title_width; title_width=$(_get_visual_width "$title"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    echo ""; echo -e "${COLOR_YELLOW}╭$(generate_line "$box_width")╮${COLOR_RESET}"; echo -e "${COLOR_YELLOW}│${left_padding}${title}${right_padding}${COLOR_YELLOW}│${COLOR_RESET}"; echo -e "${COLOR_YELLOW}╰$(generate_line "$box_width")╯${COLOR_RESET}"
     IFS=$'\n'; for line in $lines_str; do echo -e "$line"; done; IFS=$old_ifs
     echo -e "${COLOR_BLUE}$(generate_line $(expr $box_width + 2))${COLOR_RESET}"
 }
 
 _render_dynamic_box() {
     local title="$1"; local box_width="$2"; shift 2; local content_str="$@"
-    local title_width; title_width=$(_get_visual_width "$title"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(generate_spaces "$padding_left"); local right_padding; right_padding=$(generate_spaces "$padding_right")
+    local title_width; title_width=$(_get_visual_width "$title"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width"); local padding_total; padding_total=$(expr $box_width - $title_width); local padding_left; padding_left=$(expr $padding_total / 2); local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     echo ""; echo -e "${COLOR_YELLOW}╭${top_bottom_border}╮${COLOR_RESET}"; echo -e "${COLOR_YELLOW}│${left_padding}${title}${right_padding}${COLOR_YELLOW}│${COLOR_RESET}"; echo -e "${COLOR_YELLOW}╰$(generate_line "$box_width")╯${COLOR_RESET}"
     local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do echo -e "$line"; done
