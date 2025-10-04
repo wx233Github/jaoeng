@@ -1,16 +1,16 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v73.3 - Themed UI)
+# 🚀 VPS 一键安装入口脚本 (v73.4 - Minimalist UI)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v73.3"
+SCRIPT_VERSION="v73.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
-export UI_THEME="install" # 设置install.sh的主题
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL=C; fi
+export UI_THEME="install"
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
@@ -43,7 +43,7 @@ display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
     local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
     local -a menu_items_array=()
-    local i=1; while IFS=$'\t' read -r icon name; do menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")"); i=$((i + 1)); done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
+    local i=1; while IFS=$'\t' read -r icon name; do menu_items_array+=("$(printf "  %s %s" "$icon" "$name")"); i=$((i + 1)); done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
     _render_menu "$main_title_text" "${menu_items_array[@]}"
     local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     if [ "$AUTO_YES" = "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
