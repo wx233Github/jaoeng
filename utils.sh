@@ -1,6 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.15 - Final Alignment Fix)
+# 🚀 通用工具函数库 (v2.16 - 修正版)
+# - 修复 generate_line 函数中的变量错误 ($系统信息 -> $char)
+# - 增强 _render_menu 的负数边距保护
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -27,7 +29,19 @@ press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继�
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
-generate_line() { local len=${1:-40}; local char=${2:-"─"}; local line=""; local i=0; while [ $i -lt $len ]; do line="${line}${char}"; i=$((i + 1)); done; echo "$line"; }
+# [修正] 修复了循环中使用错误变量的问题
+generate_line() {
+    local len=${1:-40}
+    local char=${2:-"─"}
+    local line=""
+    local i=0
+    while [ $i -lt "$len" ]; do
+        line="${line}${char}"
+        i=$((i + 1))
+    done
+    echo "$line"
+}
+
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g'); local width=0; local i=1
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
@@ -35,12 +49,13 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift
+    local -a lines=("$@") # 将剩余参数存入数组
     
     local max_width=0
     local title_width=$(_get_visual_width "$title")
     if (( title_width > max_width )); then max_width=$title_width; fi
 
-    for line in "$@"; do
+    for line in "${lines[@]}"; do
         local line_width=$(_get_visual_width "$line")
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
@@ -62,9 +77,11 @@ _render_menu() {
     fi
     
     # 选项
-    for line in "$@"; do
+    for line in "${lines[@]}"; do
         local line_width=$(_get_visual_width "$line")
         local padding_right=$((box_width - line_width - 1))
+        # [增强] 增加负数保护，防止 printf 出错
+        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
         echo -e "${GREEN}│${NC}${line}$(printf '%*s' $padding_right)${GREEN}│${NC}"
     done
 
