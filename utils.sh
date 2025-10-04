@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.15 - Final Alignment Fix)
+# 🚀 通用工具函数库 (v2.16 - Final Alignment Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -63,9 +63,12 @@ _render_menu() {
     
     # 选项
     for line in "$@"; do
-        local line_width=$(_get_visual_width "$line")
-        local padding_right=$((box_width - line_width - 2)) # 减去 좌측 │ 와 우측 │ 사이의 공백 2개
-        echo -e "${GREEN}│${NC} ${line}$(printf '%*s' $padding_right)${GREEN}│${NC}"
+        local content_to_print=" ${line}"
+        local content_width=$(_get_visual_width "${content_to_print}")
+        local padding_needed=$((box_width - content_width))
+        if (( padding_needed < 0 )); then padding_needed=0; fi
+        local padding=$(printf '%*s' "$padding_needed")
+        echo -e "${GREEN}│${NC}${content_to_print}${padding}${GREEN}│${NC}"
     done
 
     # 底部
