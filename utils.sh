@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.2 - Final UI Fix)
+# 🚀 通用工具函数库 (v2.3 - Final UI Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -43,10 +43,9 @@ _render_menu() {
     line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
     for line in "$@"; do
-        if [ -n "$line" ]; then
-            line_width=$(_get_visual_width "$line")
-            if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
-        fi
+        # 即使是空字符串也安全处理
+        line_width=$(_get_visual_width "$line")
+        if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
     
     local box_width; box_width=$((max_width + 6)); if [ $box_width -lt 40 ]; then box_width=40; fi
@@ -67,7 +66,6 @@ _render_menu() {
     
     echo -e "${BLUE}$(generate_line $((box_width + 2)))${NC}"
 }
-
 _render_dynamic_box() {
     local title="$1"; local box_width="$2"; shift 2; local content_str="$@"
     local title_width; title_width=$(_get_visual_width "$title"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
