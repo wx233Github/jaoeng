@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.6 - Final Polish)
+# 🚀 通用工具函数库 (v1.7 - Final UI Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -32,16 +32,24 @@ _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     echo "$plain_text" | awk '{ split($0, chars, ""); width = 0; for (i in chars) { if (length(chars[i]) > 1) { width += 2; } else { width += 1; } } print width; }'
 }
+
+# =============================================================
+# 关键修复: 函数明确只接收2个参数，并用最可靠的方式处理
+# =============================================================
 _render_menu() {
-    local title="$1"; shift; local content_str="$*"; local max_width=0; local line_width
-    line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    local title="$1"
+    local content_str="$2" # 第二个参数是包含所有内容的多行字符串
+    local max_width=0
+    local line_width
+
+    line_width=$(_get_visual_width "$title")
+    if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    local old_ifs=$IFS; IFS=$'\n'
-    # =============================================================
-    # 关键修复: 增加一个判断，避免空行影响宽度计算
-    # =============================================================
+    local old_ifs=$IFS
+    IFS=$'\n'
     for line in $content_str; do
-        if [ -n "$line" ]; then # 只有在行不为空时才计算宽度
+        # 只有在行不为空时才计算宽度
+        if [ -n "$line" ]; then
             line_width=$(_get_visual_width "$line")
             if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
         fi
