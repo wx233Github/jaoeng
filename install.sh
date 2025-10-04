@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.1 - Portability & Bug Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.2 - Final UI & Portability Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.1"
+SCRIPT_VERSION="v71.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -134,21 +134,28 @@ execute_module() {
 generate_line() { local len=$1; local char="─"; local i=0; local line=""; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
 # =============================================================
-# START: Patched _get_visual_width function (Portable version)
+# START: Final _get_visual_width function
 # =============================================================
 _get_visual_width() {
     local text="$1"
     # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 使用十六进制范围匹配，兼容性更强
-    # 1. 将所有非ASCII字符（多字节）替换为两个字符'bb'
-    # 2. 将所有剩余的ASCII字符替换为单个字符'a'
-    # 3. 计算最终字符串的长度得到视觉宽度
-    local visual_width; visual_width=$(echo -n "$plain_text" | sed -e 's/[^\x00-\x7F]/bb/g' -e 's/[\x00-\x7F]/a/g' | wc -c)
-    echo "$visual_width"
+    # 使用 awk 计算视觉宽度，这是最可靠和可移植的方法
+    echo -n "$plain_text" | awk '{
+        width = 0
+        for (i = 1; i <= length; i++) {
+            char = substr($0, i, 1)
+            if (char ~ /[[:ascii:]]/) {
+                width += 1
+            } else {
+                width += 2
+            }
+        }
+        print width
+    }'
 }
 # =============================================================
-# END: Patched _get_visual_width function
+# END: Final _get_visual_width function
 # =============================================================
 
 display_menu() {
