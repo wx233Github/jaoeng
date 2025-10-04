@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.4 - Final Logic & UI Fix)
+# 🚀 Docker 自动更新助手 (v4.5.4 - Final Corrected Version)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -164,7 +164,7 @@ show_watchtower_details(){
         local -a content_lines_array=( "上次活动: $(get_last_session_time :- "未检测到")" "下次检查: $countdown" "" "最近 24h 摘要：" )
         local updates; updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then content_lines_array+=("无日志事件。"); else while IFS= read -r line; do content_lines_array+=("$(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
-        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触 发 扫 描 , [Enter] 返 回 : " pick
+        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick
         case "$pick" in
             1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;; 2) show_container_info ;;
             3) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;; *) return ;;
