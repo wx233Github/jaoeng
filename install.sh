@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v73.2 - Final Syntax Fix)
+# 🚀 VPS 一键安装入口脚本 (v73.1 - Final Unified Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v73.2"
+SCRIPT_VERSION="v73.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -15,10 +15,6 @@ if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL
 INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
 if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'; echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }; echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }; echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
-    
-    # =============================================================
-    # 关键修复: 移除 if [...] 和 then 之间的多余分号
-    # =============================================================
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."; if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi; sudo mkdir -p "$INSTALL_DIR"; BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
         declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" ); for name in "${!core_files[@]}"; do file_path="${core_files[$name]}"; echo_info "正在下载最新的 ${name} (${file_path})..."; temp_file="/tmp/$(basename "${file_path}").$$"; if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi; sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; done
