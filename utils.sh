@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.1 - Perfect Centering Final)
+# 🚀 通用工具函数库 (v2.2 - Final Centering & Array Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -42,26 +42,23 @@ _get_visual_width() {
 }
 
 # =============================================================
-# 关键修复: 采用更精确的左右边距计算方法，确保完美居中
+# 关键修复: 统一函数接口，只接受数组展开作为参数，并修复居中逻辑
 # =============================================================
 _render_menu() {
-    local title="$1"
-    # 将所有剩余参数（即使它们是分开的）合并成一个单一的多行字符串
-    shift
-    local content_str="$*"
+    local title="$1"; shift
     local max_width=0
     local line_width
 
     line_width=$(_get_visual_width "$title")
     if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    local old_ifs=$IFS; IFS=$'\n'
-    for line in $content_str; do
+    # 显式地遍历传入的每个参数（行）
+    for line in "$@"; do
         if [ -n "$line" ]; then
             line_width=$(_get_visual_width "$line")
             if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
         fi
-    done; IFS=$old_ifs
+    done
     
     local box_width; box_width=$((max_width + 6)); if [ $box_width -lt 40 ]; then box_width=40; fi
     local title_width; title_width=$(_get_visual_width "$title")
@@ -69,7 +66,7 @@ _render_menu() {
     # 精确计算左右边距
     local padding_total=$((box_width - title_width))
     local padding_left=$((padding_total / 2))
-    local padding_right=$((padding_total - padding_left)) # 确保和为 total
+    local padding_right=$((padding_total - padding_left))
     
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$padding_right")
@@ -78,9 +75,7 @@ _render_menu() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    IFS=$'\n'
-    for line in $content_str; do echo -e "$line"; done
-    IFS=$old_ifs
+    for line in "$@"; do echo -e "$line"; done
     
     echo -e "${BLUE}$(generate_line $((box_width + 2)))${NC}"
 }
@@ -89,7 +84,6 @@ _render_dynamic_box() {
     local title_width; title_width=$(_get_visual_width "$title")
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     
-    # 精确计算左右边距
     local padding_total=$((box_width - title_width))
     local padding_left=$((padding_total / 2))
     local padding_right=$((padding_total - padding_left))
