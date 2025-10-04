@@ -9,7 +9,7 @@ SCRIPT_VERSION="v4.4.2"
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF-8}
+export LC_ALL=${LC_ALL:-C.UTF_8}
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
