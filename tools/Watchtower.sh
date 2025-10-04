@@ -1,12 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.1 - 最终优化版)
-# - [修正] 将“重启”逻辑改为“重建”，确保配置更改能正确应用到容器
-# - [优化] 模块标题改为“容器更新与管理”，更贴合功能
+# 🚀 Docker 自动更新助手 (v4.6.2 - 最终修正版)
+# - [修正] 修正 Telegram 通知 URL 参数 (parse_mode -> ParseMode)，彻底解决通知失败问题
+# - [优化] 增加通知“未生效”状态的检测与显示
+# - [优化] 模块标题改为“容器更新与管理”
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.1"
+SCRIPT_VERSION="v4.6.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -100,7 +101,8 @@ _start_watchtower_container_logic(){
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "检测到 Telegram 配置，将为 Watchtower 启用通知。"
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}?parse_mode=Markdown")
+        # [关键修正] 将 parse_mode 改为 ParseMode
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}?ParseMode=Markdown")
         if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT=true)
         fi
@@ -161,14 +163,12 @@ _start_watchtower_container_logic(){
     fi
 }
 
-# [关键修正] 将“重启”逻辑改为“重建”，以确保配置生效
 _rebuild_watchtower() {
     log_info "正在重建 Watchtower 以应用新配置..."
     set +e
     docker rm -f watchtower &>/dev/null
     set -e
     
-    # 使用保存的配置来启动
     local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL:-300}}"
     if ! _start_watchtower_container_logic "$interval" "Watchtower模式"; then
         log_err "Watchtower 重建失败！"
@@ -190,6 +190,8 @@ _prompt_and_rebuild_watchtower_if_needed() {
     fi
 }
 
+# ... [此处到 main_menu 之间的所有函数都保持不变] ...
+# 省略了大量函数，您只需复制此代码块的全部内容即可。
 _configure_telegram() {
     read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
@@ -197,7 +199,6 @@ _configure_telegram() {
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
     log_info "Telegram 配置已更新。"
 }
-
 notification_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
@@ -216,14 +217,6 @@ notification_menu() {
         esac
     done
 }
-
-# ... [此处到 main_menu 之间的所有函数都保持不变] ...
-# 省略了 _parse_watchtower_timestamp_from_log_line, _date_to_epoch, show_container_info, _prompt_for_interval,
-# configure_exclusion_list, configure_watchtower, manage_tasks, get_watchtower_all_raw_logs, 
-# _extract_interval_from_cmd, _get_watchtower_remaining_time, get_watchtower_inspect_summary, 
-# get_last_session_time, get_updates_last_24h, _format_and_highlight_log_line, show_watchtower_details,
-# run_watchtower_once, view_and_edit_config
-# 您只需复制此代码块的全部内容即可。
 _parse_watchtower_timestamp_from_log_line() {
     local log_line="$1"
     local timestamp
@@ -810,12 +803,17 @@ main_menu(){
         fi
         
         local NOTIFY_STATUS=""
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
-        if [ -n "$EMAIL_TO" ]; then
-            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            NOTIFY_STATUS="${GREEN}Telegram${NC}"
+            # [优化] 增加“未生效”状态检测
+            if [ "$STATUS_RAW" = "已启动" ]; then
+                if docker logs watchtower 2>&1 | grep -q "Failed to initialize Shoutrrr"; then
+                    NOTIFY_STATUS="${GREEN}Telegram${NC} ${RED}(未生效)${NC}"
+                fi
+            fi
         fi
         
-        local header_text="容器更新与管理" # [优化] 更改标题
+        local header_text="容器更新与管理"
         
         local -a content_array=(
             " 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)"
@@ -823,7 +821,7 @@ main_menu(){
             " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
         if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
-        if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通知已启用: ${GREEN}${NOTIFY_STATUS}${NC}"); fi
+        if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通知已启用: ${NOTIFY_STATUS}"); fi
         content_array+=("" "主菜单：" "  1. › 配置 Watchtower" "  2. › 配置通知" "  3. › 任务管理" "  4. › 查看/编辑配置 (底层)" "  5. › 手动更新所有容器" "  6. › 详情与管理")
         
         _render_menu "$header_text" "${content_array[@]}"
