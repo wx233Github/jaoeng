@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.2 - Robust Line Handling Fix)
+# 🚀 通用工具函数库 (v1.3 - Universal Argument Handling Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -61,25 +61,31 @@ _get_visual_width() {
     }'
 }
 
-# =============================================================
-# 关键修复: 采用更健壮的循环方式处理传入的参数，防止 "too many arguments" 错误
-# =============================================================
+# ==============================================================================
+# 关键修复: 重写 _render_menu，使其能同时处理多参数和单一多行字符串参数
+# ==============================================================================
 _render_menu() {
     local title="$1"; shift
     local max_width=0
     
-    # 计算标题宽度
+    # 步骤 1: 规范化输入。无论输入是 ("line1" "line2") 还是 ("line1\nline2")
+    # 都将其转换为一个干净的 BASH 数组 `lines_array`
+    local -a lines_array
+    # 'readarray -t' 从标准输入读取行到数组，-t 移除每行的换行符
+    # 'printf "%s\n"' 会正确处理所有传入的参数，将它们逐行打印出来
+    printf '%s\n' "$@" | readarray -t lines_array
+
+    # 步骤 2: 使用规范化后的数组来计算最大宽度
     local line_width
     line_width=$(_get_visual_width "$title")
     if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    # 关键修复点 1: 直接遍历位置参数 "$@", 这是处理包含空格的参数的最安全方式
-    # shift 命令已经移除了标题，所以 "$@" 现在只包含菜单行
-    for line in "$@"; do
+    for line in "${lines_array[@]}"; do
         line_width=$(_get_visual_width "$line")
         if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
     
+    # 步骤 3: 正常渲染UI
     local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
     
@@ -94,8 +100,8 @@ _render_menu() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    # 关键修复点 2: 同样使用健壮的循环来打印每一行
-    for line in "$@"; do
+    # 步骤 4: 使用规范化后的数组来打印菜单项
+    for line in "${lines_array[@]}"; do
         echo -e "$line"
     done
     
@@ -118,7 +124,6 @@ _render_dynamic_box() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    # 这里使用 IFS 的方式是安全的，因为 content_str 是一个单独的变量
     local old_ifs=$IFS; IFS=$'\n'
     for line in $content_str; do
         echo -e "$line"
