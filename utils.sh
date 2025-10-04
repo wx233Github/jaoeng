@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.3 - Universal Argument Handling Fix)
+# 🚀 通用工具函数库 (v1.4 - Subshell Fix)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -62,20 +62,16 @@ _get_visual_width() {
 }
 
 # ==============================================================================
-# 关键修复: 重写 _render_menu，使其能同时处理多参数和单一多行字符串参数
+# 关键修复: 使用 Here String (<<<) 代替管道 (|) 来填充数组，避免子 Shell 问题
 # ==============================================================================
 _render_menu() {
     local title="$1"; shift
     local max_width=0
     
-    # 步骤 1: 规范化输入。无论输入是 ("line1" "line2") 还是 ("line1\nline2")
-    # 都将其转换为一个干净的 BASH 数组 `lines_array`
     local -a lines_array
-    # 'readarray -t' 从标准输入读取行到数组，-t 移除每行的换行符
-    # 'printf "%s\n"' 会正确处理所有传入的参数，将它们逐行打印出来
-    printf '%s\n' "$@" | readarray -t lines_array
+    # 使用 Here String 将 printf 的输出重定向到 readarray，确保在当前 shell 中执行
+    readarray -t lines_array <<< "$(printf '%s\n' "$@")"
 
-    # 步骤 2: 使用规范化后的数组来计算最大宽度
     local line_width
     line_width=$(_get_visual_width "$title")
     if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
@@ -85,7 +81,6 @@ _render_menu() {
         if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
     
-    # 步骤 3: 正常渲染UI
     local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
     
@@ -100,7 +95,6 @@ _render_menu() {
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    # 步骤 4: 使用规范化后的数组来打印菜单项
     for line in "${lines_array[@]}"; do
         echo -e "$line"
     done
