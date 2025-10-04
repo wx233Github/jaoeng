@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.4 - Subshell Fix)
+# 🚀 通用工具函数库 (v1.5 - Simplified & Robust)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -36,50 +36,41 @@ confirm_action() {
 }
 
 # --- UI 渲染 & 字符串处理 ---
-
 generate_line() {
-    local len=${1:-62}
-    local char="─"
+    local len=${1:-62}; local char="─"
     printf "%*s" "$len" | tr ' ' "$char"
 }
 
 _get_visual_width() {
-    local text="$1"
-    local plain_text
+    local text="$1"; local plain_text
     plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     echo "$plain_text" | awk '{
         split($0, chars, "");
         width = 0;
         for (i in chars) {
-            if (length(chars[i]) > 1) {
-                width += 2;
-            } else {
-                width += 1;
-            }
+            if (length(chars[i]) > 1) { width += 2; } else { width += 1; }
         }
         print width;
     }'
 }
 
 # ==============================================================================
-# 关键修复: 使用 Here String (<<<) 代替管道 (|) 来填充数组，避免子 Shell 问题
+# 关键修复: 简化函数，只处理单一多行字符串参数，使用经典 IFS 方法
 # ==============================================================================
 _render_menu() {
     local title="$1"; shift
-    local max_width=0
-    
-    local -a lines_array
-    # 使用 Here String 将 printf 的输出重定向到 readarray，确保在当前 shell 中执行
-    readarray -t lines_array <<< "$(printf '%s\n' "$@")"
+    local content_str="$*" # 将所有剩余参数视为一个单一字符串
+    local max_width=0; local line_width
 
-    local line_width
     line_width=$(_get_visual_width "$title")
     if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     
-    for line in "${lines_array[@]}"; do
+    local old_ifs=$IFS; IFS=$'\n'
+    for line in $content_str; do
         line_width=$(_get_visual_width "$line")
         if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     done
+    IFS=$old_ifs
     
     local box_width; box_width=$(expr $max_width + 6)
     if [ $box_width -lt 40 ]; then box_width=40; fi
@@ -90,22 +81,21 @@ _render_menu() {
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
-    echo ""
-    echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
-    for line in "${lines_array[@]}"; do
+    IFS=$'\n'
+    for line in $content_str; do
         echo -e "$line"
     done
+    IFS=$old_ifs
     
     echo -e "${BLUE}$(generate_line $(expr $box_width + 2))${NC}"
 }
 
 _render_dynamic_box() {
-    local title="$1"; local box_width="$2"; shift 2
-    local content_str="$@"
-    
+    local title="$1"; local box_width="$2"; shift 2; local content_str="$@"
     local title_width; title_width=$(_get_visual_width "$title")
     local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
     local padding_total; padding_total=$(expr $box_width - $title_width)
@@ -113,8 +103,7 @@ _render_dynamic_box() {
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
     
-    echo ""
-    echo -e "${GREEN}╭${top_bottom_border}╮${NC}"
+    echo ""; echo -e "${GREEN}╭${top_bottom_border}╮${NC}"
     echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
     echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
