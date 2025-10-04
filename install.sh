@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.2 - Final UI & Portability Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.3 - Ultimate UI & Portability Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.2"
+SCRIPT_VERSION="v71.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -138,22 +138,20 @@ generate_line() { local len=$1; local char="─"; local i=0; local line=""; whil
 # =============================================================
 _get_visual_width() {
     local text="$1"
-    # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 使用 awk 计算视觉宽度，这是最可靠和可移植的方法
-    echo -n "$plain_text" | awk '{
-        width = 0
-        for (i = 1; i <= length; i++) {
-            char = substr($0, i, 1)
-            # 检查字符的字节长度。在UTF-8中，ASCII字符是1字节。
-            if (length(char) == 1) {
-                width += 1
-            } else {
-                width += 2
-            }
-        }
-        print width
-    }'
+    local width=0
+    local i=0
+    while [ $i -lt ${#plain_text} ]; do
+        char=${plain_text:$i:1}
+        # Check byte length of the character
+        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
+            width=$((width + 2))
+        else
+            width=$((width + 1))
+        fi
+        i=$((i + 1))
+    done
+    echo $width
 }
 # =============================================================
 # END: Final _get_visual_width function
