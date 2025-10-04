@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.7 - Minimalist Theming Engine)
+# 🚀 通用工具函数库 (v2.8 - Final Minimalist UI)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -34,39 +34,60 @@ _get_visual_width() {
 }
 
 # =============================================================
-# 关键修复: 实现极简UI主题引擎
+# 关键修复: 回归经典盒子布局，但使用新的字符集和精确居中
 # =============================================================
 _render_menu() {
     local title="$1"; shift
     local theme="${UI_THEME:-default}"
-    local line_char="─"; local line_color="$BLUE"
+    
+    local horiz="─"; local vert="│"; local top_left="╭"; local top_right="╮"; local btm_left="╰"; local btm_right="╯"
+    local line_color="$GREEN"
 
-    case "$theme" in
-        install)
-            line_char="≈"; line_color="$CYAN"
-            ;;
-        watchtower)
-            line_char="~"; line_color="$YELLOW"
-            ;;
-    esac
+    if [[ "$theme" == "install" ]]; then
+        horiz="≈"; vert=" "; top_left=""; top_right=""; btm_left=""; btm_right=""
+        line_color="$BLUE"
+        title="★ ${title}"
+    elif [[ "$theme" == "watchtower" ]]; then
+        horiz="~"; vert=" "; top_left=""; top_right=""; btm_left=""; btm_right=""
+        line_color="$YELLOW"
+        title="★ ${title}"
+    fi
 
     local max_width=0; local line_width
     line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
     for line in "$@"; do line_width=$(_get_visual_width "$line"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi; done
     
-    local line_len=$((max_width > 40 ? max_width : 40))
+    local box_width=$((max_width + 4)); if [ $box_width -lt 40 ]; then box_width=40; fi
 
-    if [ -n "$title" ]; then
-        echo ""; echo -e "${line_color}$(generate_line "$line_len" "$line_char")${NC}"
-        local title_width; title_width=$(_get_visual_width "$title")
-        local padding_total=$((line_len - title_width))
-        local padding_left=$((padding_total / 2))
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        echo -e "${left_padding}${title}"
+    # 渲染顶部
+    if [[ "$theme" == "default" ]]; then
+        echo ""; echo -e "${line_color}${top_left}$(generate_line "$box_width" "$horiz")${top_right}${NC}"
+    else
+        echo ""; echo -e "${line_color}$(generate_line "$box_width" "$horiz")${NC}"
     fi
     
-    for line in "$@"; do echo -e "$line"; done
+    # 渲染标题
+    local title_width=$(_get_visual_width "$title"); local padding_total=$((box_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+    local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$padding_right")
+    echo -e "${line_color}${vert}${left_padding}${title}${right_padding}${vert}${NC}"
 
-    echo -e "${line_color}$(generate_line "$line_len" "$line_char")${NC}"
+    # 渲染分隔线
+    if [[ "$theme" != "default" ]]; then
+        echo -e "${line_color}$(generate_line "$box_width" "-")${NC}"
+    fi
+    
+    # 渲染菜单项
+    for line in "$@"; do
+        local line_width=$(_get_visual_width "$line")
+        local padding_right=$((box_width - line_width))
+        echo -e "${line_color}${vert}${NC} ${line}$(printf '%*s' "$padding_right")${line_color}${vert}${NC}"
+    done
+
+    # 渲染底部
+    if [[ "$theme" == "default" ]]; then
+        echo -e "${line_color}${btm_left}$(generate_line "$box_width" "$horiz")${btm_right}${NC}"
+    else
+        echo -e "${line_color}$(generate_line "$box_width" "$horiz")${NC}"
+    fi
 }
 _print_header() { _render_menu "$1" ""; }
