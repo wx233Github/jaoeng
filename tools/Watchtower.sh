@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.0 - Final Syntax & UI Fix)
+# 🚀 Docker 自动更新助手 (v4.5.1 - Final Syntax & UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.5.0"
+SCRIPT_VERSION="v4.5.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -12,7 +12,7 @@ export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
 # --- 加载通用工具函数库 ---
-UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具函数库 $UTILS_PATH 未找到！"; exit 1; fi
+UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
 
 # --- 脚本依赖检查 ---
 if ! command -v docker >/dev/null 2>&1; then log_err "❌ 错误: 未检测到 'docker' 命令。"; exit 1; fi
