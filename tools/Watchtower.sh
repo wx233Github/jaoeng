@@ -1,13 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.2 - 最终修正版)
-# - [修正] 修正 Telegram 通知 URL 参数 (parse_mode -> ParseMode)，彻底解决通知失败问题
-# - [优化] 增加通知“未生效”状态的检测与显示
-# - [优化] 模块标题改为“容器更新与管理”
+# 🚀 Docker 自动更新助手 (v4.6.3 - 最终修正版)
+# - [最终修正] 采用正确的 Telegram 通知 URL 格式，彻底解决通知失败问题
+# - [最终修正] 增加错误日志截断功能，修复因日志过长导致的UI排版错乱
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.2"
+SCRIPT_VERSION="v4.6.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -101,8 +100,8 @@ _start_watchtower_container_logic(){
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "检测到 Telegram 配置，将为 Watchtower 启用通知。"
-        # [关键修正] 将 parse_mode 改为 ParseMode
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}?ParseMode=Markdown")
+        # [最终修正] 采用正确的 Shoutrrr Telegram URL 格式
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT=true)
         fi
@@ -188,6 +187,60 @@ _prompt_and_rebuild_watchtower_if_needed() {
             log_warn "操作已取消。新配置将在下次手动重建 Watchtower 后生效。"
         fi
     fi
+}
+
+# [最终修正] 增加日志截断功能，修复UI
+_format_and_highlight_log_line(){
+    local line="$1"
+    local ts
+    ts=$(_parse_watchtower_timestamp_from_log_line "$line")
+    case "$line" in
+        *"Session done"*)
+            local f s u c
+            f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
+            s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
+            u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+            c="$GREEN"
+            if [ "${f:-0}" -gt 0 ]; then c="$YELLOW"; fi
+            printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s:-?}, 更新: ${u:-?}, 失败: ${f:-?}" "$NC"
+            ;;
+        *"Found new"*)
+            printf "%s %b%s%b\n" "$ts" "$GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$NC"
+            ;;
+        *"Stopping "*)
+            printf "%s %b%s%b\n" "$ts" "$GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$NC"
+            ;;
+        *"Creating "*)
+            printf "%s %b%s%b\n" "$ts" "$GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$NC"
+            ;;
+        *"No new images found"*)
+            printf "%s %b%s%b\n" "$ts" "$CYAN" "ℹ️ 未发现新镜像。" "$NC"
+            ;;
+        *"Scheduling first run"*)
+            printf "%s %b%s%b\n" "$ts" "$GREEN" "🕒 首次运行已调度" "$NC"
+            ;;
+        *"Starting Watchtower"*)
+            printf "%s %b%s%b\n" "$ts" "$GREEN" "✨ Watchtower 已启动" "$NC"
+            ;;
+        *)
+            if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request"; then
+                local msg
+                msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
+                if [ -z "$msg" ]; then
+                    msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info|fatal)|time="[^"]*")\s*//g' | tr -d '\n')
+                fi
+                # 截断过长的消息
+                local full_msg="${msg:-$line}"
+                local truncated_msg
+                if [ ${#full_msg} -gt 80 ]; then
+                    truncated_msg="${full_msg:0:77}..."
+                else
+                    truncated_msg="$full_msg"
+                fi
+                printf "%s %b%s%b\n" "$ts" "$RED" "❌ 错误: ${truncated_msg}" "$NC"
+            fi
+            ;;
+    esac
 }
 
 # ... [此处到 main_menu 之间的所有函数都保持不变] ...
@@ -562,51 +615,7 @@ get_updates_last_24h(){
     if [ -z "$raw_logs" ]; then
         raw_logs=$(docker logs --tail 200 watchtower 2>&1 || true)
     fi
-    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|permission denied|cannot connect|Could not do a head request" || true
-}
-_format_and_highlight_log_line(){
-    local line="$1"
-    local ts
-    ts=$(_parse_watchtower_timestamp_from_log_line "$line")
-    case "$line" in
-        *"Session done"*)
-            local f s u c
-            f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p')
-            s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p')
-            u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
-            c="$GREEN"
-            if [ "${f:-0}" -gt 0 ]; then c="$YELLOW"; fi
-            printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s:-?}, 更新: ${u:-?}, 失败: ${f:-?}" "$NC"
-            ;;
-        *"Found new"*)
-            printf "%s %b%s%b\n" "$ts" "$GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$NC"
-            ;;
-        *"Stopping "*)
-            printf "%s %b%s%b\n" "$ts" "$GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$NC"
-            ;;
-        *"Creating "*)
-            printf "%s %b%s%b\n" "$ts" "$GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$NC"
-            ;;
-        *"No new images found"*)
-            printf "%s %b%s%b\n" "$ts" "$CYAN" "ℹ️ 未发现新镜像。" "$NC"
-            ;;
-        *"Scheduling first run"*)
-            printf "%s %b%s%b\n" "$ts" "$GREEN" "🕒 首次运行已调度" "$NC"
-            ;;
-        *"Starting Watchtower"*)
-            printf "%s %b%s%b\n" "$ts" "$GREEN" "✨ Watchtower 已启动" "$NC"
-            ;;
-        *)
-            if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then
-                local msg
-                msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p')
-                if [ -z "$msg" ]; then
-                    msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info)|time="[^"]*")\s*//g')
-                fi
-                printf "%s %b%s%b\n" "$ts" "$RED" "❌ 错误: ${msg:-$line}" "$NC"
-            fi
-            ;;
-    esac
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request" || true
 }
 show_watchtower_details(){
     while true; do
@@ -805,7 +814,6 @@ main_menu(){
         local NOTIFY_STATUS=""
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
             NOTIFY_STATUS="${GREEN}Telegram${NC}"
-            # [优化] 增加“未生效”状态检测
             if [ "$STATUS_RAW" = "已启动" ]; then
                 if docker logs watchtower 2>&1 | grep -q "Failed to initialize Shoutrrr"; then
                     NOTIFY_STATUS="${GREEN}Telegram${NC} ${RED}(未生效)${NC}"
