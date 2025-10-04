@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.1 - Final Syntax & UI Fix)
+# 🚀 Docker 自动更新助手 (v4.5.2 - Final Syntax Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.5.1"
+SCRIPT_VERSION="v4.5.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF_8}
+export LC_ALL=${LC_ALL:-C.UTF-8}
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
@@ -24,7 +24,13 @@ load_config(){ if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE" &>/dev/null 
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"; TG_CHAT_ID="${TG_CHAT_ID:-}"; EMAIL_TO="${EMAIL_TO:-}"; WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"; WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"; WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"; WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"; DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"; CRON_HOUR="${CRON_HOUR:-4}"; CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"; WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 
 # --- 模块专属函数 ---
-send_notify() { local message="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &; fi; }
+send_notify() {
+    local message="$1"
+    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "text=${message}" -d "chat_id=${TG_CHAT_ID}" -d "parse_mode=Markdown" >/dev/null 2>&1) &
+    fi
+}
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$((seconds / 3600)); echo "${hours}h"; fi; }
 save_config(){ mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
@@ -114,7 +120,7 @@ show_watchtower_details(){
         local -a content_lines_array=( "上次活动: $(get_last_session_time :- "未检测到")" "下次检查: $countdown" "" "最近 24h 摘要：" )
         local updates; updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then content_lines_array+=("无日志事件。"); else while IFS= read -r line; do content_lines_array+=("$(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
-        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick
+        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触 发 扫 描 , [Enter] 返 回 : " pick
         case "$pick" in
             1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;; 2) show_container_info ;;
             3) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;; *) return ;;
@@ -134,9 +140,9 @@ main_menu(){
     local header_text="Docker 助手 v${SCRIPT_VERSION}"
     
     local -a content_array=(" 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" " ⏳ 下次检查: ${COUNTDOWN}" " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})")
-    if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
-    if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通知已启用: ${GREEN}${NOTIFY_STATUS}${NC}"); fi
-    content_array+=("" "主菜单：" "  1. › 配置 Watchtower" "  2. › 配置通知" "  3. › 任务管理" "  4. › 查看/编辑配置 (底层)" "  5. › 手动更新所有容器" "  6. › 详情与管理")
+    if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
+    if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
+    content_array+=("" "主菜单：" "  1. › 配 置  Watchtower" "  2. › 配 置 通 知" "  3. › 任 务 管 理" "  4. › 查 看 /编 辑 配 置  (底 层 )" "  5. › 手 动 更 新 所 有 容 器" "  6. › 详 情 与 管 理")
     
     _render_menu "$header_text" "${content_array[@]}"
     read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
