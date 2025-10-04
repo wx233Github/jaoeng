@@ -1,13 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.4 - 最终修正版)
+# 🚀 Docker 自动更新助手 (v4.6.5 - 最终决战版)
 # - [最终修正] 增加模板判断，彻底解决 TG 通知模板错误
 # - [最终修正] 优化日志截断与UI排版，适配移动终端
-# - [优化] 精确化“下次检查”的超时时间显示
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.4"
+SCRIPT_VERSION="v4.6.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -105,8 +104,8 @@ _start_watchtower_container_logic(){
         if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT=true)
         fi
-        # [最终修正] 增加 {{if .Report}} 判断，避免模板在非报告数据上执行出错
-        local NOTIFICATION_TEMPLATE='{{if .Report}}🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Report.Time.Format "2006-01-02 15:04:05"}}`{{end}}'
+        # [最终修正] 增加 {{if .Scanned}} 判断，确保模板只在最终报告上执行，并修正变量为 .Time
+        local NOTIFICATION_TEMPLATE='{{if .Scanned}}🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`{{end}}'
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE}")
     fi
 
@@ -190,7 +189,6 @@ _prompt_and_rebuild_watchtower_if_needed() {
     fi
 }
 
-# [最终修正] 优化日志截断，适配移动端UI
 _format_and_highlight_log_line(){
     local line="$1"
     local ts
@@ -226,7 +224,6 @@ _format_and_highlight_log_line(){
         *)
             if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request"; then
                 local msg
-                # 优先提取 error="xxx" 中的内容
                 msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
                 if [ -z "$msg" ]; then
                     msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
@@ -234,10 +231,9 @@ _format_and_highlight_log_line(){
                 if [ -z "$msg" ]; then
                     msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info|fatal)|time="[^"]*")\s*//g' | tr -d '\n')
                 fi
-                # 截断过长的消息
                 local full_msg="${msg:-$line}"
                 local truncated_msg
-                if [ ${#full_msg} -gt 50 ]; then # 缩短截断长度以适应移动端
+                if [ ${#full_msg} -gt 50 ]; then
                     truncated_msg="${full_msg:0:47}..."
                 else
                     truncated_msg="$full_msg"
@@ -248,7 +244,6 @@ _format_and_highlight_log_line(){
     esac
 }
 
-# [优化] 精确化超时时间显示
 _get_watchtower_remaining_time(){
     local int="$1"
     local logs="$2"
@@ -277,8 +272,7 @@ _get_watchtower_remaining_time(){
     fi
 }
 
-# ... [此处到 main_menu 之间的所有函数都保持不变] ...
-# 省略了大量函数，您只需复制此代码块的全部内容即可。
+# ... [所有其他函数都已包含在下面，请完整复制] ...
 _configure_telegram() {
     read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
