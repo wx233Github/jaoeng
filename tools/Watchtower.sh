@@ -9,9 +9,8 @@ SCRIPT_VERSION="v4.2.0"
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF-8}
-# 强制重置 locale 设置，避免中文字符间距异常
+# FINAL FIX: 强制设置 locale, 解决全局中文字符间距问题
 export LC_ALL=C.UTF-8
-unset LC_CTYPE
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -58,7 +57,7 @@ _get_visual_width() {
     local i=0
     while [ $i -lt ${#plain_text} ]; do
         char=${plain_text:$i:1}
-        # Check byte length of the character
+        # Check byte length of the character, most portable method
         if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
         else
@@ -208,6 +207,7 @@ main_menu(){
     status_lines+=("⏳ 下次检查: ${COUNTDOWN}")
     status_lines+=("📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})")
     
+    # New formatting for exclude list
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then 
         status_lines+=("🚫 排除列表: ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET} (${COLOR_CYAN}${FINAL_EXCLUDE_SOURCE}${COLOR_RESET})")
     fi
