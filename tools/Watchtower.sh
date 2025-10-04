@@ -47,36 +47,30 @@ _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE
 generate_line() { local len=${1:-62}; local char="─"; local line=""; local i=0; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
 # =============================================================
-# START: Ultimate Portable _get_visual_width function
+# START: Ultimate _get_visual_width function
 # =============================================================
 _get_visual_width() {
     local text="$1"
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
     local width=0
     local i=0
-    while [ $i -lt ${#plain_text} ]; do
-        char=${plain_text:$i:1}
-        
-        local char_code
-        char_code=$(printf '%d' "'$char" 2>/dev/null)
-        
-        if [ "$char_code" -eq 8250 ]; then
+    while [ $i -lt ${#processed_text} ]; do
+        char=${processed_text:$i:1}
+        if [[ "$char" == "›" ]]; then
             width=$((width + 1))
-        elif [ "$char_code" -eq 65039 ]; then
-            width=$((width + 0))
-        elif [ "$char_code" -le 127 ]; then
-            width=$((width + 1))
-        else
+        elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
             width=$((width + 2))
+        else
+            width=$((width + 1))
         fi
-        
         i=$((i + 1))
     done
     echo $width
 }
 # =============================================================
-# END: Ultimate Portable _get_visual_width function
+# END: Ultimate _get_visual_width function
 # =============================================================
 
 _render_menu() {
