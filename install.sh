@@ -8,8 +8,8 @@ SCRIPT_VERSION="v73.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
-export LANG=${LANG:-en_US.UTF-8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+export LANG=${LANG:-en_US.UTF_8}
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL=C; fi
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
@@ -38,27 +38,15 @@ confirm_and_force_update() { log_warn "警告: 这将从 GitHub 强制拉取所�
 uninstall_script() { log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"; log_warn "  - 安装目录: ${CONFIG[install_dir]}"; log_warn "  - 快捷方式: ${CONFIG[bin_dir]}/jb"; read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty; if [ "$choice" = "yes" ]; then log_info "开始卸载..."; sudo rm -rf "${CONFIG[install_dir]}"; log_success "安装目录已移除."; sudo rm -f "${CONFIG[bin_dir]}/jb"; log_success "快捷方式已移除."; log_success "脚本已成功卸载."; log_info "再见！"; exit 0; else log_info "卸载操作已取消."; return 10; fi; }
 _quote_args() { for arg in "$@"; do printf "%q " "$arg"; done; }
 execute_module() { local script_name="$1"; local display_name="$2"; shift 2; local local_path="${CONFIG[install_dir]}/$script_name"; log_info "您选择了 [$display_name]"; if [ ! -f "$local_path" ]; then log_info "正在下载模块..."; if ! download_module_to_cache "$script_name"; then log_err "下载失败."; return 1; fi; fi; local env_exports="export IS_NESTED_CALL=true; export FORCE_COLOR=true; export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'; export JB_TIMEZONE='${CONFIG[timezone]}'; export LC_ALL=${LC_ALL};"; local module_key; module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]'); local config_path="${CONFIG[install_dir]}/config.json"; local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // null' "$config_path"); if [ "$module_config_json" != "null" ]; then local prefix; prefix=$(basename "$script_name" .sh | tr '[:lower:]' '[:upper:]'); local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | if ($v|type) == "array" then [$k, ($v|join(","))] elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] else empty end | @tsv'; while IFS=$'\t' read -r key value; do if [ -n "$key" ]; then local key_upper; key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]'); env_exports+=$(printf "export %s_CONF_%s=%q;" "$prefix" "$key_upper" "$value"); fi; done < <(echo "$module_config_json" | jq -r "$jq_script"); fi; local exit_code=0; local extra_args_str; extra_args_str=$(_quote_args "$@"); sudo bash -c "$env_exports bash '$local_path' $extra_args_str" < /dev/tty || exit_code=$?; if [ "$exit_code" -eq 0 ]; then log_success "模块 [$display_name] 执行完毕."; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [$display_name] 返回."; else log_warn "模块 [$display_name] 执行出错 (码: $exit_code)."; fi; return $exit_code; }
-
-# =============================================================
-# 关键修复: 统一使用数组构建菜单，并通过 "${array[@]}" 安全传递
-# =============================================================
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi;
     local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local main_title_text; main_title_text=$(jq -r '.title // "🚀 VPS 一键安装脚本"' <<< "$menu_json")
-    
     local -a menu_items_array=()
-    local i=1
-    while IFS=$'\t' read -r icon name; do
-        menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
-        i=$((i + 1))
-    done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
-    
+    local i=1; while IFS=$'\t' read -r icon name; do menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")"); i=$((i + 1)); done < <(jq -r '.items[] | ((.icon // "›") + "\t" + .name)' <<< "$menu_json")
     _render_menu "$main_title_text" "${menu_items_array[@]}"
-
     local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); local exit_hint="退出"; if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi; local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: ";
     if [ "$AUTO_YES" = "true" ]; then choice=""; echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"; else read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty; fi
 }
-
 process_menu_selection() { local config_path="${CONFIG[install_dir]}/config.json"; local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path"); local menu_len; menu_len=$(jq -r '.items | length' <<< "$menu_json"); if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; return 10; fi; fi; if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then log_warn "无效选项."; return 10; fi; local item_json; item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]'); if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then log_warn "菜单项配置无效或不完整。"; return 10; fi; local type; type=$(echo "$item_json" | jq -r ".type"); local name; name=$(echo "$item_json" | jq -r ".name"); local action; action=$(echo "$item_json" | jq -r ".action"); case "$type" in item) execute_module "$action" "$name"; return $?;; submenu) CURRENT_MENU_NAME=$action; return 10;; func) "$action"; return $?;; esac; }
 main() {
     exec 200>"${CONFIG[lock_file]}"; if ! flock -n 200; then echo -e "\033[0;33m[警告] 检测到另一实例正在运行."; exit 1; fi
