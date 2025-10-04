@@ -1,15 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.3.0 - Ultimate UI & Layout Fix)
+# 🚀 Docker 自动更新助手 (v4.3.1 - Final Targeted UI Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.0"
+SCRIPT_VERSION="v4.3.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF-8}
-# FINAL FIX: 强制设置 locale, 解决全局中文字符间距问题
 export LC_ALL=C.UTF-8
 
 # --- 颜色定义 ---
@@ -47,32 +46,18 @@ send_notify() {
 _format_seconds_to_human() { local seconds="$1"; if ! echo "$seconds" | grep -qE '^[0-9]+$'; then echo "N/A"; return; fi; if [ "$seconds" -lt 3600 ]; then echo "${seconds}s"; else local hours; hours=$(expr $seconds / 3600); echo "${hours}h"; fi; }
 generate_line() { local len=${1:-62}; local char="─"; local line=""; local i=0; while [ $i -lt $len ]; do line="$line$char"; i=$(expr $i + 1); done; echo "$line"; }
 
-# =============================================================
-# START: Final _get_visual_width function
-# =============================================================
 _get_visual_width() {
     local text="$1"
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除环境可能注入的空格
     local processed_text; processed_text=$(echo "$plain_text" | sed 's/ //g')
-    
-    local width=0
-    local i=0
+    local width=0; local i=0
     while [ $i -lt ${#processed_text} ]; do
         char=${processed_text:$i:1}
-        # Check byte length of the character
-        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
-            width=$((width + 2))
-        else
-            width=$((width + 1))
-        fi
+        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi
         i=$((i + 1))
     done
     echo $width
 }
-# =============================================================
-# END: Final _get_visual_width function
-# =============================================================
 
 _render_menu() {
     local title="$1"; shift; local lines_str="$@"; local max_width=0; local line_width
@@ -86,7 +71,38 @@ _render_menu() {
     IFS=$'\n'; for line in $lines_str; do echo -e "$line"; done; IFS=$old_ifs
     echo -e "${COLOR_BLUE}$(generate_line $(expr $box_width + 2))${COLOR_RESET}"
 }
-_print_header() { _render_menu "$1" ""; }
+
+# =============================================================
+# START: New dynamic renderer for specific complex menus
+# =============================================================
+_render_dynamic_box() {
+    local title="$1"
+    local box_width="$2"
+    shift 2
+    local content_str="$@"
+    
+    local title_width; title_width=$(_get_visual_width "$title")
+    local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
+    local padding_total; padding_total=$(expr $box_width - $title_width)
+    local padding_left; padding_left=$(expr $padding_total / 2)
+    local left_padding; left_padding=$(printf '%*s' "$padding_left")
+    local right_padding; right_padding=$(printf '%*s' "$(expr $padding_total - $padding_left)")
+    
+    echo ""
+    echo -e "${COLOR_YELLOW}╭${top_bottom_border}╮${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}│${left_padding}${title}${right_padding}${COLOR_YELLOW}│${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}╰${top_bottom_border}╯${COLOR_RESET}"
+    
+    local old_ifs=$IFS; IFS=$'\n'
+    for line in $content_str; do
+        echo -e "$line"
+    done
+    IFS=$old_ifs
+}
+# =============================================================
+# END: New dynamic renderer
+# =============================================================
+
 save_config(){
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true; cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
@@ -104,15 +120,16 @@ EOF
   chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。";
 }
 press_enter_to_continue() { read -r -p "$(echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}")"; }
-
 _render_simple_lines() {
     local indent="$1"; shift; local lines=("$@")
     for line in "${lines[@]}"; do
         echo -e "${indent}${line}"
     done
 }
-
 confirm_action() { read -r -p "$(echo -e "${COLOR_YELLOW}$1 ([y]/n): ${COLOR_RESET}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
+
+# ... All functions from _start_watchtower_container_logic to just before show_watchtower_details are unchanged ...
+# (Pasting them for completeness)
 _start_watchtower_container_logic(){
   local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
   local timezone="${JB_TIMEZONE:-Asia/Shanghai}"; local cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-300}"); if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); fi
@@ -177,39 +194,40 @@ get_watchtower_inspect_summary(){ if ! docker ps --format '{{.Names}}' | grep -q
 get_last_session_time(){ local logs; logs=$(get_watchtower_all_raw_logs 2>/dev/null || true); if [ -z "$logs" ]; then echo ""; return 1; fi; local line=""; local ts=""; if echo "$logs" | grep -qiE "permission denied|cannot connect"; then echo -e "${RED}错误:权限不足${NC}"; return 1; fi; line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true); if [ -n "$line" ]; then ts=$(_parse_watchtower_timestamp_from_log_line "$line"); if [ -n "$ts" ]; then echo "$ts"; return 0; fi; fi; echo ""; return 1; }
 get_updates_last_24h(){ if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo ""; return 1; fi; local since=""; if date -d "24 hours ago" >/dev/null 2>&1; then since=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true); elif command -v gdate >/dev/null 2>&1; then since=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true); fi; local raw_logs=""; if [ -n "$since" ]; then raw_logs=$(docker logs --since "$since" watchtower 2>&1 || true); fi; if [ -z "$raw_logs" ]; then raw_logs=$(docker logs --tail 200 watchtower 2>&1 || true); fi; echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|permission denied|cannot connect|Could not do a head request" || true; }
 _format_and_highlight_log_line(){ local line="$1"; local ts; ts=$(_parse_watchtower_timestamp_from_log_line "$line"); case "$line" in *"Session done"*) local f; f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); local s; s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); local u; u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); local c="$COLOR_GREEN"; if [ "${f:-0}" -gt 0 ]; then c="$COLOR_YELLOW"; fi; printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s:-?}, 更新: ${u:-?}, 失败: ${f:-?}" "$COLOR_RESET"; return ;; *"Found new"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$COLOR_RESET"; return ;; *"Stopping "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"Creating "*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$COLOR_RESET"; return ;; *"No new images found"*) printf "%s %b%s%b\n" "$ts" "$COLOR_CYAN" "ℹ️ 未发现新镜像。" "$COLOR_RESET"; return ;; *"Scheduling first run"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "🕒 首次运行已调度" "$COLOR_RESET"; return ;; *"Starting Watchtower"*) printf "%s %b%s%b\n" "$ts" "$COLOR_GREEN" "✨ Watchtower 已启动" "$COLOR_RESET"; return ;; *) if echo "$line" | grep -qiE "\b(unauthorized|failed|error)\b|permission denied|cannot connect|Could not do a head request"; then local msg; msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p'); if [ -z "$msg" ]; then msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info)|time="[^"]*")\s*//g'); fi; printf "%s %b%s%b\n" "$ts" "$COLOR_RED" "❌ 错误: ${msg:-$line}" "$COLOR_RESET"; fi; return ;; esac; }
+
+# =============================================================
+# START: MODIFIED show_watchtower_details with dynamic box
+# =============================================================
 show_watchtower_details(){
-    # This function is now fully dynamic
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi;
         
+        local title="📊 Watchtower 详情与管理 📊"
         local interval; interval=$(get_watchtower_inspect_summary 2>/dev/null || true)
         local raw_logs; raw_logs=$(get_watchtower_all_raw_logs)
         local countdown; countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
         
-        # Prepare content lines
         local old_ifs=$IFS; IFS=$'\n'
         local content_lines_array=(
             "上次活动: $(get_last_session_time :- "未检测到")"
             "下次检查: $countdown"
         )
         local updates; updates=$(get_updates_last_24h || true)
-        local separator_line="────────────────────────────────────────────────────────────" # A reasonably long default
         
-        # Add a separator and title for logs
-        content_lines_array+=("$separator_line")
+        content_lines_array+=(" ") # Spacer
         content_lines_array+=("最近 24h 摘要：")
         
         if [ -z "$updates" ]; then
             content_lines_array+=("无日志事件。")
         else
-            # Append log lines to the array
             while IFS= read -r line; do
                 content_lines_array+=("$(_format_and_highlight_log_line "$line")")
             done <<< "$updates"
         fi
         
-        # Calculate max width from ALL content lines to make separators dynamic
         local max_width=0
+        max_width=$(_get_visual_width "$title")
+        
         for line in "${content_lines_array[@]}"; do
             local line_width; line_width=$(_get_visual_width "$line")
             if [ "$line_width" -gt "$max_width" ]; then
@@ -217,16 +235,16 @@ show_watchtower_details(){
             fi
         done
         
-        # Replace the placeholder separator with a dynamically sized one
-        dynamic_separator=$(generate_line "$max_width")
-        content_lines_array[2]="${COLOR_BLUE}${dynamic_separator}${COLOR_RESET}"
+        local box_width; box_width=$(expr $max_width + 6)
         
-        # Render the menu
+        # Build the final content string
         printf -v content_str '%s\n' "${content_lines_array[@]}"
-        IFS=$old_ifs
         
-        _render_menu "📊 Watchtower 详情与管理 📊" "$content_str"
-
+        # Use the new dedicated renderer
+        _render_dynamic_box "$title" "$box_width" "$content_str"
+        echo -e "${COLOR_BLUE}$(generate_line $(expr $box_width + 2))${COLOR_RESET}"
+        
+        IFS=$old_ifs
         read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick
         case "$pick" in
             1) if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${COLOR_RED}Watchtower 未运行。${COLOR_RESET}"; press_enter_to_continue; fi ;;
@@ -236,13 +254,14 @@ show_watchtower_details(){
         esac
     done
 }
+# =============================================================
+# END: MODIFIED show_watchtower_details
+# =============================================================
+
 run_watchtower_once(){ echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower${COLOR_RESET}"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${COLOR_YELLOW}⚠️ Watchtower 正在后台运行。${COLOR_RESET}"; if ! confirm_action "是否继续？"; then echo -e "${COLOR_YELLOW}已取消。${COLOR_RESET}"; return 0; fi; fi; if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi; return 0; }
 view_and_edit_config(){ local -a config_items; config_items=( "TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string" "Cron 任务启用状态|CRON_TASK_ENABLED|bool" ); while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config; local content_lines=""; local i; for i in "${!config_items[@]}"; do local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${COLOR_CYAN}"; case "$type" in string) if [ -n "$current_value" ]; then color="${COLOR_GREEN}"; display_text="$current_value"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; bool) if [ "$current_value" = "true" ]; then color="${COLOR_GREEN}"; display_text="是"; else color="${COLOR_CYAN}"; display_text="否"; fi ;; interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ]; then color="${COLOR_GREEN}"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; number_range) if [ -n "$current_value" ]; then color="${COLOR_GREEN}"; display_text="$current_value"; else color="${COLOR_RED}"; display_text="未设置"; fi ;; esac; content_lines+=$(printf "\n %2d. %-20s: %b%s%b" "$(expr $i + 1)" "$label" "$color" "$display_text" "$COLOR_RESET"); done; _render_menu "⚙️ 配置查看与编辑 ⚙️" "$content_lines"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice; if [ -z "$choice" ]; then return; fi; if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi; local selected_index=$(expr $choice - 1); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""; case "$type" in string) read -r -p "请输入新的 '$label' (当前: $current_value): " new_value; declare "$var_name"="${new_value:-$current_value}" ;; bool) read -r -p "是否启用 '$label'? (y/N): " new_value; if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;; interval) new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;; number_range) local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2); while true; do read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value; if [ -z "$new_value" ]; then break; fi; if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then declare "$var_name"="$new_value"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi; done ;; esac; save_config; log_info "'$label' 已更新."; sleep 1; done; }
 update_menu(){ while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; local items="  1. › 🚀 Watchtower (推荐, 名称排除)\n  2. › ⚙️ Systemd Timer (Compose 项目)\n  3. › 🕑 Cron (Compose 项目)"; _render_menu "选择更新模式" "$items"; read -r -p " └──> 选择或按 Enter 返回: " c; case "$c" in 1) configure_watchtower; break ;; *) if [ -z "$c" ]; then break; else log_warn "无效选择。"; sleep 1; fi;; esac; done; }
 
-# =============================================================
-# START: Refactored main_menu with all fixes
-# =============================================================
 main_menu(){
     if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config
     local STATUS_RAW="未运行"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
@@ -257,14 +276,12 @@ main_menu(){
     status_lines+=("🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)")
     status_lines+=("⏳ 下次检查: ${COUNTDOWN}")
     status_lines+=("📦 容器概览: 总计 $TOTAL (${COLOR_GREEN}运行中 ${RUNNING}${COLOR_RESET}, ${COLOR_RED}已停止 ${STOPPED}${COLOR_RESET})")
-    
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then 
         status_lines+=("🚫 排除列表: ${COLOR_YELLOW}${FINAL_EXCLUDE_LIST//,/, }${COLOR_RESET} (${COLOR_CYAN}${FINAL_EXCLUDE_SOURCE}${COLOR_RESET})")
     fi
     if [ -n "$NOTIFY_STATUS" ]; then 
         status_lines+=("🔔 通知已启用: ${COLOR_GREEN}${NOTIFY_STATUS}${COLOR_RESET}")
     fi
-    
     local simple_status_block; simple_status_block=$(_render_simple_lines " " "${status_lines[@]}")
     
     local -a menu_options
@@ -272,9 +289,7 @@ main_menu(){
     
     printf -v content_str '%s\n' "$simple_status_block" "${menu_options[@]}"
     _render_menu "$header_text" "$content_str"
-    
     read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
-    
     case "$choice" in
       1) configure_watchtower || true; press_enter_to_continue; main_menu ;;
       2) notification_menu; main_menu ;;
@@ -286,9 +301,6 @@ main_menu(){
       *) log_warn "无效选项。"; sleep 1; main_menu ;;
     esac
 }
-# =============================================================
-# END: Refactored main_menu
-# =============================================================
 
 main(){ 
     trap 'echo -e "\n操作被中断。"; exit 10' INT
