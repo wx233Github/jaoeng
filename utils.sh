@@ -37,7 +37,7 @@ generate_line() {
     local line=""
     local i=0
     while [ $i -lt "$len" ]; do
-        line="${line}$系统信息" # <<< 这里是唯一的、关键的、最终的修正！
+        line="${line}$char" # <<< 这里是唯一的、关键的、最终的修正！
         i=$((i + 1))
     done
     echo "$line"
