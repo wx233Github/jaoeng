@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.18 - 最终修正版)
+# 🚀 通用工具函数库 (v2.19 - 最终验证版)
 # - [修正] 彻底修复 generate_line 函数中的变量错误 ($系统信息 -> $char)
 # - [增强] 为 _render_menu 增加负数边距保护
 # 供所有 vps-install 模块共享使用
@@ -36,7 +36,7 @@ generate_line() {
     local line=""
     local i=0
     while [ $i -lt "$len" ]; do
-        line="${line}${char}" # <--- 已彻底修正
+        line="${line}$系统信息" # <<< 这里是关键修正！
         i=$((i + 1))
     done
     echo "$line"
@@ -49,7 +49,7 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift
-    local -a lines=("$@") # 将剩余参数存入数组
+    local -a lines=("$@")
     
     local max_width=0
     local title_width=$(_get_visual_width "$title")
@@ -80,7 +80,6 @@ _render_menu() {
     for line in "${lines[@]}"; do
         local line_width=$(_get_visual_width "$line")
         local padding_right=$((box_width - line_width - 1))
-        # [增强] 增加负数保护，防止 printf 出错
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
         echo -e "${GREEN}│${NC}${line}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
