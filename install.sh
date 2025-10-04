@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v71.8 - Ultimate UI Character Fix)
+# 🚀 VPS 一键安装入口脚本 (v71.9 - Ultimate UI Final Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v71.8"
+SCRIPT_VERSION="v71.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -140,25 +140,18 @@ _get_visual_width() {
     local text="$1"
     # 移除颜色代码
     local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    # 移除 Emoji 的零宽度变体选择器，这是导致计算错误的关键
-    # Bash/sed in some systems need the $'' syntax for unicode
+    # 移除 Emoji 的零宽度变体选择器
     local processed_text; processed_text=$(echo "$plain_text" | sed $'s/\uFE0F//g')
     
-    local width=0
-    local i=0
-    while [ $i -lt ${#processed_text} ]; do
-        char=${processed_text:$i:1}
-        # Special case for '›' which can be single-width in some terminals
-        if [[ "$char" == "›" ]]; then
-            width=$((width + 1))
-        # Check byte length of the character for multi-byte detection
-        elif [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
-            width=$((width + 2))
-        else
-            width=$((width + 1))
-        fi
-        i=$((i + 1))
-    done
+    # 使用正则表达式计算单字节和多字节字符的数量
+    local single_byte; single_byte=$(echo -n "$processed_text" | sed 's/[^[:ascii:]]//g' | wc -c)
+    local multi_byte; multi_byte=$(echo -n "$processed_text" | sed 's/[[:ascii:]]//g' | wc -m)
+    
+    # 特例处理 '›' 符号，通常它虽然是多字节，但只占一个字符宽度
+    local arrow_count; arrow_count=$(echo -n "$processed_text" | grep -o '›' | wc -l)
+
+    # 总宽度 = (多字节字符数 - '›'符号数) * 2 + (单字节字符数 + '›'符号数)
+    local width=$(( (multi_byte - arrow_count) * 2 + single_byte + arrow_count ))
     echo $width
 }
 # =============================================================
