@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.5.2 - Final Syntax Fix)
+# 🚀 Docker 自动更新助手 (v4.5.4 - Final Corrected Version)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.5.2"
+SCRIPT_VERSION="v4.5.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF-8}
+export LC_ALL=${LC_ALL:-C.UTF_8}
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
@@ -47,14 +47,63 @@ CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
 EOF
 chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"; }
 _start_watchtower_container_logic(){
-  local wt_interval="$1"; local mode_description="$2"; echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull containrrr/watchtower >/dev/null 2>&1 || true; set -e
-  local timezone="${JB_TIMEZONE:-Asia/Shanghai}"; local cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" -d --name watchtower --restart unless-stopped -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --interval "${wt_interval:-300}"); if [ "$mode_description" = "一次性更新" ]; then cmd_parts=(docker run -e "TZ=${timezone}" -h "$(hostname)" --rm --name watchtower-once -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup --run-once); fi
-  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then cmd_parts+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}?parse_mode=Markdown"); if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then cmd_parts+=(-e WATCHTOWER_REPORT=true); fi; local NOTIFICATION_TEMPLATE='🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Report.Time.Format "2006-01-02 15:04:05"}}`'; cmd_parts+=(-e WATCHTOWER_NOTIFICATION_TEMPLATE="$NOTIFICATION_TEMPLATE"); fi
-  if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then cmd_parts+=("--debug"); fi; if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; cmd_parts+=("${extra_tokens[@]}"); fi
-  local final_exclude_list=""; local source_msg=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; source_msg="脚本内部"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; source_msg="config.json"; fi
-  if [ -n "$final_exclude_list" ]; then log_info "发现排除规则 (来源: ${source_msg}): ${final_exclude_list}"; local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g'); local included_containers; included_containers=$(docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true); if [ -n "$included_containers" ]; then cmd_parts+=($included_containers); log_info "计算后的监控范围: ${included_containers}"; else log_warn "排除规则导致监控列表为空！"; fi; else log_info "未发现排除规则，Watchtower 将监控所有容器。"; fi
-  _print_header "正在启动 $mode_description"; echo -e "${CYAN}执行命令: ${cmd_parts[*]} ${NC}"; set +e; "${cmd_parts[@]}"; local rc=$?; set -e
-  if [ "$mode_description" = "一次性更新" ]; then if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi; return $rc; else sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi; return 0; fi
+  local wt_interval="$1"; local mode_description="$2"
+  local cmd_base=(docker run -e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
+  local wt_image="containrrr/watchtower"
+  local wt_args=("--cleanup")
+  local container_names=()
+
+  if [ "$mode_description" = "一次性更新" ]; then
+      cmd_base+=(--rm --name watchtower-once)
+      wt_args+=(--run-once)
+  else
+      cmd_base+=(-d --name watchtower --restart unless-stopped)
+      wt_args+=(--interval "${wt_interval:-300}")
+  fi
+  cmd_base+=(-v /var/run/docker.sock:/var/run/docker.sock)
+
+  if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+      cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@${TG_CHAT_ID}?parse_mode=Markdown")
+      if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then cmd_base+=(-e WATCHTOWER_REPORT=true); fi
+      local NOTIFICATION_TEMPLATE='🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Report.Time.Format "2006-01-02 15:04:05"}}`'
+      cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE}")
+  fi
+  if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
+  if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
+
+  local final_exclude_list=""; local source_msg=""
+  if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; source_msg="脚本内部"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; source_msg="config.json"; fi
+  
+  local included_containers
+  if [ -n "$final_exclude_list" ]; then
+      log_info "发现排除规则 (来源: ${source_msg}): ${final_exclude_list}"
+      local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
+      included_containers=$(docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true)
+      if [ -n "$included_containers" ]; then
+          log_info "计算后的监控范围: ${included_containers}"
+          read -r -a container_names <<< "$included_containers"
+      else
+          log_warn "排除规则导致监控列表为空！"
+      fi
+  else
+      log_info "未发现排除规则，Watchtower 将监控所有容器。"
+  fi
+
+  echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
+  
+  _print_header "正在启动 $mode_description"
+  local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
+  echo -e "${CYAN}执行命令: ${final_cmd[*]}${NC}"
+  
+  set +e; "${final_cmd[@]}"; local rc=$?; set -e
+  
+  if [ "$mode_description" = "一次性更新" ]; then
+      if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi
+      return $rc
+  else
+      sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi
+      return 0
+  fi
 }
 _prompt_and_restart_watchtower_if_needed() { if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then if confirm_action "配置已更新，是否立即重启 Watchtower 以应用新配置?"; then log_info "正在重启 Watchtower..."; if docker restart watchtower; then send_notify "🔄 Watchtower 服务已因配置变更而重启。"; log_success "Watchtower 重启成功。"; else log_err "Watchtower 重启失败！"; fi; else log_warn "操作已取消。新配置将在下次手动重启或重开 Watchtower 后生效。"; fi; fi; }
 _configure_telegram() { read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"; read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"; log_info "Telegram 配置已更新。"; }
@@ -127,7 +176,10 @@ show_watchtower_details(){
         esac
     done
 }
-run_watchtower_once(){ echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${YELLOW}⚠️ Watchtower 正在后台运行。${NC}"; if ! confirm_action "是否继续？"; then echo -e "${YELLOW}已取消。${NC}"; return 0; fi; fi; if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi; return 0; }
+run_watchtower_once(){ 
+    if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 0; fi
+    echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"; if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi; return 0;
+}
 view_and_edit_config(){ local -a config_items; config_items=( "TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string" "Cron 任务启用状态|CRON_TASK_ENABLED|bool" ); while true; do if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config; local -a content_lines_array=(); local i; for i in "${!config_items[@]}"; do local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"; case "$type" in string) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;; bool) if [ "$current_value" = "true" ]; then color="${GREEN}"; display_text="是"; else color="${CYAN}"; display_text="否"; fi ;; interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;; number_range) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;; esac; content_lines_array+=("$(printf " %2d. %-20s: %b%s%b" "$((i + 1))" "$label" "$color" "$display_text" "$NC")"); done; _render_menu "⚙️ 配置查看与编辑 ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice; if [ -z "$choice" ]; then return; fi; if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi; local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""; case "$type" in string) read -r -p "请输入新的 '$label' (当前: $current_value): " new_value; declare "$var_name"="${new_value:-$current_value}" ;; bool) read -r -p "是否启用 '$label'? (y/N): " new_value; if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;; interval) new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;; number_range) local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2); while true; do read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value; if [ -z "$new_value" ]; then break; fi; if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then declare "$var_name"="$new_value"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi; done ;; esac; save_config; log_info "'$label' 已更新."; sleep 1; done; }
 main_menu(){
     if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi; load_config
@@ -137,15 +189,14 @@ main_menu(){
     local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}"); local TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); local RUNNING=$(docker ps --format '{{.ID}}' | wc -l); local STOPPED=$((TOTAL - RUNNING))
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
     local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
-    local header_text="Docker 助手 v${SCRIPT_VERSION}"
+    local header_text="Docker 助手 ${SCRIPT_VERSION}"
     
     local -a content_array=(" 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" " ⏳ 下次检查: ${COUNTDOWN}" " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})")
-    if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
-    if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
-    content_array+=("" "主菜单：" "  1. › 配 置  Watchtower" "  2. › 配 置 通 知" "  3. › 任 务 管 理" "  4. › 查 看 /编 辑 配 置  (底 层 )" "  5. › 手 动 更 新 所 有 容 器" "  6. › 详 情 与 管 理")
+    if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
+    if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通知已启用: ${GREEN}${NOTIFY_STATUS}${NC}"); fi
+    content_array+=("" "主菜单：" "  1. › 配置 Watchtower" "  2. › 配置通知" "  3. › 任务管理" "  4. › 查看/编辑配置 (底层)" "  5. › 手动更新所有容器" "  6. › 详情与管理")
     
-    _render_menu "$header_text" "${content_array[@]}"
-    read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
+    _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
     case "$choice" in
       1) configure_watchtower || true; press_enter_to_continue; main_menu ;; 2) notification_menu; main_menu ;;
       3) manage_tasks; main_menu ;; 4) view_and_edit_config; main_menu ;;
