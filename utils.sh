@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.4 - Final Perfect UI)
+# 🚀 通用工具函数库 (v2.5 - UI Theming Engine)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -27,51 +27,52 @@ press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继�
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
-generate_line() { local len=${1:-62}; local char="─"; local line=""; local i=0; while [ $i -lt $len ]; do line="${line}${char}"; i=$((i + 1)); done; echo "$line"; }
+generate_line() {
+    local len=${1:-62}
+    local char_type=${2:-"─"} # 第二个参数可以是 "─" 或 "═"
+    local line=""
+    local i=0
+    while [ $i -lt $len ]; do line="${line}${char_type}"; i=$((i + 1)); done
+    echo "$line"
+}
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g'); local width=0; local i=1
     while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
 }
 
+# =============================================================
+# 关键修复: 实现UI主题引擎
+# =============================================================
 _render_menu() {
+    # 如果是 watchtower 风格，则不执行任何操作，由模块自己渲染
+    if [ "${UI_STYLE}" = "watchtower" ]; then
+        return 0
+    fi
+
+    # 默认使用 install 风格
     local title="$1"; shift
     local max_width=0; local line_width
 
-    line_width=$(_get_visual_width "$title"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    line_width=$(_get_visual_width "  $title  "); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
+    for line in "$@"; do line_width=$(_get_visual_width "$line"); if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi; done
     
-    for line in "$@"; do
-        line_width=$(_get_visual_width "$line")
-        if [ "$line_width" -gt "$max_width" ]; then max_width=$line_width; fi
-    done
-    
-    local box_width; box_width=$((max_width + 6)); if [ $box_width -lt 40 ]; then box_width=40; fi
+    local box_width; box_width=$((max_width + 4)); if [ $box_width -lt 40 ]; then box_width=40; fi
     local title_width; title_width=$(_get_visual_width "$title")
     
-    local padding_total=$((box_width - title_width))
+    local padding_total=$((box_width - title_width - 2)) # -2 for " ║ "
     local padding_left=$((padding_total / 2))
     local padding_right=$((padding_total - padding_left))
     
     local left_padding; left_padding=$(printf '%*s' "$padding_left")
     local right_padding; right_padding=$(printf '%*s' "$padding_right")
     
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
-    echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
+    echo ""; echo -e "${GREEN}╔$(generate_line "$box_width" "═")╗${NC}"
+    echo -e "${GREEN}║${left_padding} ${title} ${right_padding}║${NC}"
+    echo -e "${GREEN}╚$(generate_line "$box_width" "═")╝${NC}"
     
     for line in "$@"; do echo -e "$line"; done
-    
-    echo -e "${BLUE}$(generate_line $((box_width + 2)))${NC}"
+
+    # install 风格不需要底部的分隔线
 }
-_render_dynamic_box() {
-    local title="$1"; local box_width="$2"; shift 2; local content_str="$@"
-    local title_width; title_width=$(_get_visual_width "$title"); local top_bottom_border; top_bottom_border=$(generate_line "$box_width")
-    local padding_total=$((box_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
-    local left_padding; left_padding=$(printf '%*s' "$padding_left"); local right_padding; right_padding=$(printf '%*s' "$padding_right")
-    
-    echo ""; echo -e "${GREEN}╭${top_bottom_border}╮${NC}"
-    echo -e "${GREEN}│${left_padding}${title}${right_padding}${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
-    
-    local old_ifs=$IFS; IFS=$'\n'; for line in $content_str; do echo -e "$line"; done; IFS=$old_ifs
-}
+
 _print_header() { _render_menu "$1" ""; }
