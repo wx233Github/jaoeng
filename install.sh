@@ -145,7 +145,8 @@ _get_visual_width() {
         width = 0
         for (i = 1; i <= length; i++) {
             char = substr($0, i, 1)
-            if (char ~ /[[:ascii:]]/) {
+            # 检查字符的字节长度。在UTF-8中，ASCII字符是1字节。
+            if (length(char) == 1) {
                 width += 1
             } else {
                 width += 2
