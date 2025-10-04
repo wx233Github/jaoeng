@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.22 - 最终验证修正版)
-# - [最终修正] 彻底修复 generate_line 函数中因变量名错误导致的UI渲染问题
-# 供所有 vps-install 模块共享使用
+# 🚀 通用工具函数库 (v2.26 - 宽度计算修正版)
+# - [修正] 将有缺陷的 _get_visual_width 函数替换为与 install.sh 一致的健壮版本
+# - [修正] 修复 generate_line 函数中的变量名错误
 # =============================================================
 
 # --- 严格模式 ---
@@ -28,24 +28,27 @@ press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继�
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
-#
-# [最终修正] 修复了循环中使用错误变量 '$系统信息' 的致命问题。
-#
 generate_line() {
     local len=${1:-40}
     local char=${2:-"─"}
     local line=""
     local i=0
     while [ $i -lt "$len" ]; do
-        line="${line}$char" # <<< 这里是唯一的、关键的、最终的修正！
+        line="${line}$char"
         i=$((i + 1))
     done
     echo "$line"
 }
 
+# [最终修正] 使用与 install.sh 中一致的、更健壮的宽度计算函数
 _get_visual_width() {
-    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g'); local width=0; local i=1
-    while [ $i -le ${#plain_text} ]; do char=$(echo "$plain_text" | cut -c $i); if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then width=$((width + 2)); else width=$((width + 1)); fi; i=$((i + 1)); done; echo $width
+    local text="$1"
+    local plain_text
+    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    # 使用 awk length 计算字符长度，对多字节字符更友好
+    local chars
+    chars=$(echo -n "$plain_text" | awk '{print length}')
+    echo "$chars"
 }
 
 _render_menu() {
