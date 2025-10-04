@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v1.8 - Ultimate Compatibility Fix)
+# 🚀 通用工具函数库 (v1.9 - Accurate Width Calculation)
 # 供所有 vps-install 模块共享使用
 # =============================================================
 
@@ -28,15 +28,11 @@ confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; 
 
 # --- UI 渲染 & 字符串处理 ---
 
-# =============================================================
-# 关键修复: 还原为最兼容的循环实现，避免 tr 的兼容性问题
-# =============================================================
 generate_line() {
     local len=${1:-62}
     local char="─"
     local line=""
     local i=0
-    # 使用简单的循环，确保在任何环境下都能正确生成线条
     while [ $i -lt $len ]; do
         line="${line}${char}"
         i=$((i + 1))
@@ -44,9 +40,30 @@ generate_line() {
     echo "$line"
 }
 
+# =============================================================
+# 关键修复: 使用最可靠的逐字符字节判断法，精确计算可视宽度
+# =============================================================
 _get_visual_width() {
-    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    echo "$plain_text" | awk '{ split($0, chars, ""); width = 0; for (i in chars) { if (length(chars[i]) > 1) { width += 2; } else { width += 1; } } print width; }'
+    local text="$1"
+    # 移除颜色控制代码
+    local plain_text
+    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    
+    local width=0
+    local i=1
+    while [ $i -le ${#plain_text} ]; do
+        char=$(echo "$plain_text" | cut -c $i)
+        # 判断字符的字节数
+        if [ "$(echo -n "$char" | wc -c)" -gt 1 ]; then
+            # 大于1字节的字符（中文、Emoji等）宽度计为2
+            width=$((width + 2))
+        else
+            # 单字节字符宽度计为1
+            width=$((width + 1))
+        fi
+        i=$((i + 1))
+    done
+    echo $width
 }
 
 _render_menu() {
