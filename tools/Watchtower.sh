@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.4.1 - Final Comprehensive UI Fix)
+# 🚀 Docker 自动更新助手 (v4.4.2 - Final Comprehensive Fix)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.4.1"
+SCRIPT_VERSION="v4.4.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF_8}
+export LC_ALL=${LC_ALL:-C.UTF-8}
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"; if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else log_err() { echo "[错误] $*" >&2; }; log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"; exit 1; fi
@@ -56,6 +56,7 @@ _start_watchtower_container_logic(){
   _print_header "正在启动 $mode_description"; echo -e "${CYAN}执行命令: ${cmd_parts[*]} ${NC}"; set +e; "${cmd_parts[@]}"; local rc=$?; set -e
   if [ "$mode_description" = "一次性更新" ]; then if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi; return $rc; else sleep 3; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi; return 0; fi
 }
+_prompt_and_restart_watchtower_if_needed() { if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then if confirm_action "配置已更新，是否立即重启 Watchtower 以应用新配置?"; then log_info "正在重启 Watchtower..."; if docker restart watchtower; then send_notify "🔄 Watchtower 服务已因配置变更而重启。"; log_success "Watchtower 重启成功。"; else log_err "Watchtower 重启失败！"; fi; else log_warn "操作已取消。新配置将在下次手动重启或重开 Watchtower 后生效。"; fi; fi; }
 _configure_telegram() { read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"; read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT; TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"; log_info "Telegram 配置已更新。"; }
 _configure_email() { read -r -p "请输入接收邮箱 (当前: ${EMAIL_TO}): " EMAIL_TO_INPUT; EMAIL_TO="${EMAIL_TO_INPUT:-$EMAIL_TO}"; log_info "Email 配置已更新。"; }
 notification_menu() {
@@ -64,9 +65,11 @@ notification_menu() {
         local -a items_array=("  1. › 配置 Telegram  ($tg_status)" "  2. › 配置 Email      ($email_status)" "  3. › 发送测试通知" "  4. › 清空所有通知配置")
         _render_menu "⚙️ 通知配置 ⚙️" "${items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice
         case "$choice" in
-            1) _configure_telegram; save_config; press_enter_to_continue ;; 2) _configure_email; save_config; press_enter_to_continue ;;
+            1) _configure_telegram; save_config; _prompt_and_restart_watchtower_if_needed; press_enter_to_continue ;;
+            2) _configure_email; save_config; press_enter_to_continue ;;
             3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置至少一种通知方式。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 v${SCRIPT_VERSION} 的*测试消息*。"; log_info "测试通知已发送。"; fi; press_enter_to_continue ;;
-            4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; save_config; log_info "所有通知配置已清空。"; else log_info "操作已取消。"; fi; press_enter_to_continue ;; "" | *) if [ -z "$choice" ]; then return; fi; log_warn "无效选项。"; sleep 1 ;;
+            4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; save_config; log_info "所有通知配置已清空。"; _prompt_and_restart_watchtower_if_needed; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
+            "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
 }
@@ -133,9 +136,7 @@ main_menu(){
     local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}"); local TOTAL=$(docker ps -a --format '{{.ID}}' | wc -l); local RUNNING=$(docker ps --format '{{.ID}}' | wc -l); local STOPPED=$((TOTAL - RUNNING))
     local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE=""; if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"; FINAL_EXCLUDE_SOURCE="脚本"; elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"; FINAL_EXCLUDE_SOURCE="config.json"; fi
     local NOTIFY_STATUS=""; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi; if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
-    
-    # 关键修复: 移除硬编码的 'vv'
-    local header_text="Docker 助手 ${SCRIPT_VERSION}"
+    local header_text="Docker 助手 v${SCRIPT_VERSION}"
     
     local -a content_array=(" 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" " ⏳ 下次检查: ${COUNTDOWN}" " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})")
     if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
