@@ -2,11 +2,11 @@
 set -x # DEBUG: Enable shell debug tracing
 
 # =============================================================
-# VPS Install Script (v74.17-Fix local error and jb shortcut)
+# VPS Install Script (v74.18-Remove 'local' from global scope)
 # =============================================================
 
 # Script metadata
-SCRIPT_VERSION="v74.17"
+SCRIPT_VERSION="v74.18"
 
 # Force use Bash
 # Check if the current shell is bash, if not, try to re-execute with bash
@@ -66,11 +66,12 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "Performing first installation or forced refresh of core components..."
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-        declare -A core_files=( ["Main Program"]="install.sh" ["Configuration File"]="config.json" ["Utility Library"]="utils.sh" )
+        # Removed 'local' from core_files declaration, though declare -A is Bash-specific anyway
+        declare -A core_files=( ["Main Program"]="install.sh" ["Configuration File"]="config.json" ["Utility Library"]="utils.sh" ) 
         for name in "${!core_files[@]}"; do
             file_path="${core_files[$name]}"
             echo_info "Downloading latest ${name} (${file_path})..."
-            temp_file="/tmp/$(basename "${file_path}").$$"
+            temp_file="/tmp/$(basename "${file_path}").$$" # Removed 'local'
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
                 echo_error "Failed to download ${name}."
             fi
@@ -96,7 +97,7 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         echo_info "Creating/updating shortcut command 'jb' as a wrapper script..."
         BIN_DIR="/usr/local/bin"
         JB_WRAPPER_SCRIPT="${BIN_DIR}/jb"
-        local temp_wrapper="/tmp/jb_wrapper.$$"
+        temp_wrapper="/tmp/jb_wrapper.$$" # Removed 'local'
         cat > "$temp_wrapper" <<'EOF'
 #!/bin/bash
 exec "/opt/vps_install_modules/install.sh" "$@"
@@ -359,20 +360,20 @@ confirm_and_force_update() {
         log_info "Starting forced full reset..."
         declare -A core_files_to_reset=( ["Main Program"]="install.sh" ["Utility Library"]="utils.sh" ["Configuration File"]="config.json" )
         for name in "${!core_files_to_reset[@]}"; do
-            local file_path="${core_files_to_reset[$name]}"
+            file_path="${core_files_to_reset[$name]}"
             log_info "Forcing update of ${name}..."
-            local temp_file="/tmp/$(basename "$file_path").tmp.$$"
+            temp_file="/tmp/$(basename "$file_path").tmp.$$" # Removed 'local'
             if ! _download_file "$file_path" "$temp_file"; then
                 log_err "Failed to download latest ${name}."
                 continue
             fi
             # Optimization: suppress mv's run_with_sudo logs
-            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
+            JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
             log_success "${name} reset to latest version."
         done
         log_info "Restoring core script execution permissions..."
         # Optimization: suppress chmod's run_with_sudo logs
-        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
+        JB_SUDO_LOG_QUIET="true" sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
         log_success "Permissions restored."
         _update_all_modules
         log_success "Forced reset complete!"
@@ -510,7 +511,7 @@ else
   export -f run_with_sudo
 fi
 $env_exports
-# Core: module script executes as current user, if root privileges are needed, module should call run_with_sudo internally
+# Core: module script executes as current user, if root privileges are needed, module should call run_with_sudo
 exec bash '$local_path' $extra_args_str
 EOF
     # Core: execute runner script, no sudo
@@ -703,7 +704,7 @@ main() {
 
     if [ $# -gt 0 ]; then
         # This block is skipped if user runs `jb` without args.
-        local command="$1"; shift
+        command="$1"; shift # Removed 'local'
         case "$command" in
             update)
                 log_info "Safely updating all scripts in Headless mode..."
@@ -716,15 +717,11 @@ main() {
                 exit 0
                 ;;
             *)
-                local item_json
-                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
+                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1) # Removed 'local'
                 if [ -n "$item_json" ]; then
-                    local action_to_run
-                    action_to_run=$(echo "$item_json" | jq -r '.action' 2>/dev/null || echo "")
-                    local display_name
-                    display_name=$(echo "$item_json" | jq -r '.name' 2>/dev/null || echo "")
-                    local type
-                    type=$(echo "$item_json" | jq -r '.type' 2>/dev/null || echo "")
+                    action_to_run=$(echo "$item_json" | jq -r '.action' 2>/dev/null || echo "") # Removed 'local'
+                    display_name=$(echo "$item_json" | jq -r '.name' 2>/dev/null || echo "") # Removed 'local'
+                    type=$(echo "$item_json" | jq -r '.type' 2>/dev/null || echo "") # Removed 'local'
                     log_info "Executing: ${display_name} in Headless mode"
                     if [ "$type" = "func" ]; then
                         "$action_to_run" "$@"
