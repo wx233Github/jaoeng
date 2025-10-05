@@ -1,22 +1,24 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.11 - 最终修正版)
-# - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)
+# 🚀 Docker 自动更新助手 (v4.6.12 - 最终修正版)
+# - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
+#   - 恢复中文及表情模板。
+#   - 对 Go Template 内部的双引号和反引号进行 Bash 转义。
+#   - 将所有实际换行符 \n 替换为 Bash 可识别的 \\n，确保模板作为单行字符串传递。
+# - [修复] 修正了 _parse_watchtower_timestamp_from_log_line 函数中 fih 拼写错误。
+# - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)。
 # - [优化] config.json 中 notify_on_no_updates 默认 true
-# - [修复] 修复了 Watchtower 通知模板错误 (Go template Bash 转义问题)
 # - [优化] config.conf 存储优先级高于 config.json
 # - [新增] 容器管理界面新增启动所有/停止所有功能
 # - [修复] 修复了 load_config 等函数 command not found 问题
 # - [优化] 菜单标题及版本信息显示
 # - [适配] 适配 config.json 中 Watchtower 模块的默认配置
 # - [优化] 时间处理函数自包含，减少对 utils.sh 的依赖
-# - [修复] 简化 Watchtower 通知模板为纯英文，排查Go Template解析错误
 # - [修正] Watchtower详情页面“下次检查”状态显示逻辑
-# - [修复] 修正 _parse_watchtower_timestamp_from_log_line 函数中的 fih 拼写错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.11" # 脚本版本
+SCRIPT_VERSION="v4.6.12" # 脚本版本
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -225,13 +227,15 @@ _start_watchtower_container_logic(){
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Watchtower 的通知模板（纯英文简化版 Go Template 字符串）
-        # 移除所有表情符号和中文字符，以排查兼容性问题。
+        # Watchtower 的通知模板（原始 Go Template 字符串，恢复中文和表情）
         # 使用printf构建模板，确保换行符、反引号等字符正确
-        local NOTIFICATION_TEMPLATE_RAW=$(printf "Docker Container Update Report\n\nServer: \`{{.Host}}\`\n\n{{if .Updated}}Scan complete! Updated {{len .Updated}} containers.\n{{range .Updated}}\n- {{.Name}}\n  Image: \`{{.ImageName}}\`\n  ID: \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}Scan complete! No updates found.\n  (Scanned {{.Scanned}}, Failed {{.Failed}}){{else if .Failed}}Scan failed!\n  (Scanned {{.Scanned}}, Failed {{.Failed}}){{end}}\n\nTime: \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
+        local NOTIFICATION_TEMPLATE_RAW=$(printf "🐳 *Docker 容器更新报告*\n\n*服务器:* \`{{.Host}}\`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* \`{{.ImageName}}\`\n  🆔 *ID:* \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
         
-        # 对原始模板字符串中的内部双引号进行 Bash 转义，以确保其作为环境变量传递时不会被截断或错误解析
-        local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/"/\\"/g')
+        # 1. 对原始模板字符串中的内部双引号进行 Bash 转义
+        # 2. 对原始模板字符串中的内部反引号进行 Bash 转义
+        # 3. 将所有实际的换行符 '\n' 替换为 Bash 可识别的转义序列 '\\n'，使整个字符串成为单行
+        #    这样在作为环境变量传递时，Bash 不会因为换行符而截断它。
+        local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/"/\\"/g' | sed 's/`/\\`/g' | sed ':a;N;$!ba;s/\n/\\n/g')
         
         # 将转义后的模板字符串作为环境变量传递给 Watchtower 容器
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE}")
@@ -832,7 +836,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi # <-- 修正了这里！
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
