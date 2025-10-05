@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.37)
+# 🚀 通用工具函数库 (v2.38)
+# - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
 # - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
-# - 修复：修正了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`。
+# - 优化：增强了 `_get_visual_width` 函数的健壮性，增加了调试输出，以更好地处理多字节字符宽度计算。
 # - 新增：添加了 `_prompt_for_interval` 函数，用于交互式获取并验证时间间隔输入。
-# - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数，优先解析“Scheduling first run”的调度时间。
 # - 优化：脚本头部注释更简洁。
 # =============================================================
 
@@ -25,6 +25,9 @@ log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
+# 调试模式，可以通过 export JB_DEBUG_MODE=true 启用
+log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
+
 
 # --- 用户交互函数 ---
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"; }
@@ -42,26 +45,53 @@ _get_visual_width() {
     local text="$1"
     local plain_text
     plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    log_debug "Calculating width for: '$plain_text'"
     if [ -z "$plain_text" ]; then
+        log_debug "Empty plain_text, returning 0"
         echo 0
         return
     fi
 
     # 优先使用 Python 计算显示宽度，处理多字节字符 (East Asian Width)
     if command -v python3 &>/dev/null; then
-        python3 -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" || true
-    elif command -v python &>/dev/null; then
-        python -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" || true
-    else
-        # Fallback to wc -m (character count) if Python is not available
-        # This is less accurate for mixed-width characters but better than wc -c (byte count)
-        if command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
-            echo -n "$plain_text" | wc -m
+        local width
+        width=$(python3 -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
+        if [ -n "$width" ] && [ "$width" -ge 0 ]; then
+            log_debug "Python3 calculated width: $width"
+            echo "$width"
+            return
         else
-            # Final fallback to wc -c (byte count), least accurate for multi-byte characters
-            echo -n "$plain_text" | wc -c
+            log_debug "Python3 failed or returned invalid width for '$plain_text'. Trying fallback."
+        fi
+    elif command -v python &>/dev/null; then
+        local width
+        width=$(python -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
+        if [ -n "$width" ] && [ "$width" -ge 0 ]; then
+            log_debug "Python calculated width: $width"
+            echo "$width"
+            return
+        else
+            log_debug "Python failed or returned invalid width for '$plain_text'. Trying fallback."
         fi
     fi
+
+    # Fallback to wc -m (character count) if Python is not available
+    if command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        local width
+        width=$(echo -n "$plain_text" | wc -m)
+        if [ -n "$width" ] && [ "$width" -ge 0 ]; then
+            log_debug "wc -m calculated width: $width"
+            echo "$width"
+            return
+        else
+            log_debug "wc -m failed or returned invalid width for '$plain_text'. Trying fallback."
+        fi
+    fi
+
+    # Final fallback to character count (least accurate for CJK)
+    local width=${#plain_text} # 这会计算字符数，对于 CJK 字符可能不准确
+    log_warn "⚠️ 无法准确计算字符串宽度，可能导致排版问题。请确保安装 Python3 或 wc -m。Fallback width: $width"
+    echo "$width"
 }
 
 # 增加内部边距，适配移动终端
