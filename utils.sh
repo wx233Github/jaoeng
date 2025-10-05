@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.33)
+# 🚀 通用工具函数库 (v2.34)
+# - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数中的语法错误。
 # - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数，优先解析“Scheduling first run”的调度时间。
 # - 优化：脚本头部注释更简洁。
 # =============================================================
@@ -126,7 +127,7 @@ _parse_watchtower_timestamp_from_log_line() {
     if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
-    层叠
+    fi # <--- 修正: 闭合 if
     
     # 3. Next priority: YYYY-MM-DDTHH:MM:SSZ format (e.g. Watchtower 1.7.1)
     timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
