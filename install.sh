@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.9)
+# 🚀 VPS 一键安装入口脚本 (v74.10)
 # - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
+# - 修复：新增 `JB_SHOW_UNCHANGED_LOGS` 变量，默认不打印“模块 (...) 未更改”信息，可通过 `FORCE_REFRESH=true` 启用。
 # - 优化：`download_module_to_cache` 函数现在将结果返回给调用者，而不是直接打印日志。
 # - 优化：`_update_all_modules` 函数现在会收集并有序打印模块更新结果。
 # - 修复：彻底解决了所有已知语法错误和逻辑问题。
@@ -11,7 +12,10 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.9"
+SCRIPT_VERSION="v74.10"
+
+# 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
+export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -230,8 +234,8 @@ self_update() {
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
-        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_script" "$SCRIPT_PATH"
-        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$SCRIPT_PATH"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_script" "$SCRIPT_PATH" >/dev/null 2>&1
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$SCRIPT_PATH" >/dev/null 2>&1
         flock -u 200 || true
         rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
         trap - EXIT # 取消退出陷阱，防止在 exec 后再次执行
@@ -292,8 +296,8 @@ _update_core_files() {
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
             log_success "核心工具库 (utils.sh) 已更新。"
             # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
-            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
-            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH" >/dev/null 2>&1
+            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH" >/dev/null 2>&1
         else
             rm -f "$temp_utils" 2>/dev/null || true
         fi
@@ -352,7 +356,7 @@ _update_all_modules() {
 
             case "$status_type" in
                 "success") log_success "$message" ;;
-                "info")    log_info "$message" ;;
+                "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;; # 根据 JB_SHOW_UNCHANGED_LOGS 决定是否打印
                 "error")   log_err "$message" ;;
                 *)         log_warn "未知模块更新结果: $result_line" ;;
             esac
@@ -385,12 +389,12 @@ confirm_and_force_update() {
                 continue
             fi
             # 优化：抑制 mv 的 run_with_sudo 日志
-            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}" >/dev/null 2>&1
             log_success "${name} 已重置为最新版本。"
         done
         log_info "正在恢复核心脚本执行权限..."
         # 优化：抑制 chmod 的 run_with_sudo 日志
-        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" >/dev/null 2>&1 || true
         log_success "权限已恢复。"
         _update_all_modules
         log_success "强制重置完成！"
@@ -416,9 +420,9 @@ uninstall_script() {
     if [ "$choice" = "yes" ]; then
         log_info "开始卸载..."
         # 优化：抑制 rm 的 run_with_sudo 日志
-        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}" >/dev/null 2>&1
         log_success "安装目录已移除."
-        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb" >/dev/null 2>&1
         log_success "快捷方式已移除."
         log_success "脚本已成功卸载."
         log_info "再见！"
@@ -450,7 +454,7 @@ execute_module() {
         
         case "$status_type" in
             "success") log_success "$message" ;;
-            "info")    log_info "$message" ;;
+            "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;; # 根据 JB_SHOW_UNCHANGED_LOGS 决定是否打印
             "error")   log_err "$message"; return 1 ;; # 如果下载失败，返回错误
             *)         log_warn "未知模块下载结果: $result"; return 1 ;;
         esac
@@ -675,6 +679,8 @@ main() {
         case "$command" in
             update)
                 log_info "正在以 Headless 模式安全更新所有脚本..."
+                # 在 headless 模式下，强制显示所有更新日志
+                export JB_SHOW_UNCHANGED_LOGS="true" 
                 force_update_all
                 exit 0
                 ;;
@@ -708,9 +714,7 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🕛"
-    sleep 0.5
-    echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🔄\n"
+    log_info "正在智能更新... 🔄" # 使用标准 log_info 避免 \r 导致的排版问题
     force_update_all
 
     CURRENT_MENU_NAME="MAIN_MENU"
@@ -721,6 +725,7 @@ main() {
         if [ "$exit_code" -ne 10 ]; then
             # 清空输入缓冲区，防止上次输入影响下次read
             while read -r -t 0; do :; done < /dev/tty
+            tput el 2>/dev/null || true # 清除当前行（如果 tput 可用），避免回车键残留
             press_enter_to_continue
         fi
     done
