@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.16-修复非交互式环境下的jq调用)
+# 🚀 VPS 一键安装入口脚本 (v74.17-修复sed解析错误)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.16"
+SCRIPT_VERSION="v74.17"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -147,13 +147,19 @@ fi
 load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        # 修复：使用更安全的 Bash 参数扩展代替有问题的 sed 命令
         while IFS='=' read -r key value; do
-            value=$(printf '%s' "$value" | sed 's/^"$.*$"$/\1/')
+            # 只有当值的首尾是双引号时，才剥离它们
+            if [[ "$value" == \"*\" ]]; then
+                value="${value#\"}"
+                value="${value%\"}"
+            fi
             CONFIG[$key]="$value"
         done < <(jq -r 'to_entries
             | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
             | map("\(.key)=\(.value)")
             | .[]' "$CONFIG_FILE" 2>/dev/null || true)
+        
         CONFIG[dependencies]="$(jq -r '.dependencies.common // "curl cmp ln dirname flock jq"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[dependencies]}")"
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
@@ -168,7 +174,6 @@ load_config() {
         if echo "$root_default_cron_hour" | grep -qE '^[0-9]+$'; then
             CONFIG[default_cron_hour]="$root_default_cron_hour"
         fi
-
     fi
 }
 
