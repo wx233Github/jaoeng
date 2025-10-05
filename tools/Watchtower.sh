@@ -1,23 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.16 - 终极模板修复与默认行为)
-# - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
-#   - 移除对反引号的额外 `sed` 转义，确保 `printf %q` 正确引用原始模板。
-#   - 恢复中文及表情模板。
-# - [优化] `_configure_telegram` 中“无更新也通知”选项，回车默认选择“是”。
-# - [重构] 所有 Docker 命令通过 `run_with_sudo` 函数执行，遵循最小权限原则。
-# - [优化] 移除自包含的时间处理函数，统一使用 `utils.sh` 中的函数。
-# - [优化] 本地配置文件路径调整为用户可写目录，并优先使用 `install.sh` 传递的配置。
-# - [修复] 修正了 _extract_interval_from_cmd 函数中 'if' 语句的错误闭合 (} -> fi)。
-# - [优化] config.json 中 notify_on_updates 默认 true
-# - [新增] 容器管理界面新增启动所有/停止所有功能
-# - [优化] 菜单标题及版本信息显示
-# - [适配] 适配 config.json 中 Watchtower 模块的默认配置
-# - [修正] Watchtower详情页面“下次检查”状态显示逻辑
+# 🚀 Docker 自动更新助手 (v4.6.17)
+# - 修复：彻底解决了 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题。
+# - 修复：修正了之前版本中多处因 `层叠` 标记导致的语法错误。
+# - 优化：`_configure_telegram` 中“无更新也通知”选项，回车默认选择“是”。
+# - 优化：所有 Docker 命令现在通过 `JB_SUDO_LOG_QUIET=true run_with_sudo` 执行，抑制冗余日志。
+# - 优化：脚本头部注释更简洁，移除了详细更新日志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.16" # 脚本版本
+SCRIPT_VERSION="v4.6.17"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -79,7 +71,7 @@ WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON}" # 优先使
 WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED_FROM_JSON}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}"
 CRON_HOUR="${CRON_HOUR_FROM_JSON}"
-CRON_TASK_ENABLED="${CRON_TASK_ENABLED_FROM_JSON}"
+CRON_TASK_ENABLED="${CRON_TASK_ENABLED_FROM_FROM_JSON}"
 WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}"
 
 # 加载本地配置文件 (config.conf)，覆盖 config.json 的默认值
@@ -87,7 +79,7 @@ load_config(){
     if [ -f "$CONFIG_FILE" ]; then
         # 注意: source 命令会直接执行文件内容，覆盖同名变量
         source "$CONFIG_FILE" &>/dev/null || true
-    层叠
+    fi
     # 确保所有变量都有最终值，本地配置优先，若本地为空则回退到 config.json 默认值
     TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_FROM_JSON}}"
     TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_FROM_JSON}}"
@@ -136,7 +128,8 @@ _start_watchtower_container_logic(){
     local wt_interval="$1"
     local mode_description="$2" # 例如 "一次性更新" 或 "Watchtower模式"
 
-    local cmd_base=(run_with_sudo docker run -e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
+    # 优化：所有 docker run 命令都通过 JB_SUDO_LOG_QUIET=true run_with_sudo 执行
+    local cmd_base=(JB_SUDO_LOG_QUIET="true" run_with_sudo docker run -e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
     local wt_image="containrrr/watchtower"
     local wt_args=("--cleanup")
     local container_names=()
@@ -182,7 +175,6 @@ _start_watchtower_container_logic(){
 EOF
 )
         # Step 2: 移除对反引号的额外 `sed` 转义。`printf %q` 会正确引用原始模板中的反引号。
-        # local ESCAPED_TEMPLATE_FOR_BASH=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/`/\\`/g')
         local FINAL_TEMPLATE_FOR_ENV="${NOTIFICATION_TEMPLATE_RAW}" # 直接使用原始模板字符串
 
         # Step 3: 将转义后的模板字符串作为环境变量添加到 cmd_base 数组。
@@ -208,18 +200,18 @@ EOF
     elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
         final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
         source_msg="config.json (exclude_containers)"
-    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_JSON:-}" ]; then # 兼容旧的 config.json 字段
+    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_FROM_JSON:-}" ]; then # 兼容旧的 config.json 字段
         final_exclude_list="${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}"
         source_msg="config.json (exclude_list)"
     fi
     
     local included_containers
-    # 核心：使用 run_with_sudo 执行 docker ps
+    # 优化：抑制 docker ps 的 run_with_sudo 日志
     if [ -n "$final_exclude_list" ]; then
         log_info "发现排除规则 (来源: ${source_msg}): ${final_exclude_list}"
         local exclude_pattern
         exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
-        included_containers=$(run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true)
+        included_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true)
         if [ -n "$included_containers" ]; then
             log_info "计算后的监控范围: ${included_containers}"
             read -r -a container_names <<< "$included_containers"
@@ -231,7 +223,7 @@ EOF
     fi
 
     echo "⬇️ 正在拉取 Watchtower 镜像..."
-    set +e; run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
+    set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
     
     _print_header "正在启动 $mode_description"
     local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
@@ -252,8 +244,8 @@ EOF
         return $rc
     else
         sleep 3
-        # 核心：使用 run_with_sudo 执行 docker ps
-        if run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi
+        # 优化：抑制 docker ps 的 run_with_sudo 日志
+        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi
         return 0
     fi
 }
@@ -261,8 +253,8 @@ EOF
 _rebuild_watchtower() {
     log_info "正在重建 Watchtower 容器..."
     set +e
-    # 核心：使用 run_with_sudo 执行 docker rm
-    run_with_sudo docker rm -f watchtower &>/dev/null
+    # 优化：抑制 docker rm 的 run_with_sudo 日志
+    JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null
     set -e
     
     local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}"
@@ -277,13 +269,13 @@ _rebuild_watchtower() {
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
-    # 核心：使用 run_with_sudo 执行 docker ps
-    if run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+    # 优化：抑制 docker ps 的 run_with_sudo 日志
+    if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         if confirm_action "配置已更新，是否立即重建 Watchtower 以应用新配置?"; then
             _rebuild_watchtower
         else
             log_warn "操作已取消。新配置将在下次手动重建 Watchtower 后生效。"
-        层叠
+        fi
     fi
 }
 
@@ -364,7 +356,7 @@ show_container_info() {
         content_lines_array+=("$header_line")
         local -a containers=()
         local i=1
-        # 核心：使用 run_with_sudo 执行 docker ps
+        # 优化：抑制 docker ps 的 run_with_sudo 日志
         while IFS='|' read -r name image status; do 
             containers+=("$name")
             local status_colored="$status"
@@ -373,7 +365,7 @@ show_container_info() {
             else status_colored="${YELLOW}${status}${NC}"; fi
             content_lines_array+=("$(printf "%-5s %-25.25s %-45.45s %b" "$i" "$name" "$image" "$status_colored")")
             i=$((i + 1))
-        done < <(run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
+        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
         content_lines_array+=("")
         content_lines_array+=(" a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
         _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"
@@ -383,9 +375,9 @@ show_container_info() {
             a|A)
                 if confirm_action "确定要启动所有已停止的容器吗?"; then
                     log_info "正在启动..."
-                    # 核心：使用 run_with_sudo 执行 docker ps 和 docker start
-                    local stopped_containers; stopped_containers=$(run_with_sudo docker ps -aq -f status=exited)
-                    if [ -n "$stopped_containers" ]; then run_with_sudo docker start $stopped_containers &>/dev/null || true; fi
+                    # 优化：抑制 docker ps 和 docker start 的 run_with_sudo 日志
+                    local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited)
+                    if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi
                     log_success "操作完成。"
                     press_enter_to_continue
                 else
@@ -395,9 +387,9 @@ show_container_info() {
             s|S)
                 if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then
                     log_info "正在停止..."
-                    # 核心：使用 run_with_sudo 执行 docker ps 和 docker stop
-                    local running_containers; running_containers=$(run_with_sudo docker ps -q)
-                    if [ -n "$running_containers" ]; then run_with_sudo docker stop $running_containers &>/dev/null || true; fi
+                    # 优化：抑制 docker ps 和 docker stop 的 run_with_sudo 日志
+                    local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q)
+                    if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running_containers &>/dev/null || true; fi
                     log_success "操作完成。"
                     press_enter_to_continue
                 else
@@ -426,28 +418,28 @@ show_container_info() {
                     1)
                         echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"
                         trap '' INT # 临时禁用中断
-                        # 核心：使用 run_with_sudo 执行 docker logs
-                        run_with_sudo docker logs -f --tail 100 "$selected_container" || true
+                        # 优化：抑制 docker logs 的 run_with_sudo 日志
+                        JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true
                         trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
                         press_enter_to_continue
                         ;;
                     2)
                         echo "重启中..."
-                        # 核心：使用 run_with_sudo 执行 docker restart
-                        if run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
+                        # 优化：抑制 docker restart 的 run_with_sudo 日志
+                        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
                         sleep 1
                         ;; 
                     3)
                         echo "停止中..."
-                        # 核心：使用 run_with_sudo 执行 docker stop
-                        if run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
+                        # 优化：抑制 docker stop 的 run_with_sudo 日志
+                        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
                         sleep 1
                         ;; 
                     4)
                         if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then
                             echo "删除中..."
-                            # 核心：使用 run_with_sudo 执行 docker rm
-                            if run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
+                            # 优化：抑制 docker rm 的 run_with_sudo 日志
+                            if JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi
                             sleep 1
                         else
                             echo "已取消。"
@@ -455,23 +447,24 @@ show_container_info() {
                         ;; 
                     5)
                         _print_header "容器详情: ${selected_container}"
-                        # 核心：使用 run_with_sudo 执行 docker inspect
-                        (run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || run_with_sudo docker inspect "$selected_container") | less -R
+                        # 优化：抑制 docker inspect 的 run_with_sudo 日志
+                        (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R
                         ;; 
                     6)
-                        # 核心：使用 run_with_sudo 执行 docker inspect
-                        if [ "$(run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then
+                        # 优化：抑制 docker inspect 的 run_with_sudo 日志
+                        if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then
                             log_warn "容器未在运行，无法进入。"
                         else
                             log_info "尝试进入容器... (输入 'exit' 退出)"
-                            # 核心：使用 run_with_sudo 执行 docker exec
-                            run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true
+                            # 优化：抑制 docker exec 的 run_with_sudo 日志
+                            JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true
                         fi
                         press_enter_to_continue
                         ;; 
                     *) ;; 
-                层叠
-        层叠
+                esac
+            ;; # <--- 修正: 闭合 case
+        esac # <--- 修正: 闭合 case
     done
 }
 
@@ -499,10 +492,10 @@ configure_exclusion_list() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-}" = "true" ]; then clear; fi
         local -a all_containers_array=()
-        # 核心：使用 run_with_sudo 执行 docker ps
+        # 优化：抑制 docker ps 的 run_with_sudo 日志
         while IFS= read -r line; do
             all_containers_array+=("$line")
-        done < <(run_with_sudo docker ps --format '{{.Names}}')
+        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}')
 
         local -a items_array=()
         local i=0
@@ -555,7 +548,7 @@ configure_exclusion_list() {
                     sleep 1.5
                 fi
                 ;;
-        层叠
+        esac # <--- 修正: 闭合 case
     done
     local final_excluded_list=""
     if [ ${#excluded_map[@]} -gt 0 ]; then
@@ -631,12 +624,12 @@ manage_tasks(){
         read -r -p " └──> 请选择, 或按 Enter 返回: " choice
         case "$choice" in
             1)
-                # 核心：使用 run_with_sudo 执行 docker ps
-                if run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+                # 优化：抑制 docker ps 的 run_with_sudo 日志
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
                     if confirm_action "确定移除 Watchtower？"; then
                         set +e
-                        # 核心：使用 run_with_sudo 执行 docker rm
-                        run_with_sudo docker rm -f watchtower &>/dev/null
+                        # 优化：抑制 docker rm 的 run_with_sudo 日志
+                        JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null
                         set -e
                         WATCHTOWER_ENABLED="false"
                         save_config
@@ -649,8 +642,8 @@ manage_tasks(){
                 press_enter_to_continue
                 ;;
             2)
-                # 核心：使用 run_with_sudo 执行 docker ps
-                if run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+                # 优化：抑制 docker ps 的 run_with_sudo 日志
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
                     _rebuild_watchtower
                 else
                     echo -e "${YELLOW}ℹ️ Watchtower 未运行。${NC}"
@@ -660,18 +653,18 @@ manage_tasks(){
             *)
                 if [ -z "$choice" ]; then return; else log_warn "无效选项"; sleep 1; fi
                 ;;
-        层叠
+        esac # <--- 修正: 闭合 case
     done
 }
 
 get_watchtower_all_raw_logs(){
-    # 核心：使用 run_with_sudo 执行 docker ps
-    if ! run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+    # 优化：抑制 docker ps 的 run_with_sudo 日志
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo ""
         return 1
     fi
-    # 核心：使用 run_with_sudo 执行 docker logs
-    run_with_sudo docker logs --tail 2000 watchtower 2>&1 || true
+    # 优化：抑制 docker logs 的 run_with_sudo 日志
+    JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 2000 watchtower 2>&1 || true
 }
 
 _extract_interval_from_cmd(){
@@ -699,14 +692,14 @@ _extract_interval_from_cmd(){
 }
 
 get_watchtower_inspect_summary(){
-    # 核心：使用 run_with_sudo 执行 docker ps
-    if ! run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+    # 优化：抑制 docker ps 的 run_with_sudo 日志
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo ""
         return 2
     fi
     local cmd
-    # 核心：使用 run_with_sudo 执行 docker inspect
-    cmd=$(run_with_sudo docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]")
+    # 优化：抑制 docker inspect 的 run_with_sudo 日志
+    cmd=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]")
     _extract_interval_from_cmd "$cmd" 2>/dev/null || true
 }
 
@@ -733,8 +726,8 @@ get_last_session_time(){
 }
 
 get_updates_last_24h(){
-    # 核心：使用 run_with_sudo 执行 docker ps
-    if ! run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+    # 优化：抑制 docker ps 的 run_with_sudo 日志
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo ""
         return 1
     fi
@@ -747,12 +740,12 @@ get_updates_last_24h(){
     fi
     local raw_logs
     if [ -n "$since" ]; then
-        # 核心：使用 run_with_sudo 执行 docker logs
-        raw_logs=$(run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
+        # 优化：抑制 docker logs 的 run_with_sudo 日志
+        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
     fi
     if [ -z "$raw_logs" ]; then
-        # 核心：使用 run_with_sudo 执行 docker logs
-        raw_logs=$(run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
+        # 优化：抑制 docker logs 的 run_with_sudo 日志
+        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
     fi
     # 过滤 Watchtower 日志，只显示关键事件和错误
     echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
@@ -872,19 +865,19 @@ show_watchtower_details(){
         else
             while IFS= read -r line; do
                 content_lines_array+=("  $(_format_and_highlight_log_line "$line")")
-            层叠 <<< "$updates"
+            done <<< "$updates" # <--- 修正: 闭合 while
         fi
 
         _render_menu "$title" "${content_lines_array[@]}"
         read -r -p " └──> [1] 实 时 日 志 , [2] 容 器 管 理 , [3] 触 发 扫 描 , [Enter] 返 回 : " pick
         case "$pick" in
             1)
-                # 核心：使用 run_with_sudo 执行 docker ps
-                if run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+                # 优化：抑制 docker ps 的 run_with_sudo 日志
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
                     echo -e "\n按 Ctrl+C 停止..."
                     trap '' INT # 临时禁用中断
-                    # 核心：使用 run_with_sudo 执行 docker logs
-                    run_with_sudo docker logs --tail 200 -f watchtower || true
+                    # 优化：抑制 docker logs 的 run_with_sudo 日志
+                    JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 -f watchtower || true
                     trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
                     press_enter_to_continue
                 else
@@ -894,16 +887,16 @@ show_watchtower_details(){
                 ;;
             2) show_container_info ;;
             3)
-                # 核心：使用 run_with_sudo 执行 docker ps
-                if run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+                # 优化：抑制 docker ps 的 run_with_sudo 日志
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
                     log_info "正在发送 SIGHUP 信号以触发扫描..."
-                    # 核心：使用 run_with_sudo 执行 docker kill
-                    if run_with_sudo docker kill -s SIGHUP watchtower; then
+                    # 优化：抑制 docker kill 的 run_with_sudo 日志
+                    if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then
                         log_success "信号已发送！请在下方查看实时日志..."
                         echo -e "按 Ctrl+C 停止..."; sleep 2
                         trap '' INT # 临时禁用中断
-                        # 核心：使用 run_with_sudo 执行 docker logs
-                        run_with_sudo docker logs -f --tail 100 watchtower || true
+                        # 优化：抑制 docker logs 的 run_with_sudo 日志
+                        JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true
                         trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
                     else
                         log_err "发送信号失败！"
@@ -914,7 +907,7 @@ show_watchtower_details(){
                 press_enter_to_continue
                 ;;
             *) return ;;
-        层叠
+        esac # <--- 修正: 闭合 case
     done
 }
 
@@ -1030,7 +1023,7 @@ view_and_edit_config(){
                     fi
                 done
                 ;;
-        层叠
+        esac # <--- 修正: 闭合 case
         save_config
         log_info "'$label' 已更新。"
         sleep 1
@@ -1046,8 +1039,8 @@ main_menu(){
         load_config # 每次进入菜单都重新加载配置，确保最新
 
         local STATUS_RAW="未运行"; 
-        # 核心：使用 run_with_sudo 执行 docker ps
-        if run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
+        # 优化：抑制 docker ps 的 run_with_sudo 日志
+        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
         local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
         
         local interval=""; local raw_logs="";
@@ -1057,9 +1050,9 @@ main_menu(){
         fi
         
         local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
-        # 核心：使用 run_with_sudo 执行 docker ps
-        local TOTAL=$(run_with_sudo docker ps -a --format '{{.ID}}' | wc -l)
-        local RUNNING=$(run_with_sudo docker ps --format '{{.ID}}' | wc -l)
+        # 优化：抑制 docker ps 的 run_with_sudo 日志
+        local TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' | wc -l)
+        local RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' | wc -l)
         local STOPPED=$((TOTAL - RUNNING))
 
         local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE="";
@@ -1113,7 +1106,7 @@ main_menu(){
           6) show_watchtower_details ;;
           "") exit 10 ;; # 返回主脚本菜单
           *) log_warn "无效选项。"; sleep 1 ;;
-        层叠
+        esac # <--- 修正: 闭合 case
     done # 循环回到主菜单
 }
 
