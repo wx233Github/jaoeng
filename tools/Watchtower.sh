@@ -1,15 +1,16 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.17)
-# - 修复：彻底解决了 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题。
+# 🚀 Docker 自动更新助手 (v4.6.18)
+# - 修复：彻底解决了 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题，改为文件挂载方式。
 # - 修复：修正了之前版本中多处因 `层叠` 标记导致的语法错误。
+# - 修复：修正了 `JB_WATCHTOWER_CONF_TASK_ENABLED_FROM_FROM_JSON` 变量名拼写错误。
 # - 优化：`_configure_telegram` 中“无更新也通知”选项，回车默认选择“是”。
 # - 优化：所有 Docker 命令现在通过 `JB_SUDO_LOG_QUIET=true run_with_sudo` 执行，抑制冗余日志。
-# - 优化：脚本头部注释更简洁，移除了详细更新日志。
+# - 优化：脚本头部注释更简洁。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.17"
+SCRIPT_VERSION="v4.6.18"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -47,7 +48,7 @@ WATCHTOWER_CONFIG_INTERVAL_FROM_JSON="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" #
 WATCHTOWER_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_ENABLED:-false}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
 CRON_HOUR_FROM_JSON="${JB_WATCHTOWER_CONF_CRON_HOUR:-}"
-CRON_TASK_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
+CRON_TASK_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}" # 修正变量名
 TG_BOT_TOKEN_FROM_JSON="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
 TG_CHAT_ID_FROM_JSON="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
 EMAIL_TO_FROM_JSON="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
@@ -71,7 +72,7 @@ WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON}" # 优先使
 WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED_FROM_JSON}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}"
 CRON_HOUR="${CRON_HOUR_FROM_JSON}"
-CRON_TASK_ENABLED="${CRON_TASK_ENABLED_FROM_FROM_JSON}"
+CRON_TASK_ENABLED="${CRON_TASK_ENABLED_FROM_JSON}" # 修正变量名
 WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}"
 
 # 加载本地配置文件 (config.conf)，覆盖 config.json 的默认值
@@ -143,12 +144,12 @@ _start_watchtower_container_logic(){
     fi
     cmd_base+=(-v /var/run/docker.sock:/var/run/docker.sock)
 
+    local template_temp_file="" # Initialize local variable for template file
+
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
-        # Shoutrrr URL for Telegram
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         
-        # 根据 WATCHTOWER_NOTIFY_ON_NO_UPDATES 设置 WATCHTOWER_REPORT_NO_UPDATES
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
             log_info "✅ 将启用 '无更新也通知' 模式。"
@@ -156,9 +157,9 @@ _start_watchtower_container_logic(){
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Step 1: 定义原始 Go Template 模板字符串，使用 `cat <<'EOF'` 确保Bash不提前解析内部内容。
-        # 内部的 `"` 和 `` ` `` 都是 Go Template 期望的字面量。
-        local NOTIFICATION_TEMPLATE_RAW=$(cat <<'EOF'
+        # 将 Go Template 模板内容写入一个临时文件
+        template_temp_file="/tmp/watchtower_notification_template.$$.gohtml"
+        cat <<'EOF' > "$template_temp_file"
 🐳 *Docker 容器更新报告*
 
 *服务器:* `{{.Host}}`
@@ -173,14 +174,11 @@ _start_watchtower_container_logic(){
 
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
-)
-        # Step 2: 移除对反引号的额外 `sed` 转义。`printf %q` 会正确引用原始模板中的反引号。
-        local FINAL_TEMPLATE_FOR_ENV="${NOTIFICATION_TEMPLATE_RAW}" # 直接使用原始模板字符串
-
-        # Step 3: 将转义后的模板字符串作为环境变量添加到 cmd_base 数组。
-        # Bash 的数组和双引号会确保其作为单个参数传递，包括换行符。
-        # Watchtower 的 Go Template 解析器会处理内部的 ` ` ` 和 `"`。
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${FINAL_TEMPLATE_FOR_ENV}")
+        chmod 644 "$template_temp_file"
+        
+        # 将临时文件挂载到容器内部，并通过环境变量指定其路径
+        cmd_base+=(-v "${template_temp_file}:/etc/watchtower/notification.gohtml:ro")
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -200,7 +198,7 @@ EOF
     elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
         final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
         source_msg="config.json (exclude_containers)"
-    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_FROM_JSON:-}" ]; then # 兼容旧的 config.json 字段
+    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_JSON:-}" ]; then # 兼容旧的 config.json 字段
         final_exclude_list="${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}"
         source_msg="config.json (exclude_list)"
     fi
@@ -239,6 +237,11 @@ EOF
     
     set +e; eval "$final_cmd_str"; local rc=$?; set -e
     
+    # Clean up the temporary template file if it was created
+    if [ -n "$template_temp_file" ] && [ -f "$template_temp_file" ]; then
+        rm -f "$template_temp_file" 2>/dev/null || true
+    fi
+
     if [ "$mode_description" = "一次性更新" ]; then
         if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi
         return $rc
@@ -463,8 +466,8 @@ show_container_info() {
                         ;; 
                     *) ;; 
                 esac
-            ;; # <--- 修正: 闭合 case
-        esac # <--- 修正: 闭合 case
+            ;;
+        esac
     done
 }
 
@@ -548,7 +551,7 @@ configure_exclusion_list() {
                     sleep 1.5
                 fi
                 ;;
-        esac # <--- 修正: 闭合 case
+        esac
     done
     local final_excluded_list=""
     if [ ${#excluded_map[@]} -gt 0 ]; then
@@ -650,10 +653,9 @@ manage_tasks(){
                 fi
                 press_enter_to_continue
                 ;;
-            *)
-                if [ -z "$choice" ]; then return; else log_warn "无效选项"; sleep 1; fi
-                ;;
-        esac # <--- 修正: 闭合 case
+            "") return ;;
+            *) log_warn "无效选项。"; sleep 1 ;;
+        esac
     done
 }
 
@@ -865,7 +867,7 @@ show_watchtower_details(){
         else
             while IFS= read -r line; do
                 content_lines_array+=("  $(_format_and_highlight_log_line "$line")")
-            done <<< "$updates" # <--- 修正: 闭合 while
+            done <<< "$updates"
         fi
 
         _render_menu "$title" "${content_lines_array[@]}"
@@ -907,7 +909,7 @@ show_watchtower_details(){
                 press_enter_to_continue
                 ;;
             *) return ;;
-        esac # <--- 修正: 闭合 case
+        esac
     done
 }
 
@@ -936,7 +938,7 @@ view_and_edit_config(){
         "Watchtower 启用状态|WATCHTOWER_ENABLED|bool"
         "Cron 执行小时|CRON_HOUR|number_range|0-23"
         "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string"
-        "Cron 任务启用状态|CRON_TASK_ENABLED|bool"
+        "Cron 任务启用状态|CRON_TASK_ENABLED|bool" # 修正变量名
         "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool" # 新增
     )
 
@@ -1023,7 +1025,7 @@ view_and_edit_config(){
                     fi
                 done
                 ;;
-        esac # <--- 修正: 闭合 case
+        esac
         save_config
         log_info "'$label' 已更新。"
         sleep 1
@@ -1106,7 +1108,7 @@ main_menu(){
           6) show_watchtower_details ;;
           "") exit 10 ;; # 返回主脚本菜单
           *) log_warn "无效选项。"; sleep 1 ;;
-        esac # <--- 修正: 闭合 case
+        esac
     done # 循环回到主菜单
 }
 
