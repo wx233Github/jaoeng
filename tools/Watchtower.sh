@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.24-修复config.json变量解析与UI)
+# 🚀 Docker 自动更新助手 (v4.7.0-回归稳定版并集成修复)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.24"
+SCRIPT_VERSION="v4.7.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -29,11 +29,36 @@ if ! declare -f run_with_sudo &>/dev/null; then
   exit 1
 fi
 
+# --- 模块专属函数 ---
+
+# 新增：从主 config.json 文件中读取全局默认值
+_get_global_default_from_config() {
+    local key="$1"
+    local fallback_value="$2"
+    local config_file="/opt/vps_install_modules/config.json"
+    if [ -f "$config_file" ] && command -v jq &>/dev/null; then
+        local value
+        value=$(jq -r --arg key "$key" '.[$key] // ""' "$config_file" 2>/dev/null)
+        if echo "$value" | grep -qE '^[0-9]+$'; then
+            echo "$value"
+            return
+        fi
+    fi
+    echo "$fallback_value"
+}
+
 # --- config.json 传递的 Watchtower 模块配置 (由 install.sh 提供) ---
-# 修正：将 JB_ 前缀改为 WATCHTOWER_CONF_
-# 修正：增加对全局 JB_DEFAULT_INTERVAL 和 JB_DEFAULT_CRON_HOUR 的支持
-WT_CONF_DEFAULT_INTERVAL_FROM_JSON="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-${JB_DEFAULT_INTERVAL:-300}}" # 优先模块配置，其次全局默认，最后硬编码
-WT_CONF_DEFAULT_CRON_HOUR_FROM_JSON="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-${JB_DEFAULT_CRON_HOUR:-4}}" # 优先模块配置，其次全局默认，最后硬编码
+# 模块特定配置
+WT_CONF_MODULE_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-}"
+WT_CONF_MODULE_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-}"
+# 全局配置（作为备用）
+WT_CONF_GLOBAL_INTERVAL="$(_get_global_default_from_config 'default_interval' '300')"
+WT_CONF_GLOBAL_CRON_HOUR="$(_get_global_default_from_config 'default_cron_hour' '4')"
+
+# 最终默认值：优先使用模块特定配置，其次是全局配置，最后是硬编码的后备值
+WT_CONF_DEFAULT_INTERVAL="${WT_CONF_MODULE_INTERVAL:-$WT_CONF_GLOBAL_INTERVAL}"
+WT_CONF_DEFAULT_CRON_HOUR="${WT_CONF_MODULE_CRON_HOUR:-$WT_CONF_GLOBAL_CRON_HOUR}"
+
 WT_EXCLUDE_CONTAINERS_FROM_JSON="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
 WT_NOTIFY_ON_NO_UPDATES_FROM_JSON="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
 WATCHTOWER_EXTRA_ARGS_FROM_JSON="${WATCHTOWER_CONF_EXTRA_ARGS:-}"
@@ -82,11 +107,10 @@ load_config(){
     WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}}"
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_EXTRA_ARGS_FROM_JSON}}"
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_FROM_JSON}}"
-    # 修正：这里的默认值逻辑需要再次确认，确保能正确回退
-    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON:-${WT_CONF_DEFAULT_INTERVAL}}}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_FROM_JSON}}"
     DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}}"
-    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_FROM_JSON:-${WT_CONF_DEFAULT_CRON_HOUR_FROM_JSON}}}"
+    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_FROM_JSON:-${WT_CONF_DEFAULT_CRON_HOUR}}}"
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_FROM_JSON}}"
     WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}}"
 }
@@ -258,7 +282,7 @@ _rebuild_watchtower() {
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null
     set -e
     
-    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}"
+    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}"
     if ! _start_watchtower_container_logic "$interval" "Watchtower模式"; then
         log_err "Watchtower 重建失败！"
         WATCHTOWER_ENABLED="false"
@@ -560,12 +584,11 @@ configure_exclusion_list() {
 
 configure_watchtower(){
     _print_header "🚀 Watchtower 配置"
-    # 修正：确保 _prompt_for_interval 接收到的默认值是有效数字
-    local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}"
+    local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}"
     if ! echo "$current_interval_for_prompt" | grep -qE '^[0-9]+$'; then
         current_interval_for_prompt="300" # 如果解析出的默认值仍无效，回退到 300
     fi
-    local WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}"))")"
+    local WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "${WT_CONF_DEFAULT_INTERVAL}"))")"
     log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"
     sleep 1
 
