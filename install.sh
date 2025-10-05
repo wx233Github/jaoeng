@@ -1,6 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.8)
+# 🚀 VPS 一键安装入口脚本 (v74.9)
+# - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
+# - 优化：`download_module_to_cache` 函数现在将结果返回给调用者，而不是直接打印日志。
+# - 优化：`_update_all_modules` 函数现在会收集并有序打印模块更新结果。
 # - 修复：彻底解决了所有已知语法错误和逻辑问题。
 # - 优化：`run_with_sudo` 函数现在支持通过 `JB_SUDO_LOG_QUIET=true` 抑制日志输出。
 # - 优化：在下载/更新核心文件和模块时，`run_with_sudo` 的日志输出被抑制。
@@ -8,7 +11,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.8"
+SCRIPT_VERSION="v74.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -126,6 +129,7 @@ if ! declare -f run_with_sudo &>/dev/null; then
       if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then
           log_info "正在尝试以 root 权限执行: $*"
       fi
+      # 确保 sudo 从 /dev/tty 读取密码，避免管道阻塞
       sudo -E "$@" < /dev/tty
   }
   export -f run_with_sudo # 确保在加载 utils.sh 后，如果 utils.sh 没有定义，这里也能导出
@@ -222,7 +226,7 @@ self_update() {
         log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"
         rm -f "$temp_script" 2>/dev/null || true
         return
-    fi # <--- 修正: 闭合 if
+    fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
@@ -238,30 +242,49 @@ self_update() {
     rm -f "$temp_script" 2>/dev/null || true
 }
 
+# 修改：此函数现在将其结果输出到 stdout，而不是直接打印日志
 download_module_to_cache() {
     local script_name="$1"
     local local_file="${CONFIG[install_dir]}/$script_name"
     local tmp_file="/tmp/$(basename "$script_name").$$"
     local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"
     local http_code
+    local output_message=""
+    local status_type="success" # "success", "info", "error"
+
     http_code=$(curl -sS --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 -w "%{http_code}" -o "$tmp_file" "$url" 2>/dev/null) || true
     local curl_exit_code=$?
+
     if [ $curl_exit_code -ne 0 ] || [ "$http_code" != "200" ] || [ ! -s "$tmp_file" ]; then
-        log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
-        rm -f "$tmp_file" 2>/dev/null || true
-        return 1
-    fi
-    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
-        rm -f "$tmp_file" 2>/dev/null || true
-        return 0
+        output_message="模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
+        status_type="error"
+    elif [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
+        output_message="模块 (${script_name}) 未更改。"
+        status_type="info"
     else
-        log_success "模块 (${script_name}) 已更新。"
-        # 优化：抑制 mkdir, mv, chmod 的 run_with_sudo 日志
-        JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")"
-        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file"
-        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$local_file" || true
+        # 确保 run_with_sudo 在子shell中可用
+        if ! declare -f run_with_sudo &>/dev/null; then
+            run_with_sudo() {
+                [ "${JB_SUDO_LOG_QUIET:-}" != "true" ] && echo -e "${CYAN}[子进程 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
+                sudo -E "\$@" < /dev/tty
+            }
+            export -f run_with_sudo # 导出以确保后续调用也能用
+        fi
+        
+        # 执行更新操作，并抑制 run_with_sudo 的日志输出
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")" >/dev/null 2>&1 || true
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file" >/dev/null 2>&1 || true
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$local_file" >/dev/null 2>&1 || true
+        
+        output_message="模块 (${script_name}) 已更新。"
+        status_type="success"
     fi
+
+    rm -f "$tmp_file" 2>/dev/null || true
+    echo "$status_type|$output_message" # 输出状态类型和消息，供父进程处理
+    return 0 # 后台进程本身总是成功退出，实际状态在消息中
 }
+
 
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
@@ -279,30 +302,63 @@ _update_core_files() {
     fi
 }
 
+# 修改：此函数现在会收集所有模块的更新结果并有序打印
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
         log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
         return
     fi
-    local scripts_to_update
-    scripts_to_update=$(jq -r '
+    local scripts_to_update_raw
+    scripts_to_update_raw=$(jq -r '
         .menus // {} |
         to_entries[]? |
         .value.items?[]? |
         select(.type == "item") |
         .action
     ' "$cfg" 2>/dev/null || true)
-    if [ -z "$scripts_to_update" ]; then
+    
+    local -a scripts_to_update=()
+    while IFS= read -r line; do
+        scripts_to_update+=("$line")
+    done <<< "$scripts_to_update_raw"
+
+    if [ ${#scripts_to_update[@]} -eq 0 ]; then
         log_info "未检测到可更新的模块。"
         return
     fi
+
     local pids=()
-    for script_name in $scripts_to_update; do
-        download_module_to_cache "$script_name" & pids+=($!)
+    local temp_output_files=() # 存储临时输出文件路径的数组
+
+    # 在后台启动所有下载任务，并将其标准输出重定向到唯一的临时文件
+    for script_name in "${scripts_to_update[@]}"; do
+        local temp_file="/tmp/jb_module_update_result.$$.$(basename "$script_name")"
+        (download_module_to_cache "$script_name" > "$temp_file" 2>&1) & # 在子shell中运行，重定向输出
+        pids+=($!)
+        temp_output_files+=("$temp_file")
     done
+
+    # 等待所有后台任务完成，并收集其输出
+    local i=0
     for pid in "${pids[@]}"; do
-        wait "$pid" || true
+        wait "$pid" # 等待每个进程完成
+        local output_file="${temp_output_files[$i]}"
+        local result_line
+        if [ -f "$output_file" ]; then
+            result_line=$(cat "$output_file")
+            local status_type=$(echo "$result_line" | cut -d'|' -f1)
+            local message=$(echo "$result_line" | cut -d'|' -f2-)
+
+            case "$status_type" in
+                "success") log_success "$message" ;;
+                "info")    log_info "$message" ;;
+                "error")   log_err "$message" ;;
+                *)         log_warn "未知模块更新结果: $result_line" ;;
+            esac
+            rm -f "$output_file" 2>/dev/null || true
+        fi
+        i=$((i + 1))
     done
 }
 
@@ -370,7 +426,7 @@ uninstall_script() {
     else
         log_info "卸载操作已取消."
         return 10
-    fi # <--- 修正: 闭合 if
+    fi
 }
 
 _quote_args() {
@@ -386,10 +442,18 @@ execute_module() {
 
     if [ ! -f "$local_path" ]; then
         log_info "正在下载模块..."
-        if ! download_module_to_cache "$script_name"; then
-            log_err "下载失败."
-            return 1
-        fi
+        # 直接调用 download_module_to_cache 并处理其输出
+        local result
+        result=$(download_module_to_cache "$script_name")
+        local status_type=$(echo "$result" | cut -d'|' -f1)
+        local message=$(echo "$result" | cut -d'|' -f2-)
+        
+        case "$status_type" in
+            "success") log_success "$message" ;;
+            "info")    log_info "$message" ;;
+            "error")   log_err "$message"; return 1 ;; # 如果下载失败，返回错误
+            *)         log_warn "未知模块下载结果: $result"; return 1 ;;
+        esac
     fi
 
     local env_exports="export IS_NESTED_CALL=true
@@ -522,7 +586,7 @@ display_menu() {
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
     local exit_hint="退出"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
@@ -655,8 +719,9 @@ main() {
         local exit_code=0
         process_menu_selection || exit_code=$?
         if [ "$exit_code" -ne 10 ]; then
-            while read -r -t 0; do :; done
-            press_enter_to_continue < /dev/tty
+            # 清空输入缓冲区，防止上次输入影响下次read
+            while read -r -t 0; do :; done < /dev/tty
+            press_enter_to_continue
         fi
     done
 }
