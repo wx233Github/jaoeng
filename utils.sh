@@ -1,7 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.29 - 最终UI修正版)
+# 🚀 通用工具函数库 (v2.30 - 最终UI修正版)
 # - [最终修正] 增加菜单内部边距，适配移动终端UI
+# - [修复] `generate_line` 函数中 `$系统信息` 拼写错误，修正为 `$char`。
+# - [优化] `_get_visual_width` 函数，优先使用 Python 计算宽度，其次 `wc -m`，最后 `wc -c`。
 # =============================================================
 
 # --- 严格模式 ---
@@ -47,10 +49,22 @@ _get_visual_width() {
         echo 0
         return
     fi
-    local bytes chars
-    bytes=$(echo -n "$plain_text" | wc -c)
-    chars=$(echo -n "$plain_text" | wc -m)
-    echo $(( (bytes + chars) / 2 ))
+
+    # 优先使用 Python 计算显示宽度，处理多字节字符 (East Asian Width)
+    if command -v python3 &>/dev/null; then
+        python3 -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" || true
+    elif command -v python &>/dev/null; then
+        python -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" || true
+    else
+        # Fallback to wc -m (character count) if Python is not available
+        # This is less accurate for mixed-width characters but better than wc -c (byte count)
+        if command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+            echo -n "$plain_text" | wc -m
+        else
+            # Final fallback to wc -c (byte count), least accurate for multi-byte characters
+            echo -n "$plain_text" | wc -c
+        fi
+    fi
 }
 
 # [最终UI修正] 增加内部边距，适配移动终端
@@ -70,7 +84,7 @@ _render_menu() {
     done
     
     local box_width=$((max_width + 2)) # 左右边框各占1
-    if [ $box_width -lt 40 ]; then box_width=40; fi
+    if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
 
     # 顶部
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
@@ -97,3 +111,70 @@ _render_menu() {
     echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
+
+
+# --- 时间处理函数 (Watchtower 模块现在统一使用这些函数) ---
+
+# 解析 Watchtower 日志行中的时间戳
+_parse_watchtower_timestamp_from_log_line() {
+    local log_line="$1"
+    local timestamp=""
+    # 尝试匹配 time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" 格式
+    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 YYYY-MM-DDTHH:MM:SSZ 格式 (例如 Watchtower 1.7.1)
+    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
+    timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    echo ""
+    return 1
+}
+
+# 将日期时间字符串转换为 Unix 时间戳 (epoch)
+_date_to_epoch() {
+    local dt="$1"
+    [ -z "$dt" ] && echo "" && return 1 # 如果输入为空，返回空字符串并失败
+    
+    # 尝试使用 GNU date
+    if date -d "now" >/dev/null 2>&1; then
+        date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    # 尝试使用 BSD date (通过 gdate 命令)
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then
+        gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    else
+        log_warn "⚠️ 'date' 或 'gdate' 不支持。无法解析时间戳。"
+        echo ""
+        return 1
+    fi
+}
+
+# 将秒数格式化为更易读的字符串 (例如 300s, 2h)
+_format_seconds_to_human() {
+    local seconds="$1"
+    if ! echo "$seconds" | grep -qE '^[0-9]+$'; then
+        echo "N/A"
+        return 1
+    fi
+    
+    if [ "$seconds" -lt 60 ]; then
+        echo "${seconds}秒"
+    elif [ "$seconds" -lt 3600 ]; then
+        echo "$((seconds / 60))分"
+    elif [ "$seconds" -lt 86400 ]; then
+        echo "$((seconds / 3600))时"
+    else
+        echo "$((seconds / 86400))天"
+    fi
+    return 0
+}
