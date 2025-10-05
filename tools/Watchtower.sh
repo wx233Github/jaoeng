@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.18)
+# 🚀 Docker 自动更新助手 (v4.6.19)
 # - 修复：彻底解决了 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题，改为文件挂载方式。
 # - 修复：修正了之前版本中多处因 `层叠` 标记导致的语法错误。
 # - 修复：修正了 `JB_WATCHTOWER_CONF_TASK_ENABLED_FROM_FROM_JSON` 变量名拼写错误。
@@ -10,7 +10,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.18"
+SCRIPT_VERSION="v4.6.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -226,16 +226,19 @@ EOF
     _print_header "正在启动 $mode_description"
     local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    # 使用 printf %q 对每个参数进行 Bash 引用，然后通过 eval 执行。
-    # 这是最健壮的方式，可以处理所有特殊字符和多行字符串。
+    # 移除 eval "$final_cmd_str"，直接执行数组
+    # For debugging output, still build the quoted string
     local final_cmd_str=""
     for arg in "${final_cmd[@]}"; do
         final_cmd_str+=" $(printf %q "$arg")"
     done
-    
     echo -e "${CYAN}执行命令: ${final_cmd_str}${NC}"
     
-    set +e; eval "$final_cmd_str"; local rc=$?; set -e
+    set +e;
+    # 直接执行数组，避免 eval 带来的转义问题
+    "${final_cmd[@]}"
+    local rc=$?
+    set -e
     
     # Clean up the temporary template file if it was created
     if [ -n "$template_temp_file" ] && [ -f "$template_temp_file" ]; then
@@ -698,7 +701,7 @@ get_watchtower_inspect_summary(){
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo ""
         return 2
-    fi
+    层叠
     local cmd
     # 优化：抑制 docker inspect 的 run_with_sudo 日志
     cmd=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]")
@@ -902,7 +905,7 @@ show_watchtower_details(){
                         trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
                     else
                         log_err "发送信号失败！"
-                    fi
+                    层叠
                 else
                     log_warn "Watchtower 未运行，无法触发扫描。"
                 fi
