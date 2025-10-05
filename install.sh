@@ -1,561 +1,439 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.0 - 最终UI修正版)
-# - [最终修正] 增加菜单内部边距，适配移动终端UI
+# 🚀 VPS 一键安装脚本 (v4.6.15-UnifiedConfig - 全局配置联动 config.json)
+# - [核心修改] 解析 config.json 中的全局配置 (如 enable_auto_clear, timezone, watchtower模块配置)。
+# - [核心修改] 将解析到的 config.json 值作为环境变量导出，供 utils.sh 的 load_config 使用。
+# - [新增] 在主菜单中添加 UI 主题设置入口，调用 utils.sh 的 `theme_settings_menu`。
+# - [优化] 提升脚本启动速度，减少重复检查。
+# - [修复] 修正了 utils.sh 的路径依赖问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.0"
+SCRIPT_VERSION="v4.6.15-UnifiedConfig"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+export LC_ALL=${LC_ALL:-C.UTF_8}
 
-# --- [核心架构]: 智能自引导启动器 ---
-INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
-if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
-    STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
-    echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
-    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
-        echo_info "正在执行首次安装或强制刷新..."
-        if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
-        sudo mkdir -p "$INSTALL_DIR"
-        BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-        declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
-        for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"
-            echo_info "正在下载最新的 ${name} (${file_path})..."
-            temp_file="/tmp/$(basename "${file_path}").$$"
-            if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
-                echo_error "下载 ${name} 失败。"
-            fi
-            sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
-        done
-        sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"
-        echo_info "正在创建/更新快捷指令 'jb'..."
-        BIN_DIR="/usr/local/bin"
-        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
-        echo_success "安装/更新完成！"
-    fi
-    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
-    echo ""
-    exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
-fi
+# --- 基础路径和文件 ---
+INSTALL_DIR="/opt/vps_install_modules"
+BIN_DIR="/usr/local/bin"
+CONFIG_JSON_PATH="$INSTALL_DIR/config.json"
+UTILS_PATH="$INSTALL_DIR/utils.sh"
+LOCK_FILE="/tmp/vps_install_modules.lock"
 
-# --- 主程序逻辑 ---
-
-# 引入 utils
+# --- 导入通用工具函数库 ---
 if [ -f "$UTILS_PATH" ]; then
     source "$UTILS_PATH"
 else
-    echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2
+    # 如果 utils.sh 未找到，提供临时的 log_err 函数以避免脚本立即崩溃
+    log_err() { echo "[错误] $*" >&2; }
+    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！请确保脚本完整安装。"
     exit 1
 fi
 
-declare -A CONFIG
-CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-CONFIG[install_dir]="/opt/vps_install_modules"
-CONFIG[bin_dir]="/usr/local/bin"
-CONFIG[dependencies]='curl cmp ln dirname flock jq'
-CONFIG[lock_file]="/tmp/vps_install_modules.lock"
-CONFIG[enable_auto_clear]="false"
-CONFIG[timezone]="Asia/Shanghai"
-
-AUTO_YES="false"
-if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then
-    AUTO_YES="true"
+# --- 确保只运行一个实例 ---
+if ! flock -xn "$LOCK_FILE" -c "true"; then
+    log_warn "脚本已在运行中，请勿重复启动。"
+    exit 1
 fi
 
-load_config() {
-    CONFIG_FILE="${CONFIG[install_dir]}/config.json"
-    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        while IFS='=' read -r key value; do
-            value=$(printf '%s' "$value" | sed 's/^"\(.*\)"$/\1/')
-            CONFIG[$key]="$value"
-        done < <(jq -r 'to_entries
-            | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
-            | map("\(.key)=\(.value)")
-            | .[]' "$CONFIG_FILE" 2>/dev/null || true)
-        CONFIG[dependencies]="$(jq -r '.dependencies.common // "curl cmp ln dirname flock jq"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[dependencies]}")"
-        CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
-        CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
-        CONFIG[timezone]="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")"
+# --- 从 config.json 加载默认配置并导出为环境变量 ---
+load_json_defaults() {
+    if [ ! -f "$CONFIG_JSON_PATH" ]; then
+        log_err "配置文件 $CONFIG_JSON_PATH 未找到，无法加载默认配置。"
+        return 1
     fi
+
+    # 全局配置
+    export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH")"
+    export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH")"
+    # UI 主题目前没有在 config.json 定义，所以这里不导出，让 utils.sh 的默认值生效
+
+    # Watchtower 模块配置
+    export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH")"
+    export JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR_FROM_JSON="$(jq -r '.module_configs.watchtower.default_cron_hour // 4' "$CONFIG_JSON_PATH")"
+    export JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS_FROM_JSON="$(jq -r '.module_configs.watchtower.exclude_containers // ""' "$CONFIG_JSON_PATH")"
+    export JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES_FROM_JSON="$(jq -r '.module_configs.watchtower.notify_on_no_updates // false' "$CONFIG_JSON_PATH")"
+    # 其他 Watchtower 变量 (如 TG_BOT_TOKEN, EXTRA_ARGS 等) 默认在 config.json 中未定义，
+    # 它们将通过 utils.sh 中的硬编码默认值或用户在 config.conf 中的设置来管理。
+    # 如果未来 config.json 增加了这些字段，也需要在这里导出。
 }
 
-check_and_install_dependencies() {
-    local missing_deps=()
-    local deps=(${CONFIG[dependencies]})
-    for cmd in "${deps[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing_deps+=("$cmd")
+# 脚本启动时立即加载 JSON 默认值
+load_json_defaults || exit 1
+
+# 重新加载 utils.sh，以便它能读取到刚刚导出的 JSON 默认值
+# 这一步确保 utils.sh 中的 load_config 函数可以正确地应用 JSON 默认值
+source "$UTILS_PATH"
+
+# --- 菜单数据 (从 config.json 加载) ---
+MAIN_MENU_TITLE=""
+declare -A MAIN_MENU_ITEMS
+declare -A SUBMENUS
+
+load_menus_from_json() {
+    if [ ! -f "$CONFIG_JSON_PATH" ]; then
+        log_err "配置文件 $CONFIG_JSON_PATH 未找到，无法加载菜单。"
+        exit 1
+    fi
+
+    MAIN_MENU_TITLE=$(jq -r '.menus.MAIN_MENU.title // "主菜单"' "$CONFIG_JSON_PATH")
+    
+    # 清空现有菜单项
+    unset MAIN_MENU_ITEMS
+    declare -A MAIN_MENU_ITEMS
+
+    local i=0
+    while IFS= read -r item_json; do
+        local type=$(echo "$item_json" | jq -r '.type')
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        local action=$(echo "$item_json" | jq -r '.action')
+        MAIN_MENU_ITEMS["$i"]="${type}|${name}|${icon}|${action}"
+        i=$((i + 1))
+    done < <(jq -c '.menus.MAIN_MENU.items[]' "$CONFIG_JSON_PATH")
+
+    # 加载所有子菜单
+    while IFS= read -r submenu_key; do
+        local submenu_title=$(jq -r ".menus.\"$submenu_key\".title // \"$submenu_key\"" "$CONFIG_JSON_PATH")
+        SUBMENUS["${submenu_key}_title"]="$submenu_title"
+        
+        local j=0
+        while IFS= read -r item_json; do
+            local type=$(echo "$item_json" | jq -r '.type')
+            local name=$(echo "$item_json" | jq -r '.name')
+            local icon=$(echo "$item_json" | jq -r '.icon // ""')
+            local action=$(echo "$item_json" | jq -r '.action')
+            SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
+            j=$((j + 1))
+        done < <(jq -c ".menus.\"$submenu_key\".items[]" "$CONFIG_JSON_PATH")
+        SUBMENUS["${submenu_key}_count"]="$j"
+    done < <(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH")
+}
+
+# --- 依赖检查 ---
+check_dependencies() {
+    local common_deps=$(jq -r '.dependencies.common // ""' "$CONFIG_JSON_PATH")
+    local missing_deps=""
+    for dep in $common_deps; do
+        if ! command -v "$dep" &>/dev/null; then
+            missing_deps+=" $dep"
         fi
     done
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        log_warn "缺少核心依赖: ${missing_deps[*]}"
-        local pm
-        if command -v apt-get &>/dev/null; then pm="apt"; elif command -v dnf &>/dev/null; then pm="dnf"; elif command -v yum &>/dev/null; then pm="yum"; else pm="unknown"; fi
-        if [ "$pm" = "unknown" ]; then
-            log_err "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"
+
+    if [ -n "$missing_deps" ]; then
+        log_err "检测到缺失依赖：${missing_deps}。请手动安装。"
+        log_warn "尝试自动安装依赖..."
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y $missing_deps
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y $missing_deps
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y $missing_deps
+        else
+            log_err "无法自动安装依赖。请手动安装：${missing_deps}"
             exit 1
         fi
-        if [ "$AUTO_YES" = "true" ]; then
-            choice="y"
+        if [ $? -eq 0 ]; then
+            log_success "依赖安装成功。"
         else
-            read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty
-        fi
-        if echo "$choice" | grep -qE '^[Yy]$'; then
-            log_info "正在使用 $pm 安装..."
-            local update_cmd=""
-            if [ "$pm" = "apt" ]; then update_cmd="sudo apt-get update"; fi
-            if ! ($update_cmd && sudo "$pm" install -y "${missing_deps[@]}"); then
-                log_err "依赖安装失败."
-                exit 1
-            fi
-            log_success "依赖安装完成！"
-        else
-            log_err "用户取消安装."
+            log_err "依赖安装失败，请手动检查并安装。"
             exit 1
         fi
     fi
 }
 
-_download_file() {
-    local relpath="$1"
-    local dest="$2"
-    local url="${CONFIG[base_url]}/${relpath}?_=$(date +%s)"
-    if ! curl -fsSL --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 "$url" -o "$dest"; then
-        return 1
-    fi
-    return 0
-}
-
-self_update() {
-    local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
-    if [ "$0" != "$SCRIPT_PATH" ]; then
-        return
-    fi
-    local temp_script="/tmp/install.sh.tmp.$$"
-    if ! _download_file "install.sh" "$temp_script"; then
-        log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"
-        rm -f "$temp_script" 2>/dev/null || true
-        return
-    fi
-    if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-        log_success "主程序 (install.sh) 已更新。正在无缝重启..."
-        sudo mv "$temp_script" "$SCRIPT_PATH"
-        sudo chmod +x "$SCRIPT_PATH"
-        flock -u 200 || true
-        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true
-        trap - EXIT
-        exec sudo -E bash "$SCRIPT_PATH" "$@"
-    fi
-    rm -f "$temp_script" 2>/dev/null || true
-}
-
-download_module_to_cache() {
+# --- 模块管理函数 ---
+download_script() {
     local script_name="$1"
-    local local_file="${CONFIG[install_dir]}/$script_name"
-    local tmp_file="/tmp/$(basename "$script_name").$$"
-    local url="${CONFIG[base_url]}/${script_name}?_=$(date +%s)"
-    local http_code
-    http_code=$(curl -sS --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 -w "%{http_code}" -o "$tmp_file" "$url" 2>/dev/null) || true
-    local curl_exit_code=$?
-    if [ $curl_exit_code -ne 0 ] || [ "$http_code" != "200" ] || [ ! -s "$tmp_file" ]; then
-        log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
-        rm -f "$tmp_file" 2>/dev/null || true
-        return 1
-    fi
-    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
-        rm -f "$tmp_file" 2>/dev/null || true
+    local target_path="$INSTALL_DIR/$script_name"
+    local script_url="${base_url}/$script_name" # base_url 来自 config.json
+
+    mkdir -p "$(dirname "$target_path")"
+
+    log_info "正在下载 $script_name 到 $target_path..."
+    if curl -sS -o "$target_path" "$script_url"; then
+        chmod +x "$target_path"
+        log_success "下载并设置执行权限完成: $script_name"
         return 0
     else
-        log_success "模块 (${script_name}) 已更新。"
-        sudo mkdir -p "$(dirname "$local_file")"
-        sudo mv "$tmp_file" "$local_file"
-        sudo chmod +x "$local_file" || true
+        log_err "下载失败: $script_name (URL: $script_url)"
+        return 1
     fi
 }
 
-_update_core_files() {
-    local temp_utils="/tmp/utils.sh.tmp.$$"
-    if _download_file "utils.sh" "$temp_utils"; then
-        if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
-            log_success "核心工具库 (utils.sh) 已更新。"
-            sudo mv "$temp_utils" "$UTILS_PATH"
-            sudo chmod +x "$UTILS_PATH"
-        else
-            rm -f "$temp_utils" 2>/dev/null || true
+install_or_update_modules() {
+    log_info "检查并安装/更新所有模块..."
+    local script_files=("docker.sh" "nginx.sh" "cert.sh" "tools/Watchtower.sh") # 硬编码所有模块脚本
+    for script in "${script_files[@]}"; do
+        download_script "$script" || log_err "模块 $script 安装/更新失败。"
+    done
+    log_success "所有模块安装/更新操作完成。"
+    press_enter_to_continue
+}
+
+uninstall_module() {
+    log_warn "此功能尚未完全实现，目前仅为示例。"
+    log_info "要卸载模块，您可能需要手动删除其文件和相关服务。"
+    press_enter_to_continue
+}
+
+enter_module() {
+    local -a module_list=()
+    local -a module_paths=()
+    local i=1
+
+    # 遍历主菜单和子菜单中的所有 type="item"
+    local all_menu_items=()
+    for item_idx in "${!MAIN_MENU_ITEMS[@]}"; do
+        all_menu_items+=("${MAIN_MENU_ITEMS[$item_idx]}")
+    done
+
+    for submenu_key in "${!SUBMENUS[@]}"; do
+        if [[ "$submenu_key" == *_title ]]; then
+            local count_key="${submenu_key%_title}_count"
+            local count="${SUBMENUS[$count_key]}"
+            for (( j=0; j<count; j++ )); do
+                all_menu_items+=("${SUBMENUS["${submenu_key%_title}_item_$j"]}")
+            done
         fi
-    else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。"
-    fi
+    done
+
+    for item_str in "${all_menu_items[@]}"; do
+        local type=$(echo "$item_str" | cut -d'|' -f1)
+        local name=$(echo "$item_str" | cut -d'|' -f2)
+        local action=$(echo "$item_str" | cut -d'|' -f4)
+
+        if [ "$type" = "item" ] && [[ "$action" == *.sh ]]; then
+            local full_path="$INSTALL_DIR/$action"
+            if [ -f "$full_path" ]; then
+                module_list+=("$name")
+                module_paths+=("$full_path")
+            fi
+        fi
+    done
+
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+        local -a display_items=()
+        for idx in "${!module_list[@]}"; do
+            display_items+=("  $((idx + 1)). ${module_list[$idx]}")
+        done
+        _render_menu "🚀 进 入 模 块 菜 单 🚀" "${display_items[@]}"
+        read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice
+
+        if [ -z "$choice" ]; then return; fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#module_paths[@]}" ]; then
+            local selected_path="${module_paths[$((choice - 1))]}"
+            log_info "正在进入模块: $(basename "$selected_path")..."
+            "$selected_path" || true # 允许模块退出时不中断主脚本
+            press_enter_to_continue
+        else
+            log_warn "无效选项。"
+            sleep 1
+        fi
+    done
 }
 
-_update_all_modules() {
-    local cfg="${CONFIG[install_dir]}/config.json"
-    if [ ! -f "$cfg" ]; then
-        log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
-        return
-    fi
-    local scripts_to_update
-    scripts_to_update=$(jq -r '
-        .menus // {} |
-        to_entries[]? |
-        .value.items?[]? |
-        select(.type == "item") |
-        .action
-    ' "$cfg" 2>/dev/null || true)
-    if [ -z "$scripts_to_update" ]; then
-        log_info "未检测到可更新的模块。"
-        return
-    fi
-    local pids=()
-    for script_name in $scripts_to_update; do
-        download_module_to_cache "$script_name" & pids+=($!)
-    done
-    for pid in "${pids[@]}"; do
-        wait "$pid" || true
-    done
-}
-
-force_update_all() {
-    self_update
-    _update_core_files
-    _update_all_modules
-    log_success "所有组件更新检查完成！"
-}
 
 confirm_and_force_update() {
-    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
-    log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
-    read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
-    if [ "$choice" = "yes" ]; then
-        log_info "开始强制完全重置..."
-        declare -A core_files_to_reset=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
-        for name in "${!core_files_to_reset[@]}"; do
-            local file_path="${core_files_to_reset[$name]}"
-            log_info "正在强制更新 ${name}..."
-            local temp_file="/tmp/$(basename "$file_path").tmp.$$"
-            if ! _download_file "$file_path" "$temp_file"; then
-                log_err "下载最新的 ${name} 失败。"
-                continue
-            fi
-            sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
-            log_success "${name} 已重置为最新版本。"
-        done
-        log_info "正在恢复核心脚本执行权限..."
-        sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
-        log_success "权限已恢复。"
-        _update_all_modules
-        log_success "强制重置完成！"
-        log_info "脚本将在2秒后自动重启以应用所有更新..."
-        sleep 2
-        flock -u 200 || true
-        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true
-        exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+    if confirm_action "警告: 强制重置将重新下载所有脚本并恢复配置到默认值。确定继续吗?"; then
+        log_info "正在强制重置..."
+        # 1. 删除所有已安装的脚本模块
+        log_info "正在删除旧脚本模块..."
+        rm -rf "$INSTALL_DIR" || log_warn "删除旧脚本目录失败，可能不存在或权限不足。"
+        
+        # 2. 删除配置文件
+        log_info "正在删除用户配置文件..."
+        rm -f "$CONFIG_FILE" || log_warn "删除用户配置文件失败，可能不存在或权限不足。"
+
+        # 3. 重新下载 install.sh 自身并执行安装
+        log_info "正在重新下载 install.sh..."
+        local install_script_url="${base_url}/install.sh"
+        if curl -sS -o "/tmp/install.sh" "$install_script_url"; then
+            chmod +x "/tmp/install.sh"
+            log_success "install.sh 下载成功。正在重新执行安装..."
+            # 使用 exec 替换当前进程，执行新的安装脚本
+            exec "/tmp/install.sh"
+        else
+            log_err "install.sh 下载失败。请手动检查网络或基础URL。"
+            exit 1
+        fi
     else
-        log_info "操作已取消."
+        log_info "操作已取消。"
     fi
-    return 10
+    press_enter_to_continue
 }
+
 
 uninstall_script() {
-    log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
-    log_warn "  - 安装目录: ${CONFIG[install_dir]}"
-    log_warn "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
-    read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
-    if [ "$choice" = "yes" ]; then
-        log_info "开始卸载..."
-        sudo rm -rf "${CONFIG[install_dir]}"
-        log_success "安装目录已移除."
-        sudo rm -f "${CONFIG[bin_dir]}/jb"
-        log_success "快捷方式已移除."
-        log_success "脚本已成功卸载."
-        log_info "再见！"
+    if confirm_action "警告: 这将删除所有脚本、配置文件和快捷命令。确定卸载吗?"; then
+        log_info "正在卸载脚本..."
+        rm -rf "$INSTALL_DIR"
+        rm -f "$BIN_DIR/vps"
+        rm -f "$CONFIG_FILE"
+        log_success "脚本已成功卸载。"
         exit 0
     else
-        log_info "卸载操作已取消."
-        return 10
+        log_info "操作已取消。"
     fi
+    press_enter_to_continue
 }
 
-_quote_args() {
-    for arg in "$@"; do printf "%q " "$arg"; done
-}
 
-execute_module() {
-    local script_name="$1"
-    local display_name="$2"
-    shift 2
-    local local_path="${CONFIG[install_dir]}/$script_name"
-    log_info "您选择了 [$display_name]"
+# --- 主菜单 ---
+main_menu() {
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+        load_menus_from_json # 每次进入主菜单都重新加载菜单配置
+        local -a display_items=()
+        local current_item_idx=0
 
-    if [ ! -f "$local_path" ]; then
-        log_info "正在下载模块..."
-        if ! download_module_to_cache "$script_name"; then
-            log_err "下载失败."
-            return 1
+        # 从 MAIN_MENU_ITEMS 数组中构建显示项
+        for item_str in "${MAIN_MENU_ITEMS[@]}"; do
+            local type=$(echo "$item_str" | cut -d'|' -f1)
+            local name=$(echo "$item_str" | cut -d'|' -f2)
+            local icon=$(echo "$item_str" | cut -d'|' -f3)
+            local display_name="${icon} ${name}"
+            display_items+=("  $((current_item_idx + 1)). ${display_name}")
+            current_item_idx=$((current_item_idx + 1))
+        done
+        
+        # 添加 UI 主题设置到主菜单
+        display_items+=("")
+        display_items+=("  $((current_item_idx + 1)). 🎨 UI 主 题 设 置")
+
+        _render_menu "$MAIN_MENU_TITLE" "${display_items[@]}"
+        read -r -p " └──> 请选择, 或按 Enter 退出: " choice
+
+        if [ -z "$choice" ]; then exit 0; fi
+
+        # 处理 UI 主题设置选项
+        if [ "$choice" -eq "$((current_item_idx + 1))" ]; then
+            theme_settings_menu
+            continue
         fi
-    fi
 
-    local env_exports="export IS_NESTED_CALL=true
-export FORCE_COLOR=true
-export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'
-export JB_TIMEZONE='${CONFIG[timezone]}'
-export LC_ALL=${LC_ALL}
-"
-    local module_key
-    module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
-    local config_path="${CONFIG[install_dir]}/config.json"
-    local module_config_json="null"
-    if [ -f "$config_path" ] && command -v jq &>/dev/null; then
-        module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // "null"' "$config_path" 2>/dev/null || echo "null")
-    fi
-    if [ "$module_config_json" != "null" ] && [ -n "$module_config_json" ]; then
-        local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | 
-            if ($v|type) == "array" then [$k, ($v|join(","))] 
-            elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] 
-            else empty end | @tsv'
-        while IFS=$'\t' read -r key value; do
-            if [ -n "$key" ]; then
-                local key_upper
-                key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
-                value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
-                env_exports+=$(printf "export %s_CONF_%s='%s'\n" "$(echo "$module_key" | tr '[:lower:]' '[:upper:]')" "$key_upper" "$value")
-            fi
-        done < <(echo "$module_config_json" | jq -r "$jq_script" 2>/dev/null || true)
-    fi
-
-    local extra_args_str
-    extra_args_str=$(_quote_args "$@")
-    local tmp_runner="/tmp/jb_runner.$$"
-    cat > "$tmp_runner" <<EOF
-#!/bin/bash
-set -e
-$env_exports
-exec bash '$local_path' $extra_args_str
-EOF
-    sudo bash "$tmp_runner" < /dev/tty || local exit_code=$?
-    rm -f "$tmp_runner" 2>/dev/null || true
-
-    if [ "${exit_code:-0}" = "0" ]; then
-        log_success "模块 [$display_name] 执行完毕."
-    elif [ "${exit_code:-0}" = "10" ]; then
-        log_info "已从 [$display_name] 返回."
-    else
-        log_warn "模块 [$display_name] 执行出错 (码: ${exit_code:-1})."
-    fi
-
-    return ${exit_code:-0}
-}
-
-_render_menu() {
-    local title="$1"; shift
-    local -a lines=("$@")
-
-    local max_width=0
-    local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    if (( title_width > max_width )); then max_width=$title_width; fi
-
-    for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        if (( line_width > max_width )); then max_width=$line_width; fi
-    done
-
-    local box_width=$((max_width + 2))
-    if [ $box_width -lt 40 ]; then box_width=40; fi
-
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
-
-    if [ -n "$title" ]; then
-        local padding_total=$((box_width - title_width))
-        local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left))
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
-    fi
-
-    for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        local padding_right=$((box_width - line_width))
-        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
-    done
-
-    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
-}
-
-_print_header() { _render_menu "$1" ""; }
-
-display_menu() {
-    if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi
-    local config_path="${CONFIG[install_dir]}/config.json"
-    if [ ! -f "$config_path" ]; then
-        log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
-        exit 1
-    fi
-
-    local menu_json
-    menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
-    if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
-        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效！"
-        exit 1
-    fi
-
-    local main_title_text
-    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
-
-    local -a menu_items_array=()
-    local i=1
-    while IFS=$'\t' read -r icon name; do
-        menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
-        i=$((i + 1))
-    done < <(jq -r '.items[]? | ((.icon // "›") + "\t" + .name)' <<< "$menu_json" 2>/dev/null || true)
-
-    _render_menu "$main_title_text" "${menu_items_array[@]}"
-
-    local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
-    local exit_hint="退出"
-    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
-    local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
-
-    if [ "$AUTO_YES" = "true" ]; then
-        choice=""
-        echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
-    else
-        read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
-    fi
-}
-
-process_menu_selection() {
-    local config_path="${CONFIG[install_dir]}/config.json"
-    local menu_json
-    menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
-    local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
-
-    if [ -z "$choice" ]; then
-        if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-            exit 0
-        else
-            CURRENT_MENU_NAME="MAIN_MENU"
-            return 10
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$current_item_idx" ]; then
+            log_warn "无效选项。"
+            sleep 1
+            continue
         fi
-    fi
 
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then
-        log_warn "无效选项."
-        return 10
-    fi
+        local selected_item_str="${MAIN_MENU_ITEMS[$((choice - 1))]}"
+        local type=$(echo "$selected_item_str" | cut -d'|' -f1)
+        local action=$(echo "$selected_item_str" | cut -d'|' -f4)
 
-    local item_json
-    item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]' 2>/dev/null || echo "")
-    if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then
-        log_warn "菜单项配置无效或不完整。"
-        return 10
-    fi
-
-    local type
-    type=$(echo "$item_json" | jq -r ".type" 2>/dev/null || echo "")
-    local name
-    name=$(echo "$item_json" | jq -r ".name" 2>/dev/null || echo "")
-    local action
-    action=$(echo "$item_json" | jq -r ".action" 2>/dev/null || echo "")
-
-    case "$type" in
-        item)
-            execute_module "$action" "$name"
-            return $?
-            ;;
-        submenu)
-            CURRENT_MENU_NAME=$action
-            return 10
-            ;;
-        func)
-            "$action"
-            return $?
-            ;;
-        *)
-            log_warn "未知菜单类型: $type"
-            return 10
-            ;;
-    esac
-}
-
-main() {
-    exec 200>"${CONFIG[lock_file]}"
-    if ! flock -n 200; then
-        echo -e "\033[0;33m[警告] 检测到另一实例正在运行."
-        exit 1
-    fi
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}"; log_info "脚本已退出."' EXIT
-
-    if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
-        check_and_install_dependencies
-    fi
-
-    load_config
-
-    if [ $# -gt 0 ]; then
-        local command="$1"; shift
-        case "$command" in
-            update)
-                log_info "正在以 Headless 模式安全更新所有脚本..."
-                force_update_all
-                exit 0
-                ;;
-            uninstall)
-                log_info "正在以 Headless 模式执行卸载..."
-                uninstall_script
-                exit 0
-                ;;
-            *)
-                local item_json
-                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
-                if [ -n "$item_json" ]; then
-                    local action_to_run
-                    action_to_run=$(echo "$item_json" | jq -r '.action' 2>/dev/null || echo "")
-                    local display_name
-                    display_name=$(echo "$item_json" | jq -r '.name' 2>/dev/null || echo "")
-                    local type
-                    type=$(echo "$item_json" | jq -r '.type' 2>/dev/null || echo "")
-                    log_info "正在以 Headless 模式执行: ${display_name}"
-                    if [ "$type" = "func" ]; then
-                        "$action_to_run" "$@"
-                    else
-                        execute_module "$action_to_run" "$display_name" "$@"
-                    fi
-                    exit $?
+        case "$type" in
+            item)
+                local script_path="$INSTALL_DIR/$action"
+                if [ -f "$script_path" ]; then
+                    log_info "正在启动模块: $(basename "$script_path")..."
+                    "$script_path" || true # 允许子脚本退出时不中断主脚本
+                    press_enter_to_continue
                 else
-                    log_err "未知命令: $command"
-                    exit 1
+                    log_err "模块脚本 '$action' 未找到或不可执行。"
+                    press_enter_to_continue
                 fi
                 ;;
+            submenu)
+                local submenu_key="$action"
+                handle_submenu "$submenu_key"
+                ;;
+            func)
+                # 直接执行函数
+                if declare -f "$action" &>/dev/null; then
+                    "$action"
+                else
+                    log_err "函数 '$action' 未定义。"
+                    press_enter_to_continue
+                fi
+                ;;
+            *)
+                log_warn "不支持的菜单项类型: $type"
+                press_enter_to_continue
+                ;;
         esac
-    fi
-
-    log_info "脚本启动 (${SCRIPT_VERSION})"
-    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🕛"
-    sleep 0.5
-    echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🔄\n"
-    force_update_all
-
-    CURRENT_MENU_NAME="MAIN_MENU"
-    while true; do
-        display_menu
-        local exit_code=0
-        process_menu_selection || exit_code=$?
-        if [ "$exit_code" -ne 10 ]; then
-            while read -r -t 0; do :; done
-            press_enter_to_continue < /dev/tty
-        fi
     done
+}
+
+# --- 子菜单处理函数 ---
+handle_submenu() {
+    local submenu_key="$1"
+    local submenu_title="${SUBMENUS["${submenu_key}_title"]}"
+    local item_count="${SUBMENUS["${submenu_key}_count"]}"
+
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+        local -a display_items=()
+        for (( i=0; i<item_count; i++ )); do
+            local item_str="${SUBMENUS["${submenu_key}_item_$i"]}"
+            local name=$(echo "$item_str" | cut -d'|' -f2)
+            local icon=$(echo "$item_str" | cut -d'|' -f3)
+            local display_name="${icon} ${name}"
+            display_items+=("  $((i + 1)). ${display_name}")
+        done
+
+        _render_menu "$submenu_title" "${display_items[@]}"
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice
+
+        if [ -z "$choice" ]; then return; fi
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$item_count" ]; then
+            log_warn "无效选项。"
+            sleep 1
+            continue
+        fi
+
+        local selected_item_str="${SUBMENUS["${submenu_key}_item_$((choice - 1))"]}"
+        local type=$(echo "$selected_item_str" | cut -d'|' -f1)
+        local action=$(echo "$selected_item_str" | cut -d'|' -f4)
+
+        case "$type" in
+            item)
+                local script_path="$INSTALL_DIR/$action"
+                if [ -f "$script_path" ]; then
+                    log_info "正在启动模块: $(basename "$script_path")..."
+                    "$script_path" || true
+                    press_enter_to_continue
+                else
+                    log_err "模块脚本 '$action' 未找到或不可执行。"
+                    press_enter_to_continue
+                fi
+                ;;
+            func)
+                if declare -f "$action" &>/dev/null; then
+                    "$action"
+                else
+                    log_err "函数 '$action' 未定义。"
+                    press_enter_to_continue
+                fi
+                ;;
+            *)
+                log_warn "不支持的菜单项类型: $type"
+                press_enter_to_continue
+                ;;
+        esac
+    done
+}
+
+
+# --- 脚本主入口 ---
+main() {
+    # 检查 jq 依赖
+    if ! command -v jq &>/dev/null; then
+        log_err "jq 命令未找到。请手动安装 jq (例如: sudo apt-get install jq 或 sudo yum install jq)。"
+        exit 1
+    fi
+    
+    # base_url 变量从 config.json 加载
+    base_url=$(jq -r '.base_url // "https://raw.githubusercontent.com/wx233Github/jaoeng/main"' "$CONFIG_JSON_PATH")
+
+    check_dependencies
+    main_menu
 }
 
 main "$@"
