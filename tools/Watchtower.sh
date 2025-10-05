@@ -1,12 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.6 - 最终决战版)
-# - [最终修正] 移除 WATCHTOWER_REPORT=true，彻底解决 TG 通知模板错误
+# 🚀 Docker 自动更新助手 (v4.6.9 - enable_report移除版)
+# - [最终修正] 彻底移除对 WATCHTOWER_REPORT=true 相关配置的引用
+# - [更新] 适配 config.json 中的 WATCHTOWER_NOTIFY_ON_NO_UPDATES
+# - [更新] 确保本地保存的配置 (config.conf) 优先级高于 config.json
 # - [优化] 优化日志截断，确保UI内容不会撑爆
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.6"
+SCRIPT_VERSION="v4.6.9" # 版本更新
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -28,28 +30,50 @@ if ! command -v docker >/dev/null 2>&1; then log_err "❌ 错误: 未检测到 '
 if ! docker ps -q >/dev/null 2>&1; then log_err "❌ 错误:无法连接到 Docker。"; exit 1; fi
 
 # --- 配置加载 ---
-WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
-WT_CONF_DEFAULT_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
-WT_CONF_DEFAULT_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
-WT_CONF_ENABLE_REPORT="${WATCHTOWER_CONF_ENABLE_REPORT:-true}" # 此变量现在只控制是否启用通知URL和模板
+# 从 config.json 加载的默认值 (通过 install.sh 传递的环境变量)
+WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
+WT_CONF_DEFAULT_INTERVAL="${JB_WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
+WT_CONF_DEFAULT_CRON_HOUR="${JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
+# JB_WATCHTOWER_CONF_ENABLE_REPORT 已从 config.json 移除，因此不再引用
+
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if ! [ -w "$(dirname "$CONFIG_FILE")" ]; then
     CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
+
+# 初始化变量，先从 config.json 提供的默认值 (通过 JB_ 前缀的环境变量)
+TG_BOT_TOKEN="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
+TG_CHAT_ID="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
+EMAIL_TO="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
+WATCHTOWER_EXCLUDE_LIST="${JB_WATCHTOWER_CONF_EXCLUDE_LIST:-}"
+WATCHTOWER_EXTRA_ARGS="${JB_WATCHTOWER_CONF_EXTRA_ARGS:-}"
+WATCHTOWER_DEBUG_ENABLED="${JB_WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
+WATCHTOWER_CONFIG_INTERVAL="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" # 优先使用 config.json 的默认间隔
+WATCHTOWER_ENABLED="${JB_WATCHTOWER_CONF_ENABLED:-false}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
+CRON_HOUR="${JB_WATCHTOWER_CONF_CRON_HOUR:-4}"
+CRON_TASK_ENABLED="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES="${JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}" # 从 config.json 初始化
+
+# 然后，如果存在本地配置文件，则覆盖上述变量 (优先级更高)
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE" &>/dev/null || true
 fi
+
+# 确保所有变量都有一个最终的默认值 (如果 config.conf 和 config.json 都没有提供)
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 EMAIL_TO="${EMAIL_TO:-}"
+WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
 WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
-WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-}"
+WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}" # 最终默认值
 WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"
-CRON_HOUR="${CRON_HOUR:-4}"
+CRON_HOUR="${CRON_HOUR:-${WT_CONF_DEFAULT_CRON_HOUR}}" # 最终默认值
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
-WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-false}" # 最终默认值
+
 
 # --- 模块专属函数 ---
 
@@ -77,6 +101,7 @@ WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON}"
 CRON_HOUR="${CRON_HOUR}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
@@ -101,10 +126,15 @@ _start_watchtower_container_logic(){
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "检测到 Telegram 配置，将为 Watchtower 启用通知。"
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
-        # [最终修正] 移除 WATCHTOWER_REPORT=true，避免对所有日志应用复杂模板
-        # if [ "${WT_CONF_ENABLE_REPORT}" = "true" ]; then
-        #     cmd_base+=(-e WATCHTOWER_REPORT=true)
-        # fi
+        
+        # 根据 WATCHTOWER_NOTIFY_ON_NO_UPDATES 决定是否设置 WATCHTOWER_REPORT_NO_UPDATES
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
+            cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
+            log_info "将启用 '无更新也通知' 模式。"
+        else
+            log_info "将启用 '有更新才通知' 模式。"
+        fi
+
         # 模板现在只应用于有 .Scanned 字段的总结报告
         local NOTIFICATION_TEMPLATE='{{if .Scanned}}🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失 败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`{{end}}'
         cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE}")
@@ -169,7 +199,7 @@ _rebuild_watchtower() {
     docker rm -f watchtower &>/dev/null
     set -e
     
-    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL:-300}}"
+    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}"
     if ! _start_watchtower_container_logic "$interval" "Watchtower模式"; then
         log_err "Watchtower 重建失败！"
         WATCHTOWER_ENABLED="false"
@@ -226,7 +256,7 @@ _format_and_highlight_log_line(){
             if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request|Notification template error"; then
                 local msg
                 msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
-                if [ -z "$msg" ]; then
+                if [ -z "$msg" ] && [[ "$line" == *"msg="* ]]; then # 尝试从msg字段提取，如果不是error
                     msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
                 fi
                 if [ -z "$msg" ]; then
@@ -270,6 +300,30 @@ _get_watchtower_remaining_time(){
         fi
     else
         echo -e "${YELLOW}计算中...${NC}"
+    fi
+}
+
+_extract_interval_from_cmd(){
+    local cmd_json="$1"
+    local interval=""
+    if command -v jq >/dev/null 2>&1; then
+        interval=$(echo "$cmd_json" | jq -r 'first(range(length) as $i | select(.[$i] == "--interval") | .[$i+1] // empty)' 2>/dev/null || true)
+    else
+        local tokens; read -r -a tokens <<< "$(echo "$cmd_json" | tr -d '[],"')"
+        local prev=""
+        for t in "${tokens[@]}"; do
+            if [ "$prev" = "--interval" ]; then
+                interval="$t"
+                break
+            fi
+            prev="$t"
+        done
+    fi
+    interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
+    if [ -z "$interval" ]; then
+        echo ""
+    else
+        echo "$interval"
     fi
 }
 
@@ -403,6 +457,7 @@ view_and_edit_config(){
         "调试模式|WATCHTOWER_DEBUG_ENABLED|bool"
         "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval"
         "Watchtower 启用状态|WATCHTOWER_ENABLED|bool"
+        "无更新也通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool" # 新增配置项
         "Cron 执行小时|CRON_HOUR|number_range|0-23"
         "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string"
         "Cron 任务启用状态|CRON_TASK_ENABLED|bool"
@@ -521,7 +576,7 @@ main_menu(){
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
             NOTIFY_STATUS="${GREEN}Telegram${NC}"
             if [ "$STATUS_RAW" = "已启动" ]; then
-                # 现在只检查是否有任何 "Failed to initialize Shoutrrr" 错误，而不是模板错误
+                # 检查是否有任何 "Failed to initialize Shoutrrr" 错误，而不是模板错误
                 if docker logs watchtower 2>&1 | grep -q "Failed to initialize Shoutrrr"; then
                     NOTIFY_STATUS="${GREEN}Telegram${NC} ${RED}(未生效)${NC}"
                 fi
