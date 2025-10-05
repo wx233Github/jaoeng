@@ -47,7 +47,7 @@
       "comment_exclude_containers": "Watchtower 排除的容器名称，多个用逗号分隔 (低优先级，会被脚本内设置覆盖)",
       "exclude_containers": "portainer,portainer_agent",
       "comment_notify_on_no_updates": "Watchtower 是否在没有容器更新时也发送Telegram通知 (true/false)",
-      "notify_on_no_updates": true
+      "notify_on_no_updates": true  
     }
   }
 }
