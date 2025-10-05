@@ -1,6 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.25-FixBackslashDone - 修复 \done 语法错误)
+# 🚀 VPS 一键安装脚本 (v4.6.26-DeepTraceAndSanitize - 深度追踪与文件净化)
+# - [核心修复] 启用 `set -x` 进行逐行命令追踪，以精确诊断菜单渲染异常。
+# - [核心修复] 强化 `config.json` 下载后的净化处理，移除 BOM 和 Windows 回车符。
 # - [核心修复] 解决 `bash: syntax error near unexpected token `}'` 错误。
 #   - 将所有 `\done` 关键字更正为 `done`，确保 for 循环正确闭合。
 # - [核心修复] 所有 `read` 命令现在明确从 `/dev/tty` 读取，解决通过管道执行脚本时 `read` 立即退出的问题。
@@ -21,10 +23,13 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.25-FixBackslashDone"
+SCRIPT_VERSION="v4.6.26-DeepTraceAndSanitize"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
+# 启用调试模式，打印所有执行的命令
+set -x # <--- 新增：启用逐行追踪
+
 export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
@@ -82,6 +87,14 @@ _temp_log_info "正在下载配置文件 config.json..."
 if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
     _temp_log_success "config.json 下载成功。"
     
+    # --- 新增：净化 config.json 文件 ---
+    _temp_log_info "正在净化 config.json 文件 (移除BOM和回车符)..."
+    # 移除 UTF-8 BOM
+    sed -i '1s/^\xEF\xBB\xBF//' "$CONFIG_JSON_PATH"
+    # 移除 Windows 风格的回车符
+    tr -d '\r' < "$CONFIG_JSON_PATH" > "${CONFIG_JSON_PATH}.tmp" && mv "${CONFIG_JSON_PATH}.tmp" "$CONFIG_JSON_PATH"
+    _temp_log_success "config.json 文件净化完成。"
+
     # 验证 config.json 是否为有效 JSON
     if ! jq -e . "$CONFIG_JSON_PATH" >/dev/null 2>&1; then
         _temp_log_err "下载的 config.json 不是有效的 JSON 格式！请检查文件内容。"
@@ -245,7 +258,7 @@ load_menus_from_json() {
         while IFS= read -r submenu_key; do
             if [ -z "$submenu_key" ]; then continue; fi
 
-            log_info "正在处理子菜单键: $submenu_key"
+            log_info "正在处 理子 菜 单 键 : $submenu_key"
             local submenu_obj_str
             set +e
             submenu_obj_str=$(echo "$config_json_content" | jq -c ".menus.\"$submenu_key\" // {}" 2>/dev/null)
@@ -361,7 +374,7 @@ install_or_update_modules() {
     local script_files=("docker.sh" "nginx.sh" "cert.sh" "tools/Watchtower.sh") # 硬编码所有模块脚本
     for script in "${script_files[@]}"; do
         download_script "$script" || log_err "模块 $script 安装/更新失败。"
-    done # <--- 修正: '\done' 改为 'done'
+    done
     log_success "所有模块安装/更新操作完成。"
     press_enter_to_continue
 }
@@ -429,7 +442,7 @@ enter_module() {
         local -a numbered_display_items=()
         for idx in "${!module_list[@]}"; do
             numbered_display_items+=("  $((idx + 1)). ${module_list[$idx]}")
-        done # <--- 修正: '\done' 改为 'done'
+        done
 
         _render_menu "🚀 进 入 模 块 菜 单 🚀" "${numbered_display_items[@]}"
         read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice </dev/tty
@@ -519,7 +532,8 @@ main_menu() {
                 local type=$(echo "$item_str" | cut -d'|' -f1)
                 local name=$(echo "$item_str" | cut -d'|' -f2)
                 local icon=$(echo "$item_str" | cut -d'|' -f3)
-                local display_name="${icon} ${name}"
+                local action=$(echo "$item_str" | cut -d'|' -f4)
+                log_info "    Parsed: type='$type', name='$name', icon='$icon', action='$action'" # <--- 新增调试日志
                 display_items+=("  $((current_item_idx + 1)). ${display_name}")
                 log_info "    添 加 显 示 项 : $((current_item_idx + 1)). ${display_name}"
                 current_item_idx=$((current_item_idx + 1))
