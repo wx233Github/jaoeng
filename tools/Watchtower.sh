@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.9 - enable_report移除版)
-# - [最终修正] 彻底移除对 WATCHTOWER_REPORT=true 相关配置的引用
-# - [更新] 适配 config.json 中的 WATCHTOWER_NOTIFY_ON_NO_UPDATES
+# 🚀 Docker 自动更新助手 (v4.6.10 - config.json默认值适配)
+# - [更新] 适配 config.json 中 notify_on_no_updates 默认设置为 true
+# - [修正] 彻底移除对 WATCHTOWER_REPORT=true 相关配置的引用
 # - [更新] 确保本地保存的配置 (config.conf) 优先级高于 config.json
 # - [优化] 优化日志截断，确保UI内容不会撑爆
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.9" # 版本更新
+SCRIPT_VERSION="v4.6.10" # 版本更新
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -566,9 +566,11 @@ main_menu(){
         local FINAL_EXCLUDE_LIST="" FINAL_EXCLUDE_SOURCE=""
         if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
             FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"
+            SOURCE_MSG_COLOR="${CYAN}脚本${NC}"
             FINAL_EXCLUDE_SOURCE="脚本"
         elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then
             FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"
+            SOURCE_MSG_COLOR="${CYAN}config.json${NC}"
             FINAL_EXCLUDE_SOURCE="config.json"
         fi
         
@@ -590,7 +592,7 @@ main_menu(){
             " ⏳ 下次检查: ${COUNTDOWN}"
             " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
-        if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
+        if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${SOURCE_MSG_COLOR})"); fi
         if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通知已启用: ${NOTIFY_STATUS}"); fi
         content_array+=("" "主菜单：" "  1. › 配置 Watchtower" "  2. › 配置通知" "  3. › 任务管理" "  4. › 查看/编辑配置 (底层)" "  5. › 手动更新所有容器" "  6. › 详情与管理")
         
