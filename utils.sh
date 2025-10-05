@@ -1,13 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.42)
-# - 修复：所有日志函数 (log_*) 在交互式会话中强制输出到 /dev/tty，解决日志混乱和 ANSI 逃逸序列残留。
-# - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
-# - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
-# - 修复：确保 `press_enter_to_continue`, `confirm_action`, `_prompt_for_interval` 函数中的 `read` 命令明确从 `/dev/tty` 读取，解决输入无响应问题。
-# - 优化：增强了 `_get_visual_width` 函数的健壮性，增加了调试输出，以更好地处理多字节字符宽度计算。
-# - 新增：添加了 `_prompt_for_interval` 函数，用于交互式获取并验证时间间隔输入。
-# - 优化：脚本头部注释更简洁。
+# 🚀 通用工具函数库 (v2.38-修复UI与输入问题)
 # =============================================================
 
 # --- 严格模式 ---
@@ -17,20 +10,18 @@ set -eo pipefail
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
-  _log_output_target="/dev/tty" # 交互模式下强制输出到 /dev/tty
 else
   RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
-  _log_output_target="/dev/stdout" # 非交互模式下输出到 stdout
 fi
 
 # --- 日志系统 ---
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*" > "$_log_output_target"; }
-log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*" > "$_log_output_target"; }
-log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*" > "$_log_output_target"; }
-log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" > "$_log_output_target"; }
+log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
+log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
+log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 # 调试模式，可以通过 export JB_DEBUG_MODE=true 启用
-log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" > "$_log_output_target"; }
+log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
 
 
 # --- 用户交互函数 ---
@@ -106,19 +97,16 @@ _render_menu() {
     local max_width=0
     # 为标题也增加左右各一个空格的边距
     local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    log_debug "_render_menu: Title '$title', calculated title_width: $title_width"
     if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
         # 为每行内容都增加左右各一个空格的边距
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        log_debug "_render_menu: Line '$line', calculated line_width: $line_width"
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
     
     local box_width=$((max_width + 2)) # 左右边框各占1
     if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
-    log_debug "_render_menu: max_width: $max_width, final box_width: $box_width"
 
     # 顶部
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
@@ -127,8 +115,7 @@ _render_menu() {
     if [ -n "$title" ]; then
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left))
-        log_debug "_render_menu: Title padding: total=$padding_total, left=$padding_left, right=$padding_right"
+        local padding_right=$((padding_total - padding_left)) # 修复：这里是 padding_right
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
         echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
@@ -139,7 +126,6 @@ _render_menu() {
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
         local padding_right=$((box_width - line_width))
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        log_debug "_render_menu: Line '$line' padding: line_width=$line_width, padding_right=$padding_right"
         echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
@@ -227,7 +213,7 @@ _prompt_for_interval() {
     local interval_in_seconds=""
 
     while true; do
-        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty
+        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty # 修复：添加 < /dev/tty
         input="${input:-$default_interval}" # 如果用户输入为空，则使用默认值
 
         # 尝试将输入转换为秒
