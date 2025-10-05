@@ -132,7 +132,7 @@ _parse_watchtower_timestamp_from_log_line() {
     if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
-    
+    fi # <--- 确保这里是 'fi'
     # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
     timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
     if [ -n "$timestamp" ]; then
