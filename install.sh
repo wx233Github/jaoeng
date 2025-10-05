@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.17-SelfInit - 自初始化和健壮菜单解析)
+# 🚀 VPS 一键安装脚本 (v4.6.18-FixLocal - 修复全局local声明)
+# - [核心修复] 解决 `bash: local: can only be used in a function` 错误，移除全局作用域的 `local` 关键字。
 # - [核心修复] 脚本自初始化流程优化，确保 utils.sh 和 config.json 在被 source/解析前已下载。
 #   - 提前检查并安装 `jq` 依赖。
 #   - 优先下载 `config.json` 以获取正确的 `base_url`。
@@ -12,7 +13,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.17-SelfInit"
+SCRIPT_VERSION="v4.6.18-FixLocal"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -73,7 +74,7 @@ _temp_log_info "正在下载配置文件 config.json..."
 if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
     _temp_log_success "config.json 下载成功。"
     # 从下载的 config.json 更新 base_url
-    local new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH")
+    new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH") # <--- 修正: 移除 local 关键字
     if [ "$new_base_url" != "$base_url" ]; then
         base_url="$new_base_url"
         _temp_log_info "已从 config.json 更新脚本基础URL为: $base_url"
