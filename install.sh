@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.11-修复Watchtower默认值与UI排版)
+# 🚀 VPS 一键安装入口脚本 (v74.12-回归v74.11并仅集成UI修复)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.11"
+SCRIPT_VERSION="v74.12"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -146,7 +146,7 @@ load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do
-            value=$(printf '%s' "$value" | sed 's/^"\(.*\)"$/\1/')
+            value=$(printf '%s' "$value" | sed 's/^"$.*$"$/\1/')
             CONFIG[$key]="$value"
         done < <(jq -r 'to_entries
             | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
@@ -467,41 +467,54 @@ EOF
     return ${exit_code:-0}
 }
 
+# 唯一修改：集成 v74.12 的 UI 修复
 _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
 
-    local max_width=0
-    local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    if (( title_width > max_width )); then max_width=$title_width; fi
+    local max_content_width=0 # 仅计算内容宽度，不含内部空格和边框
+    
+    local title_content_width=$(_get_visual_width "$title")
+    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
 
     for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        if (( line_width > max_width )); then max_width=$line_width; fi
+        local line_content_width=$(_get_visual_width "$line")
+        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
     done
-    local box_width=$((max_width + 2))
-    if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
+    
+    local inner_padding_chars=2 # 左右各一个空格，用于内容与边框之间的间距
+    local box_inner_width=$((max_content_width + inner_padding_chars))
+    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # 最小内容区域宽度 (38 + 2边框 = 40总宽)
 
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
-
+    # 顶部
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    
+    # 标题
     if [ -n "$title" ]; then
-        local padding_total=$((box_width - title_width))
+        local current_title_line_width=$((title_content_width + inner_padding_chars)) # 标题内容宽度 + 左右各1空格
+        local padding_total=$((box_inner_width - current_title_line_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
-    fi
+        
+        local left_padding_str; left_padding_str=$(printf '%*s' "$padding_left")
+        local right_padding_str; right_padding_str=$(printf '%*s' "$padding_right")
 
+        echo -e "${GREEN}│${left_padding_str} ${title} ${right_padding_str}│${NC}"
+    fi
+    
+    # 选项
     for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        local padding_right=$((box_width - line_width))
-        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        local line_content_width=$(_get_visual_width "$line")
+        # 计算右侧填充：总内容区域宽度 - 当前行内容宽度 - 左侧一个空格
+        local padding_right_for_line=$((box_inner_width - line_content_width - 1)) 
+        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
+        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # 左侧固定一个空格
     done
 
-    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
+    # 底部
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
+
 
 _print_header() { _render_menu "$1" ""; }
 
