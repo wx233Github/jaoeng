@@ -106,6 +106,12 @@ EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
 
+load_config(){
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE" &>/dev/null || true
+    fi
+}
+
 _start_watchtower_container_logic(){
     local wt_interval="$1"
     local mode_description="$2" # 例如 "一次性更新" 或 "Watchtower模式"
