@@ -121,7 +121,7 @@ _render_menu() {
     if [ -n "$title" ]; then
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left)) # 修复：这里是 padding_right
+        local padding_right=$((padding_total - padding_left))
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
         echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
