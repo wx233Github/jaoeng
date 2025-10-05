@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.26-DeepTraceAndSanitize - 深度追踪与文件净化)
-# - [核心修复] 启用 `set -x` 进行逐行命令追踪，以精确诊断菜单渲染异常。
-# - [核心修复] 强化 `config.json` 下载后的净化处理，移除 BOM 和 Windows 回车符。
+# 🚀 VPS 一键安装脚本 (v4.6.27-FixDisplayName - 修复 display_name 变量未定义问题)
+# - [核心修复] 在 `main_menu` 函数的菜单渲染循环中，添加了 `local display_name="${icon} ${name}"`，确保菜单项名称正确显示。
+# - [优化] 移除调试模式 `set -x`。
 # - [核心修复] 解决 `bash: syntax error near unexpected token `}'` 错误。
 #   - 将所有 `\done` 关键字更正为 `done`，确保 for 循环正确闭合。
 # - [核心修复] 所有 `read` 命令现在明确从 `/dev/tty` 读取，解决通过管道执行脚本时 `read` 立即退出的问题。
@@ -23,13 +23,11 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.26-DeepTraceAndSanitize"
+SCRIPT_VERSION="v4.6.27-FixDisplayName"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
-# 启用调试模式，打印所有执行的命令
-set -x # <--- 新增：启用逐行追踪
-
+# set -x # 移除调试模式
 export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
@@ -87,7 +85,7 @@ _temp_log_info "正在下载配置文件 config.json..."
 if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
     _temp_log_success "config.json 下载成功。"
     
-    # --- 新增：净化 config.json 文件 ---
+    # --- 净化 config.json 文件 ---
     _temp_log_info "正在净化 config.json 文件 (移除BOM和回车符)..."
     # 移除 UTF-8 BOM
     sed -i '1s/^\xEF\xBB\xBF//' "$CONFIG_JSON_PATH"
@@ -422,7 +420,7 @@ enter_module() {
             local name=$(echo "$item_str" | cut -d'|' -f2)
             local icon=$(echo "$item_str" | cut -d'|' -f3)
             local action=$(echo "$item_str" | cut -d'|' -f4)
-
+            local display_name="${icon} ${name}" # <--- ADDED THIS LINE
             if [ "$type" = "item" ] && [[ "$action" == *.sh ]]; then
                 local full_path="$INSTALL_DIR/$action"
                 if [ -f "$full_path" ]; then
@@ -533,7 +531,8 @@ main_menu() {
                 local name=$(echo "$item_str" | cut -d'|' -f2)
                 local icon=$(echo "$item_str" | cut -d'|' -f3)
                 local action=$(echo "$item_str" | cut -d'|' -f4)
-                log_info "    Parsed: type='$type', name='$name', icon='$icon', action='$action'" # <--- 新增调试日志
+                local display_name="${icon} ${name}" # <--- 核心修复：添加此行
+                log_info "    Parsed: type='$type', name='$name', icon='$icon', action='$action', display_name='$display_name'" # 更新日志以显示 display_name
                 display_items+=("  $((current_item_idx + 1)). ${display_name}")
                 log_info "    添 加 显 示 项 : $((current_item_idx + 1)). ${display_name}"
                 current_item_idx=$((current_item_idx + 1))
