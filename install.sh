@@ -1,6 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.23-FixReadTTY - 修复read命令从/dev/tty读取)
+# 🚀 VPS 一键安装脚本 (v4.6.24-FixSyntax - 修复Bash语法错误)
+# - [核心修复] 解决 `bash: syntax error near unexpected token `}'` 错误。
+#   - 将所有 `if ... then ... }` 语句中的 `}` 更正为 `fi`。
 # - [核心修复] 所有 `read` 命令现在明确从 `/dev/tty` 读取，解决通过管道执行脚本时 `read` 立即退出的问题。
 # - [核心修复] 解决 MAIN_MENU_ITEMS 和 SUBMENUS 数组在函数调用后变为空的问题。
 #   - 移除 `load_menus_from_json` 函数内部的 `declare -A` 语句，确保操作的是全局数组。
@@ -19,7 +21,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.23-FixReadTTY"
+SCRIPT_VERSION="v4.6.24-FixSyntax"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -193,7 +195,7 @@ load_menus_from_json() {
 
     if echo "$main_menu_items_json_array_raw" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
         while IFS= read -r item_json; do
-            if [ -z "$item_json" ]; then continue; }
+            if [ -z "$item_json" ]; then continue; fi # <--- 修正: '}' 改为 'fi'
 
             set +e
             local type=$(echo "$item_json" | jq -r '.type // "unknown"' 2>/dev/null)
@@ -267,7 +269,7 @@ load_menus_from_json() {
             fi
             SUBMENUS["${submenu_key}_title"]="$submenu_title"
             log_info "子菜单 '$submenu_key' 标题: '$submenu_title'"
-            log_info "子菜单 '$submenu_key' 项 目 原 始 JSON数 组 : '$items_array_str'"
+            log_info "子菜单 '$submenu_key' 项目原始JSON数组: '$items_array_str'"
             
             local j=0
             if echo "$items_array_str" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
@@ -359,7 +361,7 @@ install_or_update_modules() {
     local script_files=("docker.sh" "nginx.sh" "cert.sh" "tools/Watchtower.sh") # 硬编码所有模块脚本
     for script in "${script_files[@]}"; do
         download_script "$script" || log_err "模块 $script 安装/更新失败。"
-    done
+    \done
     log_success "所有模块安装/更新操作完成。"
     press_enter_to_continue
 }
@@ -420,19 +422,19 @@ enter_module() {
         # If no modules found, display a message
         if [ ${#module_list[@]} -eq 0 ]; then
             _render_menu "🚀 进 入 模 块 菜 单 🚀" "  无可用模块。请先安装模块。"
-            read -r -p " └──> 按 Enter 返回: " </dev/tty # <--- 修正
+            read -r -p " └──> 按 Enter 返回: " </dev/tty
             return
         fi
 
         local -a numbered_display_items=()
         for idx in "${!module_list[@]}"; do
             numbered_display_items+=("  $((idx + 1)). ${module_list[$idx]}")
-        done
+        \done
 
         _render_menu "🚀 进 入 模 块 菜 单 🚀" "${numbered_display_items[@]}"
-        read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice </dev/tty # <--- 修正
+        read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice </dev/tty
 
-        if [ -z "$choice" ]; then return; }
+        if [ -z "$choice" ]; then return; fi # <--- 修正: '}' 改为 'fi'
 
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#module_paths[@]}" ]; then
             local selected_path="${module_paths[$((choice - 1))]}"
@@ -534,9 +536,9 @@ main_menu() {
         log_info "添 加 UI主 题 设 置 项 后 ， display_items 数 组 总 长 度 : ${#display_items[@]}"
 
         _render_menu "$MAIN_MENU_TITLE" "${display_items[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 退出: " choice </dev/tty # <--- 修正
+        read -r -p " └──> 请选择, 或按 Enter 退出: " choice </dev/tty
 
-        if [ -z "$choice" ]; then exit 0; fi
+        if [ -z "$choice" ]; then exit 0; fi # <--- 修正: '}' 改为 'fi'
 
         # 处理 UI 主题设置选项
         if [ "$choice" -eq "$((current_item_idx + 1))" ]; then
@@ -606,9 +608,9 @@ handle_submenu() {
         done
 
         _render_menu "$submenu_title" "${display_items[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 返回: " choice </dev/tty # <--- 修正
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice </dev/tty
 
-        if [ -z "$choice" ]; then return; fi
+        if [ -z "$choice" ]; then return; fi # <--- 修正: '}' 改为 'fi'
 
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$item_count" ]; then
             log_warn "无效选项。"
