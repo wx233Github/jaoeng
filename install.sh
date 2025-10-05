@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.11-修复Watchtower默认值与UI排版)
+# 🚀 VPS 一键安装入口脚本 (v74.12-修复Watchtower默认值与UI排版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.11"
+SCRIPT_VERSION="v74.12"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -136,6 +136,8 @@ CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
+CONFIG[default_interval]="" # 初始化，用于存储 config.json 根目录的 default_interval
+CONFIG[default_cron_hour]="" # 初始化，用于存储 config.json 根目录的 default_cron_hour
 
 AUTO_YES="false"
 if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then
@@ -156,6 +158,17 @@ load_config() {
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
         CONFIG[timezone]="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")"
+        
+        # 核心：读取根目录的 default_interval 和 default_cron_hour
+        local root_default_interval; root_default_interval=$(jq -r '.default_interval // ""' "$CONFIG_FILE" 2>/dev/null || true)
+        if echo "$root_default_interval" | grep -qE '^[0-9]+$'; then
+            CONFIG[default_interval]="$root_default_interval"
+        fi
+        local root_default_cron_hour; root_default_cron_hour=$(jq -r '.default_cron_hour // ""' "$CONFIG_FILE" 2>/dev/null || true)
+        if echo "$root_default_cron_hour" | grep -qE '^[0-9]+$'; then
+            CONFIG[default_cron_hour]="$root_default_cron_hour"
+        fi
+
     fi
 }
 
@@ -394,6 +407,16 @@ export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'
 export JB_TIMEZONE='${CONFIG[timezone]}'
 export LC_ALL=${LC_ALL}
 "
+    # 核心：如果根目录有 default_interval 或 default_cron_hour，导出它们
+    if [ -n "${CONFIG[default_interval]}" ]; then
+        env_exports+="export JB_DEFAULT_INTERVAL='${CONFIG[default_interval]}'\n"
+        log_debug "DEBUG: Exporting global default_interval: ${CONFIG[default_interval]}"
+    fi
+    if [ -n "${CONFIG[default_cron_hour]}" ]; then
+        env_exports+="export JB_DEFAULT_CRON_HOUR='${CONFIG[default_cron_hour]}'\n"
+        log_debug "DEBUG: Exporting global default_cron_hour: ${CONFIG[default_cron_hour]}"
+    fi
+
     local module_key
     module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -471,36 +494,51 @@ _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
 
-    local max_width=0
-    local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    if (( title_width > max_width )); then max_width=$title_width; fi
+    local max_content_width=0 # 仅计算内容宽度，不含内部空格和边框
+    
+    local title_content_width=$(_get_visual_width "$title")
+    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
 
     for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        if (( line_width > max_width )); then max_width=$line_width; fi
+        local line_content_width=$(_get_visual_width "$line")
+        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
     done
-    local box_width=$((max_width + 2))
-    if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
+    
+    local inner_padding_chars=2 # 左右各一个空格，用于内容与边框之间的间距
+    local box_inner_width=$((max_content_width + inner_padding_chars))
+    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # 最小内容区域宽度 (38 + 2边框 = 40总宽)
 
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
+    log_debug "DEBUG: _render_menu - title_content_width: $title_content_width, max_content_width: $max_content_width, box_inner_width: $box_inner_width"
 
+    # 顶部
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    
+    # 标题
     if [ -n "$title" ]; then
-        local padding_total=$((box_width - title_width))
+        local current_title_line_width=$((title_content_width + inner_padding_chars)) # 标题内容宽度 + 左右各1空格
+        local padding_total=$((box_inner_width - current_title_line_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
-    fi
+        
+        local left_padding_str; left_padding_str=$(printf '%*s' "$padding_left")
+        local right_padding_str; right_padding_str=$(printf '%*s' "$padding_right")
 
+        log_debug "DEBUG: Title: '$title', padding_left: $padding_left, padding_right: $padding_right"
+        echo -e "${GREEN}│${left_padding_str} ${title} ${right_padding_str}│${NC}"
+    fi
+    
+    # 选项
     for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        local padding_right=$((box_width - line_width))
-        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        local line_content_width=$(_get_visual_width "$line")
+        # 计算右侧填充：总内容区域宽度 - 当前行内容宽度 - 左侧一个空格
+        local padding_right_for_line=$((box_inner_width - line_content_width - 1)) 
+        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
+        log_debug "DEBUG: Line: '$line', line_content_width: $line_content_width, padding_right_for_line: $padding_right_for_line"
+        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # 左侧固定一个空格
     done
 
-    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
+    # 底部
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
 
 _print_header() { _render_menu "$1" ""; }
