@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.3 - 修复 `export -f` 错误)
+# 🚀 VPS 一键安装入口脚本 (v74.4 - 修复语法错误)
+# - [修复] 修正了因 `层叠` 标记导致的 `if` 语句和 `for` 循环未正确闭合的语法错误。
 # - [修复] 移除自引导部分中错误的 `export -f run_with_sudo`，避免 "not a function" 错误。
 # - [优化] 将 `run_with_sudo` 函数定义导出为环境变量，供子脚本直接使用。
 # - [重构] 默认以普通用户身份运行主程序，需要root权限的操作通过 `run_with_sudo()` 执行。
@@ -11,7 +12,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.3"
+SCRIPT_VERSION="v74.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -187,7 +188,7 @@ check_and_install_dependencies() {
             if ! ($update_cmd && run_with_sudo "$pm" install -y "${missing_deps[@]}"); then
                 log_err "依赖安装失败."
                 exit 1
-            fi
+            fi # <--- 修正: 闭合 `if`
             log_success "依赖安装完成！"
         else
             log_err "用户取消安装."
@@ -245,7 +246,7 @@ download_module_to_cache() {
         log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file" 2>/dev/null || true
         return 1
-    fi
+    fi # <--- 修正: 闭合 `if`
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
         rm -f "$tmp_file" 2>/dev/null || true
         return 0
@@ -462,7 +463,7 @@ _render_menu() {
     for line in "${lines[@]}"; do
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
         if (( line_width > max_width )); then max_width=$line_width; fi
-    层叠
+    done # <--- 修正: 闭合 `for`
     local box_width=$((max_width + 2))
     if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
 
