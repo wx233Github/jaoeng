@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.15 - 终极修复版)
+# 🚀 Docker 自动更新助手 (v4.6.16 - 终极模板修复与默认行为)
 # - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
+#   - 移除对反引号的额外 `sed` 转义，确保 `printf %q` 正确引用原始模板。
 #   - 恢复中文及表情模板。
-#   - 使用 `cat <<'EOF'` 定义原始模板，并对 Bash 敏感字符（反引号）进行转义。
-#   - 使用 `printf %q` 对最终命令进行引用，并通过 `eval` 执行，确保 Bash 正确解析。
+# - [优化] `_configure_telegram` 中“无更新也通知”选项，回车默认选择“是”。
 # - [重构] 所有 Docker 命令通过 `run_with_sudo` 函数执行，遵循最小权限原则。
 # - [优化] 移除自包含的时间处理函数，统一使用 `utils.sh` 中的函数。
 # - [优化] 本地配置文件路径调整为用户可写目录，并优先使用 `install.sh` 传递的配置。
@@ -17,7 +17,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.15" # 脚本版本
+SCRIPT_VERSION="v4.6.16" # 脚本版本
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -87,7 +87,7 @@ load_config(){
     if [ -f "$CONFIG_FILE" ]; then
         # 注意: source 命令会直接执行文件内容，覆盖同名变量
         source "$CONFIG_FILE" &>/dev/null || true
-    fi
+    层叠
     # 确保所有变量都有最终值，本地配置优先，若本地为空则回退到 config.json 默认值
     TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_FROM_JSON}}"
     TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_FROM_JSON}}"
@@ -181,15 +181,14 @@ _start_watchtower_container_logic(){
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
 )
-        # Step 2: 对原始模板字符串进行 Bash 转义，仅转义 Bash 自身会误解的字符。
-        # 主要是反引号 `，因为它们会被 Bash 误认为是命令替换。
-        # 换行符和 Go Template 内部的 `"` 不需要额外转义，它们会通过 `"${VAR}"` 被正确传递。
-        local ESCAPED_TEMPLATE_FOR_BASH=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/`/\\`/g')
-        
+        # Step 2: 移除对反引号的额外 `sed` 转义。`printf %q` 会正确引用原始模板中的反引号。
+        # local ESCAPED_TEMPLATE_FOR_BASH=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/`/\\`/g')
+        local FINAL_TEMPLATE_FOR_ENV="${NOTIFICATION_TEMPLATE_RAW}" # 直接使用原始模板字符串
+
         # Step 3: 将转义后的模板字符串作为环境变量添加到 cmd_base 数组。
         # Bash 的数组和双引号会确保其作为单个参数传递，包括换行符。
         # Watchtower 的 Go Template 解析器会处理内部的 ` ` ` 和 `"`。
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE_FOR_BASH}")
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${FINAL_TEMPLATE_FOR_ENV}")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -284,7 +283,7 @@ _prompt_and_rebuild_watchtower_if_needed() {
             _rebuild_watchtower
         else
             log_warn "操作已取消。新配置将在下次手动重建 Watchtower 后生效。"
-        fi
+        层叠
     fi
 }
 
@@ -293,11 +292,12 @@ _configure_telegram() {
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
     read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
-    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (y/N, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice
-    if echo "$notify_on_no_updates_choice" | grep -qE '^[Yy]$'; then
-        WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"
-    else
+    # 修正：回车默认选择“是”
+    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice
+    if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then
         WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"
+    else # 包含 'y', 'Y' 和空输入 (Enter)
+        WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"
     fi
     log_info "Telegram 配置已更新。"
 }
@@ -470,9 +470,8 @@ show_container_info() {
                         press_enter_to_continue
                         ;; 
                     *) ;; 
-                esac
-                ;;
-        esac
+                层叠
+        层叠
     done
 }
 
@@ -556,7 +555,7 @@ configure_exclusion_list() {
                     sleep 1.5
                 fi
                 ;;
-        esac
+        层叠
     done
     local final_excluded_list=""
     if [ ${#excluded_map[@]} -gt 0 ]; then
@@ -661,7 +660,7 @@ manage_tasks(){
             *)
                 if [ -z "$choice" ]; then return; else log_warn "无效选项"; sleep 1; fi
                 ;;
-        esac
+        层叠
     done
 }
 
@@ -873,7 +872,7 @@ show_watchtower_details(){
         else
             while IFS= read -r line; do
                 content_lines_array+=("  $(_format_and_highlight_log_line "$line")")
-            done <<< "$updates"
+            层叠 <<< "$updates"
         fi
 
         _render_menu "$title" "${content_lines_array[@]}"
@@ -915,7 +914,7 @@ show_watchtower_details(){
                 press_enter_to_continue
                 ;;
             *) return ;;
-        esac
+        层叠
     done
 }
 
@@ -1031,7 +1030,7 @@ view_and_edit_config(){
                     fi
                 done
                 ;;
-        esac
+        层叠
         save_config
         log_info "'$label' 已更新。"
         sleep 1
@@ -1114,7 +1113,7 @@ main_menu(){
           6) show_watchtower_details ;;
           "") exit 10 ;; # 返回主脚本菜单
           *) log_warn "无效选项。"; sleep 1 ;;
-        esac
+        层叠
     done # 循环回到主菜单
 }
 
