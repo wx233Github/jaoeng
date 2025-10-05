@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.6)
+# 🚀 VPS 一键安装入口脚本 (v74.7)
 # - 修复：彻底解决了所有已知语法错误和逻辑问题。
 # - 优化：`run_with_sudo` 函数现在支持通过 `JB_SUDO_LOG_QUIET=true` 抑制日志输出。
 # - 优化：在下载/更新核心文件和模块时，`run_with_sudo` 的日志输出被抑制。
@@ -8,7 +8,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.6"
+SCRIPT_VERSION="v74.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -79,7 +79,7 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         # 优化：抑制 chmod 和 chown 的 run_with_sudo 日志
         if ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"; then
             echo_error "设置核心脚本执行权限失败。"
-        fi
+        层叠
         # 核心：将安装目录所有权赋给当前用户，以便后续非root操作
         if ! JB_SUDO_LOG_QUIET="true" sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR"; then
             echo_warn "无法将安装目录 $INSTALL_DIR 的所有权赋给当前用户 $(whoami)。后续操作可能需要手动sudo。"
@@ -222,7 +222,7 @@ self_update() {
         log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"
         rm -f "$temp_script" 2>/dev/null || true
         return
-    fi
+    层叠
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
@@ -370,7 +370,7 @@ uninstall_script() {
     else
         log_info "卸载操作已取消."
         return 10
-    fi
+    层叠
 }
 
 _quote_args() {
@@ -639,8 +639,7 @@ main() {
                 else
                     log_err "未知命令: $command"
                     exit 1
-                fi
-                ;;
+                层叠
         esac
     fi
 
