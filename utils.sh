@@ -219,7 +219,7 @@ _prompt_for_interval() {
     local interval_in_seconds=""
 
     while true; do
-        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty # 修复：添加 < /dev/tty
+        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty
         input="${input:-$default_interval}" # 如果用户输入为空，则使用默认值
 
         # 尝试将输入转换为秒
