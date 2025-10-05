@@ -151,8 +151,7 @@ _start_watchtower_container_logic(){
         fi
 
         # 将 Go Template 模板内容写入一个临时文件
-        template_temp_file="/tmp/watchtower_notification_template.$$.gohtml"
-        cat <<'EOF' > "$template_temp_file"
+        cat <<'EOF' > "/tmp/watchtower_notification_template.$$.gohtml"
 🐳 *Docker 容器更新报告*
 
 *服务器:* `{{.Host}}`
@@ -167,6 +166,7 @@ _start_watchtower_container_logic(){
 
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
+        template_temp_file="/tmp/watchtower_notification_template.$$.gohtml"
         chmod 644 "$template_temp_file"
         
         # 将临时文件挂载到容器内部，并通过环境变量指定其路径
@@ -280,12 +280,12 @@ _prompt_and_rebuild_watchtower_if_needed() {
 }
 
 _configure_telegram() {
-    read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT
+    read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT < /dev/tty
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
-    read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT
+    read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT < /dev/tty
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
     # 修正：回车默认选择“是”
-    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice
+    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice < /dev/tty
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then
         WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"
     else # 包含 'y', 'Y' 和空输入 (Enter)
@@ -295,7 +295,7 @@ _configure_telegram() {
 }
 
 _configure_email() {
-    read -r -p "请输入接收邮箱 (当前: ${EMAIL_TO}): " EMAIL_TO_INPUT
+    read -r -p "请输入接收邮箱 (当前: ${EMAIL_TO}): " EMAIL_TO_INPUT < /dev/tty
     EMAIL_TO="${EMAIL_TO_INPUT:-$EMAIL_TO}"
     log_info "Email 配置已更新。"
 }
@@ -314,7 +314,7 @@ notification_menu() {
             "  4. › 清空所有通知配置"
         )
         _render_menu "⚙️ 通知配置 ⚙️" "${items_array[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 返回: " choice
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1) _configure_telegram; save_config; _prompt_and_rebuild_watchtower_if_needed; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
@@ -369,7 +369,7 @@ show_container_info() {
         content_lines_array+=("")
         content_lines_array+=(" a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
         _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"
-        read -r -p " └──> 输入编号管理, 'a'/'s' 批量操作, 或按 Enter 返回: " choice
+        read -r -p " └──> 输入编号管理, 'a'/'s' 批量操作, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in 
             "") return ;;
             a|A)
@@ -413,7 +413,7 @@ show_container_info() {
                     "  6. › 进入容器 (Exec)"
                 )
                 _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"
-                read -r -p " └──> 请选择, 或按 Enter 返回: " action
+                read -r -p " └──> 请选择, 或按 Enter 返回: " action < /dev/tty
                 case "$action" in 
                     1)
                         echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"
@@ -517,7 +517,7 @@ configure_exclusion_list() {
         items_array+=("${CYAN}备用排除 (config.json 的 exclude_containers): ${WT_EXCLUDE_CONTAINERS_FROM_JSON:-无}${NC}")
 
         _render_menu "配置排除列表 (高优先级)" "${items_array[@]}"
-        read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]使用备用配置: " choice
+        read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]使用备用配置: " choice < /dev/tty
 
         case "$choice" in
             c|C) break ;;
@@ -565,13 +565,13 @@ configure_watchtower(){
 
     configure_exclusion_list
 
-    read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice
+    read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice < /dev/tty
     local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
     if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then
-        read -r -p "请输入额外参数: " temp_extra_args
+        read -r -p "请输入额外参数: " temp_extra_args < /dev/tty
     fi
 
-    read -r -p "是否启用调试模式? (y/N, 当前: ${WATCHTOWER_DEBUG_ENABLED}): " debug_choice
+    read -r -p "是否启用调试模式? (y/N, 当前: ${WATCHTOWER_DEBUG_ENABLED}): " debug_choice < /dev/tty
     local temp_debug_enabled="false"
     if echo "$debug_choice" | grep -qE '^[Yy]$'; then
         temp_debug_enabled="true"
@@ -597,7 +597,7 @@ configure_watchtower(){
         " 调试模式: $temp_debug_enabled"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
-    read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice
+    read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice < /dev/tty
     if echo "$confirm_choice" | grep -qE '^[Nn]$'; then
         log_info "操作已取消。"
         return 10
@@ -621,7 +621,7 @@ manage_tasks(){
             "  2. › 重建 Watchtower"
         )
         _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 返回: " choice
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1)
                 # 优化：抑制 docker ps 的 run_with_sudo 日志
@@ -868,7 +868,7 @@ show_watchtower_details(){
         fi
 
         _render_menu "$title" "${content_lines_array[@]}"
-        read -r -p " └──> [1] 实 时 日 志 , [2] 容 器 管 理 , [3] 触 发 扫 描 , [Enter] 返 回 : " pick
+        read -r -p " └──> [1] 实 时 日 志 , [2] 容 器 管 理 , [3] 触 发 扫 描 , [Enter] 返 回 : " pick < /dev/tty
         case "$pick" in
             1)
                 # 优化：抑制 docker ps 的 run_with_sudo 日志
@@ -977,7 +977,7 @@ view_and_edit_config(){
         done
 
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"
-        read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice
+        read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
         if [ -z "$choice" ]; then return; fi
 
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then
@@ -997,11 +997,11 @@ view_and_edit_config(){
 
         case "$type" in
             string|string_list) # string_list 也按 string 编辑
-                read -r -p "请输入新的 '$label' (当前: $current_value): " new_value
+                read -r -p "请输入新的 '$label' (当前: $current_value): " new_value < /dev/tty
                 declare "$var_name"="${new_value:-$current_value}"
                 ;;
             bool)
-                read -r -p "是否启用 '$label'? (y/N, 当前: $current_value): " new_value
+                read -r -p "是否启用 '$label'? (y/N, 当前: $current_value): " new_value < /dev/tty
                 if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi
                 ;;
             interval)
@@ -1012,7 +1012,7 @@ view_and_edit_config(){
                 local min; min=$(echo "$extra" | cut -d'-' -f1)
                 local max; max=$(echo "$extra" | cut -d'-' -f2)
                 while true; do
-                    read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value
+                    read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value < /dev/tty
                     if [ -z "$new_value" ]; then break; fi # 允许空值以保留当前值
                     if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then
                         declare "$var_name"="$new_value"
@@ -1095,7 +1095,7 @@ main_menu(){
         )
         
         _render_menu "$header_text" "${content_array[@]}"
-        read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice
+        read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
           1) configure_watchtower || true; press_enter_to_continue ;;
           2) notification_menu ;;
