@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.15-修复trap语法错误)
+# 🚀 VPS 一键安装入口脚本 (v74.16-修复非交互式环境下的jq调用)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.15"
+SCRIPT_VERSION="v74.16"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -148,7 +148,7 @@ load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
         while IFS='=' read -r key value; do
-            value=$(printf '%s' "$value" | sed 's/^"\(.*\)"$/\1/')
+            value=$(printf '%s' "$value" | sed 's/^"$.*$"$/\1/')
             CONFIG[$key]="$value"
         done < <(jq -r 'to_entries
             | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
@@ -567,6 +567,7 @@ display_menu() {
     log_debug "DEBUG: config.json exists. Content (first 100 chars): $(head -c 100 "$config_path" 2>/dev/null || echo "Error reading file")"
 
     local menu_json
+    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
         log_err "菜单 ${CURRENT_MENU_NAME} 配置无效或无法解析！"
@@ -590,6 +591,7 @@ display_menu() {
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
+    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
     log_debug "DEBUG: menu_len: $menu_len"
     local exit_hint="退出"
@@ -607,8 +609,10 @@ display_menu() {
 process_menu_selection() {
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json
+    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     local menu_len
+    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
 
     if [ -z "$choice" ]; then
@@ -666,7 +670,7 @@ main() {
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出 (Exit Code: ${trap_exit_code})."' EXIT # 修复：移除 local
+    trap 'trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出 (Exit Code: ${trap_exit_code})."' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
