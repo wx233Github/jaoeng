@@ -1,10 +1,12 @@
 #!/bin/bash
+set -x # DEBUG: Enable shell debug tracing
+
 # =============================================================
-# VPS Install Script (v74.16-Fix local error and header comments)
+# VPS Install Script (v74.17-Fix local error and jb shortcut)
 # =============================================================
 
 # Script metadata
-SCRIPT_VERSION="v74.16"
+SCRIPT_VERSION="v74.17"
 
 # Force use Bash
 # Check if the current shell is bash, if not, try to re-execute with bash
@@ -90,14 +92,22 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
             echo_success "Install directory $INSTALL_DIR ownership adjusted to current user."
         fi
 
-        echo_info "Creating/updating shortcut command 'jb'..."
+        # NEW: Create 'jb' as a wrapper script instead of a symlink
+        echo_info "Creating/updating shortcut command 'jb' as a wrapper script..."
         BIN_DIR="/usr/local/bin"
-        # Use sudo -E bash -c to execute ln command, ensuring correct environment variables and permissions
-        # Optimization: suppress ln's run_with_sudo logs
-        if ! JB_SUDO_LOG_QUIET="true" sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; then
-            echo_warn "Failed to create shortcut command 'jb'. Check permissions or create link manually."
+        JB_WRAPPER_SCRIPT="${BIN_DIR}/jb"
+        local temp_wrapper="/tmp/jb_wrapper.$$"
+        cat > "$temp_wrapper" <<'EOF'
+#!/bin/bash
+exec "/opt/vps_install_modules/install.sh" "$@"
+EOF
+        if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_wrapper" "$JB_WRAPPER_SCRIPT"; then
+            echo_warn "Failed to create 'jb' wrapper script. Check permissions or create manually."
+        elif ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$JB_WRAPPER_SCRIPT"; then
+            echo_warn "Failed to set execution permissions for 'jb' wrapper script. Check permissions."
+        else
+            echo_success "'jb' wrapper script created/updated."
         fi
-        echo_success "Installation/update complete!"
     fi
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     echo ""
@@ -390,8 +400,17 @@ uninstall_script() {
         # Optimization: suppress rm's run_with_sudo logs
         JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}"
         log_success "Install directory removed."
-        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
-        log_success "Shortcut removed."
+        
+        # NEW: Remove the jb wrapper script
+        BIN_DIR="/usr/local/bin"
+        JB_WRAPPER_SCRIPT="${BIN_DIR}/jb"
+        if [ -f "$JB_WRAPPER_SCRIPT" ]; then
+            JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "$JB_WRAPPER_SCRIPT"
+            log_success "'jb' wrapper script removed."
+        else
+            log_info "'jb' wrapper script not found, skipping removal."
+        fi
+        
         log_success "Script successfully uninstalled."
         log_info "Goodbye!"
         exit 0
