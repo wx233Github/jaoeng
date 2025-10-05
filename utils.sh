@@ -3,6 +3,7 @@
 # 🚀 通用工具函数库 (v2.38)
 # - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
 # - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
+# - 修复：确保 `press_enter_to_continue`, `confirm_action`, `_prompt_for_interval` 函数中的 `read` 命令明确从 `/dev/tty` 读取，解决输入无响应问题。
 # - 优化：增强了 `_get_visual_width` 函数的健壮性，增加了调试输出，以更好地处理多字节字符宽度计算。
 # - 新增：添加了 `_prompt_for_interval` 函数，用于交互式获取并验证时间间隔输入。
 # - 优化：脚本头部注释更简洁。
@@ -30,8 +31,8 @@ log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timesta
 
 
 # --- 用户交互函数 ---
-press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"; }
-confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
+confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- UI 渲染 & 字符串处理 ---
 generate_line() {
@@ -218,7 +219,7 @@ _prompt_for_interval() {
     local interval_in_seconds=""
 
     while true; do
-        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input
+        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty # 修复：添加 < /dev/tty
         input="${input:-$default_interval}" # 如果用户输入为空，则使用默认值
 
         # 尝试将输入转换为秒
