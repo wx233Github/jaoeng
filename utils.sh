@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.39)
+# 🚀 通用工具函数库 (v2.40)
+# - 修复：所有日志函数 (log_*) 在交互式会话中强制输出到 /dev/tty，解决日志混乱和 ANSI 逃逸序列残留。
 # - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
 # - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
 # - 修复：确保 `press_enter_to_continue`, `confirm_action`, `_prompt_for_interval` 函数中的 `read` 命令明确从 `/dev/tty` 读取，解决输入无响应问题。
@@ -16,18 +17,20 @@ set -eo pipefail
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+  _log_output_target="/dev/tty" # 交互模式下强制输出到 /dev/tty
 else
   RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
+  _log_output_target="/dev/stdout" # 非交互模式下输出到 stdout
 fi
 
 # --- 日志系统 ---
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*"; }
-log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
-log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
-log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
+log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*" > "$_log_output_target"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*" > "$_log_output_target"; }
+log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*" > "$_log_output_target"; }
+log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" > "$_log_output_target"; }
 # 调试模式，可以通过 export JB_DEBUG_MODE=true 启用
-log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
+log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" > "$_log_output_target"; }
 
 
 # --- 用户交互函数 ---
