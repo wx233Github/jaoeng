@@ -1,18 +1,18 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.16-RobustMenu - 修复菜单解析错误)
+# 🚀 VPS 一键安装脚本 (v4.6.17-SelfInit - 自初始化和健壮菜单解析)
+# - [核心修复] 脚本自初始化流程优化，确保 utils.sh 和 config.json 在被 source/解析前已下载。
+#   - 提前检查并安装 `jq` 依赖。
+#   - 优先下载 `config.json` 以获取正确的 `base_url`。
+#   - 再下载 `utils.sh`。
 # - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，解决 `jq: Cannot index string with string "title"` 错误。
 #   - 在解析子菜单标题和项目时，增加对 JSON 结构类型的检查和错误处理。
-# - [优化] 明确 `JB_UI_THEME_FROM_JSON` 不从 config.json 加载，让 utils.sh 的默认值生效。
-# - [核心修改] 解析 config.json 中的全局配置 (如 enable_auto_clear, timezone, watchtower模块配置)。
 # - [核心修改] 将解析到的 config.json 值作为环境变量导出，供 utils.sh 的 load_config 使用。
 # - [新增] 在主菜单中添加 UI 主题设置入口，调用 utils.sh 的 `theme_settings_menu`。
-# - [优化] 提升脚本启动速度，减少重复检查。
-# - [修复] 修正了 utils.sh 的路径依赖问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.16-RobustMenu"
+SCRIPT_VERSION="v4.6.17-SelfInit"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -25,52 +25,106 @@ BIN_DIR="/usr/local/bin"
 CONFIG_JSON_PATH="$INSTALL_DIR/config.json"
 UTILS_PATH="$INSTALL_DIR/utils.sh"
 LOCK_FILE="/tmp/vps_install_modules.lock"
+# 默认的脚本下载基础URL (如果 config.json 未下载或解析失败，将使用此默认值)
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+base_url="$DEFAULT_BASE_URL" # 初始化 base_url
 
-# --- 导入通用工具函数库 ---
-if [ -f "$UTILS_PATH" ]; then
-    source "$UTILS_PATH"
-else
-    # 如果 utils.sh 未找到，提供临时的 log_err 函数以避免脚本立即崩溃
-    log_err() { echo "[错误] $*" >&2; }
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！请确保脚本完整安装。"
-    exit 1
+# --- 临时日志函数 (在 utils.sh 加载前使用) ---
+# 这些函数会在 utils.sh 加载后被其同名函数覆盖
+_temp_log_err() { echo -e "\033[0;31m[错误]\033[0m $*" >&2; }
+_temp_log_info() { echo -e "\033[0;34m[信息]\033[0m $*"; }
+_temp_log_success() { echo -e "\033[0;32m[成功]\033[0m $*"; }
+_temp_log_warn() { echo -e "\033[0;33m[警告]\033[0m $*" >&2; }
+
+# --- 确保 jq 已安装 (在任何 JSON 解析前) ---
+ensure_jq_installed() {
+    if ! command -v jq &>/dev/null; then
+        _temp_log_err "jq 命令未找到。请手动安装 jq (例如: sudo apt-get install jq 或 sudo yum install jq)。"
+        _temp_log_info "尝试自动安装 jq..."
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y jq
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y jq
+        else
+            _temp_log_err "无法自动安装 jq。请手动安装。"
+            exit 1
+        fi
+        if ! command -v jq &>/dev/null; then # 再次检查以确认安装成功
+            _temp_log_err "jq 自动安装失败。请手动安装 jq。"
+            exit 1
+        else
+            _temp_log_success "jq 安装成功。"
+        fi
+    fi
+}
+ensure_jq_installed # 脚本启动时立即检查并安装 jq
+
+# --- 创建安装目录 (在下载任何文件前) ---
+if [ ! -d "$INSTALL_DIR" ]; then
+    _temp_log_info "创建安装目录: $INSTALL_DIR..."
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo chmod 755 "$INSTALL_DIR" # 确保权限
 fi
 
-# --- 确保只运行一个实例 ---
-if ! flock -xn "$LOCK_FILE" -c "true"; then
-    log_warn "脚本已在运行中，请勿重复启动。"
+# --- 下载 config.json (获取真实的 base_url) ---
+_temp_log_info "正在下载配置文件 config.json..."
+if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
+    _temp_log_success "config.json 下载成功。"
+    # 从下载的 config.json 更新 base_url
+    local new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH")
+    if [ "$new_base_url" != "$base_url" ]; then
+        base_url="$new_base_url"
+        _temp_log_info "已从 config.json 更新脚本基础URL为: $base_url"
+    fi
+else
+    _temp_log_warn "config.json 下载失败！将使用默认基础URL: $base_url"
+    # 如果 config.json 下载失败，不退出，而是使用默认 base_url
+fi
+
+# --- 下载 utils.sh (使用可能已更新的 base_url) ---
+_temp_log_info "正在下载或更新通用工具库 utils.sh..."
+if sudo curl -fsSL "${base_url}/utils.sh?_=$(date +%s)" -o "$UTILS_PATH"; then
+    sudo chmod +x "$UTILS_PATH"
+    _temp_log_success "utils.sh 下载成功。"
+else
+    _temp_log_err "致命错误: utils.sh 下载失败！请检查网络或基础URL。"
     exit 1
 fi
 
 # --- 从 config.json 加载默认配置并导出为环境变量 ---
+# 此函数在 utils.sh 被 source 之前调用，以便 utils.sh 的 load_config 能读取这些值
 load_json_defaults() {
     if [ ! -f "$CONFIG_JSON_PATH" ]; then
-        log_err "配置文件 $CONFIG_JSON_PATH 未找到，无法加载默认配置。"
+        _temp_log_warn "配置文件 $CONFIG_JSON_PATH 未找到，无法加载 JSON 默认配置。将使用硬编码默认值。"
         return 1
     fi
 
     # 全局配置
-    export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH")"
-    export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH")"
-    # JB_UI_THEME_FROM_JSON 不从 config.json 加载，因为它不在那里。
-    # utils.sh 会使用其内部的 'default' 作为初始值，直到用户通过菜单更改并保存到 config.conf。
+    export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH" || echo "false")"
+    export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH" || echo "Asia/Shanghai")"
 
     # Watchtower 模块配置
-    export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH")"
-    export JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR_FROM_JSON="$(jq -r '.module_configs.watchtower.default_cron_hour // 4' "$CONFIG_JSON_PATH")"
-    export JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS_FROM_JSON="$(jq -r '.module_configs.watchtower.exclude_containers // ""' "$CONFIG_JSON_PATH")"
-    export JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES_FROM_JSON="$(jq -r '.module_configs.watchtower.notify_on_no_updates // false' "$CONFIG_JSON_PATH")"
+    export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH" || echo "300")"
+    export JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR_FROM_JSON="$(jq -r '.module_configs.watchtower.default_cron_hour // 4' "$CONFIG_JSON_PATH" || echo "4")"
+    export JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS_FROM_JSON="$(jq -r '.module_configs.watchtower.exclude_containers // ""' "$CONFIG_JSON_PATH" || echo "")"
+    export JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES_FROM_JSON="$(jq -r '.module_configs.watchtower.notify_on_no_updates // false' "$CONFIG_JSON_PATH" || echo "false")"
     # 其他 Watchtower 变量 (如 TG_BOT_TOKEN, EXTRA_ARGS 等) 默认在 config.json 中未定义，
     # 它们将通过 utils.sh 中的硬编码默认值或用户在 config.conf 中的设置来管理。
     # 如果未来 config.json 增加了这些字段，也需要在这里导出。
 }
+load_json_defaults # 调用此函数以设置环境变量
 
-# 脚本启动时立即加载 JSON 默认值
-load_json_defaults || exit 1
-
-# 重新加载 utils.sh，以便它能读取到刚刚导出的 JSON 默认值
-# 这一步确保 utils.sh 中的 load_config 函数可以正确地应用 JSON 默认值
+# --- 导入通用工具函数库 (现在 utils.sh 应该已存在并包含所有配置和通用函数) ---
+# utils.sh 内部会在被 source 时自动调用 load_config，从而加载 config.conf 和这些导出的 JSON 默认值。
 source "$UTILS_PATH"
+
+# --- 确保只运行一个实例 (现在使用 utils.sh 的日志函数) ---
+if ! flock -xn "$LOCK_FILE" -c "true"; then
+    log_warn "脚本已在运行中，请勿重复启动。"
+    exit 1
+fi
 
 # --- 菜单数据 (从 config.json 加载) ---
 MAIN_MENU_TITLE=""
@@ -79,7 +133,7 @@ declare -A SUBMENUS
 
 load_menus_from_json() {
     if [ ! -f "$CONFIG_JSON_PATH" ]; then
-        log_err "配置文件 $CONFIG_JSON_PATH 未找到，无法加载菜单。"
+        log_err "配置文件 $CONFIG_JSON_PATH 未找到，无法加载菜单。请尝试强制重置。"
         exit 1
     fi
 
@@ -90,47 +144,51 @@ load_menus_from_json() {
     declare -A MAIN_MENU_ITEMS
 
     local i=0
+    # 健壮地解析主菜单项
     while IFS= read -r item_json; do
-        local type=$(echo "$item_json" | jq -r '.type')
-        local name=$(echo "$item_json" | jq -r '.name')
+        local type=$(echo "$item_json" | jq -r '.type // "unknown"')
+        local name=$(echo "$item_json" | jq -r '.name // "未知菜单项"')
         local icon=$(echo "$item_json" | jq -r '.icon // ""')
-        local action=$(echo "$item_json" | jq -r '.action')
+        local action=$(echo "$item_json" | jq -r '.action // ""')
         MAIN_MENU_ITEMS["$i"]="${type}|${name}|${icon}|${action}"
         i=$((i + 1))
-    done < <(jq -c '.menus.MAIN_MENU.items[]' "$CONFIG_JSON_PATH")
+    done < <(jq -c '.menus.MAIN_MENU.items[] // empty' "$CONFIG_JSON_PATH" || true)
 
     # 加载所有子菜单
     while IFS= read -r submenu_key; do
-        # 增强子菜单标题解析的健壮性
-        local submenu_obj=$(jq -c ".menus.\"$submenu_key\" // {}" "$CONFIG_JSON_PATH") # 提取子菜单对象，如果不存在则默认为空对象
+        # 健壮地提取子菜单对象
+        local submenu_obj_str=$(jq -c ".menus.\"$submenu_key\" // {}" "$CONFIG_JSON_PATH" || echo "{}")
         
         local submenu_title=""
+        local items_array_str="[]" # 默认空数组字符串
+
         # 检查提取出的 submenu_obj 是否是一个对象并且包含 title 字段
-        if echo "$submenu_obj" | jq -e 'has("title") and (.title | type == "string")' >/dev/null 2>&1; then
-            submenu_title=$(echo "$submenu_obj" | jq -r '.title')
+        if echo "$submenu_obj_str" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            submenu_title=$(echo "$submenu_obj_str" | jq -r '.title // "'"$submenu_key"'"') # Default title to key if not present
+            items_array_str=$(echo "$submenu_obj_str" | jq -c '.items // []') # Get items, default to empty array
         else
-            submenu_title="$submenu_key" # 如果没有 title 字段或结构异常，使用键名作为标题
-            log_warn "子菜单 '$submenu_key' 未定义有效的 title 字段或其结构异常。使用键名作为标题。"
+            submenu_title="$submenu_key" # Not an object, use key as title
+            log_warn "子菜单 '$submenu_key' 在 config.json 中结构异常或不存在。使用键名作为标题。"
         fi
         SUBMENUS["${submenu_key}_title"]="$submenu_title"
         
         local j=0
         # 从提取出的 submenu_obj 中解析 items，并处理 items 不存在或不是数组的情况
         while IFS= read -r item_json; do
-            local type=$(echo "$item_json" | jq -r '.type')
-            local name=$(echo "$item_json" | jq -r '.name')
+            local type=$(echo "$item_json" | jq -r '.type // "unknown"')
+            local name=$(echo "$item_json" | jq -r '.name // "未知子菜单项"')
             local icon=$(echo "$item_json" | jq -r '.icon // ""')
-            local action=$(echo "$item_json" | jq -r '.action')
+            local action=$(echo "$item_json" | jq -r '.action // ""')
             SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
             j=$((j + 1))
-        done < <(echo "$submenu_obj" | jq -c '.items[] // empty' || true) # 如果 .items 不存在或不是数组，则输出空，避免错误
+        done < <(echo "$items_array_str" | jq -c '.[] // empty' || true)
         SUBMENUS["${submenu_key}_count"]="$j"
-    done < <(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH")
+    done < <(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH" || true)
 }
 
 # --- 依赖检查 ---
 check_dependencies() {
-    local common_deps=$(jq -r '.dependencies.common // ""' "$CONFIG_JSON_PATH")
+    local common_deps=$(jq -r '.dependencies.common // ""' "$CONFIG_JSON_PATH" || echo "")
     local missing_deps=""
     for dep in $common_deps; do
         if ! command -v "$dep" &>/dev/null; then
@@ -164,7 +222,7 @@ check_dependencies() {
 download_script() {
     local script_name="$1"
     local target_path="$INSTALL_DIR/$script_name"
-    local script_url="${base_url}/$script_name" # base_url 来自 config.json
+    local script_url="${base_url}/$script_name"
 
     mkdir -p "$(dirname "$target_path")"
 
@@ -206,9 +264,9 @@ enter_module() {
         all_menu_items+=("${MAIN_MENU_ITEMS[$item_idx]}")
     done
 
-    for submenu_key in $(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH"); do
+    for submenu_key in $(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH" || true); do
         local count_key="${submenu_key}_count"
-        local count="${SUBMENUS[$count_key]}"
+        local count="${SUBMENUS[$count_key]:-0}" # Default to 0 if not set
         for (( j=0; j<count; j++ )); do
             all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
         done
@@ -217,10 +275,34 @@ enter_module() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         local -a display_items=()
-        for idx in "${!module_list[@]}"; do
-            display_items+=("  $((idx + 1)). ${module_list[$idx]}")
+        for item_str in "${all_menu_items[@]}"; do
+            local type=$(echo "$item_str" | cut -d'|' -f1)
+            local name=$(echo "$item_str" | cut -d'|' -f2)
+            local icon=$(echo "$item_str" | cut -d'|' -f3)
+            local action=$(echo "$item_str" | cut -d'|' -f4)
+
+            if [ "$type" = "item" ] && [[ "$action" == *.sh ]]; then
+                local full_path="$INSTALL_DIR/$action"
+                if [ -f "$full_path" ]; then
+                    module_list+=("$name")
+                    module_paths+=("$full_path")
+                fi
+            fi
         done
-        _render_menu "🚀 进 入 模 块 菜 单 🚀" "${display_items[@]}"
+        
+        # If no modules found, display a message
+        if [ ${#module_list[@]} -eq 0 ]; then
+            _render_menu "🚀 进 入 模 块 菜 单 🚀" "  无可用模块。请先安装模块。"
+            read -r -p " └──> 按 Enter 返回: "
+            return
+        fi
+
+        local -a numbered_display_items=()
+        for idx in "${!module_list[@]}"; do
+            numbered_display_items+=("  $((idx + 1)). ${module_list[$idx]}")
+        done
+
+        _render_menu "🚀 进 入 模 块 菜 单 🚀" "${numbered_display_items[@]}"
         read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice
 
         if [ -z "$choice" ]; then return; fi
@@ -251,8 +333,8 @@ confirm_and_force_update() {
 
         # 3. 重新下载 install.sh 自身并执行安装
         log_info "正在重新下载 install.sh..."
-        local install_script_url="${base_url}/install.sh"
-        if curl -sS -o "/tmp/install.sh" "$install_script_url"; then
+        local install_script_url="${DEFAULT_BASE_URL}/install.sh" # 使用默认的 base_url 来获取 install.sh 自身
+        if curl -fsSL -o "/tmp/install.sh" "$install_script_url"; then
             chmod +x "/tmp/install.sh"
             log_success "install.sh 下载成功。正在重新执行安装..."
             # 使用 exec 替换当前进程，执行新的安装脚本
@@ -334,7 +416,7 @@ main_menu() {
                     "$script_path" || true # 允许子脚本退出时不中断主脚本
                     press_enter_to_continue
                 else
-                    log_err "模块脚本 '$action' 未找到或不可执行。"
+                    log_err "模块脚本 '$action' 未找到或不可执行。请尝试 '安装/更新模块'。"
                     press_enter_to_continue
                 fi
                 ;;
@@ -399,7 +481,7 @@ handle_submenu() {
                     "$script_path" || true
                     press_enter_to_continue
                 else
-                    log_err "模块脚本 '$action' 未找到或不可执行。"
+                    log_err "模块脚本 '$action' 未找到或不可执行。请尝试 '安装/更新模块'。"
                     press_enter_to_continue
                 fi
                 ;;
@@ -422,16 +504,6 @@ handle_submenu() {
 
 # --- 脚本主入口 ---
 main() {
-    # 检查 jq 依赖
-    if ! command -v jq &>/dev/null; then
-        log_err "jq 命令未找到。请手动安装 jq (例如: sudo apt-get install jq 或 sudo yum install jq)。"
-        exit 1
-    fi
-    
-    # base_url 变量从 config.json 加载
-    base_url=$(jq -r '.base_url // "https://raw.githubusercontent.com/wx233Github/jaoeng/main"' "$CONFIG_JSON_PATH")
-
-    check_dependencies
     main_menu
 }
 
