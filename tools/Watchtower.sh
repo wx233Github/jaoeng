@@ -1,13 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.10 - 适配 config.json 标准)
+# 🚀 Docker 自动更新助手 (v4.6.10 - 最终修正版)
 # - [优化] config.json 中 notify_on_no_updates 默认 true
-# - [修复] 修复了 Watchtower 通知模板错误
+# - [修复] 修复了 Watchtower 通知模板错误 (Go template Bash 转义问题)
 # - [优化] config.conf 存储优先级高于 config.json
 # - [新增] 容器管理界面新增启动所有/停止所有功能
 # - [修复] 修复了 load_config 等函数 command not found 问题
 # - [优化] 菜单标题及版本信息显示
 # - [适配] 适配 config.json 中 Watchtower 模块的默认配置
+# - [优化] 时间处理函数自包含，减少对 utils.sh 的依赖
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -215,15 +216,18 @@ _start_watchtower_container_logic(){
         # 根据 WATCHTOWER_NOTIFY_ON_NO_UPDATES 设置 WATCHTOWER_REPORT_NO_UPDATES
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
-            log_info "✅ 将启用 '有更新才通知' 模式。"
+            log_info "✅ 将启用 '有更新才通知' 模式 (无更新也通知)。"
         else
-            log_info "ℹ️ 将启用 '每次扫描都通知' 模式。"
+            log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Watchtower 的通知模板，修正了可能导致错误的 .Scanned 字段引用问题
-        # 此模板假设 Watchtower 在发送报告时，会提供 .Updated, .Scanned, .Failed, .Host, .Time 等字段
-        local NOTIFICATION_TEMPLATE='🐳 *Docker 容器更新报告*\n\n*服务器:* `{{.Host}}`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* `{{.ImageName}}`\n  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`'
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE}")
+        # Watchtower 的通知模板，修正了Bash转义问题
+        # 使用printf构建模板，避免Bash字符串中的转义复杂性
+        # 注意：这里的换行符 '\n' 在printf中会被正确解析为换行
+        local NOTIFICATION_TEMPLATE_RAW=$(printf "🐳 *Docker 容器更新报告*\n\n*服务器:* \`{{.Host}}\`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* \`{{.ImageName}}\`\n  🆔 *ID:* \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
+        # 将原始模板字符串进行URL编码，以确保作为环境变量传递时不会被破坏
+        local NOTIFICATION_TEMPLATE_ENCODED=$(printf "%s" "$NOTIFICATION_TEMPLATE_RAW" | jq -sRr @uri)
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE_ENCODED}")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -236,14 +240,14 @@ _start_watchtower_container_logic(){
 
     local final_exclude_list=""
     local source_msg=""
-    # 优先使用脚本内 WATCHTOWER_EXCLUDE_LIST，其次是 config.json 的 exclude_containers，最后是 config.json 的 exclude_list
+    # 优先使用脚本内 WATCHTOWER_EXCLUDE_LIST，其次是 config.json 的 exclude_containers
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
         final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
         source_msg="脚本内部"
     elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
         final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
         source_msg="config.json (exclude_containers)"
-    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_JSON:-}" ]; then
+    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_JSON:-}" ]; then # 兼容旧的 config.json 字段
         final_exclude_list="${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}"
         source_msg="config.json (exclude_list)"
     fi
@@ -315,7 +319,7 @@ _configure_telegram() {
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
     read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
-    read -r -p "是否只在有更新时通知? (y/N, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice
+    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (y/N, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Yy]$'; then
         WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"
     else
@@ -338,7 +342,7 @@ notification_menu() {
         local notify_on_no_updates_status="${CYAN}否${NC}"; if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then notify_on_no_updates_status="${GREEN}是${NC}"; fi
 
         local -a items_array=(
-            "  1. › 配置 Telegram  ($tg_status, 有更新才通知: $notify_on_no_updates_status)"
+            "  1. › 配置 Telegram  ($tg_status, 无更新也通知: $notify_on_no_updates_status)"
             "  2. › 配置 Email      ($email_status)"
             "  3. › 发送测试通知"
             "  4. › 清空所有通知配置"
@@ -1068,7 +1072,7 @@ main_menu(){
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
         if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (有更新才通知)"; else NOTIFY_STATUS="(有更新才通知)"; fi
+            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi
         fi
 
         local header_text="Watchtower 管理" # 菜单标题不带版本号
