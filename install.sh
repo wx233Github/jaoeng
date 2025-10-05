@@ -1,19 +1,20 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.18-FixLocal - 修复全局local声明)
+# 🚀 VPS 一键安装脚本 (v4.6.19-RobustMenuParse - 增强菜单解析健壮性)
+# - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，确保即使 config.json 结构不完全匹配也能正常加载。
+#   - 在解析主菜单和子菜单项时，增加对 JSON 结构类型的严格检查。
+#   - 使用 `<<<` here-string 替代部分 `while read < <(...)`，提高健壮性。
 # - [核心修复] 解决 `bash: local: can only be used in a function` 错误，移除全局作用域的 `local` 关键字。
 # - [核心修复] 脚本自初始化流程优化，确保 utils.sh 和 config.json 在被 source/解析前已下载。
 #   - 提前检查并安装 `jq` 依赖。
 #   - 优先下载 `config.json` 以获取正确的 `base_url`。
 #   - 再下载 `utils.sh`。
-# - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，解决 `jq: Cannot index string with string "title"` 错误。
-#   - 在解析子菜单标题和项目时，增加对 JSON 结构类型的检查和错误处理。
 # - [核心修改] 将解析到的 config.json 值作为环境变量导出，供 utils.sh 的 load_config 使用。
 # - [新增] 在主菜单中添加 UI 主题设置入口，调用 utils.sh 的 `theme_settings_menu`。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.18-FixLocal"
+SCRIPT_VERSION="v4.6.19-RobustMenuParse"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -74,7 +75,7 @@ _temp_log_info "正在下载配置文件 config.json..."
 if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
     _temp_log_success "config.json 下载成功。"
     # 从下载的 config.json 更新 base_url
-    new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH") # <--- 修正: 移除 local 关键字
+    new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH")
     if [ "$new_base_url" != "$base_url" ]; then
         base_url="$new_base_url"
         _temp_log_info "已从 config.json 更新脚本基础URL为: $base_url"
@@ -138,7 +139,8 @@ load_menus_from_json() {
         exit 1
     fi
 
-    MAIN_MENU_TITLE=$(jq -r '.menus.MAIN_MENU.title // "主菜单"' "$CONFIG_JSON_PATH")
+    # 健壮地获取主菜单标题
+    MAIN_MENU_TITLE=$(jq -r '.menus.MAIN_MENU.title // "主菜单"' "$CONFIG_JSON_PATH" || echo "主菜单")
     
     # 清空现有菜单项
     unset MAIN_MENU_ITEMS
@@ -146,45 +148,60 @@ load_menus_from_json() {
 
     local i=0
     # 健壮地解析主菜单项
-    while IFS= read -r item_json; do
-        local type=$(echo "$item_json" | jq -r '.type // "unknown"')
-        local name=$(echo "$item_json" | jq -r '.name // "未知菜单项"')
-        local icon=$(echo "$item_json" | jq -r '.icon // ""')
-        local action=$(echo "$item_json" | jq -r '.action // ""')
-        MAIN_MENU_ITEMS["$i"]="${type}|${name}|${icon}|${action}"
-        i=$((i + 1))
-    done < <(jq -c '.menus.MAIN_MENU.items[] // empty' "$CONFIG_JSON_PATH" || true)
-
-    # 加载所有子菜单
-    while IFS= read -r submenu_key; do
-        # 健壮地提取子菜单对象
-        local submenu_obj_str=$(jq -c ".menus.\"$submenu_key\" // {}" "$CONFIG_JSON_PATH" || echo "{}")
-        
-        local submenu_title=""
-        local items_array_str="[]" # 默认空数组字符串
-
-        # 检查提取出的 submenu_obj 是否是一个对象并且包含 title 字段
-        if echo "$submenu_obj_str" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            submenu_title=$(echo "$submenu_obj_str" | jq -r '.title // "'"$submenu_key"'"') # Default title to key if not present
-            items_array_str=$(echo "$submenu_obj_str" | jq -c '.items // []') # Get items, default to empty array
-        else
-            submenu_title="$submenu_key" # Not an object, use key as title
-            log_warn "子菜单 '$submenu_key' 在 config.json 中结构异常或不存在。使用键名作为标题。"
-        fi
-        SUBMENUS["${submenu_key}_title"]="$submenu_title"
-        
-        local j=0
-        # 从提取出的 submenu_obj 中解析 items，并处理 items 不存在或不是数组的情况
+    local main_menu_items_json_array=$(jq -c '.menus.MAIN_MENU.items // []' "$CONFIG_JSON_PATH" || echo "[]")
+    if echo "$main_menu_items_json_array" | jq -e 'type == "array"' >/dev/null 2>&1; then
         while IFS= read -r item_json; do
             local type=$(echo "$item_json" | jq -r '.type // "unknown"')
-            local name=$(echo "$item_json" | jq -r '.name // "未知子菜单项"')
+            local name=$(echo "$item_json" | jq -r '.name // "未知菜单项"')
             local icon=$(echo "$item_json" | jq -r '.icon // ""')
             local action=$(echo "$item_json" | jq -r '.action // ""')
-            SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
-            j=$((j + 1))
-        done < <(echo "$items_array_str" | jq -c '.[] // empty' || true)
-        SUBMENUS["${submenu_key}_count"]="$j"
-    done < <(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH" || true)
+            MAIN_MENU_ITEMS["$i"]="${type}|${name}|${icon}|${action}"
+            i=$((i + 1))
+        done <<< "$(echo "$main_menu_items_json_array" | jq -c '.[] // empty' || true)"
+    else
+        log_warn "config.json 中 'menus.MAIN_MENU.items' 结构异常或不是数组。主菜单项将为空。"
+    fi
+
+
+    # 加载所有子菜单
+    local submenu_keys_array=$(jq -r '.menus | keys[] | select(. != "MAIN_MENU") // []' "$CONFIG_JSON_PATH" || echo "[]")
+    if echo "$submenu_keys_array" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        while IFS= read -r submenu_key; do
+            # 健壮地提取子菜单对象
+            local submenu_obj_str=$(jq -c ".menus.\"$submenu_key\" // {}" "$CONFIG_JSON_PATH" || echo "{}")
+            
+            local submenu_title=""
+            local items_array_str="[]" # 默认空数组字符串
+
+            # 检查提取出的 submenu_obj 是否是一个对象并且包含 title 字段
+            if echo "$submenu_obj_str" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                submenu_title=$(echo "$submenu_obj_str" | jq -r '.title // "'"$submenu_key"'"') # Default title to key if not present
+                items_array_str=$(echo "$submenu_obj_str" | jq -c '.items // []') # Get items, default to empty array
+            else
+                submenu_title="$submenu_key" # Not an object, use key as title
+                log_warn "子菜单 '$submenu_key' 在 config.json 中结构异常或不存在。使用键名作为标题。"
+            fi
+            SUBMENUS["${submenu_key}_title"]="$submenu_title"
+            
+            local j=0
+            # 从提取出的 submenu_obj 中解析 items，并处理 items 不存在或不是数组的情况
+            if echo "$items_array_str" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                while IFS= read -r item_json; do
+                    local type=$(echo "$item_json" | jq -r '.type // "unknown"')
+                    local name=$(echo "$item_json" | jq -r '.name // "未知子菜单项"')
+                    local icon=$(echo "$item_json" | jq -r '.icon // ""')
+                    local action=$(echo "$item_json" | jq -r '.action // ""')
+                    SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
+                    j=$((j + 1))
+                done <<< "$(echo "$items_array_str" | jq -c '.[] // empty' || true)"
+            else
+                log_warn "子菜单 '$submenu_key' 的 items 结构异常或不是数组。子菜单项将为空。"
+            fi
+            SUBMENUS["${submenu_key}_count"]="$j"
+        done <<< "$(echo "$submenu_keys_array" | jq -r '.[] // empty' || true)"
+    else
+        log_warn "config.json 中 'menus' 结构异常或不是对象。子菜单将为空。"
+    fi
 }
 
 # --- 依赖检查 ---
@@ -265,13 +282,16 @@ enter_module() {
         all_menu_items+=("${MAIN_MENU_ITEMS[$item_idx]}")
     done
 
-    for submenu_key in $(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH" || true); do
-        local count_key="${submenu_key}_count"
-        local count="${SUBMENUS[$count_key]:-0}" # Default to 0 if not set
-        for (( j=0; j<count; j++ )); do
-            all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
-        done
-    done
+    local submenu_keys_array=$(jq -r '.menus | keys[] | select(. != "MAIN_MENU") // []' "$CONFIG_JSON_PATH" || true)
+    if echo "$submenu_keys_array" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        while IFS= read -r submenu_key; do
+            local count_key="${submenu_key}_count"
+            local count="${SUBMENUS[$count_key]:-0}" # Default to 0 if not set
+            for (( j=0; j<count; j++ )); do
+                all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
+            done
+        done <<< "$(echo "$submenu_keys_array" | jq -r '.[] // empty' || true)"
+    fi
 
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
