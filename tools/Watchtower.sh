@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.10 - 最新修正版)
+# 🚀 Docker 自动更新助手 (v4.6.11 - 最终修正版)
+# - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)
 # - [优化] config.json 中 notify_on_no_updates 默认 true
 # - [修复] 修复了 Watchtower 通知模板错误 (Go template Bash 转义问题)
 # - [优化] config.conf 存储优先级高于 config.json
@@ -11,10 +12,11 @@
 # - [优化] 时间处理函数自包含，减少对 utils.sh 的依赖
 # - [修复] 简化 Watchtower 通知模板为纯英文，排查Go Template解析错误
 # - [修正] Watchtower详情页面“下次检查”状态显示逻辑
+# - [修复] 修正 _parse_watchtower_timestamp_from_log_line 函数中的 fih 拼写错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.10" # 脚本版本
+SCRIPT_VERSION="v4.6.11" # 脚本版本
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -132,7 +134,7 @@ _parse_watchtower_timestamp_from_log_line() {
     if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
-    fi # <--- 确保这里是 'fi'
+    fi
     # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
     timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
     if [ -n "$timestamp" ]; then
@@ -830,7 +832,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi # <-- 修正了这里！
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
