@@ -1,10 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.12 - 最终修正版)
+# 🚀 Docker 自动更新助手 (v4.6.13 - 最终修正版)
 # - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
 #   - 恢复中文及表情模板。
-#   - 对 Go Template 内部的双引号和反引号进行 Bash 转义。
-#   - 将所有实际换行符 \n 替换为 Bash 可识别的 \\n，确保模板作为单行字符串传递。
+#   - 使用 Bash printf 进行双重转义，确保 Watchtower 接收到正确的模板字符串。
 # - [修复] 修正了 _parse_watchtower_timestamp_from_log_line 函数中 fih 拼写错误。
 # - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)。
 # - [优化] config.json 中 notify_on_no_updates 默认 true
@@ -18,7 +17,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.12" # 脚本版本
+SCRIPT_VERSION="v4.6.13" # 脚本版本
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -222,23 +221,28 @@ _start_watchtower_container_logic(){
         # 根据 WATCHTOWER_NOTIFY_ON_NO_UPDATES 设置 WATCHTOWER_REPORT_NO_UPDATES
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
-            log_info "✅ 将启用 '无更新也通知' 模式。" # 修正此处描述，与 config.json 保持一致
+            log_info "✅ 将启用 '无更新也通知' 模式。"
         else
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
         # Watchtower 的通知模板（原始 Go Template 字符串，恢复中文和表情）
-        # 使用printf构建模板，确保换行符、反引号等字符正确
-        local NOTIFICATION_TEMPLATE_RAW=$(printf "🐳 *Docker 容器更新报告*\n\n*服务器:* \`{{.Host}}\`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* \`{{.ImageName}}\`\n  🆔 *ID:* \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
-        
-        # 1. 对原始模板字符串中的内部双引号进行 Bash 转义
-        # 2. 对原始模板字符串中的内部反引号进行 Bash 转义
-        # 3. 将所有实际的换行符 '\n' 替换为 Bash 可识别的转义序列 '\\n'，使整个字符串成为单行
-        #    这样在作为环境变量传递时，Bash 不会因为换行符而截断它。
-        local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/"/\\"/g' | sed 's/`/\\`/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+        # 使用 Bash printf 进行双重转义：
+        #   - printf 内部的 `\\n` 会被解释为字面量 `\n`。
+        #   - printf 内部的 `\\"` 会被解释为字面量 `"`。
+        #   - printf 内部的 `\\\`` 会被解释为字面量 `` ` ``。
+        # 这样，NOTIFICATION_TEMPLATE_ESCAPED_FOR_BASH 变量将包含一个单行字符串，
+        # 其中 `\n`、`"` 和 `` ` `` 都是字面量。
+        # 当这个变量在 `cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${...}")` 中被 Bash 再次解析时：
+        #   - 字面量 `\n` 会被 Bash 解释为实际的换行符。
+        #   - 字面量 `\"` 会被 Bash 解释为字面量 `"`。
+        #   - 字面量 ``\` `` 会被 Bash 解释为字面量 `` ` ``。
+        # 最终，Watchtower 将接收到一个包含实际换行符、字面量 `"` 和字面量 `` ` `` 的 Go Template 字符串，
+        # 这正是 Go Template 解析器所期望的。
+        local NOTIFICATION_TEMPLATE_ESCAPED_FOR_BASH=$(printf "🐳 *Docker 容器更新报告*\\n\\n*服务器:* \\`{{.Host}}\\`\\n\\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\\n{{range .Updated}}\\n- 🔄 *{{.Name}}*\\n  🖼️ *镜像:* \\`{{.ImageName}}\\`\\n  🆔 *ID:* \\`{{.OldImageID.Short}}\\` -> \\`{{.NewImageID.Short}}\\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\\n\\n⏰ *时间:* \\`{{.Time.Format \\\"2006-01-02 15:04:05\\\"}}\\`")
         
         # 将转义后的模板字符串作为环境变量传递给 Watchtower 容器
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE}")
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE_ESCAPED_FOR_BASH}")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -708,7 +712,7 @@ _extract_interval_from_cmd(){
             if [ "$prev" = "--interval" ]; then
                 interval="$t"
                 break
-            fi
+            }
             prev="$t"
         done
     fi
