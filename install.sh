@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.8-修复与优化)
+# 🚀 VPS 一键安装入口脚本 (v74.9-优化更新动画)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.8"
+SCRIPT_VERSION="v74.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -640,10 +640,27 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🕛"
-    sleep 0.5
-    echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 🔄\n"
-    force_update_all
+    local spinner_msg="$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 "
+    local spinner_chars="/-\|"
+    local i=0
+    local pid
+
+    # 在后台运行 force_update_all
+    force_update_all &
+    pid=$!
+
+    # 循环显示动画，直到后台进程结束
+    while kill -0 "$pid" 2>/dev/null; do
+        i=$(( (i+1) % 4 ))
+        printf "\r%s%c" "$spinner_msg" "${spinner_chars:$i:1}"
+        sleep 0.1
+    done
+
+    # 等待后台进程真正完成
+    wait "$pid"
+
+    # 清除动画并输出最终的完成符号
+    printf "\r%s%s\n" "$spinner_msg" "🔄"
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
