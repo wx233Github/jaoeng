@@ -9,7 +9,7 @@ SCRIPT_VERSION="v74.9"
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; fi
 
 # --- 备用 UI 渲染函数 (Fallback UI rendering functions) ---
 # 这些函数在 utils.sh 未加载或加载失败时提供基本的菜单渲染能力，防止脚本崩溃。
@@ -251,7 +251,7 @@ download_module_to_cache() {
         rm -f "$tmp_file" 2>/dev/null || true
         return 0
     else
-        log_success "模块 (${script_name}) 已更新。"
+        log_success "模 块  (${script_name}) 已 更 新 。"
         # 优化：抑制 mkdir, mv, chmod 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")"
         JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file"
@@ -263,7 +263,7 @@ _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if _download_file "utils.sh" "$temp_utils"; then
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
-            log_success "核心工具库 (utils.sh) 已更新。"
+            log_success "核 心 工 具 库  (utils.sh) 已 更 新 。"
             # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
             JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
@@ -271,14 +271,14 @@ _update_core_files() {
             rm -f "$temp_utils" 2>/dev/null || true
         fi
     else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。"
+        log_warn "核 心 工 具 库  (utils.sh) 更 新 检 查 失 败 。"
     fi
 }
 
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
-        log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
+        log_warn "配 置 文 件  ${cfg} 不 存 在 ， 跳 过 模 块 更 新 。"
         return
     fi
     local scripts_to_update
@@ -290,7 +290,7 @@ _update_all_modules() {
         .action
     ' "$cfg" 2>/dev/null || true)
     if [ -z "$scripts_to_update" ]; then
-        log_info "未检测到可更新的模块。"
+        log_info "未 检 测 到 可 更 新 的 模 块 。"
         return
     fi
     local pids=()
@@ -300,71 +300,72 @@ _update_all_modules() {
     for pid in "${pids[@]}"; do
         wait "$pid" || true
     done
+    # 移除这里的 log_success，由 main 函数统一处理
+    # log_success "所有组件更新检查完成！"
 }
 
 force_update_all() {
     self_update
     _update_core_files
     _update_all_modules
-    log_success "所有组件更新检查完成！"
 }
 
 confirm_and_force_update() {
-    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
-    log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
-    read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    log_warn "警 告 : 这 将 从  GitHub 强 制 拉 取 所 有 最 新 脚 本 和 【 主 配 置 文 件  config.json 】。"
+    log_warn "您 对  config.json 的 【 所 有 本 地 修 改 都 将 丢 失 】！ 这 是 一 个 恢 复 出 厂 设 置 的 操 作 。"
+    read -p "$(echo -e "${RED}此 操 作 不 可 逆 ， 请 输 入  'yes' 确 认 继 续 : ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "开始强制完全重置..."
-        declare -A core_files_to_reset=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
+        log_info "开 始 强 制 完 全 重 置 ..."
+        declare -A core_files_to_reset=( ["主 程 序 "]="install.sh" ["工 具 库 "]="utils.sh" ["配 置 文 件 "]="config.json" )
         for name in "${!core_files_to_reset[@]}"; do
             local file_path="${core_files_to_reset[$name]}"
-            log_info "正在强制更新 ${name}..."
+            log_info "正 在 强 制 更 新  ${name}..."
             local temp_file="/tmp/$(basename "$file_path").tmp.$$"
             if ! _download_file "$file_path" "$temp_file"; then
-                log_err "下载最新的 ${name} 失败。"
+                log_err "下 载 最 新 的  ${name} 失 败 。"
                 continue
             fi
             # 优化：抑制 mv 的 run_with_sudo 日志
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
-            log_success "${name} 已重置为最新版本。"
+            log_success "${name} 已 重 置 为 最 新 版 本 。"
         done
-        log_info "正在恢复核心脚本执行权限..."
+        log_info "正 在 恢 复 核 心 脚 本 执 行 权 限 ..."
         # 优化：抑制 chmod 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
-        log_success "权限已恢复。"
+        log_success "权 限 已 恢 复 。"
         _update_all_modules
-        log_success "强制重置完成！"
-        log_info "脚本将在2秒后自动重启以应用所有更新..."
+        log_success "强 制 重 置 完 成 ！"
+        log_info "脚 本 将 在 2 秒 后 自 动 重 启 以 应 用 所 有 更 新 ..."
         sleep 2
         flock -u 200 || true
         rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
         trap - EXIT
-        # 核心：重启自身，仍以当前用户身份执行
-        export -f run_with_sudo # 再次导出，确保新执行的脚本也能识别
+        # 核 心 ： 重 启 自 身 ， 仍 以 当 前 用 户 身 份 执 行
+        export -f run_with_sudo # 再 次 导 出 ， 确 保 新 执 行 的 脚 本 也 能 识 别
         exec bash "$FINAL_SCRIPT_PATH" "$@"
     else
-        log_info "操作已取消."
+        log_info "操 作 已 取 消 ."
     fi
     return 10
 }
 
 uninstall_script() {
-    log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
-    log_warn "  - 安装目录: ${CONFIG[install_dir]}"
-    log_warn "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
-    read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    log_warn "警 告 : 这 将 从 您 的 系 统 中 彻 底 移 除 本 脚 本 及 其 所 有 组 件 ！"
+    log_warn "  - 安 装 目 录 : ${CONFIG[install_dir]}"
+    log_warn "  - 快 捷 方 式 : ${CONFIG[bin_dir]}/jb"
+    read -p "$(echo -e "${RED}这 是 一 个 不 可 逆 的 操 作 , 您 确 定 要 继 续 吗 ? (请 输 入  'yes' 确 认 ): ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "开始卸载..."
+        log_info "开 始 卸 载 ..."
         # 优化：抑制 rm 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}"
-        log_success "安装目录已移除."
+        log_success "安 装 目 录 已 移 除 ."
         JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
-        log_success "快捷方式已移除."
-        log_success "脚本已成功卸载."
-        log_info "再见！"
+        log_success "快 捷 方 式 已 移 除 ."
+        log_success "脚 本 已 成 功 卸 载 ."
+        log_info "再 见 ！"
         exit 0
     else
-        log_info "卸载操作已取消."
+        log_info "卸 载 操 作 已 取 消 ."
         return 10
     fi
 }
@@ -378,12 +379,12 @@ execute_module() {
     local display_name="$2"
     shift 2
     local local_path="${CONFIG[install_dir]}/$script_name"
-    log_info "您选择了 [$display_name]"
+    log_info "您 选 择 了  [$display_name]"
 
     if [ ! -f "$local_path" ]; then
-        log_info "正在下载模块..."
+        log_info "正 在 下 载 模 块 ..."
         if ! download_module_to_cache "$script_name"; then
-            log_err "下载失败."
+            log_err "下 载 失 败 ."
             return 1
         fi
     fi
@@ -422,31 +423,31 @@ export LC_ALL=${LC_ALL}
     cat > "$tmp_runner" <<EOF
 #!/bin/bash
 set -e
-# 核心：将 run_with_sudo 函数定义注入到子脚本中
+# 核 心 ： 将  run_with_sudo 函 数 定 义 注 入 到 子 脚 本 中
 if declare -f run_with_sudo &>/dev/null; then
   export -f run_with_sudo
 else
   # Fallback definition if for some reason it's not inherited
   run_with_sudo() {
-      echo -e "${CYAN}[子脚本 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
+      echo -e "${CYAN}[子 脚 本  - 信 息 ]${NC} 正 在 尝 试 以  root 权 限 执 行 : \$*" >&2
       sudo -E "\$@" < /dev/tty
   }
   export -f run_with_sudo
 fi
 $env_exports
-# 核心：模块脚本以当前用户身份执行，如果需要root权限，模块内部应调用 run_with_sudo
+# 核 心 ： 模 块 脚 本 以 当 前 用 户 身 份 执 行 ， 如 果 需 要  root 权 限 ， 模 块 内 部 应 调 用  run_with_sudo
 exec bash '$local_path' $extra_args_str
 EOF
-    # 核心：执行 runner 脚本，不使用 sudo
+    # 核 心 ： 执 行  runner 脚 本 ， 不 使 用  sudo
     bash "$tmp_runner" < /dev/tty || local exit_code=$?
     rm -f "$tmp_runner" 2>/dev/null || true
 
     if [ "${exit_code:-0}" = "0" ]; then
-        log_success "模块 [$display_name] 执行完毕."
+        log_success "模 块  [$display_name] 执 行 完 毕 ."
     elif [ "${exit_code:-0}" = "10" ]; then
-        log_info "已从 [$display_name] 返回."
+        log_info "已 从  [$display_name] 返 回 ."
     else
-        log_warn "模块 [$display_name] 执行出错 (码: ${exit_code:-1})."
+        log_warn "模 块  [$display_name] 执 行 出 错  (码: ${exit_code:-1})."
     fi
 
     return ${exit_code:-0}
@@ -494,19 +495,19 @@ display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$config_path" ]; then
-        log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
+        log_err "配 置 文 件  ${config_path} 未 找 到 ， 请 确 保 已 安 装 核 心 文 件 。"
         exit 1
     fi
 
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
-        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效！"
+        log_err "菜 单  ${CURRENT_MENU_NAME} 配 置 无 效 ！"
         exit 1
     fi
 
     local main_title_text
-    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
+    main_title_text=$(jq -r '.title // "VPS 安 装 脚 本 "' <<< "$menu_json")
 
     local -a menu_items_array=()
     local i=1
@@ -519,13 +520,13 @@ display_menu() {
 
     local menu_len
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
-    local exit_hint="退出"
-    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
-    local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
+    local exit_hint="退 出 "
+    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返 回 "; fi
+    local prompt_text=" └──> 请 选 择  [1-${menu_len}], 或  [Enter] ${exit_hint}: "
 
     if [ "$AUTO_YES" = "true" ]; then
         choice=""
-        echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
+        echo -e "${BLUE}${prompt_text}${NC} [非 交 互 模 式 ]"
     else
         read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
     fi
@@ -548,14 +549,14 @@ process_menu_selection() {
     fi
 
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then
-        log_warn "无效选项."
+        log_warn "无 效 选 项 ."
         return 10
     fi
 
     local item_json
     item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]' 2>/dev/null || echo "")
     if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then
-        log_warn "菜单项配置无效或不完整。"
+        log_warn "菜 单 项 配 置 无 效 或 不 完 整 。"
         return 10
     fi
 
@@ -580,7 +581,7 @@ process_menu_selection() {
             return $?
             ;;
         *)
-            log_warn "未知菜单类型: $type"
+            log_warn "未 知 菜 单 类 型 : $type"
             return 10
             ;;
     esac
@@ -589,13 +590,13 @@ process_menu_selection() {
 main() {
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
-        echo -e "\033[0;33m[警告] 检测到另一实例正在运行."
+        echo -e "\033[0;33m[警 告 ] 检 测 到 另 一 实 例 正 在 运 行 ."
         exit 1
     fi
-    # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出."' EXIT
+    # 退 出 陷 阱 ， 确 保 在 脚 本 退 出 时 释 放 文 件 锁
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚 本 已 退 出 ."' EXIT
 
-    # 检查核心依赖，如果缺失则尝试安装
+    # 检 查 核 心 依 赖 ， 如 果 缺 失 则 尝 试 安 装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
         check_and_install_dependencies
     fi
@@ -606,12 +607,12 @@ main() {
         local command="$1"; shift
         case "$command" in
             update)
-                log_info "正在以 Headless 模式安全更新所有脚本..."
+                log_info "正 在 以  Headless 模 式 安 全 更 新 所 有 脚 本 ..."
                 force_update_all
                 exit 0
                 ;;
             uninstall)
-                log_info "正在以 Headless 模式执行卸载..."
+                log_info "正 在 以  Headless 模 式 执 行 卸 载 ..."
                 uninstall_script
                 exit 0
                 ;;
@@ -625,7 +626,7 @@ main() {
                     display_name=$(echo "$item_json" | jq -r '.name' 2>/dev/null || echo "")
                     local type
                     type=$(echo "$item_json" | jq -r '.type' 2>/dev/null || echo "")
-                    log_info "正在以 Headless 模式执行: ${display_name}"
+                    log_info "正 在 以  Headless 模 式 执 行 : ${display_name}"
                     if [ "$type" = "func" ]; then
                         "$action_to_run" "$@"
                     else
@@ -633,34 +634,43 @@ main() {
                     fi
                     exit $?
                 else
-                    log_err "未知命令: $command"
+                    log_err "未 知 命 令 : $command"
                     exit 1
                 fi
         esac
     fi
 
-    log_info "脚本启动 (${SCRIPT_VERSION})"
-    local spinner_msg="$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 "
+    log_info "脚 本 启 动  (${SCRIPT_VERSION})"
+
+    local initial_update_msg="$(log_timestamp) ${BLUE}[信 息 ]${NC} 正 在 智 能 更 新 "
+    printf "%s" "$initial_update_msg" # 打 印 初 始 消 息 ， 不 带 换 行 符
+    
+    force_update_all &
+    local pid=$!
+
     local spinner_chars="/-\|"
     local i=0
-    local pid
+    local update_success=0
 
-    # 在后台运行 force_update_all
-    force_update_all &
-    pid=$!
-
-    # 循环显示动画，直到后台进程结束
+    # 循 环 显 示 动 画
     while kill -0 "$pid" 2>/dev/null; do
         i=$(( (i+1) % 4 ))
-        printf "\r%s%c" "$spinner_msg" "${spinner_chars:$i:1}"
+        printf "%c\b" "${spinner_chars:$i:1}" # 打 印 字 符 并 退 格 ， 实 现 覆 盖
         sleep 0.1
     done
 
-    # 等待后台进程真正完成
+    # 等 待 后 台 进 程 结 束 并 捕 获 其 退 出 状 态
     wait "$pid"
+    update_success=$?
 
-    # 清除动画并输出最终的完成符号
-    printf "\r%s%s\n" "$spinner_msg" "🔄"
+    # 清 除 动 画 并 打 印 最 终 状 态
+    if [ "$update_success" -eq 0 ]; then
+        printf "🔄\n" # 覆 盖 最 后 一 个 动 画 字 符 ， 并 加 换 行
+        log_success "所 有 组 件 更 新 检 查 完 成 ！"
+    else
+        printf "${RED}❌ 更 新 失 败 ！${NC}\n" # 覆 盖 最 后 一 个 动 画 字 符 ， 并 加 换 行
+        log_err "智 能 更 新 过 程 中 发 生 错 误 。"
+    fi
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
