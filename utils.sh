@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.32)
+# 🚀 通用工具函数库 (v2.33)
+# - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数，优先解析“Scheduling first run”的调度时间。
 # - 优化：脚本头部注释更简洁。
 # =============================================================
 
@@ -112,24 +113,28 @@ _print_header() { _render_menu "$1" ""; }
 _parse_watchtower_timestamp_from_log_line() {
     local log_line="$1"
     local timestamp=""
-    # 尝试匹配 time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" 格式
-    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
-    if [ -n "$timestamp" ]; then
-        echo "$timestamp"
-        return 0
-    fi
-    # 尝试匹配 YYYY-MM-DDTHH:MM:SSZ 格式 (例如 Watchtower 1.7.1)
-    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
-    if [ -n "$timestamp" ]; then
-        echo "$timestamp"
-        return 0
-    fi
-    # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
+
+    # 1. Highest priority: "Scheduling first run: YYYY-MM-DD HH:MM:SS" format
     timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
     if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
     fi
+
+    # 2. Next priority: time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" format
+    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    层叠
+    
+    # 3. Next priority: YYYY-MM-DDTHH:MM:SSZ format (e.g. Watchtower 1.7.1)
+    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+
     echo ""
     return 1
 }
