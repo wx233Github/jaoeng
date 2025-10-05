@@ -1,7 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.11)
+# 🚀 VPS 一键安装入口脚本 (v74.12)
 # - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
+# - 修复：解决了动态加载动画的 ANSI 逃逸序列残留问题，并优化了动画停止时的行清除。
+# - 修复：解决了脚本在更新后立即退出，不显示菜单的问题。
 # - 新增：在智能更新时增加了动态加载动画。
 # - 修复：新增 `JB_SHOW_UNCHANGED_LOGS` 变量，默认不打印“模块 (...) 未更改”信息，可通过 `FORCE_REFRESH=true` 启用。
 # - 优化：`download_module_to_cache` 函数现在将结果输出到 stdout，而不是直接打印日志。
@@ -13,7 +15,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.11"
+SCRIPT_VERSION="v74.12"
 
 # 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
 export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
@@ -60,7 +62,7 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     if [ ! -d "$INSTALL_DIR" ]; then
         echo_info "安装目录 $INSTALL_DIR 不存在，正在尝试创建..."
         # 优化：抑制 mkdir 的 run_with_sudo 日志
-        if ! JB_SUDO_LOG_QUIET="true" sudo mkdir -p "$INSTALL_DIR"; then
+        if ! JB_SUDO_LOG_QUIET="true" sudo mkdir -p "$INSTALL_DIR" >/dev/null 2>&1; then
             echo_error "无法创建安装目录 $INSTALL_DIR。请检查权限或手动创建。"
         fi
     fi
@@ -78,18 +80,18 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
                 echo_error "下载 ${name} 失败。"
             fi
             # 优化：抑制 mv 的 run_with_sudo 日志
-            if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
+            if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}" >/dev/null 2>&1; then
                 echo_error "移动 ${name} 到 ${INSTALL_DIR} 失败。"
             fi
         done
         
         echo_info "正在设置核心脚本执行权限并调整目录所有权..."
         # 优化：抑制 chmod 和 chown 的 run_with_sudo 日志
-        if ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"; then
+        if ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" >/dev/null 2>&1; then
             echo_error "设置核心脚本执行权限失败。"
         fi
         # 核心：将安装目录所有权赋给当前用户，以便后续非root操作
-        if ! JB_SUDO_LOG_QUIET="true" sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR"; then
+        if ! JB_SUDO_LOG_QUIET="true" sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR" >/dev/null 2>&1; then
             echo_warn "无法将安装目录 $INSTALL_DIR 的所有权赋给当前用户 $(whoami)。后续操作可能需要手动sudo。"
         else
             echo_success "安装目录 $INSTALL_DIR 所有权已调整为当前用户。"
@@ -99,7 +101,7 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         BIN_DIR="/usr/local/bin"
         # 使用 sudo -E bash -c 来执行 ln 命令，确保环境变量和权限正确
         # 优化：抑制 ln 的 run_with_sudo 日志
-        if ! JB_SUDO_LOG_QUIET="true" sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; then
+        if ! JB_SUDO_LOG_QUIET="true" sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'" >/dev/null 2>&1; then
             echo_warn "无法创建快捷指令 'jb'。请检查权限或手动创建链接。"
         fi
         echo_success "安装/更新完成！"
@@ -162,7 +164,9 @@ stop_spinner() {
     if [ -n "$_spinner_pid" ]; then
         kill "$_spinner_pid" 2>/dev/null || true
         # 清除 spinner 留下的行，并打印完成信息
-        echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 完成。   \n" > /dev/tty
+        echo -ne "\r\033[K" > /dev/tty # \033[K clears from cursor to end of line
+        echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 完成。   " > /dev/tty
+        unset _spinner_pid # 清除 PID
     fi
 }
 
@@ -195,6 +199,8 @@ load_config() {
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
         CONFIG[timezone]="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")"
+    else
+        log_warn "config.json 文件未找到或 jq 不可用，将使用默认配置。"
     fi
 }
 
@@ -222,9 +228,9 @@ check_and_install_dependencies() {
         if echo "$choice" | grep -qE '^[Yy]$'; then
             log_info "正在使用 $pm 安装..."
             local update_cmd=""
-            if [ "$pm" = "apt" ]; then update_cmd="JB_SUDO_LOG_QUIET='true' run_with_sudo apt-get update"; fi # 优化：抑制 apt-get update 的日志
+            if [ "$pm" = "apt" ]; then update_cmd="JB_SUDO_LOG_QUIET='true' run_with_sudo apt-get update >/dev/null 2>&1"; fi # 优化：抑制 apt-get update 的日志
             # 优化：抑制包安装的 run_with_sudo 日志
-            if ! ($update_cmd && JB_SUDO_LOG_QUIET='true' run_with_sudo "$pm" install -y "${missing_deps[@]}"); then
+            if ! (eval "$update_cmd" && JB_SUDO_LOG_QUIET='true' run_with_sudo "$pm" install -y "${missing_deps[@]}" >/dev/null 2>&1); then
                 log_err "依赖安装失败."
                 exit 1
             fi
@@ -612,6 +618,7 @@ display_menu() {
         log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
         exit 1
     fi
+    log_debug "display_menu: config_path=$config_path"
 
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
@@ -619,9 +626,11 @@ display_menu() {
         log_err "菜单 ${CURRENT_MENU_NAME} 配置无效！"
         exit 1
     fi
+    log_debug "display_menu: menu_json loaded for $CURRENT_MENU_NAME"
 
     local main_title_text
     main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
+    log_debug "display_menu: main_title_text='$main_title_text'"
 
     local -a menu_items_array=()
     local i=1
@@ -629,8 +638,10 @@ display_menu() {
         menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
         i=$((i + 1))
     done < <(jq -r '.items[]? | ((.icon // "›") + "\t" + .name)' <<< "$menu_json" 2>/dev/null || true)
+    log_debug "display_menu: menu_items_array size=${#menu_items_array[@]}"
 
     _render_menu "$main_title_text" "${menu_items_array[@]}"
+    log_debug "display_menu: _render_menu called."
 
     local menu_len
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
@@ -704,11 +715,11 @@ process_menu_selection() {
 main() {
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
-        echo -e "\033[0;33m[警告] 检测到另一实例正在运行."
+        echo -e "\033[0;33m[警告] 检测到另一实例正在运行." > /dev/tty
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; stop_spinner; log_info "脚本已退出."' EXIT
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; stop_spinner; echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 脚本已退出." > /dev/tty;' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
@@ -725,7 +736,7 @@ main() {
                 # 在 headless 模式下，强制显示所有更新日志
                 export JB_SHOW_UNCHANGED_LOGS="true" 
                 force_update_all
-                log_success "所有组件更新检查完成！" # Headless 模式下直接打印完成信息
+                echo -e "$(log_timestamp) ${GREEN}[成功]${NC} 所有组件更新检查完成！" > /dev/tty # Headless 模式下直接打印完成信息
                 exit 0
                 ;;
             uninstall)
@@ -762,7 +773,7 @@ main() {
     start_spinner # 启动加载动画
     force_update_all # 执行更新操作
     stop_spinner # 停止加载动画，并打印完成信息
-    log_success "所有组件更新检查完成！" # 交互模式下打印最终完成信息
+    # 移除这里冗余的 log_success "所有组件更新检查完成！"，因为 stop_spinner 已经打印了。
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
