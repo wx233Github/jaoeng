@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.22-FixArrayScope - 修复数组作用域问题)
+# 🚀 VPS 一键安装脚本 (v4.6.23-FixReadTTY - 修复read命令从/dev/tty读取)
+# - [核心修复] 所有 `read` 命令现在明确从 `/dev/tty` 读取，解决通过管道执行脚本时 `read` 立即退出的问题。
 # - [核心修复] 解决 MAIN_MENU_ITEMS 和 SUBMENUS 数组在函数调用后变为空的问题。
 #   - 移除 `load_menus_from_json` 函数内部的 `declare -A` 语句，确保操作的是全局数组。
 #   - 使用 `unset 'ARRAY_NAME[@]'` 来清空数组元素，而不是重新声明。
@@ -18,7 +19,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.22-FixArrayScope"
+SCRIPT_VERSION="v4.6.23-FixReadTTY"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -192,7 +193,7 @@ load_menus_from_json() {
 
     if echo "$main_menu_items_json_array_raw" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
         while IFS= read -r item_json; do
-            if [ -z "$item_json" ]; then continue; fi
+            if [ -z "$item_json" ]; then continue; }
 
             set +e
             local type=$(echo "$item_json" | jq -r '.type // "unknown"' 2>/dev/null)
@@ -266,7 +267,7 @@ load_menus_from_json() {
             fi
             SUBMENUS["${submenu_key}_title"]="$submenu_title"
             log_info "子菜单 '$submenu_key' 标题: '$submenu_title'"
-            log_info "子菜单 '$submenu_key' 项目原始JSON数组: '$items_array_str'"
+            log_info "子菜单 '$submenu_key' 项 目 原 始 JSON数 组 : '$items_array_str'"
             
             local j=0
             if echo "$items_array_str" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
@@ -419,7 +420,7 @@ enter_module() {
         # If no modules found, display a message
         if [ ${#module_list[@]} -eq 0 ]; then
             _render_menu "🚀 进 入 模 块 菜 单 🚀" "  无可用模块。请先安装模块。"
-            read -r -p " └──> 按 Enter 返回: "
+            read -r -p " └──> 按 Enter 返回: " </dev/tty # <--- 修正
             return
         fi
 
@@ -429,9 +430,9 @@ enter_module() {
         done
 
         _render_menu "🚀 进 入 模 块 菜 单 🚀" "${numbered_display_items[@]}"
-        read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice
+        read -r -p " └──> 请选择模块编号, 或按 Enter 返回: " choice </dev/tty # <--- 修正
 
-        if [ -z "$choice" ]; then return; fi
+        if [ -z "$choice" ]; then return; }
 
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#module_paths[@]}" ]; then
             local selected_path="${module_paths[$((choice - 1))]}"
@@ -518,22 +519,22 @@ main_menu() {
                 local icon=$(echo "$item_str" | cut -d'|' -f3)
                 local display_name="${icon} ${name}"
                 display_items+=("  $((current_item_idx + 1)). ${display_name}")
-                log_info "    添加显示项: $((current_item_idx + 1)). ${display_name}"
+                log_info "    添 加 显 示 项 : $((current_item_idx + 1)). ${display_name}"
                 current_item_idx=$((current_item_idx + 1))
             else
                 log_warn "  主菜单项格式异常，跳过: '$item_str'"
             fi
         done
-        log_info "主菜单项渲染完成。display_items 数组当前长度: ${#display_items[@]}"
-        log_info "current_item_idx (在添加UI主题前): $current_item_idx"
+        log_info "主菜单项渲染完成。display_items 数 组 当 前 长 度 : ${#display_items[@]}"
+        log_info "current_item_idx (在 添 加 UI主 题 前 ): $current_item_idx"
         
         # 添加 UI 主题设置到主菜单
         display_items+=("")
         display_items+=("  $((current_item_idx + 1)). 🎨 UI 主 题 设 置")
-        log_info "添加UI主题设置项后，display_items 数组总长度: ${#display_items[@]}"
+        log_info "添 加 UI主 题 设 置 项 后 ， display_items 数 组 总 长 度 : ${#display_items[@]}"
 
         _render_menu "$MAIN_MENU_TITLE" "${display_items[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 退出: " choice
+        read -r -p " └──> 请选择, 或按 Enter 退出: " choice </dev/tty # <--- 修正
 
         if [ -z "$choice" ]; then exit 0; fi
 
@@ -605,7 +606,7 @@ handle_submenu() {
         done
 
         _render_menu "$submenu_title" "${display_items[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 返回: " choice
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice </dev/tty # <--- 修正
 
         if [ -z "$choice" ]; then return; fi
 
