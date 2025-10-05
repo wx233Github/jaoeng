@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.13)
+# 🚀 VPS 一键安装入口脚本 (v74.14)
+# - 修复：彻底解决了并发模块更新时日志排版混乱的问题，通过严格控制日志输出时序实现。
 # - 修复：解决了脚本在更新后立即退出，不显示菜单的问题，确保 config.json 配置及时重载。
 # - 修复：修正了 `EXIT` 陷阱中对 `stop_spinner` 的重复调用问题。
 # - 修复：解决了动态加载动画的 ANSI 逃逸序列残留问题，并优化了动画停止时的行清除。
-# - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
 # - 新增：在智能更新时增加了动态加载动画。
 # - 修复：新增 `JB_SHOW_UNCHANGED_LOGS` 变量，默认不打印“模块 (...) 未更改”信息，可通过 `FORCE_REFRESH=true` 启用。
 # - 优化：`download_module_to_cache` 函数现在将结果输出到 stdout，而不是直接打印日志。
-# - 优化：`_update_all_modules` 函数现在会收集所有模块更新结果到一个数组，并在所有后台任务完成后，统一、有序地打印日志。
+# - 优化：`_update_all_modules` 函数现在仅收集模块更新结果到数组，不直接打印日志。
 # - 修复：彻底解决了所有已知语法错误和逻辑问题。
 # - 优化：`run_with_sudo` 函数现在支持通过 `JB_SUDO_LOG_QUIET=true` 抑制日志输出。
 # - 优化：在下载/更新核心文件和模块时，`run_with_sudo` 的日志输出被抑制。
@@ -16,7 +16,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.13"
+SCRIPT_VERSION="v74.14"
 
 # 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
 export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
@@ -354,11 +354,12 @@ _update_core_files() {
     fi
 }
 
-# 修改：此函数现在会收集所有模块的更新结果并有序打印
+# 修改：此函数现在会收集所有模块的更新结果到数组，并在所有后台任务完成后，统一、有序地打印日志
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
-        log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
+        # 即使没有配置文件，也要确保 spinner 能够停止
+        # log_warn "配置文件 ${cfg} 不存在，跳过模块更新。" # 不在这里打印日志
         return
     fi
     local scripts_to_update_raw
@@ -392,30 +393,17 @@ _update_all_modules() {
         temp_output_files+=("$temp_file")
     done
 
-    # 收集所有结果到数组
-    local -a collected_results=()
+    # 收集所有结果到数组 (全局数组)
+    local -g _module_update_results=() 
     local i=0
     for pid in "${pids[@]}"; do
         wait "$pid" # 等待每个进程完成
         local output_file="${temp_output_files[$i]}"
         if [ -f "$output_file" ]; then
-            collected_results+=("$(cat "$output_file")")
+            _module_update_results+=("$(cat "$output_file")")
             rm -f "$output_file" 2>/dev/null || true
         fi
         i=$((i + 1))
-    done
-
-    # 按顺序打印收集到的结果
-    for result_line in "${collected_results[@]}"; do
-        local status_type=$(echo "$result_line" | cut -d'|' -f1)
-        local message=$(echo "$result_line" | cut -d'|' -f2-)
-
-        case "$status_type" in
-            "success") log_success "$message" ;;
-            "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;; # 根据 JB_SHOW_UNCHANGED_LOGS 决定是否打印
-            "error")   log_err "$message" ;;
-            *)         log_warn "未知模块更新结果: $result_line" ;;
-        esac
     done
 }
 
@@ -423,7 +411,7 @@ force_update_all() {
     self_update
     _update_core_files
     _update_all_modules
-    # 这里的成功信息将在 spinner 停止后打印
+    # 这里的成功信息将在 spinner 停止后，由 main 函数统一打印
 }
 
 confirm_and_force_update() {
@@ -454,6 +442,17 @@ confirm_and_force_update() {
         export JB_SHOW_UNCHANGED_LOGS="true" 
         _update_all_modules
         export JB_SHOW_UNCHANGED_LOGS="${old_show_unchanged}" # 恢复之前的设置
+        # 打印收集到的模块更新结果
+        for result_line in "${_module_update_results[@]}"; do
+            local status_type=$(echo "$result_line" | cut -d'|' -f1)
+            local message=$(echo "$result_line" | cut -d'|' -f2-)
+            case "$status_type" in
+                "success") log_success "$message" ;;
+                "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;;
+                "error")   log_err "$message" ;;
+                *)         log_warn "未知模块更新结果: $result_line" ;;
+            esac
+        done
         log_success "强制重置完成！"
         log_info "脚本将在2秒后自动重启以应用所有更新..."
         sleep 2
@@ -732,8 +731,7 @@ main() {
         echo -e "\033[0;33m[警告] 检测到另一实例正在运行." > /dev/tty
         exit 1
     fi
-    # 退出陷阱，确保在脚本退出时释放文件锁
-    # 移除了 stop_spinner 的调用，因为 main 函数会显式调用它
+    # 退出陷阱，确保在脚本退出时释放文件锁。stop_spinner 不再在这里调用。
     trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 脚本已退出." > /dev/tty;' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
@@ -750,7 +748,18 @@ main() {
                 log_info "正在以 Headless 模式安全更新所有脚本..."
                 # 在 headless 模式下，强制显示所有更新日志
                 export JB_SHOW_UNCHANGED_LOGS="true" 
-                force_update_all
+                force_update_all # 这将填充 _module_update_results
+                # 打印收集到的模块更新结果
+                for result_line in "${_module_update_results[@]}"; do
+                    local status_type=$(echo "$result_line" | cut -d'|' -f1)
+                    local message=$(echo "$result_line" | cut -d'|' -f2-)
+                    case "$status_type" in
+                        "success") log_success "$message" ;;
+                        "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;;
+                        "error")   log_err "$message" ;;
+                        *)         log_warn "未知模块更新结果: $result_line" ;;
+                    esac
+                done
                 echo -e "$(log_timestamp) ${GREEN}[成功]${NC} 所有组件更新检查完成！" > /dev/tty # Headless 模式下直接打印完成信息
                 exit 0
                 ;;
@@ -761,7 +770,7 @@ main() {
                 ;;
             *)
                 local item_json
-                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startstartswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
+                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
                 if [ -n "$item_json" ]; then
                     local action_to_run
                     action_to_run=$(echo "$item_json" | jq -r '.action' 2>/dev/null || echo "")
@@ -786,8 +795,20 @@ main() {
     log_info "脚本启动 (${SCRIPT_VERSION})"
     
     start_spinner # 启动加载动画
-    force_update_all # 执行更新操作
-    stop_spinner # 停止加载动画，并打印完成信息
+    force_update_all # 执行更新操作，结果存储在 _module_update_results
+    stop_spinner # 停止加载动画
+
+    # 打印收集到的模块更新结果
+    for result_line in "${_module_update_results[@]}"; do
+        local status_type=$(echo "$result_line" | cut -d'|' -f1)
+        local message=$(echo "$result_line" | cut -d'|' -f2-)
+        case "$status_type" in
+            "success") log_success "$message" ;;
+            "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;;
+            "error")   log_err "$message" ;;
+            *)         log_warn "未知模块更新结果: $result_line" ;;
+        esac
+    done
     log_success "所有组件更新检查完成！" # 交互模式下打印最终完成信息
 
     # 重新加载配置，确保使用最新的 config.json
