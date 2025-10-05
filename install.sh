@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.14)
-# - 修复：彻底解决了并发模块更新时日志排版混乱的问题，通过严格控制日志输出时序实现。
-# - 修复：解决了脚本在更新后立即退出，不显示菜单的问题，确保 config.json 配置及时重载。
+# 🚀 VPS 一键安装入口脚本 (v74.15)
+# - 修复：彻底解决了并发模块更新时日志排版混乱的问题，通过严格控制日志输出时序和行清除实现。
+# - 修复：解决了脚本在更新后立即退出，不显示菜单的问题，确保 config.json 配置及时重载并增加调试日志。
 # - 修复：修正了 `EXIT` 陷阱中对 `stop_spinner` 的重复调用问题。
 # - 修复：解决了动态加载动画的 ANSI 逃逸序列残留问题，并优化了动画停止时的行清除。
 # - 新增：在智能更新时增加了动态加载动画。
@@ -16,7 +16,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.14"
+SCRIPT_VERSION="v74.15"
 
 # 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
 export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
@@ -164,9 +164,11 @@ start_spinner() {
 stop_spinner() {
     if [ -n "$_spinner_pid" ]; then
         kill "$_spinner_pid" 2>/dev/null || true
-        # 清除 spinner 留下的行，并打印完成信息
+        # 清除 spinner 留下的行
         echo -ne "\r\033[K" > /dev/tty # \033[K clears from cursor to end of line
-        echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 完成。   " > /dev/tty
+        # 打印完成信息，使用 log_info 函数确保格式一致性
+        log_info "正在智能更新... 完成。"
+        echo "" > /dev/tty # 明确添加一个新行，确保后续日志从新行开始
         unset _spinner_pid # 清除 PID
     fi
 }
@@ -354,7 +356,10 @@ _update_core_files() {
     fi
 }
 
-# 修改：此函数现在会收集所有模块的更新结果到数组，并在所有后台任务完成后，统一、有序地打印日志
+# 全局数组，用于收集模块更新结果
+declare -ga _module_update_results=()
+
+# 修改：此函数现在会收集所有模块的更新结果到数组，不直接打印日志
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
@@ -393,8 +398,8 @@ _update_all_modules() {
         temp_output_files+=("$temp_file")
     done
 
-    # 收集所有结果到数组 (全局数组)
-    local -g _module_update_results=() 
+    # 清空之前的收集结果
+    _module_update_results=() 
     local i=0
     for pid in "${pids[@]}"; do
         wait "$pid" # 等待每个进程完成
@@ -726,6 +731,10 @@ process_menu_selection() {
 }
 
 main() {
+    if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
+        set -x
+    fi
+
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
         echo -e "\033[0;33m[警告] 检测到另一实例正在运行." > /dev/tty
@@ -739,16 +748,18 @@ main() {
         check_and_install_dependencies
     fi
 
+    log_debug "Initial load_config call."
     load_config
 
     if [ $# -gt 0 ]; then
+        log_debug "Script called with arguments, entering headless mode."
         local command="$1"; shift
         case "$command" in
             update)
                 log_info "正在以 Headless 模式安全更新所有脚本..."
                 # 在 headless 模式下，强制显示所有更新日志
                 export JB_SHOW_UNCHANGED_LOGS="true" 
-                force_update_all # 这将填充 _module_update_results
+                _update_all_modules # 这将填充 _module_update_results
                 # 打印收集到的模块更新结果
                 for result_line in "${_module_update_results[@]}"; do
                     local status_type=$(echo "$result_line" | cut -d'|' -f1)
@@ -799,6 +810,7 @@ main() {
     stop_spinner # 停止加载动画
 
     # 打印收集到的模块更新结果
+    log_debug "Printing collected module update results."
     for result_line in "${_module_update_results[@]}"; do
         local status_type=$(echo "$result_line" | cut -d'|' -f1)
         local message=$(echo "$result_line" | cut -d'|' -f2-)
@@ -812,14 +824,22 @@ main() {
     log_success "所有组件更新检查完成！" # 交互模式下打印最终完成信息
 
     # 重新加载配置，确保使用最新的 config.json
+    log_debug "Attempting to reload config after update."
     load_config 
+    log_debug "Config reloaded. About to enter main menu loop. Sleeping for 1 second..."
+    sleep 1 # Add a short delay for visual clarity
+    log_debug "Entering main menu loop now."
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
+        log_debug "Inside main menu loop. Calling display_menu."
         display_menu
+        log_debug "display_menu returned. Calling process_menu_selection."
         local exit_code=0
         process_menu_selection || exit_code=$?
+        log_debug "process_menu_selection returned with exit_code: $exit_code"
         if [ "$exit_code" -ne 10 ]; then
+            log_debug "Exit code is not 10. Pressing enter to continue."
             # 清空输入缓冲区，防止上次输入影响下次read
             while read -r -t 0; do :; done < /dev/tty
             tput el 2>/dev/null || true # 清除当前行（如果 tput 可用），避免回车键残留
