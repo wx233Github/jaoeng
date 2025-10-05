@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v75.0-回归稳定版并集成修复)
+# 🚀 VPS 一键安装入口脚本 (v74.11-修复Watchtower默认值与UI排版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v75.0"
+SCRIPT_VERSION="v74.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -64,10 +64,6 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
             temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
                 echo_error "下载 ${name} 失败。"
-            fi
-            # 增加对下载文件的基础验证
-            if [ ! -s "$temp_file" ]; then
-                echo_error "下载的 ${name} 文件为空，安装中止。"
             fi
             # 优化：抑制 mv 的 run_with_sudo 日志
             if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
@@ -149,19 +145,13 @@ fi
 load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        # 回归 v74.11 的稳定加载逻辑
         while IFS='=' read -r key value; do
-            # 使用更安全的 Bash 参数扩展代替有问题的 sed 命令
-            if [[ "$value" == \"*\" ]]; then
-                value="${value#\"}"
-                value="${value%\"}"
-            fi
+            value=$(printf '%s' "$value" | sed 's/^"\(.*\)"$/\1/')
             CONFIG[$key]="$value"
         done < <(jq -r 'to_entries
             | map(select(.key != "menus" and .key != "dependencies" and (.key | startswith("comment") | not)))
             | map("\(.key)=\(.value)")
             | .[]' "$CONFIG_FILE" 2>/dev/null || true)
-        
         CONFIG[dependencies]="$(jq -r '.dependencies.common // "curl cmp ln dirname flock jq"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[dependencies]}")"
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
@@ -229,11 +219,6 @@ self_update() {
         rm -f "$temp_script" 2>/dev/null || true
         return
     fi
-    if [ ! -s "$temp_script" ]; then
-        log_warn "主程序 (install.sh) 更新检查失败 (下载文件为空)。"
-        rm -f "$temp_script" 2>/dev/null || true
-        return
-    fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
@@ -274,45 +259,20 @@ download_module_to_cache() {
     fi
 }
 
-# 终极修复：封装了下载、验证和替换逻辑的健壮函数
-_update_single_core_file() {
-    local file_name="$1"      # e.g., "utils.sh"
-    local dest_path="$2"      # e.g., /opt/vps_install_modules/utils.sh
-    local validation_cmd="$3" # e.g., "jq . >/dev/null 2>&1" or ""
-
-    local temp_file="/tmp/${file_name}.tmp.$$"
-    trap 'rm -f "$temp_file" 2>/dev/null' RETURN # Ensure temp file is cleaned up
-
-    if ! _download_file "$file_name" "$temp_file"; then
-        log_warn "核心文件 ($file_name) 更新检查失败 (无法连接)。"
-        return 1
-    fi
-
-    if [ ! -s "$temp_file" ]; then
-        log_warn "核心文件 ($file_name) 更新检查失败 (下载的文件为空)。"
-        return 1
-    fi
-
-    if [ -n "$validation_cmd" ]; then
-        if ! eval "$validation_cmd < '$temp_file'"; then
-            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。"
-            return 1
-        fi
-    fi
-
-    if [ ! -f "$dest_path" ] || ! cmp -s "$dest_path" "$temp_file"; then
-        log_success "核心文件 ($file_name) 已更新。"
-        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "$dest_path"
-        if [[ "$file_name" == *.sh ]]; then
-            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$dest_path"
-        fi
-    fi
-    return 0
-}
-
 _update_core_files() {
-    _update_single_core_file "utils.sh" "$UTILS_PATH" ""
-    _update_single_core_file "config.json" "$CONFIG_PATH" "jq . >/dev/null 2>&1"
+    local temp_utils="/tmp/utils.sh.tmp.$$"
+    if _download_file "utils.sh" "$temp_utils"; then
+        if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
+            log_success "核心工具库 (utils.sh) 已更新。"
+            # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
+            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
+        else
+            rm -f "$temp_utils" 2>/dev/null || true
+        fi
+    else
+        log_warn "核心工具库 (utils.sh) 更新检查失败。"
+    fi
 }
 
 _update_all_modules() {
@@ -507,56 +467,40 @@ EOF
     return ${exit_code:-0}
 }
 
-# 集成 v74.12+ 的 UI 修复
 _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
 
-    local max_content_width=0 # 仅计算内容宽度，不含内部空格和边框
-    
-    local title_content_width=$(_get_visual_width "$title")
-    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
+    local max_width=0
+    local title_width=$(( $(_get_visual_width "$title") + 2 ))
+    if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
-        local line_content_width=$(_get_visual_width "$line")
-        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        if (( line_width > max_width )); then max_width=$line_width; fi
     done
-    
-    local inner_padding_chars=2 # 左右各一个空格，用于内容与边框之间的间距
-    local box_inner_width=$((max_content_width + inner_padding_chars))
-    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # 最小内容区域宽度 (38 + 2边框 = 40总宽)
+    local box_width=$((max_width + 2))
+    if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
 
-    log_debug "DEBUG: _render_menu - title_content_width: $title_content_width, max_content_width: $max_content_width, box_inner_width: $box_inner_width"
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
 
-    # 顶部
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
-    
-    # 标题
     if [ -n "$title" ]; then
-        local current_title_line_width=$((title_content_width + inner_padding_chars)) # 标题内容宽度 + 左右各1空格
-        local padding_total=$((box_inner_width - current_title_line_width))
+        local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
-        
-        local left_padding_str; left_padding_str=$(printf '%*s' "$padding_left")
-        local right_padding_str; right_padding_str=$(printf '%*s' "$padding_right")
-
-        log_debug "DEBUG: Title: '$title', padding_left: $padding_left, padding_right: $padding_right"
-        echo -e "${GREEN}│${left_padding_str} ${title} ${right_padding_str}│${NC}"
+        local left_padding; left_padding=$(printf '%*s' "$padding_left")
+        local right_padding; right_padding=$(printf '%*s' "$padding_right")
+        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
     fi
-    
-    # 选项
+
     for line in "${lines[@]}"; do
-        local line_content_width=$(_get_visual_width "$line")
-        # 计算右侧填充：总内容区域宽度 - 当前行内容宽度 - 左侧一个空格
-        local padding_right_for_line=$((box_inner_width - line_content_width - 1)) 
-        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
-        log_debug "DEBUG: Line: '$line', line_content_width: $line_content_width, padding_right_for_line: $padding_right_for_line"
-        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # 左侧固定一个空格
+        local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        local padding_right=$((box_width - line_width))
+        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
+        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
-    # 底部
-    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
 }
 
 _print_header() { _render_menu "$1" ""; }
@@ -589,7 +533,7 @@ display_menu() {
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
     local exit_hint="退出"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
@@ -607,7 +551,7 @@ process_menu_selection() {
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
 
     if [ -z "$choice" ]; then
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
@@ -664,7 +608,7 @@ main() {
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出 (Exit Code: ${trap_exit_code})."' EXIT
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出."' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
@@ -715,9 +659,6 @@ main() {
     sleep 0.5
     echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
     force_update_all
-    
-    # 确保在更新后重新加载配置
-    load_config
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
