@@ -1,9 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.12)
-# - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
+# 🚀 VPS 一键安装入口脚本 (v74.13)
+# - 修复：解决了脚本在更新后立即退出，不显示菜单的问题，确保 config.json 配置及时重载。
+# - 修复：修正了 `EXIT` 陷阱中对 `stop_spinner` 的重复调用问题。
 # - 修复：解决了动态加载动画的 ANSI 逃逸序列残留问题，并优化了动画停止时的行清除。
-# - 修复：解决了脚本在更新后立即退出，不显示菜单的问题。
+# - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
 # - 新增：在智能更新时增加了动态加载动画。
 # - 修复：新增 `JB_SHOW_UNCHANGED_LOGS` 变量，默认不打印“模块 (...) 未更改”信息，可通过 `FORCE_REFRESH=true` 启用。
 # - 优化：`download_module_to_cache` 函数现在将结果输出到 stdout，而不是直接打印日志。
@@ -15,7 +16,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.12"
+SCRIPT_VERSION="v74.13"
 
 # 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
 export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
@@ -337,6 +338,19 @@ _update_core_files() {
         fi
     else
         log_warn "核心工具库 (utils.sh) 更新检查失败。"
+    fi
+
+    local temp_config="/tmp/config.json.tmp.$$"
+    if _download_file "config.json" "$temp_config"; then
+        if [ ! -f "$CONFIG_PATH" ] || ! cmp -s "$CONFIG_PATH" "$temp_config"; then
+            log_success "核心配置文件 (config.json) 已更新。"
+            # 优化：抑制 mv 的 run_with_sudo 日志
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_config" "$CONFIG_PATH" >/dev/null 2>&1
+        else
+            rm -f "$temp_config" 2>/dev/null || true
+        fi
+    else
+        log_warn "核心配置文件 (config.json) 更新检查失败。"
     fi
 }
 
@@ -719,7 +733,8 @@ main() {
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; stop_spinner; echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 脚本已退出." > /dev/tty;' EXIT
+    # 移除了 stop_spinner 的调用，因为 main 函数会显式调用它
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; echo -e "$(log_timestamp) ${BLUE}[信息]${NC} 脚本已退出." > /dev/tty;' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
@@ -746,7 +761,7 @@ main() {
                 ;;
             *)
                 local item_json
-                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
+                item_json=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.type != "submenu") | select(.action == $cmd or (.name | ascii_downcase | startstartswith($cmd)))' "${CONFIG[install_dir]}/config.json" 2>/dev/null | head -n 1)
                 if [ -n "$item_json" ]; then
                     local action_to_run
                     action_to_run=$(echo "$item_json" | jq -r '.action' 2>/dev/null || echo "")
@@ -773,7 +788,10 @@ main() {
     start_spinner # 启动加载动画
     force_update_all # 执行更新操作
     stop_spinner # 停止加载动画，并打印完成信息
-    # 移除这里冗余的 log_success "所有组件更新检查完成！"，因为 stop_spinner 已经打印了。
+    log_success "所有组件更新检查完成！" # 交互模式下打印最终完成信息
+
+    # 重新加载配置，确保使用最新的 config.json
+    load_config 
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
