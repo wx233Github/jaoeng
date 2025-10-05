@@ -1,18 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.4 - 修复语法错误)
-# - [修复] 修正了因 `层叠` 标记导致的 `if` 语句和 `for` 循环未正确闭合的语法错误。
-# - [修复] 移除自引导部分中错误的 `export -f run_with_sudo`，避免 "not a function" 错误。
-# - [优化] 将 `run_with_sudo` 函数定义导出为环境变量，供子脚本直接使用。
-# - [重构] 默认以普通用户身份运行主程序，需要root权限的操作通过 `run_with_sudo()` 执行。
-# - [修复] 启动器在首次下载后，将安装目录所有权赋给当前用户，确保后续操作权限。
-# - [增强] 在 `source utils.sh` 之前，增加 `_get_visual_width` 和 `generate_line` 的备用（fallback）定义。
-# - [优化] 调整 `exec` 命令，确保自更新和模块执行的权限流一致。
-# - [修正] 增加菜单内部边距，适配移动终端UI
+# 🚀 VPS 一键安装入口脚本 (v74.5 - 彻底修复)
+# - 修复：移除了自引导部分中错误的 `export -f run_with_sudo`。
+# - 修复：修正了之前版本中多处因 `层叠` 标记导致的语法错误。
+# - 优化：`run_with_sudo` 函数现在支持通过 `JB_SUDO_LOG_QUIET=true` 抑制日志输出。
+# - 优化：在下载/更新核心文件和模块时，`run_with_sudo` 的日志输出被抑制。
+# - 优化：脚本头部注释更简洁，移除了详细更新日志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.4"
+SCRIPT_VERSION="v74.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -38,7 +35,7 @@ generate_line() {
     local length="$1"
     local char="${2:-─}"
     if [ "$length" -le 0 ]; then echo ""; return; fi
-    printf "%${length}s" "" | sed "s/ /$char/g" # 修正了 $系统信息 错误
+    printf "%${length}s" "" | sed "s/ /$char/g"
 }
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -55,7 +52,8 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     # 确保安装目录存在
     if [ ! -d "$INSTALL_DIR" ]; then
         echo_info "安装目录 $INSTALL_DIR 不存在，正在尝试创建..."
-        if ! sudo mkdir -p "$INSTALL_DIR"; then
+        # 优化：抑制 mkdir 的 run_with_sudo 日志
+        if ! JB_SUDO_LOG_QUIET="true" sudo mkdir -p "$INSTALL_DIR"; then
             echo_error "无法创建安装目录 $INSTALL_DIR。请检查权限或手动创建。"
         fi
     fi
@@ -72,17 +70,19 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
                 echo_error "下载 ${name} 失败。"
             fi
-            if ! sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
+            # 优化：抑制 mv 的 run_with_sudo 日志
+            if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
                 echo_error "移动 ${name} 到 ${INSTALL_DIR} 失败。"
             fi
         done
         
         echo_info "正在设置核心脚本执行权限并调整目录所有权..."
-        if ! sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"; then
+        # 优化：抑制 chmod 和 chown 的 run_with_sudo 日志
+        if ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"; then
             echo_error "设置核心脚本执行权限失败。"
         fi
         # 核心：将安装目录所有权赋给当前用户，以便后续非root操作
-        if ! sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR"; then
+        if ! JB_SUDO_LOG_QUIET="true" sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR"; then
             echo_warn "无法将安装目录 $INSTALL_DIR 的所有权赋给当前用户 $(whoami)。后续操作可能需要手动sudo。"
         else
             echo_success "安装目录 $INSTALL_DIR 所有权已调整为当前用户。"
@@ -91,7 +91,8 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         echo_info "正在创建/更新快捷指令 'jb'..."
         BIN_DIR="/usr/local/bin"
         # 使用 sudo -E bash -c 来执行 ln 命令，确保环境变量和权限正确
-        if ! sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; then
+        # 优化：抑制 ln 的 run_with_sudo 日志
+        if ! JB_SUDO_LOG_QUIET="true" sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; then
             echo_warn "无法创建快捷指令 'jb'。请检查权限或手动创建链接。"
         fi
         echo_success "安装/更新完成！"
@@ -122,7 +123,10 @@ fi
 # 如果函数未被导出，这里重新定义以确保可用性
 if ! declare -f run_with_sudo &>/dev/null; then
   run_with_sudo() {
-      log_info "正在尝试以 root 权限执行: $*"
+      # 优化：根据 JB_SUDO_LOG_QUIET 环境变量决定是否输出日志
+      if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then
+          log_info "正在尝试以 root 权限执行: $*"
+      fi
       sudo -E "$@" < /dev/tty
   }
   export -f run_with_sudo # 确保在加载 utils.sh 后，如果 utils.sh 没有定义，这里也能导出
@@ -184,11 +188,12 @@ check_and_install_dependencies() {
         if echo "$choice" | grep -qE '^[Yy]$'; then
             log_info "正在使用 $pm 安装..."
             local update_cmd=""
-            if [ "$pm" = "apt" ]; then update_cmd="run_with_sudo apt-get update"; fi
-            if ! ($update_cmd && run_with_sudo "$pm" install -y "${missing_deps[@]}"); then
+            if [ "$pm" = "apt" ]; then update_cmd="JB_SUDO_LOG_QUIET='true' run_with_sudo apt-get update"; fi # 优化：抑制 apt-get update 的日志
+            # 优化：抑制包安装的 run_with_sudo 日志
+            if ! ($update_cmd && JB_SUDO_LOG_QUIET='true' run_with_sudo "$pm" install -y "${missing_deps[@]}"); then
                 log_err "依赖安装失败."
                 exit 1
-            fi # <--- 修正: 闭合 `if`
+            fi
             log_success "依赖安装完成！"
         else
             log_err "用户取消安装."
@@ -221,9 +226,9 @@ self_update() {
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
-        # 使用 run_with_sudo 移动文件和设置权限
-        run_with_sudo mv "$temp_script" "$SCRIPT_PATH"
-        run_with_sudo chmod +x "$SCRIPT_PATH"
+        # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_script" "$SCRIPT_PATH"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$SCRIPT_PATH"
         flock -u 200 || true
         rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
         trap - EXIT # 取消退出陷阱，防止在 exec 后再次执行
@@ -246,16 +251,16 @@ download_module_to_cache() {
         log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file" 2>/dev/null || true
         return 1
-    fi # <--- 修正: 闭合 `if`
+    fi
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
         rm -f "$tmp_file" 2>/dev/null || true
         return 0
     else
         log_success "模块 (${script_name}) 已更新。"
-        # 核心：使用 run_with_sudo 创建目录和移动文件，因为 INSTALL_DIR 可能在 /opt
-        run_with_sudo mkdir -p "$(dirname "$local_file")"
-        run_with_sudo mv "$tmp_file" "$local_file"
-        run_with_sudo chmod +x "$local_file" || true
+        # 优化：抑制 mkdir, mv, chmod 的 run_with_sudo 日志
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$local_file" || true
     fi
 }
 
@@ -264,9 +269,9 @@ _update_core_files() {
     if _download_file "utils.sh" "$temp_utils"; then
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
             log_success "核心工具库 (utils.sh) 已更新。"
-            # 核心：使用 run_with_sudo 移动文件和设置权限
-            run_with_sudo mv "$temp_utils" "$UTILS_PATH"
-            run_with_sudo chmod +x "$UTILS_PATH"
+            # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
+            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
         else
             rm -f "$temp_utils" 2>/dev/null || true
         fi
@@ -324,13 +329,13 @@ confirm_and_force_update() {
                 log_err "下载最新的 ${name} 失败。"
                 continue
             fi
-            # 核心：使用 run_with_sudo 移动文件
-            run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
+            # 优化：抑制 mv 的 run_with_sudo 日志
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
             log_success "${name} 已重置为最新版本。"
         done
         log_info "正在恢复核心脚本执行权限..."
-        # 核心：使用 run_with_sudo 设置权限
-        run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
+        # 优化：抑制 chmod 的 run_with_sudo 日志
+        JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
         log_success "权限已恢复。"
         _update_all_modules
         log_success "强制重置完成！"
@@ -355,10 +360,10 @@ uninstall_script() {
     read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
         log_info "开始卸载..."
-        # 核心：使用 run_with_sudo 移除文件
-        run_with_sudo rm -rf "${CONFIG[install_dir]}"
+        # 优化：抑制 rm 的 run_with_sudo 日志
+        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}"
         log_success "安装目录已移除."
-        run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
         log_success "快捷方式已移除."
         log_success "脚本已成功卸载."
         log_info "再见！"
@@ -463,7 +468,7 @@ _render_menu() {
     for line in "${lines[@]}"; do
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
         if (( line_width > max_width )); then max_width=$line_width; fi
-    done # <--- 修正: 闭合 `for`
+    done
     local box_width=$((max_width + 2))
     if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
 
