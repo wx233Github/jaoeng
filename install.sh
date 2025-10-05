@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.9-优化更新提示)
+# 🚀 VPS 一键安装入口脚本 (v74.10-修复Watchtower模块变量名)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.9"
+SCRIPT_VERSION="v74.10"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -42,8 +42,7 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
     
     # 检查 curl 依赖
-    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fen
-    fi
+    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
 
     # 确保安装目录存在
     if [ ! -d "$INSTALL_DIR" ]; then
@@ -412,6 +411,7 @@ export LC_ALL=${LC_ALL}
                 local key_upper
                 key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
                 value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
+                # 修正：导出变量时使用 WATCHTOWER_CONF_ 而不是 JB_WATCHTOWER_CONF_
                 env_exports+=$(printf "export %s_CONF_%s='%s'\n" "$(echo "$module_key" | tr '[:lower:]' '[:upper:]')" "$key_upper" "$value")
             fi
         done < <(echo "$module_config_json" | jq -r "$jq_script" 2>/dev/null || true)
@@ -519,7 +519,7 @@ display_menu() {
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
     local exit_hint="退出"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
