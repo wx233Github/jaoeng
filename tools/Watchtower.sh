@@ -216,18 +216,20 @@ _start_watchtower_container_logic(){
         # 根据 WATCHTOWER_NOTIFY_ON_NO_UPDATES 设置 WATCHTOWER_REPORT_NO_UPDATES
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
-            log_info "✅ 将启用 '有更新才通知' 模式 (无更新也通知)。"
+            log_info "✅ 将启用 '无更新也通知' 模式。" # 修正此处描述，与 config.json 保持一致
         else
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Watchtower 的通知模板，修正了Bash转义问题
-        # 使用printf构建模板，避免Bash字符串中的转义复杂性
-        # 注意：这里的换行符 '\n' 在printf中会被正确解析为换行
+        # Watchtower 的通知模板（原始 Go Template 字符串）
+        # 使用printf构建模板，确保换行符、反引号等字符正确
         local NOTIFICATION_TEMPLATE_RAW=$(printf "🐳 *Docker 容器更新报告*\n\n*服务器:* \`{{.Host}}\`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* \`{{.ImageName}}\`\n  🆔 *ID:* \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
-        # 将原始模板字符串进行URL编码，以确保作为环境变量传递时不会被破坏
-        local NOTIFICATION_TEMPLATE_ENCODED=$(printf "%s" "$NOTIFICATION_TEMPLATE_RAW" | jq -sRr @uri)
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${NOTIFICATION_TEMPLATE_ENCODED}")
+        
+        # 对原始模板字符串中的内部双引号进行 Bash 转义，以确保其作为环境变量传递时不会被截断或错误解析
+        local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/"/\\"/g')
+        
+        # 将转义后的模板字符串作为环境变量传递给 Watchtower 容器
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE}")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -834,10 +836,13 @@ _get_watchtower_remaining_time(){
         if [[ "$log_line" == *"Session done"* ]]; then
             rem=$((int - ($(date +%s) - epoch) ))
         elif [[ "$log_line" == *"Scheduling first run"* ]]; then
+            # 如果是首次调度，计算距离调度时间的剩余时间
             rem=$((epoch - $(date +%s)))
         elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
-            # 假设 Watchtower 启动后 5 秒内会进行首次调度
-            rem=$(( (epoch + 5 + int) - $(date +%s) ))
+            # 假设 Watchtower 启动后 5 秒内会进行首次调度，然后按间隔运行
+            # 这里需要更准确地获取实际的下次调度时间，但从日志难以直接获得
+            # 暂时假设启动后立即开始计时，下次检查是 interval 秒后
+            rem=$(( (epoch + int) - $(date +%s) ))
         fi
 
         if [ "$rem" -gt 0 ]; then
