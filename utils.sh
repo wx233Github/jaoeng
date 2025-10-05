@@ -97,3 +97,69 @@ _render_menu() {
     echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
+
+# --- Watchtower 模块所需的通用时间处理函数 ---
+
+# 解析 Watchtower 日志行中的时间戳
+_parse_watchtower_timestamp_from_log_line() {
+    local log_line="$1"
+    local timestamp=""
+    # 尝试匹配 time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" 格式
+    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 YYYY-MM-DDTHH:MM:SSZ 格式 (例如 Watchtower 1.7.1)
+    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
+    timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    echo ""
+    return 1
+}
+
+# 将日期时间字符串转换为 Unix 时间戳 (epoch)
+_date_to_epoch() {
+    local dt="$1"
+    [ -z "$dt" ] && echo "" && return 1 # 如果输入为空，返回空字符串并失败
+    
+    # 尝试使用 GNU date
+    if date -d "now" >/dev/null 2>&1; then
+        date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    # 尝试使用 BSD date (通过 gdate 命令)
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then
+        gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    else
+        log_warn "⚠️ 'date' 或 'gdate' 不支持。无法解析时间戳。"
+        echo ""
+        return 1
+    fi
+}
+
+# 将秒数格式化为更易读的字符串 (例如 300s, 2h)
+_format_seconds_to_human() {
+    local seconds="$1"
+    if ! echo "$seconds" | grep -qE '^[0-9]+$'; then
+        echo "N/A"
+        return 1
+    fi
+    
+    if [ "$seconds" -lt 60 ]; then
+        echo "${seconds}秒"
+    elif [ "$seconds" -lt 3600 ]; then
+        echo "$((seconds / 60))分"
+    elif [ "$seconds" -lt 86400 ]; then
+        echo "$((seconds / 3600))时"
+    else
+        echo "$((seconds / 86400))天"
+    fi
+    return 0
+}
