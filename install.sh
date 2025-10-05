@@ -16,7 +16,7 @@ fi
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL=C; fi
 
 # --- 备用 UI 渲染函数 (Fallback UI rendering functions) ---
 # 这些函数在 utils.sh 未加载或加载失败时提供基本的菜单渲染能力，防止脚本崩溃。
