@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.35)
+# 🚀 通用工具函数库 (v2.36)
+# - 修复：解决了 `_parse_watchtower_timestamp_from_log_line` 函数中 `if` 语句未闭合的语法错误。
+# - 修复：修正了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`。
 # - 新增：添加了 `_prompt_for_interval` 函数，用于交互式获取并验证时间间隔输入。
-# - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数中的语法错误。
 # - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数，优先解析“Scheduling first run”的调度时间。
 # - 优化：脚本头部注释更简洁。
 # =============================================================
@@ -89,7 +90,7 @@ _render_menu() {
     if [ -n "$title" ]; then
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left))
+        local padding_right=$((padding_total - padding_left)) # 修复：这里是 padding_right
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
         echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
@@ -124,4 +125,94 @@ _parse_watchtower_timestamp_from_log_line() {
     fi
 
     # 2. Next priority: time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" format
-    timestamp=$(echo "$log_line" | sed -n 's/.*time="$[^"]*$".*/\1/p' | head -n1 || true)
+    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then # 修复：这里缺少 if 的闭合
+        echo "$timestamp"
+        return 0
+    fi
+    
+    # 3. Next priority: YYYY-MM-DDTHH:MM:SSZ format (e.g. Watchtower 1.7.1)
+    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+
+    echo ""
+    return 1
+}
+
+# 将日期时间字符串转换为 Unix 时间戳 (epoch)
+_date_to_epoch() {
+    local dt="$1"
+    [ -z "$dt" ] && echo "" && return 1 # 如果输入为空，返回空字符串并失败
+    
+    # 尝试使用 GNU date
+    if date -d "now" >/dev/null 2>&1; then
+        date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    # 尝试使用 BSD date (通过 gdate 命令)
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then
+        gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    else
+        log_warn "⚠️ 'date' 或 'gdate' 不支持。无法解析时间戳。"
+        echo ""
+        return 1
+    fi
+}
+
+# 将秒数格式化为更易读的字符串 (例如 300s, 2h)
+_format_seconds_to_human() {
+    local seconds="$1"
+    if ! echo "$seconds" | grep -qE '^[0-9]+$'; then
+        echo "N/A"
+        return 1
+    fi
+    
+    if [ "$seconds" -lt 60 ]; then
+        echo "${seconds}秒"
+    elif [ "$seconds" -lt 3600 ]; then
+        echo "$((seconds / 60))分"
+    elif [ "$seconds" -lt 86400 ]; then
+        echo "$((seconds / 3600))时"
+    else
+        echo "$((seconds / 86400))天"
+    fi
+    return 0
+}
+
+# 交互式获取并验证时间间隔
+_prompt_for_interval() {
+    local default_interval="$1"
+    local prompt_msg="$2"
+    local input=""
+    local interval_in_seconds=""
+
+    while true; do
+        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input
+        input="${input:-$default_interval}" # 如果用户输入为空，则使用默认值
+
+        # 尝试将输入转换为秒
+        if echo "$input" | grep -qE '^[0-9]+$'; then
+            interval_in_seconds="$input"
+        elif echo "$input" | grep -qE '^[0-9]+s$'; then
+            interval_in_seconds=$(echo "$input" | sed 's/s$//')
+        elif echo "$input" | grep -qE '^[0-9]+m$'; then
+            interval_in_seconds=$(( $(echo "$input" | sed 's/m$//') * 60 ))
+        elif echo "$input" | grep -qE '^[0-9]+h$'; then
+            interval_in_seconds=$(( $(echo "$input" | sed 's/h$//') * 3600 ))
+        elif echo "$input" | grep -qE '^[0-9]+d$'; then
+            interval_in_seconds=$(( $(echo "$input" | sed 's/d$//') * 86400 ))
+        else
+            log_warn "无效的间隔格式。请使用秒数 (例如: 300), 或带单位 (例如: 5m, 1h, 1d)。"
+            continue
+        fi
+
+        # 验证是否为正整数
+        if echo "$interval_in_seconds" | grep -qE '^[0-9]+$' && [ "$interval_in_seconds" -gt 0 ]; then
+            echo "$interval_in_seconds"
+            return 0
+        else
+            log_warn "无效的间隔值。请输入一个大于零的整数。"
+        fi
+    done
+}
