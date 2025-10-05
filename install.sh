@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.10-修复Watchtower模块变量名)
+# 🚀 VPS 一键安装入口脚本 (v74.11-修复Watchtower默认值与UI排版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.10"
+SCRIPT_VERSION="v74.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -401,21 +401,35 @@ export LC_ALL=${LC_ALL}
     if [ -f "$config_path" ] && command -v jq &>/dev/null; then
         module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key] // "null"' "$config_path" 2>/dev/null || echo "null")
     fi
-    if [ "$module_config_json" != "null" ] && [ -n "$module_config_json" ]; then
-        local jq_script='to_entries | .[] | select((.key | startswith("comment") | not) and .value != null) | .key as $k | .value as $v | 
-            if ($v|type) == "array" then [$k, ($v|join(","))] 
-            elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] 
-            else empty end | @tsv'
-        while IFS=$'\t' read -r key value; do
-            if [ -n "$key" ]; then
-                local key_upper
-                key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
-                value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
-                # 修正：导出变量时使用 WATCHTOWER_CONF_ 而不是 JB_WATCHTOWER_CONF_
-                env_exports+=$(printf "export %s_CONF_%s='%s'\n" "$(echo "$module_key" | tr '[:lower:]' '[:upper:]')" "$key_upper" "$value")
+    
+    log_debug "DEBUG: Processing module_config_json for '$module_key': '$module_config_json'"
+
+    # 改进 jq_script，将 null 值转换为 ""
+    local jq_script='to_entries | .[] | select((.key | startswith("comment") | not)) | .key as $k | .value as $v | 
+        if ($v|type) == "array" then [$k, ($v|join(","))] 
+        elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] 
+        elif ($v|type) == "null" then [$k, ""] # Treat null as empty string
+        else empty end | @tsv'
+
+    while IFS=$'\t' read -r key value; do
+        if [ -n "$key" ]; then
+            local key_upper
+            key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+            
+            # 针对数值型配置进行前置验证
+            if [[ "$key" == *"interval"* ]] || [[ "$key" == *"hour"* ]]; then
+                if ! echo "$value" | grep -qE '^[0-9]+$'; then
+                    log_warn "config.json中'${module_key}.${key}'的值'${value}'不是有效数字，将忽略此配置。"
+                    continue # 忽略无效的数值配置
+                fi
             fi
-        done < <(echo "$module_config_json" | jq -r "$jq_script" 2>/dev/null || true)
-    fi
+            value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
+            env_exports+=$(printf "export %s_CONF_%s='%s'\n" "$(echo "$module_key" | tr '[:lower:]' '[:upper:]')" "$key_upper" "$value")
+            log_debug "DEBUG: Exporting: ${module_key^^}_CONF_${key_upper}='${value}'"
+        fi
+    done < <(echo "$module_config_json" | jq -r "$jq_script" 2>/dev/null || true)
+    
+    log_debug "DEBUG: Final env_exports for '$module_key':\n$env_exports"
 
     local extra_args_str
     extra_args_str=$(_quote_args "$@")
@@ -641,7 +655,6 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    # 修复：移除省略号
     echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🕛"
     sleep 0.5
     echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
