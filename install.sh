@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.10-修复更新动画冲突)
+# 🚀 VPS 一键安装入口脚本 (v74.9-优化更新提示)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.10"
+SCRIPT_VERSION="v74.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; fi
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
 
 # --- 备用 UI 渲染函数 (Fallback UI rendering functions) ---
 # 这些函数在 utils.sh 未加载或加载失败时提供基本的菜单渲染能力，防止脚本崩溃。
@@ -42,7 +42,8 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
     
     # 检查 curl 依赖
-    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
+    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fen
+    fi
 
     # 确保安装目录存在
     if [ ! -d "$INSTALL_DIR" ]; then
@@ -234,7 +235,6 @@ self_update() {
     rm -f "$temp_script" 2>/dev/null || true
 }
 
-# download_module_to_cache 返回值: 0: 已是最新, 1: 下载失败, 2: 已更新
 download_module_to_cache() {
     local script_name="$1"
     local local_file="${CONFIG[install_dir]}/$script_name"
@@ -244,50 +244,43 @@ download_module_to_cache() {
     http_code=$(curl -sS --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 -w "%{http_code}" -o "$tmp_file" "$url" 2>/dev/null) || true
     local curl_exit_code=$?
     if [ $curl_exit_code -ne 0 ] || [ "$http_code" != "200" ] || [ ! -s "$tmp_file" ]; then
-        # log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)" # 避免在动画中输出
+        log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file" 2>/dev/null || true
-        return 1 # Indicate failure
+        return 1
     fi
     if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then
         rm -f "$tmp_file" 2>/dev/null || true
-        return 0 # Indicate no update needed
+        return 0
     else
-        # log_success "模块 (${script_name}) 已更新。" # 避免在动画中输出
+        log_success "模块 (${script_name}) 已更新。"
+        # 优化：抑制 mkdir, mv, chmod 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")"
         JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file"
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$local_file" || true
-        return 2 # Indicate update happened
     fi
 }
 
-# _update_core_files 返回值: 0: 已是最新, 1: 下载失败, 2: 已更新
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
-    local update_status=0 # 0: no update, 1: failed, 2: updated
-
     if _download_file "utils.sh" "$temp_utils"; then
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
-            # log_success "核心工具库 (utils.sh) 已更新。" # 避免在动画中输出
+            log_success "核心工具库 (utils.sh) 已更新。"
+            # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
             JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
-            update_status=2
         else
             rm -f "$temp_utils" 2>/dev/null || true
-            update_status=0
         fi
     else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。" # 警告/错误可以保留
-        update_status=1
+        log_warn "核心工具库 (utils.sh) 更新检查失败。"
     fi
-    return "$update_status"
 }
 
-# _update_all_modules 返回值: 0: 已是最新, 1: 有模块下载失败, 2: 有模块已更新
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
         log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
-        return 1 # Indicate failure to update modules due to missing config
+        return
     fi
     local scripts_to_update
     scripts_to_update=$(jq -r '
@@ -298,40 +291,23 @@ _update_all_modules() {
         .action
     ' "$cfg" 2>/dev/null || true)
     if [ -z "$scripts_to_update" ]; then
-        return 0 # Indicate no modules to update
+        log_info "未检测到可更新的模块。"
+        return
     fi
     local pids=()
-    local overall_status=0 # 0: all good, 1: some failed, 2: some updated
     for script_name in $scripts_to_update; do
         download_module_to_cache "$script_name" & pids+=($!)
     done
     for pid in "${pids[@]}"; do
         wait "$pid" || true
-        local status=$?
-        if [ "$status" -eq 1 ]; then # Download failed
-            overall_status=1
-        elif [ "$status" -eq 2 ] && [ "$overall_status" -eq 0 ]; then # Updated, but no prior failure
-            overall_status=2
-        fi
     done
-    return "$overall_status"
 }
 
-# force_update_all 返回值: 0: 所有组件都是最新, 1: 更新过程中有失败, 2: 有组件成功更新
 force_update_all() {
-    self_update # This already handles restart if updated, so its return code is not directly used for animation
-
-    local core_update_status=$(_update_core_files)
-    local modules_update_status=$(_update_all_modules)
-
-    # 如果任何更新失败，返回 1。如果任何更新成功，返回 2。否则返回 0。
-    if [ "$core_update_status" -eq 1 ] || [ "$modules_update_status" -eq 1 ]; then
-        return 1
-    elif [ "$core_update_status" -eq 2 ] || [ "$modules_update_status" -eq 2 ]; then
-        return 2
-    else
-        return 0
-    fi
+    self_update
+    _update_core_files
+    _update_all_modules
+    log_success "所有组件更新检查完成！"
 }
 
 confirm_and_force_update() {
@@ -357,7 +333,7 @@ confirm_and_force_update() {
         # 优化：抑制 chmod 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
         log_success "权限已恢复。"
-        _update_all_modules # 强制重置后，也需要更新所有模块，这里不关心返回值
+        _update_all_modules
         log_success "强制重置完成！"
         log_info "脚本将在2秒后自动重启以应用所有更新..."
         sleep 2
@@ -665,38 +641,11 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-
-    local base_msg="$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 "
-    
-    force_update_all &
-    local pid=$!
-
-    local spinner_chars="/-\|"
-    local i=0
-    local update_result=0 # 0: no updates, 1: failed, 2: updated
-
-    # 循环显示动画
-    while kill -0 "$pid" 2>/dev/null; do
-        i=$(( (i+1) % 4 ))
-        printf "\r%s%c" "$base_msg" "${spinner_chars:$i:1}"
-        sleep 0.1
-    done
-
-    # 等待后台进程真正完成
-    wait "$pid"
-    update_result=$? # 捕获 force_update_all 的返回码
-
-    # 清除动画并打印最终状态
-    if [ "$update_result" -eq 0 ]; then
-        printf "\r%s%s\n" "$base_msg" "🔄"
-        log_info "所有组件已是最新。"
-    elif [ "$update_result" -eq 2 ]; then
-        printf "\r%s%s\n" "$base_msg" "🔄"
-        log_success "所有组件更新检查完成！"
-    else # update_result is 1 (failure)
-        printf "\r%s${RED}❌ 更 新 失 败 ！${NC}\n" "$base_msg"
-        log_err "智能更新过程中发生错误。"
-    fi
+    # 修复：移除省略号
+    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🕛"
+    sleep 0.5
+    echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
+    force_update_all
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
