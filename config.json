@@ -1,101 +1,53 @@
 {
-  "comment": "脚本全局配置文件",
-
+  "comment_base_url": "脚本文件下载的基础URL",
   "base_url": "https://raw.githubusercontent.com/wx233Github/jaoeng/main",
-  "comment_base_url": "所有模块的下载基础 URL。",
-
+  "comment_install_dir": "脚本模块安装目录",
   "install_dir": "/opt/vps_install_modules",
-  "comment_install_dir": "脚本及模块的本地安装目录。",
-
+  "comment_bin_dir": "快捷命令安装目录",
   "bin_dir": "/usr/local/bin",
-  "comment_bin_dir": "'jb' 快捷方式的存放目录。",
-
-  "enable_auto_clear": false,
-  "comment_enable_auto_clear": "切换菜单时是否自动清屏 (默认 false 关闭，开启:true)",
-
-  "timezone": "Asia/Shanghai",
-  "comment_timezone": "为各模块(如Docker容器)设置时区。",
-  
+  "comment_dependencies": "脚本运行所需的基本依赖，会自动检查安装",
   "dependencies": {
-    "comment": "脚本核心依赖。",
     "common": "curl cmp ln dirname flock jq"
   },
+  "comment_lock_file": "防止多实例运行的锁文件",
+  "lock_file": "/tmp/vps_install_modules.lock",
+  "comment_enable_auto_clear": "是否在每次菜单显示前自动清屏 (true/false)",
+  "enable_auto_clear": false,
+  "comment_timezone": "服务器时区设置",
+  "timezone": "Asia/Shanghai",
 
+  "comment_menus": "主菜单配置",
   "menus": {
-    "comment": "动态菜单配置区。每个菜单都有 title 和 items。",
     "MAIN_MENU": {
       "title": "🖥️ VPS 一键安装脚本",
       "items": [
-        {
-          "name": "Docker",
-          "type": "item",
-          "action": "docker.sh",
-          "icon": "›"
-        },
-        {
-          "name": "Nginx",
-          "type": "item",
-          "action": "nginx.sh",
-          "icon": "›"
-        },
-        {
-          "name": "🔧 常用工具",
-          "type": "submenu",
-          "action": "TOOLS_MENU",
-          "icon": "→"
-        },
-        {
-          "name": "📕 证书申请",
-          "type": "submenu",
-          "action": "CERT_MENU",
-          "icon": "→"
-        },
-        {
-          "name": "强制重置 (更新脚本+恢复配置)",
-          "type": "func",
-          "action": "confirm_and_force_update",
-          "icon": "⚙️"
-        },
-        {
-          "name": "卸载脚本 (Uninstall)",
-          "type": "func",
-          "action": "uninstall_script",
-          "icon": "🗑️"
-        }
+        { "type": "item", "name": "Docker", "icon": "🐳", "action": "docker.sh" },
+        { "type": "item", "name": "Nginx", "icon": "🌐", "action": "nginx.sh" },
+        { "type": "submenu", "name": "常用工具", "icon": "🛠️", "action": "TOOLS_MENU" },
+        { "type": "item", "name": "证书申请", "icon": "📜", "action": "cert.sh" },
+        { "type": "func", "name": "强制重置 (更新脚本+恢复配置)", "icon": "⚙️", "action": "confirm_and_force_update" },
+        { "type": "func", "name": "卸载脚本 (Uninstall)", "icon": "🗑️", "action": "uninstall_script" }
       ]
     },
-
     "TOOLS_MENU": {
-      "title": "🔧 常用工具",
+      "title": "🛠️ 常用工具",
       "items": [
-        { "name": "Watchtower (Docker 更新)", "type": "item", "action": "tools/Watchtower.sh", "icon": "›" }
-      ]
-    },
-
-    "CERT_MENU": {
-      "title": "📕 证书申请",
-      "items": [
-        { "name": "Acme.sh (证书申请)", "type": "item", "action": "cert.sh", "icon": "›" }
+        { "type": "item", "name": "Watchtower (Docker 更新)", "icon": "🔄", "action": "tools/Watchtower.sh" }
       ]
     }
   },
 
+  "comment_module_configs": "模块特定的配置",
   "module_configs": {
-    "comment": "模块专属配置 (会作为环境变量传递给子脚本)",
     "watchtower": {
-      "comment": "Watchtower 模块配置",
-      "default_interval": 300,
-      "comment_interval": "默认检查间隔 (秒)",
+      "comment_default_interval": "Watchtower 默认检查间隔 (秒)",
+      "default_interval": 21600,
+      "comment_default_cron_hour": "Watchtower Cron 任务默认执行时间 (小时, 0-23)",
       "default_cron_hour": 4,
-      "comment_cron_hour": "Cron模式默认执行小时 (0-23)",
-      "enable_report": true,
-      "comment_report": "报告模式: true(每次都通知), false(仅更新后通知)",
-      
-      "comment_exclude": "【备用配置】当脚本内未设置排除列表时，将使用此列表。在这里填入不想被更新的容器名称。",
-      "exclude_containers": [
-        "portainer",
-        "portainer_agent"
-      ]
+      "comment_exclude_containers": "Watchtower 排除的容器名称，多个用逗号分隔 (低优先级，会被脚本内设置覆盖)",
+      "exclude_containers": "portainer,portainer_agent",
+      "comment_notify_on_no_updates": "Watchtower 是否在没有容器更新时也发送Telegram通知 (true/false)",
+      "notify_on_no_updates": true  
     }
   }
 }
