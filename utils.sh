@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.41)
+# 🚀 通用工具函数库 (v2.42)
 # - 修复：所有日志函数 (log_*) 在交互式会话中强制输出到 /dev/tty，解决日志混乱和 ANSI 逃逸序列残留。
 # - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
 # - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
