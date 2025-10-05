@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.38)
+# 🚀 通用工具函数库 (v2.39)
 # - 修复：彻底解决了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`，修复了排版混乱问题。
 # - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
 # - 修复：确保 `press_enter_to_continue`, `confirm_action`, `_prompt_for_interval` 函数中的 `read` 命令明确从 `/dev/tty` 读取，解决输入无响应问题。
@@ -103,16 +103,19 @@ _render_menu() {
     local max_width=0
     # 为标题也增加左右各一个空格的边距
     local title_width=$(( $(_get_visual_width "$title") + 2 ))
+    log_debug "_render_menu: Title '$title', calculated title_width: $title_width"
     if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
         # 为每行内容都增加左右各一个空格的边距
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        log_debug "_render_menu: Line '$line', calculated line_width: $line_width"
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
     
     local box_width=$((max_width + 2)) # 左右边框各占1
     if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
+    log_debug "_render_menu: max_width: $max_width, final box_width: $box_width"
 
     # 顶部
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
@@ -122,6 +125,7 @@ _render_menu() {
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
+        log_debug "_render_menu: Title padding: total=$padding_total, left=$padding_left, right=$padding_right"
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
         echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
@@ -132,6 +136,7 @@ _render_menu() {
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
         local padding_right=$((box_width - line_width))
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
+        log_debug "_render_menu: Line '$line' padding: line_width=$line_width, padding_right=$padding_right"
         echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
