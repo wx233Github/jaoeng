@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.21)
+# 🚀 Docker 自动更新助手 (v4.6.22)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.21"
+SCRIPT_VERSION="v4.6.22"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -123,29 +123,28 @@ _start_watchtower_container_logic(){
     local wt_interval="$1"
     local mode_description="$2" # 例如 "一次性更新" 或 "Watchtower模式"
 
-    # 优化：所有 docker run 命令都通过 JB_SUDO_LOG_QUIET=true run_with_sudo 执行
-    local cmd_base=(JB_SUDO_LOG_QUIET="true" run_with_sudo docker run -e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
+    local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
     local wt_image="containrrr/watchtower"
     local wt_args=("--cleanup")
     local container_names=()
 
     if [ "$mode_description" = "一次性更新" ]; then
-        cmd_base+=(--rm --name watchtower-once)
+        docker_run_args+=(--rm --name watchtower-once)
         wt_args+=(--run-once)
     else
-        cmd_base+=(-d --name watchtower --restart unless-stopped)
+        docker_run_args+=(-d --name watchtower --restart unless-stopped)
         wt_args+=(--interval "${wt_interval:-300}")
     fi
-    cmd_base+=(-v /var/run/docker.sock:/var/run/docker.sock)
+    docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
 
     local template_temp_file="" # Initialize local variable for template file
 
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            cmd_base+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
+            docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
             log_info "✅ 将启用 '无更新也通知' 模式。"
         else
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
@@ -171,8 +170,8 @@ EOF
         chmod 644 "$template_temp_file"
         
         # 将临时文件挂载到容器内部，并通过环境变量指定其路径
-        cmd_base+=(-v "${template_temp_file}:/etc/watchtower/notification.gohtml:ro")
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
+        docker_run_args+=(-v "${template_temp_file}:/etc/watchtower/notification.gohtml:ro")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -218,18 +217,20 @@ EOF
     set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
     
     _print_header "正在启动 $mode_description"
-    local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
+    
+    # Construct the final command to be executed directly
+    local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
     # For debugging output, still build the quoted string
     local final_cmd_str=""
-    for arg in "${final_cmd[@]}"; do
+    for arg in "${final_command_to_run[@]}"; do
         final_cmd_str+=" $(printf %q "$arg")"
     done
-    echo -e "${CYAN}执行命令: ${final_cmd_str}${NC}"
+    echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
     
     set +e;
-    # 直接执行数组，避免 eval 带来的转义问题
-    "${final_cmd[@]}"
+    # 执行命令，确保 JB_SUDO_LOG_QUIET 环境变量正确作用于 run_with_sudo
+    JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"
     local rc=$?
     set -e
     
@@ -740,7 +741,7 @@ get_updates_last_24h(){
     if [ -n "$since" ]; then
         # 优化：抑制 docker logs 的 run_with_sudo 日志
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
-    fi # <--- 修正: 闭合 if
+    fi
     if [ -z "$raw_logs" ]; then
         # 优化：抑制 docker logs 的 run_with_sudo 日志
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
