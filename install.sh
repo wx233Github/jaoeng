@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.13-修复config.json更新流程)
+# 🚀 VPS 一键安装入口脚本 (v74.14-修复config.json重新加载与退出问题)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.13"
+SCRIPT_VERSION="v74.14"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -558,20 +558,26 @@ _print_header() { _render_menu "$1" ""; }
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"
+    log_debug "DEBUG: display_menu called. config_path: $config_path"
+
     if [ ! -f "$config_path" ]; then
         log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
-        exit 1
+        exit 1 # Exit Code 100 for config file missing
     fi
+    log_debug "DEBUG: config.json exists. Content (first 100 chars): $(head -c 100 "$config_path" 2>/dev/null || echo "Error reading file")"
 
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
-        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效！"
-        exit 1
+        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效或无法解析！"
+        log_debug "DEBUG: Failed to parse menu_json for $CURRENT_MENU_NAME. menu_json was: '$menu_json'"
+        exit 1 # Exit Code 101 for menu parsing failure
     fi
+    log_debug "DEBUG: menu_json for $CURRENT_MENU_NAME successfully parsed."
 
     local main_title_text
-    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
+    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json" 2>/dev/null || echo "无法获取标题")
+    log_debug "DEBUG: main_title_text: '$main_title_text'"
 
     local -a menu_items_array=()
     local i=1
@@ -579,11 +585,13 @@ display_menu() {
         menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
         i=$((i + 1))
     done < <(jq -r '.items[]? | ((.icon // "›") + "\t" + .name)' <<< "$menu_json" 2>/dev/null || true)
+    log_debug "DEBUG: menu_items_array count: ${#menu_items_array[@]}"
 
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
+    log_debug "DEBUG: menu_len: $menu_len"
     local exit_hint="退出"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
@@ -601,11 +609,11 @@ process_menu_selection() {
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     local menu_len
-    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/tty 2>/dev/null || echo "0")
+    menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
 
     if [ -z "$choice" ]; then
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-            exit 0
+            exit 0 # Exit Code 0 for graceful exit from main menu
         else
             CURRENT_MENU_NAME="MAIN_MENU"
             return 10
@@ -658,16 +666,17 @@ main() {
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出."' EXIT
+    trap 'local trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出 (Exit Code: ${trap_exit_code})."' EXIT # Added exit code
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
         check_and_install_dependencies
     fi
 
-    load_config
+    load_config # 首次加载配置
 
     if [ $# -gt 0 ]; then
+        # This block is skipped if user runs `jb` without args.
         local command="$1"; shift
         case "$command" in
             update)
@@ -708,7 +717,11 @@ main() {
     echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🕛"
     sleep 0.5
     echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
-    force_update_all
+    force_update_all # 执行所有更新
+    
+    load_config # 核心修复：更新后重新加载配置，确保使用最新配置
+
+    log_debug "DEBUG: force_update_all completed and config reloaded. Attempting to display menu." # NEW DEBUG LINE
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
