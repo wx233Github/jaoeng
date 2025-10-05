@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.17-修复sed解析错误)
+# 🚀 VPS 一键安装入口脚本 (v74.18-增加下载文件有效性验证)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.17"
+SCRIPT_VERSION="v74.18"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -64,6 +64,10 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
             temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
                 echo_error "下载 ${name} 失败。"
+            fi
+            # 增加对下载文件的基础验证
+            if [ ! -s "$temp_file" ]; then
+                echo_error "下载的 ${name} 文件为空，安装中止。"
             fi
             # 优化：抑制 mv 的 run_with_sudo 日志
             if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
@@ -237,6 +241,11 @@ self_update() {
         rm -f "$temp_script" 2>/dev/null || true
         return
     fi
+    if [ ! -s "$temp_script" ]; then
+        log_warn "主程序 (install.sh) 更新检查失败 (下载文件为空)。"
+        rm -f "$temp_script" 2>/dev/null || true
+        return
+    fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
@@ -277,32 +286,45 @@ download_module_to_cache() {
     fi
 }
 
-_update_core_files() {
-    local temp_utils="/tmp/utils.sh.tmp.$$"
-    if _download_file "utils.sh" "$temp_utils"; then
-        if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
-            log_success "核心工具库 (utils.sh) 已更新。"
-            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
-            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
-        else
-            rm -f "$temp_utils" 2>/dev/null || true
-        fi
-    else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。"
+# 终极修复：封装了下载、验证和替换逻辑的健壮函数
+_update_single_core_file() {
+    local file_name="$1"      # e.g., "utils.sh"
+    local dest_path="$2"      # e.g., /opt/vps_install_modules/utils.sh
+    local validation_cmd="$3" # e.g., "jq . >/dev/null 2>&1" or ""
+
+    local temp_file="/tmp/${file_name}.tmp.$$"
+    trap 'rm -f "$temp_file" 2>/dev/null' RETURN # Ensure temp file is cleaned up
+
+    if ! _download_file "$file_name" "$temp_file"; then
+        log_warn "核心文件 ($file_name) 更新检查失败 (无法连接)。"
+        return 1
     fi
 
-    # ADDED: Explicitly update config.json here
-    local temp_config="/tmp/config.json.tmp.$$"
-    if _download_file "config.json" "$temp_config"; then
-        if [ ! -f "$CONFIG_PATH" ] || ! cmp -s "$CONFIG_PATH" "$temp_config"; then
-            log_success "核心配置文件 (config.json) 已更新。"
-            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_config" "$CONFIG_PATH"
-        else
-            rm -f "$temp_config" 2>/dev/null || true
-        fi
-    else
-        log_warn "核心配置文件 (config.json) 更新检查失败。"
+    if [ ! -s "$temp_file" ]; then
+        log_warn "核心文件 ($file_name) 更新检查失败 (下载的文件为空)。"
+        return 1
     fi
+
+    if [ -n "$validation_cmd" ]; then
+        if ! eval "$validation_cmd < '$temp_file'"; then
+            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。"
+            return 1
+        fi
+    fi
+
+    if [ ! -f "$dest_path" ] || ! cmp -s "$dest_path" "$temp_file"; then
+        log_success "核心文件 ($file_name) 已更新。"
+        JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "$dest_path"
+        if [[ "$file_name" == *.sh ]]; then
+            JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$dest_path"
+        fi
+    fi
+    return 0
+}
+
+_update_core_files() {
+    _update_single_core_file "utils.sh" "$UTILS_PATH" ""
+    _update_single_core_file "config.json" "$CONFIG_PATH" "jq . >/dev/null 2>&1"
 }
 
 _update_all_modules() {
