@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v4.6.15-UnifiedConfig - 全局配置及UI主题管理)
+# 🚀 通用工具函数库 (v4.6.23-FixReadTTY - 修复read命令从/dev/tty读取)
+# - [核心修复] 所有 `read` 命令现在明确从 `/dev/tty` 读取，解决通过管道执行脚本时 `read` 立即退出的问题。
 # - [核心修改] `CONFIG_FILE` 定义移至此处。
 # - [核心修改] 所有全局配置变量（包括UI主题、自动清屏、Watchtower配置）的默认值在此定义。
 # - [核心修改] `load_config` 和 `save_config` 函数在此实现，统一管理所有全局配置。
@@ -234,13 +235,13 @@ log_err() {
 # 暂停并等待用户按Enter键
 press_enter_to_continue() {
     echo -e "\n${CYAN}按 Enter 键继续...${NC}"
-    read -r
+    read -r </dev/tty # <--- 修正
 }
 
 # 确认操作
 confirm_action() {
     local prompt_message="$1"
-    read -r -p "${YELLOW}${prompt_message} (y/N)? ${NC}" response
+    read -r -p "${YELLOW}${prompt_message} (y/N)? ${NC}" response </dev/tty # <--- 修正
     case "$response" in
         [yY][eE][sS]|[yY])
             true
@@ -260,7 +261,7 @@ _prompt_for_interval() {
     local new_interval_seconds=""
 
     while true; do
-        read -r -p "${CYAN}${prompt_message} (当前: ${default_display}, 支持 s/m/h/d, 如 30m): ${NC}" new_interval_input_raw
+        read -r -p "${CYAN}${prompt_message} (当前: ${default_display}, 支持 s/m/h/d, 如 30m): ${NC}" new_interval_input_raw </dev/tty # <--- 修正
         new_interval_input="${new_interval_input_raw:-$current_interval_seconds}" # 如果用户输入为空，则使用当前值
 
         if echo "$new_interval_input" | grep -qE '^[0-9]+(s|m|h|d)?$'; then
@@ -312,7 +313,7 @@ theme_settings_menu() {
         fi
 
         _render_menu "🎨 UI 主题设置 🎨" "${items_array[@]}"
-        read -r -p " └──> 请选择, 或按 Enter 返回: " choice
+        read -r -p " └──> 请选择, 或按 Enter 返回: " choice </dev/tty # <--- 修正
         case "$choice" in
             1) set_ui_theme "default"; press_enter_to_continue ;;
             2) set_ui_theme "modern"; press_enter_to_continue ;;
