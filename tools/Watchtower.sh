@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.10 - 最终修正版)
+# 🚀 Docker 自动更新助手 (v4.6.10 - 最新修正版)
 # - [优化] config.json 中 notify_on_no_updates 默认 true
 # - [修复] 修复了 Watchtower 通知模板错误 (Go template Bash 转义问题)
 # - [优化] config.conf 存储优先级高于 config.json
@@ -9,6 +9,8 @@
 # - [优化] 菜单标题及版本信息显示
 # - [适配] 适配 config.json 中 Watchtower 模块的默认配置
 # - [优化] 时间处理函数自包含，减少对 utils.sh 的依赖
+# - [修复] 简化 Watchtower 通知模板为纯英文，排查Go Template解析错误
+# - [修正] Watchtower详情页面“下次检查”状态显示逻辑
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -130,7 +132,7 @@ _parse_watchtower_timestamp_from_log_line() {
     if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
-    fi
+    fih
     # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
     timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
     if [ -n "$timestamp" ]; then
@@ -221,9 +223,10 @@ _start_watchtower_container_logic(){
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Watchtower 的通知模板（原始 Go Template 字符串）
+        # Watchtower 的通知模板（纯英文简化版 Go Template 字符串）
+        # 移除所有表情符号和中文字符，以排查兼容性问题。
         # 使用printf构建模板，确保换行符、反引号等字符正确
-        local NOTIFICATION_TEMPLATE_RAW=$(printf "🐳 *Docker 容器更新报告*\n\n*服务器:* \`{{.Host}}\`\n\n{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*\n{{range .Updated}}\n- 🔄 *{{.Name}}*\n  🖼️ *镜像:* \`{{.ImageName}}\`\n  🆔 *ID:* \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*\n  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}\n\n⏰ *时间:* \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
+        local NOTIFICATION_TEMPLATE_RAW=$(printf "Docker Container Update Report\n\nServer: \`{{.Host}}\`\n\n{{if .Updated}}Scan complete! Updated {{len .Updated}} containers.\n{{range .Updated}}\n- {{.Name}}\n  Image: \`{{.ImageName}}\`\n  ID: \`{{.OldImageID.Short}}\` -> \`{{.NewImageID.Short}}\`{{end}}{{else if .Scanned}}Scan complete! No updates found.\n  (Scanned {{.Scanned}}, Failed {{.Failed}}){{else if .Failed}}Scan failed!\n  (Scanned {{.Scanned}}, Failed {{.Failed}}){{end}}\n\nTime: \`{{.Time.Format \"2006-01-02 15:04:05\"}}\`")
         
         # 对原始模板字符串中的内部双引号进行 Bash 转义，以确保其作为环境变量传递时不会被截断或错误解析
         local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/"/\\"/g')
@@ -761,7 +764,7 @@ get_updates_last_24h(){
         raw_logs=$(docker logs --tail 200 watchtower 2>&1 || true)
     fi
     # 过滤 Watchtower 日志，只显示关键事件和错误
-    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error" || true
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
 }
 
 _format_and_highlight_log_line(){
@@ -797,7 +800,7 @@ _format_and_highlight_log_line(){
             printf "%s %b%s%b\n" "$ts" "$GREEN" "✨ Watchtower 已启动" "$NC"
             ;;
         *)
-            if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request|Notification template error"; then
+            if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template"; then
                 local msg
                 msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
                 if [ -z "$msg" ] && [[ "$line" == *"msg="* ]]; then # 优先从msg=中提取，如果没有，则尝试从error=中提取
@@ -827,7 +830,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -836,13 +839,11 @@ _get_watchtower_remaining_time(){
         if [[ "$log_line" == *"Session done"* ]]; then
             rem=$((int - ($(date +%s) - epoch) ))
         elif [[ "$log_line" == *"Scheduling first run"* ]]; then
-            # 如果是首次调度，计算距离调度时间的剩余时间
+            # 如果是首次调度，计算距离调度时间的剩余时间 (未来时间 - 当前时间)
             rem=$((epoch - $(date +%s)))
         elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
-            # 假设 Watchtower 启动后 5 秒内会进行首次调度，然后按间隔运行
-            # 这里需要更准确地获取实际的下次调度时间，但从日志难以直接获得
-            # 暂时假设启动后立即开始计时，下次检查是 interval 秒后
-            rem=$(( (epoch + int) - $(date +%s) ))
+            # 如果 Watchtower 刚刚启动，但还没有调度第一次运行，显示等待
+            echo -e "${YELLOW}等待首次调度...${NC}"; return;
         fi
 
         if [ "$rem" -gt 0 ]; then
