@@ -939,8 +939,11 @@ view_and_edit_config(){
 }
 
 main_menu(){
+    # 在进入 Watchtower 模块主菜单时，打印一次欢迎和版本信息
+    log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}"
+
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; 键，然后 clear; fi
         load_config # 每次进入菜单都重新加载配置，确保最新
 
         local STATUS_RAW="未运行"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
@@ -967,13 +970,13 @@ main_menu(){
         fi
 
         local NOTIFY_STATUS="";
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; 键，然后 NOTIFY_STATUS="Telegram"; fi
         if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (有更新才通知)"; else NOTIFY_STATUS="(有更新才通知)"; fi
+            if [ -n "$NOTIFY_STATUS" ]; 键，然后 NOTIFY_STATUS="$NOTIFY_STATUS (有更新才通知)"; else NOTIFY_STATUS="(有更新才通知)"; fi
         fi
 
-        local header_text="Docker 助手 ${SCRIPT_VERSION}" # 修正 vv 显示问题
+        local header_text="Watchtower 管理" # 菜单标题不带版本号
         
         local -a content_array=(
             " 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)"
