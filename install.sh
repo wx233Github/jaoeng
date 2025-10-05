@@ -1,10 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.10)
+# 🚀 VPS 一键安装入口脚本 (v74.11)
 # - 修复：彻底解决了并发模块更新时日志排版混乱的问题。现在模块更新日志将有序输出。
+# - 新增：在智能更新时增加了动态加载动画。
 # - 修复：新增 `JB_SHOW_UNCHANGED_LOGS` 变量，默认不打印“模块 (...) 未更改”信息，可通过 `FORCE_REFRESH=true` 启用。
-# - 优化：`download_module_to_cache` 函数现在将结果返回给调用者，而不是直接打印日志。
-# - 优化：`_update_all_modules` 函数现在会收集并有序打印模块更新结果。
+# - 优化：`download_module_to_cache` 函数现在将结果输出到 stdout，而不是直接打印日志。
+# - 优化：`_update_all_modules` 函数现在会收集所有模块更新结果到一个数组，并在所有后台任务完成后，统一、有序地打印日志。
 # - 修复：彻底解决了所有已知语法错误和逻辑问题。
 # - 优化：`run_with_sudo` 函数现在支持通过 `JB_SUDO_LOG_QUIET=true` 抑制日志输出。
 # - 优化：在下载/更新核心文件和模块时，`run_with_sudo` 的日志输出被抑制。
@@ -12,7 +13,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.10"
+SCRIPT_VERSION="v74.11"
 
 # 控制是否显示“模块未更改”的日志信息。如果 FORCE_REFRESH 为 true，则显示，否则不显示。
 export JB_SHOW_UNCHANGED_LOGS="${FORCE_REFRESH:-false}"
@@ -138,6 +139,32 @@ if ! declare -f run_with_sudo &>/dev/null; then
   }
   export -f run_with_sudo # 确保在加载 utils.sh 后，如果 utils.sh 没有定义，这里也能导出
 fi
+
+# --- Spinner animation ---
+_spinner_pid=""
+_spinner_chars=("-" "\\" "|" "/") # 使用 Bash 兼容的字符数组
+_spinner_animation() {
+    local i=0
+    while true; do
+        i=$(( (i + 1) % 4 ))
+        # 直接输出到 /dev/tty 避免与脚本的 stdout 混淆
+        echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 ${YELLOW}${_spinner_chars[$i]}${NC}" > /dev/tty
+        sleep 0.1
+    done
+}
+
+start_spinner() {
+    _spinner_animation &
+    _spinner_pid=$!
+}
+
+stop_spinner() {
+    if [ -n "$_spinner_pid" ]; then
+        kill "$_spinner_pid" 2>/dev/null || true
+        # 清除 spinner 留下的行，并打印完成信息
+        echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新... 完成。   \n" > /dev/tty
+    fi
+}
 
 
 declare -A CONFIG
@@ -269,7 +296,8 @@ download_module_to_cache() {
         # 确保 run_with_sudo 在子shell中可用
         if ! declare -f run_with_sudo &>/dev/null; then
             run_with_sudo() {
-                [ "${JB_SUDO_LOG_QUIET:-}" != "true" ] && echo -e "${CYAN}[子进程 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
+                # 子进程中的 run_with_sudo 也应该抑制日志，因为它会将结果写到临时文件
+                # [ "${JB_SUDO_LOG_QUIET:-}" != "true" ] && echo -e "${CYAN}[子进程 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
                 sudo -E "\$@" < /dev/tty
             }
             export -f run_with_sudo # 导出以确保后续调用也能用
@@ -328,7 +356,7 @@ _update_all_modules() {
     done <<< "$scripts_to_update_raw"
 
     if [ ${#scripts_to_update[@]} -eq 0 ]; then
-        log_info "未检测到可更新的模块。"
+        # 如果没有模块，直接返回，spinner 会停止
         return
     fi
 
@@ -338,31 +366,36 @@ _update_all_modules() {
     # 在后台启动所有下载任务，并将其标准输出重定向到唯一的临时文件
     for script_name in "${scripts_to_update[@]}"; do
         local temp_file="/tmp/jb_module_update_result.$$.$(basename "$script_name")"
-        (download_module_to_cache "$script_name" > "$temp_file" 2>&1) & # 在子shell中运行，重定向输出
+        # 在子shell中运行 download_module_to_cache，并将其所有输出重定向到临时文件
+        (download_module_to_cache "$script_name" > "$temp_file" 2>&1) &
         pids+=($!)
         temp_output_files+=("$temp_file")
     done
 
-    # 等待所有后台任务完成，并收集其输出
+    # 收集所有结果到数组
+    local -a collected_results=()
     local i=0
     for pid in "${pids[@]}"; do
         wait "$pid" # 等待每个进程完成
         local output_file="${temp_output_files[$i]}"
-        local result_line
         if [ -f "$output_file" ]; then
-            result_line=$(cat "$output_file")
-            local status_type=$(echo "$result_line" | cut -d'|' -f1)
-            local message=$(echo "$result_line" | cut -d'|' -f2-)
-
-            case "$status_type" in
-                "success") log_success "$message" ;;
-                "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;; # 根据 JB_SHOW_UNCHANGED_LOGS 决定是否打印
-                "error")   log_err "$message" ;;
-                *)         log_warn "未知模块更新结果: $result_line" ;;
-            esac
+            collected_results+=("$(cat "$output_file")")
             rm -f "$output_file" 2>/dev/null || true
         fi
         i=$((i + 1))
+    done
+
+    # 按顺序打印收集到的结果
+    for result_line in "${collected_results[@]}"; do
+        local status_type=$(echo "$result_line" | cut -d'|' -f1)
+        local message=$(echo "$result_line" | cut -d'|' -f2-)
+
+        case "$status_type" in
+            "success") log_success "$message" ;;
+            "info")    [ "${JB_SHOW_UNCHANGED_LOGS:-false}" = "true" ] && log_info "$message" ;; # 根据 JB_SHOW_UNCHANGED_LOGS 决定是否打印
+            "error")   log_err "$message" ;;
+            *)         log_warn "未知模块更新结果: $result_line" ;;
+        esac
     done
 }
 
@@ -370,7 +403,7 @@ force_update_all() {
     self_update
     _update_core_files
     _update_all_modules
-    log_success "所有组件更新检查完成！"
+    # 这里的成功信息将在 spinner 停止后打印
 }
 
 confirm_and_force_update() {
@@ -396,7 +429,11 @@ confirm_and_force_update() {
         # 优化：抑制 chmod 的 run_with_sudo 日志
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" >/dev/null 2>&1 || true
         log_success "权限已恢复。"
+        # 在强制重置时，强制显示所有更新日志
+        local old_show_unchanged="${JB_SHOW_UNCHANGED_LOGS}"
+        export JB_SHOW_UNCHANGED_LOGS="true" 
         _update_all_modules
+        export JB_SHOW_UNCHANGED_LOGS="${old_show_unchanged}" # 恢复之前的设置
         log_success "强制重置完成！"
         log_info "脚本将在2秒后自动重启以应用所有更新..."
         sleep 2
@@ -530,14 +567,18 @@ _render_menu() {
 
     local max_width=0
     local title_width=$(( $(_get_visual_width "$title") + 2 ))
+    log_debug "_render_menu: Title '$title', calculated title_width: $title_width"
     if (( title_width > max_width )); then max_width=$title_width; fi
 
     for line in "${lines[@]}"; do
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
+        log_debug "_render_menu: Line '$line', calculated line_width: $line_width"
         if (( line_width > max_width )); then max_width=$line_width; fi
     done
+    
     local box_width=$((max_width + 2))
     if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
+    log_debug "_render_menu: max_width: $max_width, final box_width: $box_width"
 
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
 
@@ -545,6 +586,7 @@ _render_menu() {
         local padding_total=$((box_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
+        log_debug "_render_menu: Title padding: total=$padding_total, left=$padding_left, right=$padding_right"
         local left_padding; left_padding=$(printf '%*s' "$padding_left")
         local right_padding; right_padding=$(printf '%*s' "$padding_right")
         echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
@@ -554,6 +596,7 @@ _render_menu() {
         local line_width=$(( $(_get_visual_width "$line") + 2 ))
         local padding_right=$((box_width - line_width))
         if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
+        log_debug "_render_menu: Line '$line' padding: line_width=$line_width, padding_right=$padding_right"
         echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
     done
 
@@ -665,7 +708,7 @@ main() {
         exit 1
     fi
     # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出."' EXIT
+    trap 'flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; stop_spinner; log_info "脚本已退出."' EXIT
 
     # 检查核心依赖，如果缺失则尝试安装
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
@@ -682,6 +725,7 @@ main() {
                 # 在 headless 模式下，强制显示所有更新日志
                 export JB_SHOW_UNCHANGED_LOGS="true" 
                 force_update_all
+                log_success "所有组件更新检查完成！" # Headless 模式下直接打印完成信息
                 exit 0
                 ;;
             uninstall)
@@ -714,8 +758,11 @@ main() {
     fi
 
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    log_info "正在智能更新... 🔄" # 使用标准 log_info 避免 \r 导致的排版问题
-    force_update_all
+    
+    start_spinner # 启动加载动画
+    force_update_all # 执行更新操作
+    stop_spinner # 停止加载动画，并打印完成信息
+    log_success "所有组件更新检查完成！" # 交互模式下打印最终完成信息
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
