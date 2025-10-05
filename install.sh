@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.19-增加下载文件有效性验证)
+# 🚀 VPS 一键安装入口脚本 (v75.0-回归稳定版并集成修复)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.19"
+SCRIPT_VERSION="v75.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -140,8 +140,6 @@ CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
-CONFIG[default_interval]="" # 初始化，用于存储 config.json 根目录的 default_interval
-CONFIG[default_cron_hour]="" # 初始化，用于存储 config.json 根目录的 default_cron_hour
 
 AUTO_YES="false"
 if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then
@@ -151,9 +149,9 @@ fi
 load_config() {
     CONFIG_FILE="${CONFIG[install_dir]}/config.json"
     if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
-        # 修复：使用更安全的 Bash 参数扩展代替有问题的 sed 命令
+        # 回归 v74.11 的稳定加载逻辑
         while IFS='=' read -r key value; do
-            # 只有当值的首尾是双引号时，才剥离它们
+            # 使用更安全的 Bash 参数扩展代替有问题的 sed 命令
             if [[ "$value" == \"*\" ]]; then
                 value="${value#\"}"
                 value="${value%\"}"
@@ -168,16 +166,6 @@ load_config() {
         CONFIG[lock_file]="$(jq -r '.lock_file // "/tmp/vps_install_modules.lock"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[lock_file]}")"
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
         CONFIG[timezone]="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")"
-        
-        # 核心：读取根目录的 default_interval 和 default_cron_hour
-        local root_default_interval; root_default_interval=$(jq -r '.default_interval // ""' "$CONFIG_FILE" 2>/dev/null || true)
-        if echo "$root_default_interval" | grep -qE '^[0-9]+$'; then
-            CONFIG[default_interval]="$root_default_interval"
-        fi
-        local root_default_cron_hour; root_default_cron_hour=$(jq -r '.default_cron_hour // ""' "$CONFIG_FILE" 2>/dev/null || true)
-        if echo "$root_default_cron_hour" | grep -qE '^[0-9]+$'; then
-            CONFIG[default_cron_hour]="$root_default_cron_hour"
-        fi
     fi
 }
 
@@ -290,7 +278,7 @@ download_module_to_cache() {
 _update_single_core_file() {
     local file_name="$1"      # e.g., "utils.sh"
     local dest_path="$2"      # e.g., /opt/vps_install_modules/utils.sh
-    local validation_cmd="$3" # e.g., "jq -e '.menus.MAIN_MENU' >/dev/null 2>&1" or ""
+    local validation_cmd="$3" # e.g., "jq . >/dev/null 2>&1" or ""
 
     local temp_file="/tmp/${file_name}.tmp.$$"
     trap 'rm -f "$temp_file" 2>/dev/null' RETURN # Ensure temp file is cleaned up
@@ -307,7 +295,7 @@ _update_single_core_file() {
 
     if [ -n "$validation_cmd" ]; then
         if ! eval "$validation_cmd < '$temp_file'"; then
-            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。将保留旧版本以确保稳定性。"
+            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。"
             return 1
         fi
     fi
@@ -324,8 +312,7 @@ _update_single_core_file() {
 
 _update_core_files() {
     _update_single_core_file "utils.sh" "$UTILS_PATH" ""
-    # 关键修复：使用更严格的验证命令，确保主菜单存在
-    _update_single_core_file "config.json" "$CONFIG_PATH" "jq -e '.menus.MAIN_MENU' >/dev/null 2>&1"
+    _update_single_core_file "config.json" "$CONFIG_PATH" "jq . >/dev/null 2>&1"
 }
 
 _update_all_modules() {
@@ -357,7 +344,7 @@ _update_all_modules() {
 
 force_update_all() {
     self_update
-    _update_core_files # Now includes config.json
+    _update_core_files
     _update_all_modules
     log_success "所有组件更新检查完成！"
 }
@@ -447,16 +434,6 @@ export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'
 export JB_TIMEZONE='${CONFIG[timezone]}'
 export LC_ALL=${LC_ALL}
 "
-    # 核心：如果根目录有 default_interval 或 default_cron_hour，导出它们
-    if [ -n "${CONFIG[default_interval]}" ]; then
-        env_exports+="export JB_DEFAULT_INTERVAL='${CONFIG[default_interval]}'\n"
-        log_debug "DEBUG: Exporting global default_interval: ${CONFIG[default_interval]}"
-    fi
-    if [ -n "${CONFIG[default_cron_hour]}" ]; then
-        env_exports+="export JB_DEFAULT_CRON_HOUR='${CONFIG[default_cron_hour]}'\n"
-        log_debug "DEBUG: Exporting global default_cron_hour: ${CONFIG[default_cron_hour]}"
-    fi
-
     local module_key
     module_key=$(basename "$script_name" .sh | tr '[:upper:]' '[:lower:]')
     local config_path="${CONFIG[install_dir]}/config.json"
@@ -530,6 +507,7 @@ EOF
     return ${exit_code:-0}
 }
 
+# 集成 v74.12+ 的 UI 修复
 _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
@@ -586,27 +564,20 @@ _print_header() { _render_menu "$1" ""; }
 display_menu() {
     if [ "${CONFIG[enable_auto_clear]}" = "true" ]; then clear 2>/dev/null || true; fi
     local config_path="${CONFIG[install_dir]}/config.json"
-    log_debug "DEBUG: display_menu called. config_path: $config_path"
-
     if [ ! -f "$config_path" ]; then
         log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
-        exit 1 # Exit Code 100 for config file missing
+        exit 1
     fi
-    log_debug "DEBUG: config.json exists. Content (first 100 chars): $(head -c 100 "$config_path" 2>/dev/null || echo "Error reading file")"
 
     local menu_json
-    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
-        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效或无法解析！"
-        log_debug "DEBUG: Failed to parse menu_json for $CURRENT_MENU_NAME. menu_json was: '$menu_json'"
-        exit 1 # Exit Code 101 for menu parsing failure
+        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效！"
+        exit 1
     fi
-    log_debug "DEBUG: menu_json for $CURRENT_MENU_NAME successfully parsed."
 
     local main_title_text
-    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json" 2>/dev/null || echo "无法获取标题")
-    log_debug "DEBUG: main_title_text: '$main_title_text'"
+    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json")
 
     local -a menu_items_array=()
     local i=1
@@ -614,14 +585,11 @@ display_menu() {
         menu_items_array+=("$(printf "  ${YELLOW}%2d.${NC} %s %s" "$i" "$icon" "$name")")
         i=$((i + 1))
     done < <(jq -r '.items[]? | ((.icon // "›") + "\t" + .name)' <<< "$menu_json" 2>/dev/null || true)
-    log_debug "DEBUG: menu_items_array count: ${#menu_items_array[@]}"
 
     _render_menu "$main_title_text" "${menu_items_array[@]}"
 
     local menu_len
-    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
-    log_debug "DEBUG: menu_len: $menu_len"
     local exit_hint="退出"
     if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
     local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
@@ -637,15 +605,13 @@ display_menu() {
 process_menu_selection() {
     local config_path="${CONFIG[install_dir]}/config.json"
     local menu_json
-    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     local menu_len
-    # 修复：使用 2>/dev/null 替代 2>/dev/tty
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
 
     if [ -z "$choice" ]; then
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-            exit 0 # Exit Code 0 for graceful exit from main menu
+            exit 0
         else
             CURRENT_MENU_NAME="MAIN_MENU"
             return 10
@@ -705,10 +671,9 @@ main() {
         check_and_install_dependencies
     fi
 
-    load_config # 首次加载配置
+    load_config
 
     if [ $# -gt 0 ]; then
-        # This block is skipped if user runs `jb` without args.
         local command="$1"; shift
         case "$command" in
             update)
@@ -749,11 +714,10 @@ main() {
     echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🕛"
     sleep 0.5
     echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
-    force_update_all # 执行所有更新
+    force_update_all
     
-    load_config # 核心修复：更新后重新加载配置，确保使用最新配置
-
-    log_debug "DEBUG: force_update_all completed and config reloaded. Attempting to display menu." # NEW DEBUG LINE
+    # 确保在更新后重新加载配置
+    load_config
 
     CURRENT_MENU_NAME="MAIN_MENU"
     while true; do
