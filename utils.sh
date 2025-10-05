@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.36)
-# - 修复：解决了 `_parse_watchtower_timestamp_from_log_line` 函数中 `if` 语句未闭合的语法错误。
+# 🚀 通用工具函数库 (v2.37)
+# - 修复：彻底解决了 `_parse_watchtower_timestamp_from_log_line` 函数因截断导致的 `unexpected end of file` 错误。
 # - 修复：修正了 `_render_menu` 函数中 `padding_padding` 变量名错误为 `padding_right`。
 # - 新增：添加了 `_prompt_for_interval` 函数，用于交互式获取并验证时间间隔输入。
 # - 修复：修正了 `_parse_watchtower_timestamp_from_log_line` 函数，优先解析“Scheduling first run”的调度时间。
@@ -126,7 +126,7 @@ _parse_watchtower_timestamp_from_log_line() {
 
     # 2. Next priority: time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" format
     timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
-    if [ -n "$timestamp" ]; then # 修复：这里缺少 if 的闭合
+    if [ -n "$timestamp" ]; then
         echo "$timestamp"
         return 0
     fi
