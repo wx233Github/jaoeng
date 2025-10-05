@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.13 - 最终修正版)
+# 🚀 Docker 自动更新助手 (v4.6.14 - 最终修正版)
 # - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
 #   - 恢复中文及表情模板。
 #   - 使用 Bash printf 进行双重转义，确保 Watchtower 接收到正确的模板字符串。
 # - [修复] 修正了 _parse_watchtower_timestamp_from_log_line 函数中 fih 拼写错误。
 # - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)。
+# - [修复] 修正了 _extract_interval_from_cmd 函数中 'if' 语句的错误闭合 (} -> fi)。
 # - [优化] config.json 中 notify_on_no_updates 默认 true
 # - [优化] config.conf 存储优先级高于 config.json
 # - [新增] 容器管理界面新增启动所有/停止所有功能
@@ -17,7 +18,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.13" # 脚本版本
+SCRIPT_VERSION="v4.6.14" # 脚本版本
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -712,7 +713,7 @@ _extract_interval_from_cmd(){
             if [ "$prev" = "--interval" ]; then
                 interval="$t"
                 break
-            }
+            fi # <--- 修正了这里！
             prev="$t"
         done
     fi
@@ -894,7 +895,7 @@ show_watchtower_details(){
         fi
 
         _render_menu "$title" "${content_lines_array[@]}"
-        read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触 发 扫 描 , [Enter] 返 回 : " pick
+        read -r -p " └──> [1] 实 时 日 志 , [2] 容 器 管 理 , [3] 触 发 扫 描 , [Enter] 返 回 : " pick
         case "$pick" in
             1)
                 if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
