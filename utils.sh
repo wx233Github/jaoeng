@@ -1,99 +1,53 @@
-#!/bin/bash
-# =============================================================
-# 🚀 通用工具函数库 (v2.29 - 最终UI修正版)
-# - [最终修正] 增加菜单内部边距，适配移动终端UI
-# =============================================================
+{
+  "comment_base_url": "脚本文件下载的基础URL",
+  "base_url": "https://raw.githubusercontent.com/wx233Github/jaoeng/main",
+  "comment_install_dir": "脚本模块安装目录",
+  "install_dir": "/opt/vps_install_modules",
+  "comment_bin_dir": "快捷命令安装目录",
+  "bin_dir": "/usr/local/bin",
+  "comment_dependencies": "脚本运行所需的基本依赖，会自动检查安装",
+  "dependencies": {
+    "common": "curl cmp ln dirname flock jq"
+  },
+  "comment_lock_file": "防止多实例运行的锁文件",
+  "lock_file": "/tmp/vps_install_modules.lock",
+  "comment_enable_auto_clear": "是否在每次菜单显示前自动清屏 (true/false)",
+  "enable_auto_clear": false,
+  "comment_timezone": "服务器时区设置",
+  "timezone": "Asia/Shanghai",
 
-# --- 严格模式 ---
-set -eo pipefail
+  "comment_menus": "主菜单配置",
+  "menus": {
+    "MAIN_MENU": {
+      "title": "🖥️ VPS 一键安装脚本",
+      "items": [
+        { "type": "item", "name": "Docker", "icon": "🐳", "action": "docker.sh" },
+        { "type": "item", "name": "Nginx", "icon": "🌐", "action": "nginx.sh" },
+        { "type": "submenu", "name": "常用工具", "icon": "🛠️", "action": "TOOLS_MENU" },
+        { "type": "item", "name": "证书申请", "icon": "📜", "action": "cert.sh" },
+        { "type": "func", "name": "强制重置 (更新脚本+恢复配置)", "icon": "⚙️", "action": "confirm_and_force_update" },
+        { "type": "func", "name": "卸载脚本 (Uninstall)", "icon": "🗑️", "action": "uninstall_script" }
+      ]
+    },
+    "TOOLS_MENU": {
+      "title": "🛠️ 常用工具",
+      "items": [
+        { "type": "item", "name": "Watchtower (Docker 更新)", "icon": "🔄", "action": "tools/Watchtower.sh" }
+      ]
+    }
+  },
 
-# --- 颜色定义 ---
-if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
-  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
-  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
-else
-  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
-fi
-
-# --- 日志系统 ---
-log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${BLUE}[信息]${NC} $*"; }
-log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
-log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
-log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
-
-# --- 用户交互函数 ---
-press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")"; }
-confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
-
-# --- UI 渲染 & 字符串处理 ---
-generate_line() {
-    local len=${1:-40}
-    local char=${2:-"─"}
-    local line=""
-    local i=0
-    while [ $i -lt "$len" ]; do
-        line="${line}$char"
-        i=$((i + 1))
-    done
-    echo "$line"
+  "comment_module_configs": "模块特定的配置",
+  "module_configs": {
+    "watchtower": {
+      "comment_default_interval": "Watchtower 默认检查间隔 (秒)",
+      "default_interval": 21600,
+      "comment_default_cron_hour": "Watchtower Cron 任务默认执行时间 (小时, 0-23)",
+      "default_cron_hour": 4,
+      "comment_exclude_containers": "Watchtower 排除的容器名称，多个用逗号分隔 (低优先级，会被脚本内设置覆盖)",
+      "exclude_containers": "portainer,portainer_agent",
+      "comment_notify_on_no_updates": "Watchtower 是否在没有容器更新时也发送Telegram通知 (true/false)",
+      "notify_on_no_updates": true
+    }
+  }
 }
-
-_get_visual_width() {
-    local text="$1"
-    local plain_text
-    plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    if [ -z "$plain_text" ]; then
-        echo 0
-        return
-    fi
-    local bytes chars
-    bytes=$(echo -n "$plain_text" | wc -c)
-    chars=$(echo -n "$plain_text" | wc -m)
-    echo $(( (bytes + chars) / 2 ))
-}
-
-# [最终UI修正] 增加内部边距，适配移动终端
-_render_menu() {
-    local title="$1"; shift
-    local -a lines=("$@")
-    
-    local max_width=0
-    # 为标题也增加左右各一个空格的边距
-    local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    if (( title_width > max_width )); then max_width=$title_width; fi
-
-    for line in "${lines[@]}"; do
-        # 为每行内容都增加左右各一个空格的边距
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        if (( line_width > max_width )); then max_width=$line_width; fi
-    done
-    
-    local box_width=$((max_width + 2)) # 左右边框各占1
-    if [ $box_width -lt 40 ]; then box_width=40; fi
-
-    # 顶部
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
-    
-    # 标题
-    if [ -n "$title" ]; then
-        local padding_total=$((box_width - title_width))
-        local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left))
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
-    fi
-    
-    # 选项
-    for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        local padding_right=$((box_width - line_width))
-        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
-    done
-
-    # 底部
-    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
-}
-_print_header() { _render_menu "$1" ""; }
