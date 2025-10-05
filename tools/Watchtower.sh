@@ -1,12 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.10 - 最终修正版)
+# 🚀 Docker 自动更新助手 (v4.6.10 - 适配 config.json 标准)
 # - [优化] config.json 中 notify_on_no_updates 默认 true
 # - [修复] 修复了 Watchtower 通知模板错误
 # - [优化] config.conf 存储优先级高于 config.json
 # - [新增] 容器管理界面新增启动所有/停止所有功能
 # - [修复] 修复了 load_config 等函数 command not found 问题
 # - [优化] 菜单标题及版本信息显示
+# - [适配] 适配 config.json 中 Watchtower 模块的默认配置
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -29,45 +30,46 @@ else
 fi
 
 # --- config.json 传递的 Watchtower 模块配置 (由 install.sh 提供) ---
-WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
-WT_CONF_DEFAULT_INTERVAL="${JB_WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
-WT_CONF_DEFAULT_CRON_HOUR="${JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
-# JB_WATCHTOWER_CONF_ENABLE_REPORT 已废弃，由 WATCHTOWER_NOTIFY_ON_NO_UPDATES 替代
+# 这些变量直接从 config.json 映射过来，作为默认值
+WT_CONF_DEFAULT_INTERVAL_FROM_JSON="${JB_WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
+WT_CONF_DEFAULT_CRON_HOUR_FROM_JSON="${JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
+WT_EXCLUDE_CONTAINERS_FROM_JSON="${JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
+WT_NOTIFY_ON_NO_UPDATES_FROM_JSON="${JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
+# 其他可能从 config.json 传递的 WATCHTOWER_CONF_* 变量，用于初始化，但本地配置优先
+WATCHTOWER_EXTRA_ARGS_FROM_JSON="${JB_WATCHTOWER_CONF_EXTRA_ARGS:-}"
+WATCHTOWER_DEBUG_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
+WATCHTOWER_CONFIG_INTERVAL_FROM_JSON="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" # 如果 config.json 有指定，用于初始化
+WATCHTOWER_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_ENABLED:-false}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
+CRON_HOUR_FROM_JSON="${JB_WATCHTOWER_CONF_CRON_HOUR:-}"
+CRON_TASK_ENABLED_FROM_JSON="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
+TG_BOT_TOKEN_FROM_JSON="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
+TG_CHAT_ID_FROM_JSON="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
+EMAIL_TO_FROM_JSON="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
+WATCHTOWER_EXCLUDE_LIST_FROM_JSON="${JB_WATCHTOWER_CONF_EXCLUDE_LIST:-}"
+
 
 CONFIG_FILE="/etc/docker-auto-update.conf"
 if ! [ -w "$(dirname "$CONFIG_FILE")" ]; then
     CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
 
-# 从 config.json 加载默认值 (通过 JB_ 前缀变量由 install.sh 传递)
-TG_BOT_TOKEN_DEFAULT="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
-TG_CHAT_ID_DEFAULT="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
-EMAIL_TO_DEFAULT="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
-WATCHTOWER_EXCLUDE_LIST_DEFAULT="${JB_WATCHTOWER_CONF_EXCLUDE_LIST:-}"
-WATCHTOWER_EXTRA_ARGS_DEFAULT="${JB_WATCHTOWER_CONF_EXTRA_ARGS:-}"
-WATCHTOWER_DEBUG_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
-WATCHTOWER_CONFIG_INTERVAL_DEFAULT="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" # config.json 的默认间隔
-WATCHTOWER_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_ENABLED:-false}"
-DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
-CRON_HOUR_DEFAULT="${JB_WATCHTOWER_CONF_CRON_HOUR:-4}"
-CRON_TASK_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
-WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT="${JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}" # config.json 默认
+# --- 模块专属函数 ---
 
 # 初始化变量，使用 config.json 的默认值
-TG_BOT_TOKEN="${TG_BOT_TOKEN_DEFAULT}"
-TG_CHAT_ID="${TG_CHAT_ID_DEFAULT}"
-EMAIL_TO="${EMAIL_TO_DEFAULT}"
-WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST_DEFAULT}"
-WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_DEFAULT}"
-WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED_DEFAULT}"
-WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL_DEFAULT}"
-WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED_DEFAULT}"
-DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT}"
-CRON_HOUR="${CRON_HOUR_DEFAULT}"
-CRON_TASK_ENABLED="${CRON_TASK_ENABLED_DEFAULT}"
-WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT}"
-
-# --- 模块专属函数 ---
+# 这些是脚本内部使用的变量，它们的值会被本地配置文件覆盖
+TG_BOT_TOKEN="${TG_BOT_TOKEN_FROM_JSON}"
+TG_CHAT_ID="${TG_CHAT_ID_FROM_JSON}"
+EMAIL_TO="${EMAIL_TO_FROM_JSON}"
+WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}"
+WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_FROM_JSON}"
+WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED_FROM_JSON}"
+WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON}" # 优先使用 config.json 的具体配置
+WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED_FROM_JSON}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}"
+CRON_HOUR="${CRON_HOUR_FROM_JSON}"
+CRON_TASK_ENABLED="${CRON_TASK_ENABLED_FROM_JSON}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}"
 
 # 加载本地配置文件 (config.conf)，覆盖 config.json 的默认值
 load_config(){
@@ -76,18 +78,18 @@ load_config(){
         source "$CONFIG_FILE" &>/dev/null || true
     fi
     # 确保所有变量都有最终值，本地配置优先，若本地为空则回退到 config.json 默认值
-    TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_DEFAULT}}"
-    TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_DEFAULT}}"
-    EMAIL_TO="${EMAIL_TO:-${EMAIL_TO_DEFAULT}}"
-    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_EXCLUDE_LIST_DEFAULT}}"
-    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_EXTRA_ARGS_DEFAULT}}"
-    WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_DEFAULT}}"
-    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_DEFAULT:-${WT_CONF_DEFAULT_INTERVAL}}}"
-    WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_DEFAULT}}"
-    DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT}}"
-    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_DEFAULT:-${WT_CONF_DEFAULT_CRON_HOUR}}}"
-    CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_DEFAULT}}"
-    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT}}"
+    TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_FROM_JSON}}"
+    TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_FROM_JSON}}"
+    EMAIL_TO="${EMAIL_TO:-${EMAIL_TO_FROM_JSON}}"
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}}"
+    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_EXTRA_ARGS_FROM_JSON}}"
+    WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_FROM_JSON}}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}}" # 如果本地和 config.json 都没有具体配置，才使用 config.json 的 default_interval
+    WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_FROM_JSON}}"
+    DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}}"
+    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_FROM_JSON:-${WT_CONF_DEFAULT_CRON_HOUR_FROM_JSON}}}" # 如果本地和 config.json 都没有具体配置，才使用 config.json 的 default_cron_hour
+    CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_FROM_JSON}}"
+    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}}"
 }
 
 save_config(){
@@ -234,12 +236,16 @@ _start_watchtower_container_logic(){
 
     local final_exclude_list=""
     local source_msg=""
+    # 优先使用脚本内 WATCHTOWER_EXCLUDE_LIST，其次是 config.json 的 exclude_containers，最后是 config.json 的 exclude_list
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
         final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
         source_msg="脚本内部"
-    elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then
-        final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"
-        source_msg="config.json"
+    elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
+        final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
+        source_msg="config.json (exclude_containers)"
+    elif [ -n "${WATCHTOWER_EXCLUDE_LIST_FROM_JSON:-}" ]; then
+        final_exclude_list="${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}"
+        source_msg="config.json (exclude_list)"
     fi
     
     local included_containers
@@ -283,7 +289,7 @@ _rebuild_watchtower() {
     docker rm -f watchtower &>/dev/null
     set -e
     
-    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}"
+    local interval="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}"
     if ! _start_watchtower_container_logic "$interval" "Watchtower模式"; then
         log_err "Watchtower 重建失败！"
         WATCHTOWER_ENABLED="false"
@@ -484,9 +490,17 @@ show_container_info() {
 
 configure_exclusion_list() {
     declare -A excluded_map
+    # 优先使用脚本内 WATCHTOWER_EXCLUDE_LIST，其次是 config.json 的 exclude_containers
+    local initial_exclude_list=""
     if [ -n "$WATCHTOWER_EXCLUDE_LIST" ]; then
+        initial_exclude_list="$WATCHTOWER_EXCLUDE_LIST"
+    elif [ -n "$WT_EXCLUDE_CONTAINERS_FROM_JSON" ]; then
+        initial_exclude_list="$WT_EXCLUDE_CONTAINERS_FROM_JSON"
+    fi
+
+    if [ -n "$initial_exclude_list" ]; then
         local IFS=,
-        for container_name in $WATCHTOWER_EXCLUDE_LIST; do
+        for container_name in $initial_exclude_list; do
             container_name=$(echo "$container_name" | xargs)
             if [ -n "$container_name" ]; then
                 excluded_map["$container_name"]=1
@@ -518,8 +532,8 @@ configure_exclusion_list() {
         if [ ${#excluded_map[@]} -gt 0 ]; then
             current_excluded_display=$(IFS=,; echo "${!excluded_map[*]:-}")
         fi
-        items_array+=("${CYAN}当前排除 (脚本内): ${current_excluded_display:-(空, 将使用 config.json)}${NC}")
-        items_array+=("${CYAN}备用排除 (config.json): ${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}${NC}")
+        items_array+=("${CYAN}当前排除 (脚本内): ${current_excluded_display:-(空, 将使用 config.json 的 exclude_containers)}${NC}")
+        items_array+=("${CYAN}备用排除 (config.json 的 exclude_containers): ${WT_EXCLUDE_CONTAINERS_FROM_JSON:-无}${NC}")
 
         _render_menu "配置排除列表 (高优先级)" "${items_array[@]}"
         read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]使用备用配置: " choice
@@ -564,7 +578,7 @@ configure_exclusion_list() {
 
 configure_watchtower(){
     _print_header "🚀 Watchtower 配置"
-    local WT_INTERVAL_TMP="$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL:-300}}" "请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "${WT_CONF_DEFAULT_INTERVAL:-300}"))")"
+    local WT_INTERVAL_TMP="$(_prompt_for_interval "${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}}" "请输入检查间隔 (config.json 默认: $(_format_seconds_to_human "${WT_CONF_DEFAULT_INTERVAL_FROM_JSON}"))")"
     log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"
     sleep 1
 
@@ -583,12 +597,16 @@ configure_watchtower(){
     fi
 
     local final_exclude_list_display
-    final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST:-${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}}"
-    local source_msg
+    # 显示时优先脚本内配置，其次 config.json 的 exclude_containers
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
+        final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST}"
         source_msg="脚本"
+    elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
+        final_exclude_list_display="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
+        source_msg="config.json (exclude_containers)"
     else
-        source_msg="config.json"
+        final_exclude_list_display="无"
+        source_msg=""
     fi
 
     local -a confirm_array=(
@@ -1034,12 +1052,16 @@ main_menu(){
         local STOPPED=$((TOTAL - RUNNING))
 
         local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE="";
+        # 优先使用脚本内 WATCHTOWER_EXCLUDE_LIST，其次是 config.json 的 exclude_containers
         if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
             FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"
             FINAL_EXCLUDE_SOURCE="脚本"
-        elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-}" ]; then
-            FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_CONFIG}"
-            FINAL_EXCLUDE_SOURCE="config.json"
+        elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
+            FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
+            FINAL_EXCLUDE_SOURCE="config.json (exclude_containers)"
+        else
+            FINAL_EXCLUDE_LIST="无"
+            FINAL_EXCLUDE_SOURCE=""
         fi
 
         local NOTIFY_STATUS="";
@@ -1056,7 +1078,7 @@ main_menu(){
             " ⏳ 下次检查: ${COUNTDOWN}"
             " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
-        if [ -n "$FINAL_EXCLUDE_LIST" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
+        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}${FINAL_EXCLUDE_SOURCE}${NC})"); fi
         if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
         
         content_array+=(""
