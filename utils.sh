@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.38-修复UI与输入问题)
+# 🚀 通用工具函数库 (v2.39-修复UI与默认值解析)
 # =============================================================
 
 # --- 严格模式 ---
@@ -40,9 +40,9 @@ _get_visual_width() {
     local text="$1"
     local plain_text
     plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    log_debug "Calculating width for: '$plain_text'"
+    log_debug "DEBUG: _get_visual_width input: '$text', plain_text: '$plain_text'"
     if [ -z "$plain_text" ]; then
-        log_debug "Empty plain_text, returning 0"
+        log_debug "DEBUG: Empty plain_text, returning 0"
         echo 0
         return
     fi
@@ -52,21 +52,21 @@ _get_visual_width() {
         local width
         width=$(python3 -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
         if [ -n "$width" ] && [ "$width" -ge 0 ]; then
-            log_debug "Python3 calculated width: $width"
+            log_debug "DEBUG: Python3 calculated width for '$plain_text': $width"
             echo "$width"
             return
         else
-            log_debug "Python3 failed or returned invalid width for '$plain_text'. Trying fallback."
+            log_debug "DEBUG: Python3 failed or returned invalid width for '$plain_text'. Trying fallback."
         fi
     elif command -v python &>/dev/null; then
         local width
         width=$(python -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
         if [ -n "$width" ] && [ "$width" -ge 0 ]; then
-            log_debug "Python calculated width: $width"
+            log_debug "DEBUG: Python calculated width for '$plain_text': $width"
             echo "$width"
             return
         else
-            log_debug "Python failed or returned invalid width for '$plain_text'. Trying fallback."
+            log_debug "DEBUG: Python failed or returned invalid width for '$plain_text'. Trying fallback."
         fi
     fi
 
@@ -75,11 +75,11 @@ _get_visual_width() {
         local width
         width=$(echo -n "$plain_text" | wc -m)
         if [ -n "$width" ] && [ "$width" -ge 0 ]; then
-            log_debug "wc -m calculated width: $width"
+            log_debug "DEBUG: wc -m calculated width for '$plain_text': $width"
             echo "$width"
             return
         else
-            log_debug "wc -m failed or returned invalid width for '$plain_text'. Trying fallback."
+            log_debug "DEBUG: wc -m failed or returned invalid width for '$plain_text'. Trying fallback."
         fi
     fi
 
@@ -94,43 +94,51 @@ _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
     
-    local max_width=0
-    # 为标题也增加左右各一个空格的边距
-    local title_width=$(( $(_get_visual_width "$title") + 2 ))
-    if (( title_width > max_width )); then max_width=$title_width; fi
+    local max_content_width=0 # 仅计算内容宽度，不含内部空格和边框
+    
+    local title_content_width=$(_get_visual_width "$title")
+    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
 
     for line in "${lines[@]}"; do
-        # 为每行内容都增加左右各一个空格的边距
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        if (( line_width > max_width )); then max_width=$line_width; fi
+        local line_content_width=$(_get_visual_width "$line")
+        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
     done
     
-    local box_width=$((max_width + 2)) # 左右边框各占1
-    if [ $box_width -lt 40 ]; then box_width=40; fi # 最小宽度
+    local inner_padding_chars=2 # 左右各一个空格，用于内容与边框之间的间距
+    local box_inner_width=$((max_content_width + inner_padding_chars))
+    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # 最小内容区域宽度 (38 + 2边框 = 40总宽)
+
+    log_debug "DEBUG: _render_menu - title_content_width: $title_content_width, max_content_width: $max_content_width, box_inner_width: $box_inner_width"
 
     # 顶部
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     
     # 标题
     if [ -n "$title" ]; then
-        local padding_total=$((box_width - title_width))
+        local current_title_line_width=$((title_content_width + inner_padding_chars)) # 标题内容宽度 + 左右各1空格
+        local padding_total=$((box_inner_width - current_title_line_width))
         local padding_left=$((padding_total / 2))
-        local padding_right=$((padding_total - padding_left)) # 修复：这里是 padding_right
-        local left_padding; left_padding=$(printf '%*s' "$padding_left")
-        local right_padding; right_padding=$(printf '%*s' "$padding_right")
-        echo -e "${GREEN}│${left_padding} ${title} ${right_padding}│${NC}"
+        local padding_right=$((padding_total - padding_left))
+        
+        local left_padding_str; left_padding_str=$(printf '%*s' "$padding_left")
+        local right_padding_str; right_padding_str=$(printf '%*s' "$padding_right")
+
+        log_debug "DEBUG: Title: '$title', padding_left: $padding_left, padding_right: $padding_right"
+        echo -e "${GREEN}│${left_padding_str} ${title} ${right_padding_str}│${NC}"
     fi
     
     # 选项
     for line in "${lines[@]}"; do
-        local line_width=$(( $(_get_visual_width "$line") + 2 ))
-        local padding_right=$((box_width - line_width))
-        if [ "$padding_right" -lt 0 ]; then padding_right=0; fi
-        echo -e "${GREEN}│${NC} ${line} $(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        local line_content_width=$(_get_visual_width "$line")
+        # 计算右侧填充：总内容区域宽度 - 当前行内容宽度 - 左侧一个空格
+        local padding_right_for_line=$((box_inner_width - line_content_width - 1)) 
+        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
+        log_debug "DEBUG: Line: '$line', line_content_width: $line_content_width, padding_right_for_line: $padding_right_for_line"
+        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # 左侧固定一个空格
     done
 
     # 底部
-    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
 
@@ -188,7 +196,9 @@ _date_to_epoch() {
 # 将秒数格式化为更易读的字符串 (例如 300s, 2h)
 _format_seconds_to_human() {
     local seconds="$1"
+    log_debug "DEBUG: _format_seconds_to_human received: '$seconds'"
     if ! echo "$seconds" | grep -qE '^[0-9]+$'; then
+        log_debug "DEBUG: '$seconds' is not numeric, returning N/A."
         echo "N/A"
         return 1
     fi
@@ -213,7 +223,7 @@ _prompt_for_interval() {
     local interval_in_seconds=""
 
     while true; do
-        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当前: $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty # 修复：添加 < /dev/tty
+        read -r -p "$(echo -e "${YELLOW}${prompt_msg} (例如: 300, 5m, 1h, 当 前 : $(_format_seconds_to_human "$default_interval")): ${NC}")" input < /dev/tty
         input="${input:-$default_interval}" # 如果用户输入为空，则使用默认值
 
         # 尝试将输入转换为秒
