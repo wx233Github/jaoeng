@@ -1,10 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.20-DebugRobustMenu - 增强菜单解析健壮性及日志)
+# 🚀 VPS 一键安装脚本 (v4.6.21-DeepDebugMenu - 深度调试菜单解析)
 # - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，确保即使 config.json 结构不完全匹配也能正常加载。
 #   - 在解析主菜单和子菜单项时，增加对 JSON 结构类型的严格检查。
 #   - 使用 `set +e / set -e` 块包围关键 `jq` 命令，并检查其退出状态。
 #   - 增加大量 `_temp_log_info` 消息，以便追踪解析流程和中间结果。
+#   - 修正了子菜单键的 `jq` 命令，确保输出为 JSON 数组字符串。
+#   - 增加了对 `jq` stderr 的捕获，以诊断意外输出。
+# - [核心修复] 修复 `main_menu` 渲染循环，增加详细日志以诊断为何菜单项未显示。
 # - [核心修复] 解决 `bash: local: can only be used in a function` 错误，移除全局作用域的 `local` 关键字。
 # - [核心修复] 脚本自初始化流程优化，确保 utils.sh 和 config.json 在被 source/解析前已下载。
 #   - 提前检查并安装 `jq` 依赖。
@@ -15,7 +18,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.20-DebugRobustMenu"
+SCRIPT_VERSION="v4.6.21-DeepDebugMenu"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -75,6 +78,13 @@ fi
 _temp_log_info "正在下载配置文件 config.json..."
 if sudo curl -fsSL "${DEFAULT_BASE_URL}/config.json?_=$(date +%s)" -o "$CONFIG_JSON_PATH"; then
     _temp_log_success "config.json 下载成功。"
+    
+    # 验证 config.json 是否为有效 JSON
+    if ! jq -e . "$CONFIG_JSON_PATH" >/dev/null 2>&1; then
+        _temp_log_err "下载的 config.json 不是有效的 JSON 格式！请检查文件内容。"
+        exit 1
+    fi
+
     # 从下载的 config.json 更新 base_url
     new_base_url=$(jq -r '.base_url // "'"$DEFAULT_BASE_URL"'"' "$CONFIG_JSON_PATH")
     if [ "$new_base_url" != "$base_url" ]; then
@@ -105,14 +115,14 @@ load_json_defaults() {
     fi
 
     # 全局配置
-    export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH" || echo "false")"
-    export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH" || echo "Asia/Shanghai")"
+    export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH" 2>/dev/null || echo "false")"
+    export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH" 2>/dev/null || echo "Asia/Shanghai")"
 
     # Watchtower 模块配置
-    export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH" || echo "300")"
-    export JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR_FROM_JSON="$(jq -r '.module_configs.watchtower.default_cron_hour // 4' "$CONFIG_JSON_PATH" || echo "4")"
-    export JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS_FROM_JSON="$(jq -r '.module_configs.watchtower.exclude_containers // ""' "$CONFIG_JSON_PATH" || echo "")"
-    export JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES_FROM_JSON="$(jq -r '.module_configs.watchtower.notify_on_no_updates // false' "$CONFIG_JSON_PATH" || echo "false")"
+    export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH" 2>/dev/null || echo "300")"
+    export JB_WATCHTOWER_CONF_DEFAULT_CRON_HOUR_FROM_JSON="$(jq -r '.module_configs.watchtower.default_cron_hour // 4' "$CONFIG_JSON_PATH" 2>/dev/null || echo "4")"
+    export JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS_FROM_JSON="$(jq -r '.module_configs.watchtower.exclude_containers // ""' "$CONFIG_JSON_PATH" 2>/dev/null || echo "")"
+    export JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES_FROM_JSON="$(jq -r '.module_configs.watchtower.notify_on_no_updates // false' "$CONFIG_JSON_PATH" 2>/dev/null || echo "false")"
     # 其他 Watchtower 变量 (如 TG_BOT_TOKEN, EXTRA_ARGS 等) 默认在 config.json 中未定义，
     # 它们将通过 utils.sh 中的硬编码默认值或用户在 config.conf 中的设置来管理。
     # 如果未来 config.json 增加了这些字段，也需要在这里导出。
@@ -155,14 +165,14 @@ load_menus_from_json() {
 
     # 健壮地获取主菜单标题
     set +e
-    MAIN_MENU_TITLE=$(echo "$config_json_content" | jq -r '.menus.MAIN_MENU.title // "主菜单"')
+    MAIN_MENU_TITLE=$(echo "$config_json_content" | jq -r '.menus.MAIN_MENU.title // "主菜单"' 2>/dev/null)
     local jq_status=$?
     set -e
     if [ $jq_status -ne 0 ]; then
         log_warn "从 config.json 获取主菜单标题失败 (jq exit status: $jq_status)。使用默认标题。"
         MAIN_MENU_TITLE="主菜单"
     fi
-    log_info "主菜单标题: $MAIN_MENU_TITLE"
+    log_info "主菜单标题: '$MAIN_MENU_TITLE'"
     
     unset MAIN_MENU_ITEMS
     declare -A MAIN_MENU_ITEMS
@@ -171,24 +181,24 @@ load_menus_from_json() {
     # 健壮地解析主菜单项
     local main_menu_items_json_array_raw
     set +e
-    main_menu_items_json_array_raw=$(echo "$config_json_content" | jq -c '.menus.MAIN_MENU.items // []')
+    main_menu_items_json_array_raw=$(echo "$config_json_content" | jq -c '.menus.MAIN_MENU.items // []' 2>/dev/null)
     jq_status=$?
     set -e
     if [ $jq_status -ne 0 ]; then
         log_warn "从 config.json 获取 'menus.MAIN_MENU.items' 失败 (jq exit status: $jq_status)。将使用空主菜单项。"
         main_menu_items_json_array_raw="[]"
     fi
-    log_info "主菜单项原始JSON数组: $main_menu_items_json_array_raw"
+    log_info "主菜单项原始JSON数组: '$main_menu_items_json_array_raw'"
 
-    if echo "$main_menu_items_json_array_raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    if echo "$main_menu_items_json_array_raw" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
         while IFS= read -r item_json; do
-            if [ -z "$item_json" ]; then continue; fi # 跳过空行
+            if [ -z "$item_json" ]; then continue; fi
 
             set +e
-            local type=$(echo "$item_json" | jq -r '.type // "unknown"')
-            local name=$(echo "$item_json" | jq -r '.name // "未知菜单项"')
-            local icon=$(echo "$item_json" | jq -r '.icon // ""')
-            local action=$(echo "$item_json" | jq -r '.action // ""')
+            local type=$(echo "$item_json" | jq -r '.type // "unknown"' 2>/dev/null)
+            local name=$(echo "$item_json" | jq -r '.name // "未知菜单项"' 2>/dev/null)
+            local icon=$(echo "$item_json" | jq -r '.icon // ""' 2>/dev/null)
+            local action=$(echo "$item_json" | jq -r '.action // ""' 2>/dev/null)
             jq_status=$?
             set -e
             if [ $jq_status -ne 0 ]; then
@@ -197,9 +207,9 @@ load_menus_from_json() {
             fi
 
             MAIN_MENU_ITEMS["$i"]="${type}|${name}|${icon}|${action}"
-            log_info "添加主菜单项 $i: ${MAIN_MENU_ITEMS["$i"]}"
+            log_info "添加主菜单项 $i: '${MAIN_MENU_ITEMS["$i"]}'"
             i=$((i + 1))
-        done <<< "$(echo "$main_menu_items_json_array_raw" | jq -c '.[] // empty' || true)"
+        done <<< "$(echo "$main_menu_items_json_array_raw" | jq -c '.[] // empty' 2>/dev/null || true)"
     else
         log_warn "config.json 中 'menus.MAIN_MENU.items' 结构异常或不是数组。主菜单项将为空。"
     fi
@@ -207,57 +217,64 @@ load_menus_from_json() {
 
 
     # 加载所有子菜单键
-    local submenu_keys_array_raw
+    local submenu_keys_json_array_raw
+    local submenu_keys_json_array_stderr_output # 捕获 stderr
+    log_info "尝试从 config.json 获取子菜单键列表 (JSON数组格式)..."
     set +e
-    submenu_keys_array_raw=$(echo "$config_json_content" | jq -c '.menus | keys[] | select(. != "MAIN_MENU") // []')
+    submenu_keys_json_array_raw=$(echo "$config_json_content" | jq -c '.menus | keys | map(select(. != "MAIN_MENU")) // []' 2> >(submenu_keys_json_array_stderr_output=$(cat); echo "$submenu_keys_json_array_stderr_output" >&2))
     jq_status=$?
     set -e
+    log_info "jq 命令获取子菜单键的退出状态: $jq_status"
+    if [ -n "$submenu_keys_json_array_stderr_output" ]; then
+        log_warn "jq 获取子菜单键时有 stderr 输出: '$submenu_keys_json_array_stderr_output'"
+    fi
     if [ $jq_status -ne 0 ]; then
         log_warn "从 config.json 获取子菜单键失败 (jq exit status: $jq_status)。将使用空子菜单。"
-        submenu_keys_array_raw="[]" # 确保是一个空JSON数组字符串
+        submenu_keys_json_array_raw="[]"
     fi
-    log_info "子菜单键原始JSON数组: $submenu_keys_array_raw"
+    log_info "子菜单键原始JSON数组 (预期): '$submenu_keys_json_array_raw'"
 
-    if echo "$submenu_keys_array_raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    if echo "$submenu_keys_json_array_raw" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
+        log_info "子菜单键列表是有效的JSON数组，开始迭代。"
         while IFS= read -r submenu_key; do
             if [ -z "$submenu_key" ]; then continue; fi
 
             log_info "正在处理子菜单键: $submenu_key"
             local submenu_obj_str
             set +e
-            submenu_obj_str=$(echo "$config_json_content" | jq -c ".menus.\"$submenu_key\" // {}")
+            submenu_obj_str=$(echo "$config_json_content" | jq -c ".menus.\"$submenu_key\" // {}" 2>/dev/null)
             jq_status=$?
             set -e
             if [ $jq_status -ne 0 ]; then
                 log_warn "从 config.json 获取子菜单 '$submenu_key' 对象失败 (jq exit status: $jq_status)。跳过此子菜单。"
                 continue
             fi
-            log_info "子菜单 '$submenu_key' 原始JSON对象: $submenu_obj_str"
+            log_info "子菜单 '$submenu_key' 原始JSON对象: '$submenu_obj_str'"
             
             local submenu_title=""
             local items_array_str="[]"
 
-            if echo "$submenu_obj_str" | jq -e 'type == "object"' >/dev/null 2>&1; then
-                submenu_title=$(echo "$submenu_obj_str" | jq -r '.title // "'"$submenu_key"'"')
-                items_array_str=$(echo "$submenu_obj_str" | jq -c '.items // []')
+            if echo "$submenu_obj_str" | jq -e 'type == "object"' 2>/dev/null >/dev/null; then
+                submenu_title=$(echo "$submenu_obj_str" | jq -r '.title // "'"$submenu_key"'"' 2>/dev/null)
+                items_array_str=$(echo "$submenu_obj_str" | jq -c '.items // []' 2>/dev/null)
             else
                 submenu_title="$submenu_key"
                 log_warn "子菜单 '$submenu_key' 在 config.json 中结构异常或不是对象。使用键名作为标题，子菜单项将为空。"
             fi
             SUBMENUS["${submenu_key}_title"]="$submenu_title"
-            log_info "子菜单 '$submenu_key' 标题: $submenu_title"
-            log_info "子菜单 '$submenu_key' 项目原始JSON数组: $items_array_str"
+            log_info "子菜单 '$submenu_key' 标题: '$submenu_title'"
+            log_info "子菜单 '$submenu_key' 项目原始JSON数组: '$items_array_str'"
             
             local j=0
-            if echo "$items_array_str" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            if echo "$items_array_str" | jq -e 'type == "array"' 2>/dev/null >/dev/null; then
                 while IFS= read -r item_json; do
                     if [ -z "$item_json" ]; then continue; fi
 
                     set +e
-                    local type=$(echo "$item_json" | jq -r '.type // "unknown"')
-                    local name=$(echo "$item_json" | jq -r '.name // "未知子菜单项"')
-                    local icon=$(echo "$item_json" | jq -r '.icon // ""')
-                    local action=$(echo "$item_json" | jq -r '.action // ""')
+                    local type=$(echo "$item_json" | jq -r '.type // "unknown"' 2>/dev/null)
+                    local name=$(echo "$item_json" | jq -r '.name // "未知子菜单项"' 2>/dev/null)
+                    local icon=$(echo "$item_json" | jq -r '.icon // ""' 2>/dev/null)
+                    local action=$(echo "$item_json" | jq -r '.action // ""' 2>/dev/null)
                     jq_status=$?
                     set -e
                     if [ $jq_status -ne 0 ]; then
@@ -265,15 +282,15 @@ load_menus_from_json() {
                         continue
                     fi
                     SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
-                    log_info "添加子菜单 '$submenu_key' 项目 $j: ${SUBMENUS["${submenu_key}_item_$j"]}"
+                    log_info "添加子菜单 '$submenu_key' 项目 $j: '${SUBMENUS["${submenu_key}_item_$j"]}'"
                     j=$((j + 1))
-                done <<< "$(echo "$items_array_str" | jq -c '.[] // empty' || true)"
+                done <<< "$(echo "$items_array_str" | jq -c '.[] // empty' 2>/dev/null || true)"
             else
                 log_warn "子菜单 '$submenu_key' 的 items 结构异常或不是数组。子菜单项将为空。"
             fi
             SUBMENUS["${submenu_key}_count"]="$j"
             log_info "子菜单 '$submenu_key' 加载完成。共 $j 项。"
-        done <<< "$(echo "$submenu_keys_array_raw" | jq -r '.[] // empty' || true)"
+        done <<< "$(echo "$submenu_keys_json_array_raw" | jq -r '.[] // empty' 2>/dev/null || true)"
     else
         log_info "config.json 中未发现子菜单键。"
     fi
@@ -283,7 +300,7 @@ load_menus_from_json() {
 # --- 依赖检查 ---
 check_dependencies() {
     log_info "检查依赖项..."
-    local common_deps=$(jq -r '.dependencies.common // ""' "$CONFIG_JSON_PATH" || echo "")
+    local common_deps=$(jq -r '.dependencies.common // ""' "$CONFIG_JSON_PATH" 2>/dev/null || echo "")
     local missing_deps=""
     for dep in $common_deps; do
         if ! command -v "$dep" &>/dev/null; then
@@ -361,16 +378,22 @@ enter_module() {
         all_menu_items+=("${MAIN_MENU_ITEMS[$item_idx]}")
     done
 
-    local submenu_keys_array=$(jq -r '.menus | keys[] | select(. != "MAIN_MENU") // []' "$CONFIG_JSON_PATH" || echo "[]")
-    if echo "$submenu_keys_array" | jq -e 'type == "array"' >/dev/null 2>&1; then
-        while IFS= read -r submenu_key; do
-            local count_key="${submenu_key}_count"
-            local count="${SUBMENUS[$count_key]:-0}" # Default to 0 if not set
-            for (( j=0; j<count; j++ )); do
-                all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
-            done
-        done <<< "$(echo "$submenu_keys_array" | jq -r '.[] // empty' || true)"
-    fi
+    # Collect all unique submenu keys that were successfully loaded
+    local -a loaded_submenu_keys=()
+    for key in "${!SUBMENUS[@]}"; do
+        if [[ "$key" == *_title ]]; then
+            # Extract the base key (e.g., "TOOLS_MENU" from "TOOLS_MENU_title")
+            loaded_submenu_keys+=("${key%_title}")
+        fi
+    done
+
+    for submenu_key in "${loaded_submenu_keys[@]}"; do
+        local count_key="${submenu_key}_count"
+        local count="${SUBMENUS[$count_key]:-0}" # Default to 0 if not set
+        for (( j=0; j<count; j++ )); do
+            all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
+        done
+    done
 
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
@@ -471,22 +494,40 @@ main_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         load_menus_from_json # 每次进入主菜单都重新加载菜单配置
+        
         local -a display_items=()
         local current_item_idx=0
 
-        # 从 MAIN_MENU_ITEMS 数组中构建显示项
-        for item_str in "${MAIN_MENU_ITEMS[@]}"; do
-            local type=$(echo "$item_str" | cut -d'|' -f1)
-            local name=$(echo "$item_str" | cut -d'|' -f2)
-            local icon=$(echo "$item_str" | cut -d'|' -f3)
-            local display_name="${icon} ${name}"
-            display_items+=("  $((current_item_idx + 1)). ${display_name}")
-            current_item_idx=$((current_item_idx + 1))
+        log_info "MAIN_MENU_ITEMS 数组内容 (用于渲染):"
+        for idx in "${!MAIN_MENU_ITEMS[@]}"; do
+            log_info "  $idx: '${MAIN_MENU_ITEMS[$idx]}'"
         done
+        log_info "MAIN_MENU_ITEMS 数组长度: ${#MAIN_MENU_ITEMS[@]}"
+
+        # 从 MAIN_MENU_ITEMS 数组中构建显示项
+        log_info "开始渲染主菜单项到 display_items..."
+        for item_str in "${MAIN_MENU_ITEMS[@]}"; do
+            log_info "  正在处理主菜单项字符串: '$item_str'"
+            # 确保 item_str 包含至少一个 '|' 以避免 cut 错误
+            if [[ "$item_str" == *"|"* ]]; then
+                local type=$(echo "$item_str" | cut -d'|' -f1)
+                local name=$(echo "$item_str" | cut -d'|' -f2)
+                local icon=$(echo "$item_str" | cut -d'|' -f3)
+                local display_name="${icon} ${name}"
+                display_items+=("  $((current_item_idx + 1)). ${display_name}")
+                log_info "    添加显示项: $((current_item_idx + 1)). ${display_name}"
+                current_item_idx=$((current_item_idx + 1))
+            else
+                log_warn "  主菜单项格式异常，跳过: '$item_str'"
+            fi
+        done
+        log_info "主菜单项渲染完成。display_items 数组当前长度: ${#display_items[@]}"
+        log_info "current_item_idx (在添加UI主题前): $current_item_idx"
         
         # 添加 UI 主题设置到主菜单
         display_items+=("")
         display_items+=("  $((current_item_idx + 1)). 🎨 UI 主 题 设 置")
+        log_info "添加UI主题设置项后，display_items 数组总长度: ${#display_items[@]}"
 
         _render_menu "$MAIN_MENU_TITLE" "${display_items[@]}"
         read -r -p " └──> 请选择, 或按 Enter 退出: " choice
