@@ -3,7 +3,8 @@
 # 🚀 Docker 自动更新助手 (v4.6.15 - 终极修复版)
 # - [终极修复] 彻底解决 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题：
 #   - 恢复中文及表情模板。
-#   - 使用 Bash printf 和 sed 进行双重转义，确保 Watchtower 接收到正确的模板字符串。
+#   - 使用 `cat <<'EOF'` 定义原始模板，并对 Bash 敏感字符（反引号）进行转义。
+#   - 使用 `printf %q` 对最终命令进行引用，并通过 `eval` 执行，确保 Bash 正确解析。
 # - [修复] 修正了 _parse_watchtower_timestamp_from_log_line 函数中 fih 拼写错误。
 # - [修复] 修正了 _get_watchtower_remaining_time 函数中 'if' 语句的错误闭合 (return; } -> return; fi)。
 # - [修复] 修正了 _extract_interval_from_cmd 函数中 'if' 语句的错误闭合 (} -> fi)。
@@ -227,7 +228,8 @@ _start_watchtower_container_logic(){
             log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"
         fi
 
-        # Step 1: 定义原始 Go Template 模板字符串，包含实际的换行符和 Go Template 语法。
+        # Step 1: 定义原始 Go Template 模板字符串，使用 `cat <<'EOF'` 确保Bash不提前解析内部内容。
+        # 内部的 `"` 和 `` ` `` 都是 Go Template 期望的字面量。
         local NOTIFICATION_TEMPLATE_RAW=$(cat <<'EOF'
 🐳 *Docker 容器更新报告*
 
@@ -244,19 +246,15 @@ _start_watchtower_container_logic(){
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
 )
-        # Step 2: 对原始模板字符串进行 Bash 转义，以便作为单个环境变量值传递给 Docker。
-        # 转义顺序很重要：先转义反斜杠，再转义双引号、反引号，最后处理换行符。
-        local ESCAPED_TEMPLATE=$(echo "$NOTIFICATION_TEMPLATE_RAW" | \
-            sed -E 's/\\/\\\\/g' |         `# 1. 将所有字面量 \ 替换为 \\ (Bash会再次将其解释为 \)` \
-            sed -E 's/"/\\"/g' |           `# 2. 将所有字面量 " 替换为 \" (Bash会再次将其解释为 ")` \
-            sed -E 's/`/\\`/g' |           `# 3. 将所有字面量 ` 替换为 \` (Bash会再次将其解释为 `)` \
-            sed -E ':a;N;$!ba;s/\n/\\n/g'  `# 4. 将所有实际的换行符 \n 替换为字面量 \n (Bash会再次将其解释为 \n)` \
-        )
+        # Step 2: 对原始模板字符串进行 Bash 转义，仅转义 Bash 自身会误解的字符。
+        # 主要是反引号 `，因为它们会被 Bash 误认为是命令替换。
+        # 换行符和 Go Template 内部的 `"` 不需要额外转义，它们会通过 `"${VAR}"` 被正确传递。
+        local ESCAPED_TEMPLATE_FOR_BASH=$(echo "$NOTIFICATION_TEMPLATE_RAW" | sed 's/`/\\`/g')
         
-        # Step 3: 将转义后的模板字符串作为环境变量传递给 Watchtower 容器。
-        # Bash 会对 `"${ESCAPED_TEMPLATE}"` 中的内容进行一次反转义，
-        # 最终传递给 Docker 的 VALUE 将是 Watchtower Go Template 期望的格式。
-        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE}")
+        # Step 3: 将转义后的模板字符串作为环境变量添加到 cmd_base 数组。
+        # Bash 的数组和双引号会确保其作为单个参数传递，包括换行符。
+        # Watchtower 的 Go Template 解析器会处理内部的 ` ` ` 和 `"`。
+        cmd_base+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${ESCAPED_TEMPLATE_FOR_BASH}")
     fi
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then
@@ -302,9 +300,17 @@ EOF
     
     _print_header "正在启动 $mode_description"
     local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
-    echo -e "${CYAN}执行命令: ${final_cmd[*]}${NC}"
     
-    set +e; "${final_cmd[@]}"; local rc=$?; set -e
+    # 使用 printf %q 对每个参数进行 Bash 引用，然后通过 eval 执行。
+    # 这是最健壮的方式，可以处理所有特殊字符和多行字符串。
+    local final_cmd_str=""
+    for arg in "${final_cmd[@]}"; do
+        final_cmd_str+=" $(printf %q "$arg")"
+    done
+    
+    echo -e "${CYAN}执行命令: ${final_cmd_str}${NC}"
+    
+    set +e; eval "$final_cmd_str"; local rc=$?; set -e
     
     if [ "$mode_description" = "一次性更新" ]; then
         if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi
