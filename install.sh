@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.12-修复Watchtower默认值与UI排版)
+# 🚀 VPS 一键安装入口脚本 (v74.13-修复config.json更新流程)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.12"
+SCRIPT_VERSION="v74.13"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -277,7 +277,6 @@ _update_core_files() {
     if _download_file "utils.sh" "$temp_utils"; then
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
             log_success "核心工具库 (utils.sh) 已更新。"
-            # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
             JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
         else
@@ -285,6 +284,19 @@ _update_core_files() {
         fi
     else
         log_warn "核心工具库 (utils.sh) 更新检查失败。"
+    fi
+
+    # ADDED: Explicitly update config.json here
+    local temp_config="/tmp/config.json.tmp.$$"
+    if _download_file "config.json" "$temp_config"; then
+        if [ ! -f "$CONFIG_PATH" ] || ! cmp -s "$CONFIG_PATH" "$temp_config"; then
+            log_success "核心配置文件 (config.json) 已更新。"
+            JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_config" "$CONFIG_PATH"
+        else
+            rm -f "$temp_config" 2>/dev/null || true
+        fi
+    else
+        log_warn "核心配置文件 (config.json) 更新检查失败。"
     fi
 }
 
@@ -317,7 +329,7 @@ _update_all_modules() {
 
 force_update_all() {
     self_update
-    _update_core_files
+    _update_core_files # Now includes config.json
     _update_all_modules
     log_success "所有组件更新检查完成！"
 }
