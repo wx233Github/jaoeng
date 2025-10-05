@@ -1,10 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.10 - 编码及通知模板修正版)
+# 🚀 Docker 自动更新助手 (v4.6.10 - 最终修正版)
 # - [优化] config.json 中 notify_on_no_updates 默认 true
 # - [修复] 修复了 Watchtower 通知模板错误
 # - [优化] config.conf 存储优先级高于 config.json
 # - [新增] 容器管理界面新增启动所有/停止所有功能
+# - [修复] 修复了 load_config 等函数 command not found 问题
+# - [优化] 菜单标题及版本信息显示
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -26,10 +28,6 @@ else
     exit 1
 fi
 
-# --- 脚本依赖检查 ---
-if ! command -v docker >/dev/null 2>&1; then log_err "❌ 错误: 未检测到 'docker' 命令。"; exit 1; fi
-if ! docker ps -q >/dev/null 2>&1; then log_err "❌ 错误: 无法连接到 Docker。"; exit 1; fi
-
 # --- config.json 传递的 Watchtower 模块配置 (由 install.sh 提供) ---
 WT_EXCLUDE_CONTAINERS_FROM_CONFIG="${JB_WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
 WT_CONF_DEFAULT_INTERVAL="${JB_WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
@@ -42,49 +40,54 @@ if ! [ -w "$(dirname "$CONFIG_FILE")" ]; then
 fi
 
 # 从 config.json 加载默认值 (通过 JB_ 前缀变量由 install.sh 传递)
-TG_BOT_TOKEN="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
-TG_CHAT_ID="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
-EMAIL_TO="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
-WATCHTOWER_EXCLUDE_LIST="${JB_WATCHTOWER_CONF_EXCLUDE_LIST:-}"
-WATCHTOWER_EXTRA_ARGS="${JB_WATCHTOWER_CONF_EXTRA_ARGS:-}"
-WATCHTOWER_DEBUG_ENABLED="${JB_WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
-WATCHTOWER_CONFIG_INTERVAL="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" # config.json 的默认间隔
-WATCHTOWER_ENABLED="${JB_WATCHTOWER_CONF_ENABLED:-false}"
-DOCKER_COMPOSE_PROJECT_DIR_CRON="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
-CRON_HOUR="${JB_WATCHTOWER_CONF_CRON_HOUR:-4}"
-CRON_TASK_ENABLED="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
-WATCHTOWER_NOTIFY_ON_NO_UPDATES="${JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}" # config.json 默认
+TG_BOT_TOKEN_DEFAULT="${JB_WATCHTOWER_CONF_BOT_TOKEN:-}"
+TG_CHAT_ID_DEFAULT="${JB_WATCHTOWER_CONF_CHAT_ID:-}"
+EMAIL_TO_DEFAULT="${JB_WATCHTOWER_CONF_EMAIL_TO:-}"
+WATCHTOWER_EXCLUDE_LIST_DEFAULT="${JB_WATCHTOWER_CONF_EXCLUDE_LIST:-}"
+WATCHTOWER_EXTRA_ARGS_DEFAULT="${JB_WATCHTOWER_CONF_EXTRA_ARGS:-}"
+WATCHTOWER_DEBUG_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
+WATCHTOWER_CONFIG_INTERVAL_DEFAULT="${JB_WATCHTOWER_CONF_CONFIG_INTERVAL:-}" # config.json 的默认间隔
+WATCHTOWER_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_ENABLED:-false}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT="${JB_WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
+CRON_HOUR_DEFAULT="${JB_WATCHTOWER_CONF_CRON_HOUR:-4}"
+CRON_TASK_ENABLED_DEFAULT="${JB_WATCHTOWER_CONF_TASK_ENABLED:-false}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT="${JB_WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}" # config.json 默认
 
-# 加载本地配置文件 (config.conf)，覆盖 config.json 的默认值
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE" &>/dev/null || true
-fi
-
-# 确保所有变量都有最终值，本地配置优先
-TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
-TG_CHAT_ID="${TG_CHAT_ID:-}"
-EMAIL_TO="${EMAIL_TO:-}"
-WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
-WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
-WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
-WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WT_CONF_DEFAULT_INTERVAL}}" # 如果本地未配置，使用 config.json 默认
-WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
-DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"
-CRON_HOUR="${CRON_HOUR:-${WT_CONF_DEFAULT_CRON_HOUR}}" # 如果本地未配置，使用 config.json 默认
-WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-false}" # 如果本地未配置，使用 config.json 默认
-CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
-
+# 初始化变量，使用 config.json 的默认值
+TG_BOT_TOKEN="${TG_BOT_TOKEN_DEFAULT}"
+TG_CHAT_ID="${TG_CHAT_ID_DEFAULT}"
+EMAIL_TO="${EMAIL_TO_DEFAULT}"
+WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST_DEFAULT}"
+WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS_DEFAULT}"
+WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED_DEFAULT}"
+WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL_DEFAULT}"
+WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED_DEFAULT}"
+DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT}"
+CRON_HOUR="${CRON_HOUR_DEFAULT}"
+CRON_TASK_ENABLED="${CRON_TASK_ENABLED_DEFAULT}"
+WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT}"
 
 # --- 模块专属函数 ---
 
-send_notify() {
-    local message="$1"
-    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "text=${message}" \
-            -d "chat_id=${TG_CHAT_ID}" \
-            -d "parse_mode=Markdown" >/dev/null 2>&1) &
+# 加载本地配置文件 (config.conf)，覆盖 config.json 的默认值
+load_config(){
+    if [ -f "$CONFIG_FILE" ]; then
+        # 注意: source 命令会直接执行文件内容，覆盖同名变量
+        source "$CONFIG_FILE" &>/dev/null || true
     fi
+    # 确保所有变量都有最终值，本地配置优先，若本地为空则回退到 config.json 默认值
+    TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_DEFAULT}}"
+    TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_DEFAULT}}"
+    EMAIL_TO="${EMAIL_TO:-${EMAIL_TO_DEFAULT}}"
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_EXCLUDE_LIST_DEFAULT}}"
+    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_EXTRA_ARGS_DEFAULT}}"
+    WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_DEFAULT}}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_DEFAULT:-${WT_CONF_DEFAULT_INTERVAL}}}"
+    WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_DEFAULT}}"
+    DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_DEFAULT}}"
+    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_DEFAULT:-${WT_CONF_DEFAULT_CRON_HOUR}}}"
+    CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_DEFAULT}}"
+    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WATCHTOWER_NOTIFY_ON_NO_UPDATES_DEFAULT}}"
 }
 
 save_config(){
@@ -106,9 +109,81 @@ EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
 
-load_config(){
-    if [ -f "$CONFIG_FILE" ]; then
-        source "$CONFIG_FILE" &>/dev/null || true
+
+# --- Watchtower 模块所需的通用时间处理函数 (自包含在 Watchtower.sh 中) ---
+
+# 解析 Watchtower 日志行中的时间戳
+_parse_watchtower_timestamp_from_log_line() {
+    local log_line="$1"
+    local timestamp=""
+    # 尝试匹配 time="YYYY-MM-DDTHH:MM:SS+ZZ:ZZ" 格式
+    timestamp=$(echo "$log_line" | sed -n 's/.*time="\([^"]*\)".*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 YYYY-MM-DDTHH:MM:SSZ 格式 (例如 Watchtower 1.7.1)
+    timestamp=$(echo "$log_line" | grep -Eo '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z?' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    # 尝试匹配 "Scheduling first run: YYYY-MM-DD HH:MM:SS" 格式
+    timestamp=$(echo "$log_line" | sed -nE 's/.*Scheduling first run: ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8}).*/\1/p' | head -n1 || true)
+    if [ -n "$timestamp" ]; then
+        echo "$timestamp"
+        return 0
+    fi
+    echo ""
+    return 1
+}
+
+# 将日期时间字符串转换为 Unix 时间戳 (epoch)
+_date_to_epoch() {
+    local dt="$1"
+    [ -z "$dt" ] && echo "" && return 1 # 如果输入为空，返回空字符串并失败
+    
+    # 尝试使用 GNU date
+    if date -d "now" >/dev/null 2>&1; then
+        date -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'date -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    # 尝试使用 BSD date (通过 gdate 命令)
+    elif command -v gdate >/dev/null 2>&1 && gdate -d "now" >/dev/null 2>&1; then
+        gdate -d "$dt" +%s 2>/dev/null || (log_warn "⚠️ 'gdate -d' 解析 '$dt' 失败。"; echo ""; return 1)
+    else
+        log_warn "⚠️ 'date' 或 'gdate' 不支持。无法解析时间戳。"
+        echo ""
+        return 1
+    fi
+}
+
+# 将秒数格式化为更易读的字符串 (例如 300s, 2h)
+_format_seconds_to_human() {
+    local seconds="$1"
+    if ! echo "$seconds" | grep -qE '^[0-9]+$'; then
+        echo "N/A"
+        return 1
+    fi
+    
+    if [ "$seconds" -lt 60 ]; then
+        echo "${seconds}秒"
+    elif [ "$seconds" -lt 3600 ]; then
+        echo "$((seconds / 60))分"
+    elif [ "$seconds" -lt 86400 ]; then
+        echo "$((seconds / 3600))时"
+    else
+        echo "$((seconds / 86400))天"
+    fi
+    return 0
+}
+
+
+send_notify() {
+    local message="$1"
+    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "text=${message}" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "parse_mode=Markdown" >/dev/null 2>&1) &
     fi
 }
 
@@ -268,12 +343,12 @@ notification_menu() {
             1) _configure_telegram; save_config; _prompt_and_rebuild_watchtower_if_needed; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
             3)
-                if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+                if [ -z "$TG_BOT_TOKEN" ] && [ -z "$EMAIL_TO" ]; then
                     log_warn "请先配置至少一种通知方式。"
                 else
                     log_info "正在发送测试..."
                     send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} 的*测试消息*。"
-                    log_info "测试通知已发送。"
+                    log_info "测试通知已发送。请检查你的 Telegram 或邮箱。"
                 fi
                 press_enter_to_continue
                 ;;
@@ -296,9 +371,6 @@ notification_menu() {
         esac
     done
 }
-
-# _parse_watchtower_timestamp_from_log_line, _date_to_epoch, _format_seconds_to_human 
-# 假设已在 utils.sh 中定义
 
 show_container_info() { 
     while true; do
@@ -366,7 +438,7 @@ show_container_info() {
                 case "$action" in 
                     1)
                         echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"
-                        trap '' INT
+                        trap '' INT # 临时禁用中断
                         docker logs -f --tail 100 "$selected_container" || true
                         trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
                         press_enter_to_continue
@@ -444,7 +516,7 @@ configure_exclusion_list() {
         items_array+=("")
         local current_excluded_display=""
         if [ ${#excluded_map[@]} -gt 0 ]; then
-            current_excluded_display=$(IFS=, ; echo "${!excluded_map[*]:-}")
+            current_excluded_display=$(IFS=,; echo "${!excluded_map[*]:-}")
         fi
         items_array+=("${CYAN}当前排除 (脚本内): ${current_excluded_display:-(空, 将使用 config.json)}${NC}")
         items_array+=("${CYAN}备用排除 (config.json): ${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}${NC}")
@@ -510,8 +582,8 @@ configure_watchtower(){
         temp_debug_enabled="true"
     fi
 
-    local final_exclude_list
-    final_exclude_list="${WATCHTOWER_EXCLUDE_LIST:-${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}}"
+    local final_exclude_list_display
+    final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST:-${WT_EXCLUDE_CONTAINERS_FROM_CONFIG:-无}}"
     local source_msg
     if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
         source_msg="脚本"
@@ -521,7 +593,7 @@ configure_watchtower(){
 
     local -a confirm_array=(
         " 检查间隔: $(_format_seconds_to_human "$WT_INTERVAL_TMP")"
-        " 排除列表 (${source_msg}): ${final_exclude_list//,/, }"
+        " 排除列表 (${source_msg}): ${final_exclude_list_display//,/, }"
         " 额外参数: ${temp_extra_args:-无}"
         " 调试模式: $temp_debug_enabled"
     )
@@ -860,6 +932,7 @@ view_and_edit_config(){
             local label; label=$(echo "$item" | cut -d'|' -f1)
             local var_name; var_name=$(echo "$item" | cut -d'|' -f2)
             local type; type=$(echo "$item" | cut -d'|' -f3)
+            local extra; extra=$(echo "$item" | cut -d'|' -f4)
             local current_value="${!var_name}"
             local display_text=""
             local color="${CYAN}"
@@ -943,7 +1016,7 @@ main_menu(){
     log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}"
 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; 键，然后 clear; fi
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         load_config # 每次进入菜单都重新加载配置，确保最新
 
         local STATUS_RAW="未运行"; if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
@@ -970,10 +1043,10 @@ main_menu(){
         fi
 
         local NOTIFY_STATUS="";
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; 键，然后 NOTIFY_STATUS="Telegram"; fi
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
         if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            if [ -n "$NOTIFY_STATUS" ]; 键，然后 NOTIFY_STATUS="$NOTIFY_STATUS (有更新才通知)"; else NOTIFY_STATUS="(有更新才通知)"; fi
+            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (有更新才通知)"; else NOTIFY_STATUS="(有更新才通知)"; fi
         fi
 
         local header_text="Watchtower 管理" # 菜单标题不带版本号
