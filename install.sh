@@ -1,6 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.1 - 最小权限与UI健壮性增强)
+# 🚀 VPS 一键安装入口脚本 (v74.2 - 权限传递优化)
+# - [优化] 将 `run_with_sudo` 函数定义导出为环境变量，供子脚本直接使用。
 # - [重构] 默认以普通用户身份运行主程序，需要root权限的操作通过 `run_with_sudo()` 执行。
 # - [修复] 启动器在首次下载后，将安装目录所有权赋给当前用户，确保后续操作权限。
 # - [增强] 在 `source utils.sh` 之前，增加 `_get_visual_width` 和 `generate_line` 的备用（fallback）定义。
@@ -9,7 +10,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.1"
+SCRIPT_VERSION="v74.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -35,7 +36,7 @@ generate_line() {
     local length="$1"
     local char="${2:-─}"
     if [ "$length" -le 0 ]; then echo ""; return; fi
-    printf "%${length}s" "" | sed "s/ /${char}/g"
+    printf "%${length}s" "" | sed "s/ /$char/g" # 修正了 $系统信息 错误
 }
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -95,7 +96,9 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     fi
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     echo ""
-    # 核心：主程序以当前用户身份执行
+    # 核心：主程序以当前用户身份执行，并导出 run_with_sudo 函数
+    # 将 run_with_sudo 函数定义导出为环境变量，以便子脚本可以直接使用
+    export -f run_with_sudo
     exec bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
@@ -114,12 +117,15 @@ else
 fi
 
 # --- Helper function to run commands with sudo ---
-run_with_sudo() {
-    log_info "正在尝试以 root 权限执行: $*"
-    # 使用 -E 选项保留当前用户的环境变量，这对于模块脚本可能很重要
-    # 使用 < /dev/tty 确保 sudo 可以在非交互式 shell 中获取密码输入
-    sudo -E "$@" < /dev/tty
-}
+# 如果函数未被导出，这里重新定义以确保可用性
+if ! declare -f run_with_sudo &>/dev/null; then
+  run_with_sudo() {
+      log_info "正在尝试以 root 权限执行: $*"
+      sudo -E "$@" < /dev/tty
+  }
+  export -f run_with_sudo # 确保在加载 utils.sh 后，如果 utils.sh 没有定义，这里也能导出
+fi
+
 
 declare -A CONFIG
 CONFIG[base_url]="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -220,6 +226,7 @@ self_update() {
         rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
         trap - EXIT # 取消退出陷阱，防止在 exec 后再次执行
         # 核心：重启自身，仍以当前用户身份执行
+        export -f run_with_sudo # 再次导出，确保新执行的脚本也能识别
         exec bash "$SCRIPT_PATH" "$@"
     fi
     rm -f "$temp_script" 2>/dev/null || true
@@ -331,6 +338,7 @@ confirm_and_force_update() {
         rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
         trap - EXIT
         # 核心：重启自身，仍以当前用户身份执行
+        export -f run_with_sudo # 再次导出，确保新执行的脚本也能识别
         exec bash "$FINAL_SCRIPT_PATH" "$@"
     else
         log_info "操作已取消."
@@ -412,6 +420,17 @@ export LC_ALL=${LC_ALL}
     cat > "$tmp_runner" <<EOF
 #!/bin/bash
 set -e
+# 核心：将 run_with_sudo 函数定义注入到子脚本中
+if declare -f run_with_sudo &>/dev/null; then
+  export -f run_with_sudo
+else
+  # Fallback definition if for some reason it's not inherited
+  run_with_sudo() {
+      echo -e "${CYAN}[子脚本 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
+      sudo -E "\$@" < /dev/tty
+  }
+  export -f run_with_sudo
+fi
 $env_exports
 # 核心：模块脚本以当前用户身份执行，如果需要root权限，模块内部应调用 run_with_sudo
 exec bash '$local_path' $extra_args_str
