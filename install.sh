@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.21-DeepDebugMenu - 深度调试菜单解析)
+# 🚀 VPS 一键安装脚本 (v4.6.22-FixArrayScope - 修复数组作用域问题)
+# - [核心修复] 解决 MAIN_MENU_ITEMS 和 SUBMENUS 数组在函数调用后变为空的问题。
+#   - 移除 `load_menus_from_json` 函数内部的 `declare -A` 语句，确保操作的是全局数组。
+#   - 使用 `unset 'ARRAY_NAME[@]'` 来清空数组元素，而不是重新声明。
 # - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，确保即使 config.json 结构不完全匹配也能正常加载。
 #   - 在解析主菜单和子菜单项时，增加对 JSON 结构类型的严格检查。
 #   - 使用 `set +e / set -e` 块包围关键 `jq` 命令，并检查其退出状态。
 #   - 增加大量 `_temp_log_info` 消息，以便追踪解析流程和中间结果。
-#   - 修正了子菜单键的 `jq` 命令，确保输出为 JSON 数组字符串。
-#   - 增加了对 `jq` stderr 的捕获，以诊断意外输出。
-# - [核心修复] 修复 `main_menu` 渲染循环，增加详细日志以诊断为何菜单项未显示。
 # - [核心修复] 解决 `bash: local: can only be used in a function` 错误，移除全局作用域的 `local` 关键字。
 # - [核心修复] 脚本自初始化流程优化，确保 utils.sh 和 config.json 在被 source/解析前已下载。
 #   - 提前检查并安装 `jq` 依赖。
@@ -18,7 +18,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.21-DeepDebugMenu"
+SCRIPT_VERSION="v4.6.22-FixArrayScope"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -141,8 +141,8 @@ fi
 
 # --- 菜单数据 (从 config.json 加载) ---
 MAIN_MENU_TITLE=""
-declare -A MAIN_MENU_ITEMS
-declare -A SUBMENUS
+declare -A MAIN_MENU_ITEMS # 全局声明
+declare -A SUBMENUS        # 全局声明
 
 load_menus_from_json() {
     log_info "开始加载菜单配置..."
@@ -152,7 +152,6 @@ load_menus_from_json() {
     fi
 
     local config_json_content
-    # 读取整个 config.json 内容
     set +e # 临时禁用错误退出
     config_json_content=$(cat "$CONFIG_JSON_PATH")
     local cat_status=$?
@@ -174,8 +173,9 @@ load_menus_from_json() {
     fi
     log_info "主菜单标题: '$MAIN_MENU_TITLE'"
     
-    unset MAIN_MENU_ITEMS
-    declare -A MAIN_MENU_ITEMS
+    # 清空全局数组，而不是重新声明局部数组
+    unset 'MAIN_MENU_ITEMS[@]' 
+    log_info "已清空 MAIN_MENU_ITEMS 数组。"
 
     local i=0
     # 健壮地解析主菜单项
@@ -215,6 +215,9 @@ load_menus_from_json() {
     fi
     log_info "主菜单项加载完成。共 $i 项。"
 
+    # 清空全局数组，而不是重新声明局部数组
+    unset 'SUBMENUS[@]'
+    log_info "已清空 SUBMENUS 数组。"
 
     # 加载所有子菜单键
     local submenu_keys_json_array_raw
@@ -502,7 +505,7 @@ main_menu() {
         for idx in "${!MAIN_MENU_ITEMS[@]}"; do
             log_info "  $idx: '${MAIN_MENU_ITEMS[$idx]}'"
         done
-        log_info "MAIN_MENU_ITEMS 数组长度: ${#MAIN_MENU_ITEMS[@]}"
+        log_info "MAIN_MENU_ITEMS 数组长度: ${#MAIN_MENU_ITEMS[@]}" # 期望这里是 6
 
         # 从 MAIN_MENU_ITEMS 数组中构建显示项
         log_info "开始渲染主菜单项到 display_items..."
