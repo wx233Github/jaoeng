@@ -1,31 +1,31 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.15-修复local错误与文件兼容性)
+# VPS Install Script (v74.16-Fix local error and header comments)
 # =============================================================
 
-# --- 脚本元数据 ---
-SCRIPT_VERSION="v74.15"
+# Script metadata
+SCRIPT_VERSION="v74.16"
 
-# --- 强制使用 Bash ---
-# 检查当前运行的shell是否是bash，如果不是则尝试重新执行
+# Force use Bash
+# Check if the current shell is bash, if not, try to re-execute with bash
 if [ -z "$BASH_VERSION" ]; then
-    echo "此脚本需要 Bash 才能运行。尝试使用 Bash 重新执行..." >&2
+    echo "This script requires Bash to run. Attempting to re-execute with Bash..." >&2
     exec /bin/bash "$0" "$@"
 fi
 
-# --- 严格模式与环境设定 ---
+# Strict mode and environment settings
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF_8; else export LC_ALL=C; fi
+if locale -a | grep -q "C.UTF-8"; then export LC_ALL=C.UTF-8; else export LC_ALL=C; fi
 
-# --- 备用 UI 渲染函数 (Fallback UI rendering functions) ---
-# 这些函数在 utils.sh 未加载或加载失败时提供基本的菜单渲染能力，防止脚本崩溃。
-# 如果 utils.sh 成功加载，其内部的同名函数将覆盖这些备用定义。
+# Fallback UI rendering functions (These functions provide basic menu rendering capabilities
+# in case utils.sh is not loaded or fails to load, preventing script crashes.
+# If utils.sh loads successfully, its internal functions with the same names will override these fallback definitions.)
 _get_visual_width() {
     local str="$1"
-    # 移除ANSI颜色码
+    # Remove ANSI color codes
     local clean_str=$(echo "$str" | sed 's/\x1b\[[0-9;]*m//g')
-    # 使用 wc -m 计算字符数，fallback 到字节数如果 wc -m 不可用
+    # Use wc -m for character count, fallback to byte count if wc -m is unavailable
     if command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
         echo "$clean_str" | wc -m
     else
@@ -40,98 +40,98 @@ generate_line() {
     printf "%${length}s" "" | sed "s/ /$char/g"
 }
 
-# --- [核心架构]: 智能自引导启动器 ---
+# Core Architecture: Smart Self-Bootstrapper
 INSTALL_DIR="/opt/vps_install_modules"; FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"; CONFIG_PATH="${INSTALL_DIR}/config.json"; UTILS_PATH="${INSTALL_DIR}/utils.sh"
 if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
-    echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+    echo_info() { echo -e "${STARTER_BLUE}[Bootstrapper]${STARTER_NC} $1"; }
+    echo_success() { echo -e "${STARTER_GREEN}[Bootstrapper]${STARTER_NC} $1"; }
+    echo_error() { echo -e "${STARTER_RED}[Bootstrapper Error]${STARTER_NC} $1" >&2; exit 1; }
     
-    # 检查 curl 依赖
-    if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
+    # Check curl dependency
+    if ! command -v curl &> /dev/null; then echo_error "curl command not found, please install it first."; fi
 
-    # 确保安装目录存在
+    # Ensure install directory exists
     if [ ! -d "$INSTALL_DIR" ]; then
-        echo_info "安装目录 $INSTALL_DIR 不存在，正在尝试创建..."
-        # 优化：抑制 mkdir 的 run_with_sudo 日志
+        echo_info "Install directory $INSTALL_DIR does not exist, attempting to create..."
+        # Optimization: suppress mkdir's run_with_sudo logs
         if ! JB_SUDO_LOG_QUIET="true" sudo mkdir -p "$INSTALL_DIR"; then
-            echo_error "无法创建安装目录 $INSTALL_DIR。请检查权限或手动创建。"
+            echo_error "Failed to create install directory $INSTALL_DIR. Check permissions or create manually."
         fi
     fi
 
-    # 检查是否需要首次安装或强制刷新
+    # Check if first installation or forced refresh is needed
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
-        echo_info "正在执行首次安装或强制刷新核心组件..."
+        echo_info "Performing first installation or forced refresh of core components..."
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-        declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
+        declare -A core_files=( ["Main Program"]="install.sh" ["Configuration File"]="config.json" ["Utility Library"]="utils.sh" )
         for name in "${!core_files[@]}"; do
             file_path="${core_files[$name]}"
-            echo_info "正在下载最新的 ${name} (${file_path})..."
+            echo_info "Downloading latest ${name} (${file_path})..."
             temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then
-                echo_error "下载 ${name} 失败。"
+                echo_error "Failed to download ${name}."
             fi
-            # 优化：抑制 mv 的 run_with_sudo 日志
+            # Optimization: suppress mv's run_with_sudo logs
             if ! JB_SUDO_LOG_QUIET="true" sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"; then
-                echo_error "移动 ${name} 到 ${INSTALL_DIR} 失败。"
+                echo_error "Failed to move ${name} to ${INSTALL_DIR}."
             fi
         done
         
-        echo_info "正在设置核心脚本执行权限并调整目录所有权..."
-        # 优化：抑制 chmod 和 chown 的 run_with_sudo 日志
+        echo_info "Setting core script execution permissions and adjusting directory ownership..."
+        # Optimization: suppress chmod and chown's run_with_sudo logs
         if ! JB_SUDO_LOG_QUIET="true" sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH"; then
-            echo_error "设置核心脚本执行权限失败。"
+            echo_error "Failed to set core script execution permissions."
         fi
-        # 核心：将安装目录所有权赋给当前用户，以便后续非root操作
+        # Core: assign ownership of install directory to current user for subsequent non-root operations
         if ! JB_SUDO_LOG_QUIET="true" sudo chown -R "$(whoami):$(whoami)" "$INSTALL_DIR"; then
-            echo_warn "无法将安装目录 $INSTALL_DIR 的所有权赋给当前用户 $(whoami)。后续操作可能需要手动sudo。"
+            echo_warn "Failed to assign ownership of install directory $INSTALL_DIR to current user $(whoami). Subsequent operations may require manual sudo."
         else
-            echo_success "安装目录 $INSTALL_DIR 所有权已调整为当前用户。"
+            echo_success "Install directory $INSTALL_DIR ownership adjusted to current user."
         fi
 
-        echo_info "正在创建/更新快捷指令 'jb'..."
+        echo_info "Creating/updating shortcut command 'jb'..."
         BIN_DIR="/usr/local/bin"
-        # 使用 sudo -E bash -c 来执行 ln 命令，确保环境变量和权限正确
-        # 优化：抑制 ln 的 run_with_sudo 日志
+        # Use sudo -E bash -c to execute ln command, ensuring correct environment variables and permissions
+        # Optimization: suppress ln's run_with_sudo logs
         if ! JB_SUDO_LOG_QUIET="true" sudo -E bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; then
-            echo_warn "无法创建快捷指令 'jb'。请检查权限或手动创建链接。"
+            echo_warn "Failed to create shortcut command 'jb'. Check permissions or create link manually."
         fi
-        echo_success "安装/更新完成！"
+        echo_success "Installation/update complete!"
     fi
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     echo ""
-    # 核心：主程序以当前用户身份执行
-    # 注意：这里不再尝试 export -f run_with_sudo，因为函数尚未定义。
-    # run_with_sudo 将在主程序逻辑中定义并导出。
+    # Core: main program executes as current user
+    # Note: run_with_sudo is not attempted to be exported here, as the function is not yet defined.
+    # run_with_sudo will be defined and exported in the main program logic.
     exec bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
-# --- 主程序逻辑 ---
+# Main program logic
 
-# 引入 utils
+# Include utils
 if [ -f "$UTILS_PATH" ]; then
     source "$UTILS_PATH"
 else
-    # 如果 utils.sh 无法加载，使用备用日志函数
-    log_err() { echo -e "${RED}[错误] $*${NC}" >&2; }
-    log_warn() { echo -e "${YELLOW}[警告] $*${NC}" >&2; }
-    log_info() { echo -e "${CYAN}[信息] $*${NC}"; }
-    log_success() { echo -e "${GREEN}[成功] $*${NC}"; }
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到或无法加载！脚本功能可能受限或不稳定。"
+    # If utils.sh cannot be loaded, provide a fallback log_err function to prevent script from crashing immediately
+    log_err() { echo -e "${RED}[Error] $*${NC}" >&2; }
+    log_warn() { echo -e "${YELLOW}[Warning] $*${NC}" >&2; }
+    log_info() { echo -e "${CYAN}[Info] $*${NC}"; }
+    log_success() { echo -e "${GREEN}[Success] $*${NC}"; }
+    log_err "Fatal Error: Common utility library $UTILS_PATH not found or failed to load! Script functionality may be limited or unstable."
 fi
 
-# --- Helper function to run commands with sudo ---
-# 如果函数未被导出，这里重新定义以确保可用性
+# Helper function to run commands with sudo
+# If the function is not exported, redefine it here to ensure availability
 if ! declare -f run_with_sudo &>/dev/null; then
   run_with_sudo() {
-      # 优化：根据 JB_SUDO_LOG_QUIET 环境变量决定是否输出日志
+      # Optimization: decide whether to output logs based on JB_SUDO_LOG_QUIET environment variable
       if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then
-          log_info "正在尝试以 root 权限执行: $*"
+          log_info "Attempting to execute with root privileges: $*"
       fi
       sudo -E "$@" < /dev/tty
   }
-  export -f run_with_sudo # 确保在加载 utils.sh 后，如果 utils.sh 没有定义，这里也能导出
+  export -f run_with_sudo # Ensure that after utils.sh is loaded, if utils.sh does not define it, it can be exported here
 fi
 
 
@@ -143,8 +143,8 @@ CONFIG[dependencies]='curl cmp ln dirname flock jq'
 CONFIG[lock_file]="/tmp/vps_install_modules.lock"
 CONFIG[enable_auto_clear]="false"
 CONFIG[timezone]="Asia/Shanghai"
-CONFIG[default_interval]="" # 初始化，用于存储 config.json 根目录的 default_interval
-CONFIG[default_cron_hour]="" # 初始化，用于存储 config.json 根目录的 default_cron_hour
+CONFIG[default_interval]="" # Initialize to store default_interval from config.json root
+CONFIG[default_cron_hour]="" # Initialize to store default_cron_hour from config.json root
 
 AUTO_YES="false"
 if [ "${NON_INTERACTIVE:-}" = "true" ] || [ "${YES_TO_ALL:-}" = "true" ]; then
@@ -166,7 +166,7 @@ load_config() {
         CONFIG[enable_auto_clear]="$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[enable_auto_clear]}")"
         CONFIG[timezone]="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE" 2>/dev/null || echo "${CONFIG[timezone]}")"
         
-        # 核心：读取根目录的 default_interval 和 default_cron_hour
+        # Core: read default_interval and default_cron_hour from root directory
         local root_default_interval; root_default_interval=$(jq -r '.default_interval // ""' "$CONFIG_FILE" 2>/dev/null || true)
         if echo "$root_default_interval" | grep -qE '^[0-9]+$'; then
             CONFIG[default_interval]="$root_default_interval"
@@ -188,30 +188,30 @@ check_and_install_dependencies() {
         fi
     done
     if [ ${#missing_deps[@]} -gt 0 ]; then
-        log_warn "缺少核心依赖: ${missing_deps[*]}"
+        log_warn "Missing core dependencies: ${missing_deps[*]}"
         local pm
         if command -v apt-get &>/dev/null; then pm="apt"; elif command -v dnf &>/dev/null; then pm="dnf"; elif command -v yum &>/dev/null; then pm="yum"; else pm="unknown"; fi
         if [ "$pm" = "unknown" ]; then
-            log_err "无法检测到包管理器, 请手动安装: ${missing_deps[*]}"
+            log_err "Cannot detect package manager, please install manually: ${missing_deps[*]}"
             exit 1
         fi
         if [ "$AUTO_YES" = "true" ]; then
             choice="y"
         else
-            read -p "$(echo -e "${YELLOW}是否尝试自动安装? (y/N): ${NC}")" choice < /dev/tty
+            read -p "$(echo -e "${YELLOW}Attempt to install automatically? (y/N): ${NC}")" choice < /dev/tty
         fi
         if echo "$choice" | grep -qE '^[Yy]$'; then
-            log_info "正在使用 $pm 安装..."
+            log_info "Installing using $pm..."
             local update_cmd=""
-            if [ "$pm" = "apt" ]; then update_cmd="JB_SUDO_LOG_QUIET='true' run_with_sudo apt-get update"; fi # 优化：抑制 apt-get update 的日志
-            # 优化：抑制包安装的 run_with_sudo 日志
+            if [ "$pm" = "apt" ]; then update_cmd="JB_SUDO_LOG_QUIET='true' run_with_sudo apt-get update"; fi # Optimization: suppress apt-get update logs
+            # Optimization: suppress package installation run_with_sudo logs
             if ! ($update_cmd && JB_SUDO_LOG_QUIET='true' run_with_sudo "$pm" install -y "${missing_deps[@]}"); then
-                log_err "依赖安装失败."
+                log_err "Dependency installation failed."
                 exit 1
             fi
-            log_success "依赖安装完成！"
+            log_success "Dependency installation complete!"
         else
-            log_err "用户取消安装."
+            log_err "User cancelled installation."
             exit 1
         fi
     fi
@@ -229,26 +229,26 @@ _download_file() {
 
 self_update() {
     local SCRIPT_PATH="${CONFIG[install_dir]}/install.sh"
-    # 如果当前执行的脚本不是最终安装路径的脚本，则不执行自更新（由启动器处理）
+    # If the currently executing script is not the final installed script, do not perform self-update (handled by bootstrapper)
     if [ "$0" != "$SCRIPT_PATH" ]; then
         return
     fi
     local temp_script="/tmp/install.sh.tmp.$$"
     if ! _download_file "install.sh" "$temp_script"; then
-        log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"
+        log_warn "Main program (install.sh) update check failed (cannot connect)."
         rm -f "$temp_script" 2>/dev/null || true
         return
     fi
     if ! cmp -s "$SCRIPT_PATH" "$temp_script"; then
-        log_success "主程序 (install.sh) 已更新。正在无缝重启..."
-        # 优化：抑制 mv 和 chmod 的 run_with_sudo 日志
+        log_success "Main program (install.sh) updated. Seamlessly restarting..."
+        # Optimization: suppress mv and chmod's run_with_sudo logs
         JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_script" "$SCRIPT_PATH"
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$SCRIPT_PATH"
         flock -u 200 || true
-        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
-        trap - EXIT # 取消退出陷阱，防止在 exec 后再次执行
-        # 核心：重启自身，仍以当前用户身份执行
-        export -f run_with_sudo # 再次导出，确保新执行的脚本也能识别
+        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # Lock file is in /tmp, user can delete
+        trap - EXIT # Cancel exit trap to prevent re-execution after exec
+        # Core: restart itself, still executing as current user
+        export -f run_with_sudo # Export again to ensure the newly executed script can also recognize it
         exec bash "$SCRIPT_PATH" "$@"
     fi
     rm -f "$temp_script" 2>/dev/null || true
@@ -263,7 +263,7 @@ download_module_to_cache() {
     http_code=$(curl -sS --connect-timeout 5 --max-time 60 --retry 3 --retry-delay 2 -w "%{http_code}" -o "$tmp_file" "$url" 2>/dev/null) || true
     local curl_exit_code=$?
     if [ $curl_exit_code -ne 0 ] || [ "$http_code" != "200" ] || [ ! -s "$tmp_file" ]; then
-        log_err "模块 (${script_name}) 下载失败 (HTTP: $http_code, Curl: $curl_exit_code)"
+        log_err "Module (${script_name}) download failed (HTTP: $http_code, Curl: $curl_exit_code)"
         rm -f "$tmp_file" 2>/dev/null || true
         return 1
     fi
@@ -271,8 +271,8 @@ download_module_to_cache() {
         rm -f "$tmp_file" 2>/dev/null || true
         return 0
     else
-        log_success "模块 (${script_name}) 已更新。"
-        # 优化：抑制 mkdir, mv, chmod 的 run_with_sudo 日志
+        log_success "Module (${script_name}) updated."
+        # Optimization: suppress mkdir, mv, chmod's run_with_sudo logs
         JB_SUDO_LOG_QUIET="true" run_with_sudo mkdir -p "$(dirname "$local_file")"
         JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$tmp_file" "$local_file"
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$local_file" || true
@@ -283,34 +283,34 @@ _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if _download_file "utils.sh" "$temp_utils"; then
         if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
-            log_success "核心工具库 (utils.sh) 已更新。"
+            log_success "Core utility library (utils.sh) updated."
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_utils" "$UTILS_PATH"
             JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "$UTILS_PATH"
         else
             rm -f "$temp_utils" 2>/dev/null || true
         fi
     else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。"
+        log_warn "Core utility library (utils.sh) update check failed."
     fi
 
-    # ADDED: Explicitly update config.json here
+    # Explicitly update config.json here
     local temp_config="/tmp/config.json.tmp.$$"
     if _download_file "config.json" "$temp_config"; then
         if [ ! -f "$CONFIG_PATH" ] || ! cmp -s "$CONFIG_PATH" "$temp_config"; then
-            log_success "核心配置文件 (config.json) 已更新。"
+            log_success "Core configuration file (config.json) updated."
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_config" "$CONFIG_PATH"
         else
             rm -f "$temp_config" 2>/dev/null || true
         fi
     else
-        log_warn "核心配置文件 (config.json) 更新检查失败。"
+        log_warn "Core configuration file (config.json) update check failed."
     fi
 }
 
 _update_all_modules() {
     local cfg="${CONFIG[install_dir]}/config.json"
     if [ ! -f "$cfg" ]; then
-        log_warn "配置文件 ${cfg} 不存在，跳过模块更新。"
+        log_warn "Configuration file ${cfg} does not exist, skipping module update."
         return
     fi
     local scripts_to_update
@@ -322,7 +322,7 @@ _update_all_modules() {
         .action
     ' "$cfg" 2>/dev/null || true)
     if [ -z "$scripts_to_update" ]; then
-        log_info "未检测到可更新的模块。"
+        log_info "No updatable modules detected."
         return
     fi
     local pids=()
@@ -338,65 +338,65 @@ force_update_all() {
     self_update
     _update_core_files # Now includes config.json
     _update_all_modules
-    log_success "所有组件更新检查完成！"
+    log_success "All components update check complete!"
 }
 
 confirm_and_force_update() {
-    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
-    log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
-    read -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    log_warn "Warning: This will force pull all latest scripts and the [main configuration file config.json] from GitHub."
+    log_warn "All your local modifications to config.json will be lost! This is a factory reset operation."
+    read -p "$(echo -e "${RED}This operation is irreversible, please type 'yes' to confirm: ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "开始强制完全重置..."
-        declare -A core_files_to_reset=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
+        log_info "Starting forced full reset..."
+        declare -A core_files_to_reset=( ["Main Program"]="install.sh" ["Utility Library"]="utils.sh" ["Configuration File"]="config.json" )
         for name in "${!core_files_to_reset[@]}"; do
             local file_path="${core_files_to_reset[$name]}"
-            log_info "正在强制更新 ${name}..."
+            log_info "Forcing update of ${name}..."
             local temp_file="/tmp/$(basename "$file_path").tmp.$$"
             if ! _download_file "$file_path" "$temp_file"; then
-                log_err "下载最新的 ${name} 失败。"
+                log_err "Failed to download latest ${name}."
                 continue
             fi
-            # 优化：抑制 mv 的 run_with_sudo 日志
+            # Optimization: suppress mv's run_with_sudo logs
             JB_SUDO_LOG_QUIET="true" run_with_sudo mv "$temp_file" "${CONFIG[install_dir]}/${file_path}"
-            log_success "${name} 已重置为最新版本。"
+            log_success "${name} reset to latest version."
         done
-        log_info "正在恢复核心脚本执行权限..."
-        # 优化：抑制 chmod 的 run_with_sudo 日志
+        log_info "Restoring core script execution permissions..."
+        # Optimization: suppress chmod's run_with_sudo logs
         JB_SUDO_LOG_QUIET="true" run_with_sudo chmod +x "${CONFIG[install_dir]}/install.sh" "${CONFIG[install_dir]}/utils.sh" || true
-        log_success "权限已恢复。"
+        log_success "Permissions restored."
         _update_all_modules
-        log_success "强制重置完成！"
-        log_info "脚本将在2秒后自动重启以应用所有更新..."
+        log_success "Forced reset complete!"
+        log_info "Script will automatically restart in 2 seconds to apply all updates..."
         sleep 2
         flock -u 200 || true
-        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # 锁文件在 /tmp，用户可删除
+        rm -f "${CONFIG[lock_file]}" 2>/dev/null || true # Lock file is in /tmp, user can delete
         trap - EXIT
-        # 核心：重启自身，仍以当前用户身份执行
-        export -f run_with_sudo # 再次导出，确保新执行的脚本也能识别
+        # Core: restart itself, still executing as current user
+        export -f run_with_sudo # Export again to ensure the newly executed script can also recognize it
         exec bash "$FINAL_SCRIPT_PATH" "$@"
     else
-        log_info "操作已取消."
+        log_info "Operation cancelled."
     fi
     return 10
 }
 
 uninstall_script() {
-    log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
-    log_warn "  - 安装目录: ${CONFIG[install_dir]}"
-    log_warn "  - 快捷方式: ${CONFIG[bin_dir]}/jb"
-    read -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    log_warn "Warning: This will completely remove this script and all its components from your system!"
+    log_warn "  - Install directory: ${CONFIG[install_dir]}"
+    log_warn "  - Shortcut: ${CONFIG[bin_dir]}/jb"
+    read -p "$(echo -e "${RED}This is an irreversible operation, are you sure you want to continue? (Please type 'yes' to confirm): ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "开始卸载..."
-        # 优化：抑制 rm 的 run_with_sudo 日志
+        log_info "Starting uninstallation..."
+        # Optimization: suppress rm's run_with_sudo logs
         JB_SUDO_LOG_QUIET="true" run_with_sudo rm -rf "${CONFIG[install_dir]}"
-        log_success "安装目录已移除."
+        log_success "Install directory removed."
         JB_SUDO_LOG_QUIET="true" run_with_sudo rm -f "${CONFIG[bin_dir]}/jb"
-        log_success "快捷方式已移除."
-        log_success "脚本已成功卸载."
-        log_info "再见！"
+        log_success "Shortcut removed."
+        log_success "Script successfully uninstalled."
+        log_info "Goodbye!"
         exit 0
     else
-        log_info "卸载操作已取消."
+        log_info "Uninstallation cancelled."
         return 10
     fi
 }
@@ -410,12 +410,12 @@ execute_module() {
     local display_name="$2"
     shift 2
     local local_path="${CONFIG[install_dir]}/$script_name"
-    log_info "您选择了 [$display_name]"
+    log_info "You selected [$display_name]"
 
     if [ ! -f "$local_path" ]; then
-        log_info "正在下载模块..."
+        log_info "Downloading module..."
         if ! download_module_to_cache "$script_name"; then
-            log_err "下载失败."
+            log_err "Download failed."
             return 1
         fi
     fi
@@ -426,7 +426,7 @@ export JB_ENABLE_AUTO_CLEAR='${CONFIG[enable_auto_clear]}'
 export JB_TIMEZONE='${CONFIG[timezone]}'
 export LC_ALL=${LC_ALL}
 "
-    # 核心：如果根目录有 default_interval 或 default_cron_hour，导出它们
+    # Core: If default_interval or default_cron_hour exist in the root, export them
     if [ -n "${CONFIG[default_interval]}" ]; then
         env_exports+="export JB_DEFAULT_INTERVAL='${CONFIG[default_interval]}'\n"
         log_debug "DEBUG: Exporting global default_interval: ${CONFIG[default_interval]}"
@@ -446,7 +446,7 @@ export LC_ALL=${LC_ALL}
     
     log_debug "DEBUG: Processing module_config_json for '$module_key': '$module_config_json'"
 
-    # 改进 jq_script，将 null 值转换为 ""
+    # Improved jq_script, converting null values to ""
     local jq_script='to_entries | .[] | select((.key | startswith("comment") | not)) | .key as $k | .value as $v | 
         if ($v|type) == "array" then [$k, ($v|join(","))] 
         elif ($v|type) | IN("string", "number", "boolean") then [$k, $v] 
@@ -458,11 +458,11 @@ export LC_ALL=${LC_ALL}
             local key_upper
             key_upper=$(echo "$key" | tr '[:lower:]' '[:upper:]')
             
-            # 针对数值型配置进行前置验证
+            # Pre-validate numeric configurations
             if [[ "$key" == *"interval"* ]] || [[ "$key" == *"hour"* ]]; then
                 if ! echo "$value" | grep -qE '^[0-9]+$'; then
-                    log_warn "config.json中'${module_key}.${key}'的值'${value}'不是有效数字，将忽略此配置。"
-                    continue # 忽略无效的数值配置
+                    log_warn "Value '${value}' for '${module_key}.${key}' in config.json is not a valid number, ignoring this configuration."
+                    continue # Ignore invalid numeric configurations
                 fi
             fi
             value=$(printf '%s' "$value" | sed "s/'/'\\\\''/g")
@@ -479,31 +479,31 @@ export LC_ALL=${LC_ALL}
     cat > "$tmp_runner" <<EOF
 #!/bin/bash
 set -e
-# 核心：将 run_with_sudo 函数定义注入到子脚本中
+# Core: inject run_with_sudo function definition into sub-script
 if declare -f run_with_sudo &>/dev/null; then
   export -f run_with_sudo
 else
   # Fallback definition if for some reason it's not inherited
   run_with_sudo() {
-      echo -e "${CYAN}[子脚本 - 信息]${NC} 正在尝试以 root 权限执行: \$*" >&2
+      echo -e "${CYAN}[Sub-script - Info]${NC} Attempting to execute with root privileges: \$*" >&2
       sudo -E "\$@" < /dev/tty
   }
   export -f run_with_sudo
 fi
 $env_exports
-# 核心：模块脚本以当前用户身份执行，如果需要root权限，模块内部应调用 run_with_sudo
+# Core: module script executes as current user, if root privileges are needed, module should call run_with_sudo internally
 exec bash '$local_path' $extra_args_str
 EOF
-    # 核心：执行 runner 脚本，不使用 sudo
+    # Core: execute runner script, no sudo
     bash "$tmp_runner" < /dev/tty || local exit_code=$?
     rm -f "$tmp_runner" 2>/dev/null || true
 
     if [ "${exit_code:-0}" = "0" ]; then
-        log_success "模块 [$display_name] 执行完毕."
+        log_success "Module [$display_name] executed successfully."
     elif [ "${exit_code:-0}" = "10" ]; then
-        log_info "已从 [$display_name] 返回."
+        log_info "Returned from [$display_name]."
     else
-        log_warn "模块 [$display_name] 执行出错 (码: ${exit_code:-1})."
+        log_warn "Module [$display_name] execution failed (Code: ${exit_code:-1})."
     fi
 
     return ${exit_code:-0}
@@ -513,7 +513,7 @@ _render_menu() {
     local title="$1"; shift
     local -a lines=("$@")
 
-    local max_content_width=0 # 仅计算内容宽度，不含内部空格和边框
+    local max_content_width=0 # Only calculate content width, excluding internal spaces and borders
     
     local title_content_width=$(_get_visual_width "$title")
     if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
@@ -523,18 +523,18 @@ _render_menu() {
         if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
     done
     
-    local inner_padding_chars=2 # 左右各一个空格，用于内容与边框之间的间距
+    local inner_padding_chars=2 # One space on each side, for spacing between content and border
     local box_inner_width=$((max_content_width + inner_padding_chars))
-    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # 最小内容区域宽度 (38 + 2边框 = 40总宽)
+    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi # Minimum content area width (38 + 2 borders = 40 total width)
 
     log_debug "DEBUG: _render_menu - title_content_width: $title_content_width, max_content_width: $max_content_width, box_inner_width: $box_inner_width"
 
-    # 顶部
+    # Top
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     
-    # 标题
+    # Title
     if [ -n "$title" ]; then
-        local current_title_line_width=$((title_content_width + inner_padding_chars)) # 标题内容宽度 + 左右各1空格
+        local current_title_line_width=$((title_content_width + inner_padding_chars)) # Title content width + 1 space on each side
         local padding_total=$((box_inner_width - current_title_line_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
@@ -546,17 +546,17 @@ _render_menu() {
         echo -e "${GREEN}│${left_padding_str} ${title} ${right_padding_str}│${NC}"
     fi
     
-    # 选项
+    # Options
     for line in "${lines[@]}"; do
         local line_content_width=$(_get_visual_width "$line")
-        # 计算右侧填充：总内容区域宽度 - 当前行内容宽度 - 左侧一个空格
+        # Calculate right padding: total content area width - current line content width - one left space
         local padding_right_for_line=$((box_inner_width - line_content_width - 1)) 
         if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
         log_debug "DEBUG: Line: '$line', line_content_width: $line_content_width, padding_right_for_line: $padding_right_for_line"
-        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # 左侧固定一个空格
+        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}" # Fixed one space on the left
     done
 
-    # 底部
+    # Bottom
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
 
@@ -568,7 +568,7 @@ display_menu() {
     log_debug "DEBUG: display_menu called. config_path: $config_path"
 
     if [ ! -f "$config_path" ]; then
-        log_err "配置文件 ${config_path} 未找到，请确保已安装核心文件。"
+        log_err "Configuration file ${config_path} not found, please ensure core files are installed."
         exit 1 # Exit Code 100 for config file missing
     fi
     log_debug "DEBUG: config.json exists. Content (first 100 chars): $(head -c 100 "$config_path" 2>/dev/null || echo "Error reading file")"
@@ -576,14 +576,14 @@ display_menu() {
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$config_path" 2>/dev/null || echo "")
     if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then
-        log_err "菜单 ${CURRENT_MENU_NAME} 配置无效或无法解析！"
+        log_err "Menu ${CURRENT_MENU_NAME} configuration is invalid or cannot be parsed!"
         log_debug "DEBUG: Failed to parse menu_json for $CURRENT_MENU_NAME. menu_json was: '$menu_json'"
         exit 1 # Exit Code 101 for menu parsing failure
     fi
     log_debug "DEBUG: menu_json for $CURRENT_MENU_NAME successfully parsed."
 
     local main_title_text
-    main_title_text=$(jq -r '.title // "VPS 安装脚本"' <<< "$menu_json" 2>/dev/null || echo "无法获取标题")
+    main_title_text=$(jq -r '.title // "VPS Install Script"' <<< "$menu_json" 2>/dev/null || echo "Could not get title")
     log_debug "DEBUG: main_title_text: '$main_title_text'"
 
     local -a menu_items_array=()
@@ -599,13 +599,13 @@ display_menu() {
     local menu_len
     menu_len=$(jq -r '.items | length' <<< "$menu_json" 2>/dev/null || echo "0")
     log_debug "DEBUG: menu_len: $menu_len"
-    local exit_hint="退出"
-    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="返回"; fi
-    local prompt_text=" └──> 请选择 [1-${menu_len}], 或 [Enter] ${exit_hint}: "
+    local exit_hint="Exit"
+    if [ "$CURRENT_MENU_NAME" != "MAIN_MENU" ]; then exit_hint="Return"; fi
+    local prompt_text=" └──> Please select [1-${menu_len}], or [Enter] ${exit_hint}: "
 
     if [ "$AUTO_YES" = "true" ]; then
         choice=""
-        echo -e "${BLUE}${prompt_text}${NC} [非交互模式]"
+        echo -e "${BLUE}${prompt_text}${NC} [Non-interactive mode]"
     else
         read -p "$(echo -e "${BLUE}${prompt_text}${NC}")" choice < /dev/tty
     fi
@@ -628,14 +628,14 @@ process_menu_selection() {
     fi
 
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$menu_len" ]; then
-        log_warn "无效选项."
+        log_warn "Invalid option."
         return 10
     fi
 
     local item_json
     item_json=$(echo "$menu_json" | jq -r --argjson idx "$(expr $choice - 1)" '.items[$idx]' 2>/dev/null || echo "")
     if [ -z "$item_json" ] || [ "$item_json" = "null" ]; then
-        log_warn "菜单项配置无效或不完整。"
+        log_warn "Menu item configuration is invalid or incomplete."
         return 10
     fi
 
@@ -660,7 +660,7 @@ process_menu_selection() {
             return $?
             ;;
         *)
-            log_warn "未知菜单类型: $type"
+            log_warn "Unknown menu type: $type"
             return 10
             ;;
     esac
@@ -669,30 +669,30 @@ process_menu_selection() {
 main() {
     exec 200>"${CONFIG[lock_file]}"
     if ! flock -n 200; then
-        echo -e "\033[0;33m[警告] 检测到另一实例正在运行."
+        echo -e "\033[0;33m[Warning] Another instance detected running."
         exit 1
     fi
-    # 退出陷阱，确保在脚本退出时释放文件锁
-    trap 'local trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "脚本已退出 (Exit Code: ${trap_exit_code})."' EXIT # Added exit code
+    # Exit trap, ensure file lock is released when script exits
+    trap 'local trap_exit_code=$?; flock -u 200; rm -f "${CONFIG[lock_file]}" 2>/dev/null || true; log_info "Script exited (Exit Code: ${trap_exit_code})."' EXIT # Added exit code
 
-    # 检查核心依赖，如果缺失则尝试安装
+    # Check core dependencies, install if missing
     if ! command -v flock >/dev/null || ! command -v jq >/dev/null; then
         check_and_install_dependencies
     fi
 
-    load_config # 首次加载配置
+    load_config # First load config
 
     if [ $# -gt 0 ]; then
         # This block is skipped if user runs `jb` without args.
         local command="$1"; shift
         case "$command" in
             update)
-                log_info "正在以 Headless 模式安全更新所有脚本..."
+                log_info "Safely updating all scripts in Headless mode..."
                 force_update_all
                 exit 0
                 ;;
             uninstall)
-                log_info "正在以 Headless 模式执行卸载..."
+                log_info "Performing uninstallation in Headless mode..."
                 uninstall_script
                 exit 0
                 ;;
@@ -706,7 +706,7 @@ main() {
                     display_name=$(echo "$item_json" | jq -r '.name' 2>/dev/null || echo "")
                     local type
                     type=$(echo "$item_json" | jq -r '.type' 2>/dev/null || echo "")
-                    log_info "正在以 Headless 模式执行: ${display_name}"
+                    log_info "Executing: ${display_name} in Headless mode"
                     if [ "$type" = "func" ]; then
                         "$action_to_run" "$@"
                     else
@@ -714,19 +714,19 @@ main() {
                     fi
                     exit $?
                 else
-                    log_err "未知命令: $command"
+                    log_err "Unknown command: $command"
                     exit 1
                 fi
         esac
     fi
 
-    log_info "脚本启动 (${SCRIPT_VERSION})"
-    echo -ne "$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🕛"
+    log_info "Script started (v${SCRIPT_VERSION})"
+    echo -ne "$(log_timestamp) ${BLUE}[Info]${NC} Intelligently updating 🕛"
     sleep 0.5
-    echo -ne "\r$(log_timestamp) ${BLUE}[信息]${NC} 正在智能更新 🔄\n"
-    force_update_all # 执行所有更新
+    echo -ne "\r$(log_timestamp) ${BLUE}[Info]${NC} Intelligently updating 🔄\n"
+    force_update_all # Perform all updates
     
-    load_config # 核心修复：更新后重新加载配置，确保使用最新配置
+    load_config # Core fix: reload config after update to ensure latest config is used
 
     log_debug "DEBUG: force_update_all completed and config reloaded. Attempting to display menu." # NEW DEBUG LINE
 
