@@ -1,16 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.6.19)
-# - 修复：彻底解决了 WATCHTOWER_NOTIFICATION_TEMPLATE 环境变量传递问题，改为文件挂载方式。
-# - 修复：修正了之前版本中多处因 `层叠` 标记导致的语法错误。
-# - 修复：修正了 `JB_WATCHTOWER_CONF_TASK_ENABLED_FROM_FROM_JSON` 变量名拼写错误。
-# - 优化：`_configure_telegram` 中“无更新也通知”选项，回车默认选择“是”。
-# - 优化：所有 Docker 命令现在通过 `JB_SUDO_LOG_QUIET=true run_with_sudo` 执行，抑制冗余日志。
-# - 优化：脚本头部注释更简洁。
+# 🚀 Docker 自动更新助手 (v4.6.21)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.19"
+SCRIPT_VERSION="v4.6.21"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -226,7 +220,6 @@ EOF
     _print_header "正在启动 $mode_description"
     local final_cmd=("${cmd_base[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    # 移除 eval "$final_cmd_str"，直接执行数组
     # For debugging output, still build the quoted string
     local final_cmd_str=""
     for arg in "${final_cmd[@]}"; do
@@ -701,7 +694,7 @@ get_watchtower_inspect_summary(){
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
         echo ""
         return 2
-    层叠
+    fi
     local cmd
     # 优化：抑制 docker inspect 的 run_with_sudo 日志
     cmd=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect watchtower --format '{{json .Config.Cmd}}' 2>/dev/null || echo "[]")
@@ -747,7 +740,7 @@ get_updates_last_24h(){
     if [ -n "$since" ]; then
         # 优化：抑制 docker logs 的 run_with_sudo 日志
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
-    fi
+    fi # <--- 修正: 闭合 if
     if [ -z "$raw_logs" ]; then
         # 优化：抑制 docker logs 的 run_with_sudo 日志
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
@@ -840,7 +833,7 @@ _get_watchtower_remaining_time(){
             printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
         else
             local overdue=$(( -rem ))
-            printf "%b已逾期 %02d分%02d秒, 正在等待...%b" "$YELLOW" $((overdue / 60)) $((overdue % 60)) "$NC"
+            printf "%b已逾期 %02d分%02d秒, 正 在 等 待 ...%b" "$YELLOW" $((overdue / 60)) $((overdue % 60)) "$NC"
         fi
     else
         echo -e "${YELLOW}计算中...${NC}"
@@ -894,20 +887,20 @@ show_watchtower_details(){
             3)
                 # 优化：抑制 docker ps 的 run_with_sudo 日志
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
-                    log_info "正在发送 SIGHUP 信号以触发扫描..."
+                    log_info "正在发送 SIGHUP 信 号 以 触 发 扫 描 ..."
                     # 优化：抑制 docker kill 的 run_with_sudo 日志
                     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then
-                        log_success "信号已发送！请在下方查看实时日志..."
-                        echo -e "按 Ctrl+C 停止..."; sleep 2
-                        trap '' INT # 临时禁用中断
-                        # 优化：抑制 docker logs 的 run_with_sudo 日志
+                        log_success "信 号 已 发 送 ！ 请 在 下 方 查 看 实 时 日 志 ..."
+                        echo -e "按 Ctrl+C 停 止 ..."; sleep 2
+                        trap '' INT # 临 时 禁 用 中 断
+                        # 优 化 ： 抑 制  docker logs 的  run_with_sudo 日 志
                         JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true
-                        trap 'echo -e "\n操作被中断。"; exit 10' INT # 恢复中断处理
+                        trap 'echo -e "\n操 作 被 中 断 。"; exit 10' INT # 恢 复 中 断 处 理
                     else
-                        log_err "发送信号失败！"
-                    层叠
+                        log_err "发 送 信 号 失 败 ！"
+                    fi
                 else
-                    log_warn "Watchtower 未运行，无法触发扫描。"
+                    log_warn "Watchtower 未 运 行 ， 无 法 触 发 扫 描 。"
                 fi
                 press_enter_to_continue
                 ;;
