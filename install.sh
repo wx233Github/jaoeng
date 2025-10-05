@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装入口脚本 (v74.18-增加下载文件有效性验证)
+# 🚀 VPS 一键安装入口脚本 (v74.19-增加下载文件有效性验证)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.18"
+SCRIPT_VERSION="v74.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -290,7 +290,7 @@ download_module_to_cache() {
 _update_single_core_file() {
     local file_name="$1"      # e.g., "utils.sh"
     local dest_path="$2"      # e.g., /opt/vps_install_modules/utils.sh
-    local validation_cmd="$3" # e.g., "jq . >/dev/null 2>&1" or ""
+    local validation_cmd="$3" # e.g., "jq -e '.menus.MAIN_MENU' >/dev/null 2>&1" or ""
 
     local temp_file="/tmp/${file_name}.tmp.$$"
     trap 'rm -f "$temp_file" 2>/dev/null' RETURN # Ensure temp file is cleaned up
@@ -307,7 +307,7 @@ _update_single_core_file() {
 
     if [ -n "$validation_cmd" ]; then
         if ! eval "$validation_cmd < '$temp_file'"; then
-            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。"
+            log_warn "核心文件 ($file_name) 更新检查失败 (文件内容验证失败)。将保留旧版本以确保稳定性。"
             return 1
         fi
     fi
@@ -324,7 +324,8 @@ _update_single_core_file() {
 
 _update_core_files() {
     _update_single_core_file "utils.sh" "$UTILS_PATH" ""
-    _update_single_core_file "config.json" "$CONFIG_PATH" "jq . >/dev/null 2>&1"
+    # 关键修复：使用更严格的验证命令，确保主菜单存在
+    _update_single_core_file "config.json" "$CONFIG_PATH" "jq -e '.menus.MAIN_MENU' >/dev/null 2>&1"
 }
 
 _update_all_modules() {
