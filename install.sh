@@ -1,6 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v4.6.15-UnifiedConfig - 全局配置联动 config.json)
+# 🚀 VPS 一键安装脚本 (v4.6.16-RobustMenu - 修复菜单解析错误)
+# - [核心修复] 增强 `load_menus_from_json` 函数的健壮性，解决 `jq: Cannot index string with string "title"` 错误。
+#   - 在解析子菜单标题和项目时，增加对 JSON 结构类型的检查和错误处理。
+# - [优化] 明确 `JB_UI_THEME_FROM_JSON` 不从 config.json 加载，让 utils.sh 的默认值生效。
 # - [核心修改] 解析 config.json 中的全局配置 (如 enable_auto_clear, timezone, watchtower模块配置)。
 # - [核心修改] 将解析到的 config.json 值作为环境变量导出，供 utils.sh 的 load_config 使用。
 # - [新增] 在主菜单中添加 UI 主题设置入口，调用 utils.sh 的 `theme_settings_menu`。
@@ -9,7 +12,7 @@
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.6.15-UnifiedConfig"
+SCRIPT_VERSION="v4.6.16-RobustMenu"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -49,7 +52,8 @@ load_json_defaults() {
     # 全局配置
     export JB_ENABLE_AUTO_CLEAR_FROM_JSON="$(jq -r '.enable_auto_clear // false' "$CONFIG_JSON_PATH")"
     export JB_TIMEZONE_FROM_JSON="$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_JSON_PATH")"
-    # UI 主题目前没有在 config.json 定义，所以这里不导出，让 utils.sh 的默认值生效
+    # JB_UI_THEME_FROM_JSON 不从 config.json 加载，因为它不在那里。
+    # utils.sh 会使用其内部的 'default' 作为初始值，直到用户通过菜单更改并保存到 config.conf。
 
     # Watchtower 模块配置
     export JB_WATCHTOWER_CONF_DEFAULT_INTERVAL_FROM_JSON="$(jq -r '.module_configs.watchtower.default_interval // 300' "$CONFIG_JSON_PATH")"
@@ -97,10 +101,21 @@ load_menus_from_json() {
 
     # 加载所有子菜单
     while IFS= read -r submenu_key; do
-        local submenu_title=$(jq -r ".menus.\"$submenu_key\".title // \"$submenu_key\"" "$CONFIG_JSON_PATH")
+        # 增强子菜单标题解析的健壮性
+        local submenu_obj=$(jq -c ".menus.\"$submenu_key\" // {}" "$CONFIG_JSON_PATH") # 提取子菜单对象，如果不存在则默认为空对象
+        
+        local submenu_title=""
+        # 检查提取出的 submenu_obj 是否是一个对象并且包含 title 字段
+        if echo "$submenu_obj" | jq -e 'has("title") and (.title | type == "string")' >/dev/null 2>&1; then
+            submenu_title=$(echo "$submenu_obj" | jq -r '.title')
+        else
+            submenu_title="$submenu_key" # 如果没有 title 字段或结构异常，使用键名作为标题
+            log_warn "子菜单 '$submenu_key' 未定义有效的 title 字段或其结构异常。使用键名作为标题。"
+        fi
         SUBMENUS["${submenu_key}_title"]="$submenu_title"
         
         local j=0
+        # 从提取出的 submenu_obj 中解析 items，并处理 items 不存在或不是数组的情况
         while IFS= read -r item_json; do
             local type=$(echo "$item_json" | jq -r '.type')
             local name=$(echo "$item_json" | jq -r '.name')
@@ -108,7 +123,7 @@ load_menus_from_json() {
             local action=$(echo "$item_json" | jq -r '.action')
             SUBMENUS["${submenu_key}_item_$j"]="${type}|${name}|${icon}|${action}"
             j=$((j + 1))
-        done < <(jq -c ".menus.\"$submenu_key\".items[]" "$CONFIG_JSON_PATH")
+        done < <(echo "$submenu_obj" | jq -c '.items[] // empty' || true) # 如果 .items 不存在或不是数组，则输出空，避免错误
         SUBMENUS["${submenu_key}_count"]="$j"
     done < <(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH")
 }
@@ -191,28 +206,12 @@ enter_module() {
         all_menu_items+=("${MAIN_MENU_ITEMS[$item_idx]}")
     done
 
-    for submenu_key in "${!SUBMENUS[@]}"; do
-        if [[ "$submenu_key" == *_title ]]; then
-            local count_key="${submenu_key%_title}_count"
-            local count="${SUBMENUS[$count_key]}"
-            for (( j=0; j<count; j++ )); do
-                all_menu_items+=("${SUBMENUS["${submenu_key%_title}_item_$j"]}")
-            done
-        fi
-    done
-
-    for item_str in "${all_menu_items[@]}"; do
-        local type=$(echo "$item_str" | cut -d'|' -f1)
-        local name=$(echo "$item_str" | cut -d'|' -f2)
-        local action=$(echo "$item_str" | cut -d'|' -f4)
-
-        if [ "$type" = "item" ] && [[ "$action" == *.sh ]]; then
-            local full_path="$INSTALL_DIR/$action"
-            if [ -f "$full_path" ]; then
-                module_list+=("$name")
-                module_paths+=("$full_path")
-            fi
-        fi
+    for submenu_key in $(jq -r '.menus | keys[] | select(. != "MAIN_MENU")' "$CONFIG_JSON_PATH"); do
+        local count_key="${submenu_key}_count"
+        local count="${SUBMENUS[$count_key]}"
+        for (( j=0; j<count; j++ )); do
+            all_menu_items+=("${SUBMENUS["${submenu_key}_item_$j"]}")
+        done
     done
 
     while true; do
