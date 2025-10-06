@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.19-修复main函数日志调用顺序)
+# 🚀 VPS 一键安装脚本 (v74.20-修复main函数日志调用顺序)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.19"
+SCRIPT_VERSION="v74.20"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -22,9 +22,9 @@ fi
 _tmp_log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 _tmp_log_info()    { echo -e "$(_tmp_log_timestamp) ${BLUE}[信息]${NC} $*"; }
 _tmp_log_success() { echo -e "$(_tmp_log_timestamp) ${GREEN}[成功]${NC} $*"; }
-_tmp_log_warn()    { echo -e "$(_tmp_log_timestamp) ${YELLOW}[警告]${NC} $*"; }
+_tmp_log_warn()    { echo -e "$(_tmp_log_timestamp) ${YELLOW}[警告]${NC} $*" >&2; } # Redirect warn to stderr
 _tmp_log_err()     { echo -e "$(_tmp_log_timestamp) ${RED}[错误]${NC} $*" >&2; }
-
+# _tmp_log_debug is not defined here, as it will be sourced from utils.sh
 
 # --- 全局变量和配置路径 ---
 INSTALL_DIR="/opt/vps_install_modules"
@@ -489,7 +489,7 @@ main_menu(){
 
 # --- Main entry point ---
 main() {
-    _tmp_log_debug "DEBUG: Entering main function" # Use _tmp_log_debug here
+    _tmp_log_info "进入主函数..." # Use _tmp_log_info here
     _acquire_lock
     
     # Check if core files exist, if not, download them
@@ -513,17 +513,17 @@ main() {
     
     # Create symlink for jb command
     if [ ! -f "$BIN_DIR/jb" ] || ! readlink "$BIN_DIR/jb" | grep -q "$INSTALL_DIR/install.sh"; then
-        _tmp_log_info "创建快捷命令 'jb'..."
+        _tmp_log_info "创建快捷命令 'jb'..." # Use _tmp_log_info here
         sudo ln -sf "$INSTALL_DIR/install.sh" "$BIN_DIR/jb" || _tmp_log_err "创建 'jb' 快捷命令失败！"
-        _tmp_log_success "快捷命令 'jb' 已创建。"
+        _tmp_log_success "快捷命令 'jb' 已创建。" # Use _tmp_log_success here
     fi
 
     # Check other dependencies defined in config.json
     _check_dependencies_after_utils
     
-    _tmp_log_debug "DEBUG: Calling main_menu" # Use _tmp_log_debug here
+    log_info "调用主菜单..." # Now log_info from utils.sh is available
     main_menu
-    _tmp_log_debug "DEBUG: Exiting main function" # Use _tmp_log_debug here
+    log_info "退出主函数。" # Now log_info from utils.sh is available
     exit 0
 }
 
