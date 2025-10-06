@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.18-稳定版)
-# - 修复: `check_and_install_dependencies` 中 `sha256sum` 的拼写错误
-# - 配合 utils.sh v2.3，确保脚本稳定运行
+# 🚀 VPS 一键安装与管理脚本 (v77.19-根源修复版)
+# - 修复: 启动器主动安装核心依赖(jq,curl)，根除首次运行崩溃问题
+# - 优化: 确保主程序在完全准备好的环境中启动
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.18"
+SCRIPT_VERSION="v77.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -23,28 +23,49 @@ REAL_SCRIPT_PATH=""
 REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
+    # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+
+    # --- [关键修复] 在启动器中主动、非交互式地安装核心依赖 ---
+    if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
+        echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
+        if command -v apt-get &>/dev/null; then
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y curl jq
+        else
+            echo_error "无法自动安装 curl 和 jq。请手动安装后再试。"
+        fi
+        echo_success "核心依赖安装完成。"
+    fi
+
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
-        if ! command -v curl &> /dev/null; then echo_error "curl 命令未找到, 请先安装."; fi
         sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+        
         declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
         for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"; echo_info "正在下载最新的 ${name} (${file_path})..."
+            file_path="${core_files[$name]}"
+            echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
+
         sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
-        BIN_DIR="/usr/local/bin"; sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; echo_success "安装/更新完成！"
+        BIN_DIR="/usr/local/bin"
+        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
+        echo_success "安装/更新完成！"
     fi
+    
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
@@ -73,7 +94,6 @@ run_with_sudo() {
 export -f run_with_sudo
 
 check_and_install_dependencies() {
-    # --- [关键修复] 修正 sha256sum 的拼写错误 ---
     local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
     local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "$default_deps")
     if [ -z "$deps" ]; then deps="$default_deps"; fi
@@ -84,7 +104,7 @@ check_and_install_dependencies() {
     
     if [ -n "$missing_pkgs" ]; then
         missing_pkgs=$(echo "$missing_pkgs" | xargs)
-        log_info "检查依赖..."
+        log_info "检查附加依赖..."
         log_warn "缺失依赖: ${missing_pkgs}"
         if confirm_action "是否尝试自动安装?"; then
             if command -v apt-get &>/dev/null; then run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get update; run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing_pkgs
@@ -92,7 +112,7 @@ check_and_install_dependencies() {
             else log_err "不支持的包管理器。请手动安装: ${missing_pkgs}"; exit 1; fi
         else log_err "用户取消安装，脚本无法继续。"; exit 1; fi
     else
-        log_debug "所有依赖均已安装。"
+        log_success "所有依赖均已满足。"
     fi
 }
 
@@ -178,7 +198,7 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         while IFS=$'\t' read -r icon name type action; do
-            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
+            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=(); local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
@@ -210,7 +230,10 @@ display_and_process_menu() {
 }
 
 main() {
-    load_config "$CONFIG_PATH"; check_and_install_dependencies
+    load_config "$CONFIG_PATH"
+    # 现在 check_and_install_dependencies 主要负责检查次要依赖
+    check_and_install_dependencies
+    
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})"' EXIT
     if [ $# -gt 0 ]; then
