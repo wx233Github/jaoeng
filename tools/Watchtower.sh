@@ -1,10 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.9-修复函数定义顺序)
+# 🚀 Docker 自动更新助手 (v4.7.10-深度调试版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.9"
+SCRIPT_VERSION="v4.7.10"
+
+# --- 开启调试模式 ---
+set -x # <<< 为调试目的添加，请将所有输出复制给我！
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -48,6 +51,7 @@ fi
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 
 # --- 模块变量 ---
+# 预先声明所有变量，避免潜在的未定义错误
 TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 EMAIL_TO=""
@@ -160,14 +164,14 @@ get_last_session_time(){
     local logs
     logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
     if [ -z "$logs" ]; then echo ""; return 1; fi
-    local line ts
+    local log_line ts
     if echo "$logs" | grep -qiE "permission denied|cannot connect"; then
         echo -e "${RED}错误:权限不足${NC}"
         return 1
     fi
-    line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
-    if [ -n "$line" ]; then
-        ts=$(_parse_watchtower_timestamp_from_log_line "$line")
+    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    if [ -n "$log_line" ]; then
+        ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
         if [ -n "$ts" ]; then
             echo "$ts"
             return 0
@@ -241,7 +245,7 @@ _get_watchtower_remaining_time(){
 
     if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line") # Fix: use log_line instead of line
+    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
 
     if [ "$epoch" -gt 0 ]; then
@@ -309,7 +313,7 @@ _start_watchtower_container_logic(){
         log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         
-        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then # Corrected variable name
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
             log_info "✅ 将启用 '无更新也通知' 模式。"
         else
@@ -736,7 +740,7 @@ manage_tasks(){
             "  1. › 停止/移除 Watchtower"
             "  2. › 重建 Watchtower"
         )
-        _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"
+        _render_menu "⚙️ 任 务 管 理 ⚙️" "${items_array[@]}"
         read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1)
