@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.4-稳定版)
-# - 修复: 使用 POSIX 兼容的 `[ -gt ]` 代替 `((...))` 解决致命语法错误
-# - 修复: _render_menu 中单列菜单的 UI 渲染逻辑
+# 🚀 通用工具函数库 (v2.5-最终稳定版)
+# - 修复: 使用 `${var:-0}` 防止空变量导致致命的语法错误
+# - 修复: 彻底修正单列菜单的 UI 渲染对齐逻辑
 # =============================================================
 
 # --- 严格模式 ---
@@ -75,7 +75,7 @@ generate_line() {
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
-    if command -v python3 &>/dev/null; then
+    if command -v python3 &/dev/null; then
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
         echo -n "$plain_text" | wc -m
@@ -98,16 +98,16 @@ _render_menu() {
         local left_width; left_width=$(_get_visual_width "$left_part")
         local right_width; right_width=$(_get_visual_width "$right_part")
         
-        if [ "$left_width" -gt "$max_left_width" ]; then max_left_width=$left_width; fi
-        if [ "$right_width" -gt "$max_right_width" ]; then max_right_width=$right_width; fi
+        # --- [关键修复] 使用 `${var:-0}` 确保即使变量为空也不会导致语法错误 ---
+        if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
+        if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
     done
 
     local box_inner_width
     if $has_separator; then
         box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
     else
-        # --- [关键修复] 使用最稳定、兼容性最强的 `[ -gt ]` 进行数字比较 ---
-        if [ "$max_left_width" -gt "$title_width" ]; then
+        if [ "${max_left_width:-0}" -gt "${title_width:-0}" ]; then
             box_inner_width=$max_left_width
         else
             box_inner_width=$title_width
@@ -125,7 +125,6 @@ _render_menu() {
     for line in "${lines[@]}"; do
         local left_part="${line%%│*}"; local right_part="${line##*│}"
         [[ "$left_part" == "$right_part" ]] && right_part=""
-        
         local left_width; left_width=$(_get_visual_width "$left_part")
         
         if $has_separator; then
@@ -135,9 +134,9 @@ _render_menu() {
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
             # --- [关键修复] 修正单列菜单的渲染逻辑和 padding 计算 ---
-            local padding=$((box_inner_width - left_width - 1))
+            local padding=$((box_inner_width - left_width - 2)) # 2 = space on left and right
             if [ $padding -lt 0 ]; then padding=0; fi
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding")│${NC}"
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
