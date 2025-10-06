@@ -7,7 +7,7 @@
   "bin_dir": "/usr/local/bin",
   "comment_dependencies": "脚本运行所需的基本依赖，会自动检查安装",
   "dependencies": {
-    "common": "curl cmp ln dirname flock jq"
+    "common": "curl ln dirname flock jq sha256sum mktemp"
   },
   "comment_lock_file": "防止多实例运行的锁文件",
   "lock_file": "/tmp/vps_install_modules.lock",
