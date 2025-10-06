@@ -25,8 +25,8 @@
         { "type": "item", "name": "Nginx", "icon": "🌐", "action": "nginx.sh" },
         { "type": "submenu", "name": "常用工具", "icon": "🛠️", "action": "TOOLS_MENU" },
         { "type": "item", "name": "证书申请", "icon": "📜", "action": "cert.sh" },
-        { "type": "func", "name": "强制重置 (更新脚本+恢复配置)", "icon": "⚙️", "action": "confirm_and_force_update" },
-        { "type": "func", "name": "卸载脚本 (Uninstall)", "icon": "🗑️", "action": "uninstall_script" }
+        { "type": "func", "name": "强制重置", "icon": "⚙️", "action": "confirm_and_force_update" },
+        { "type": "func", "name": "卸载脚本", "icon": "🗑️", "action": "uninstall_script" }
       ]
     },
     "TOOLS_MENU": {
