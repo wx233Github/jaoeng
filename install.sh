@@ -1,13 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.12-深度诊断修复)
-# - 内置强制诊断检查点，以定位精确的失败位置
-# - 增加了 Bash 4+ 版本检查
-# - 修复了之前版本引入的多个潜在错误
+# 🚀 VPS 一键安装与管理脚本 (v77.13-最终修复)
+# - 修正了 main 函数中 flock 在依赖检查前被调用的致命逻辑错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.12"
+SCRIPT_VERSION="v77.13"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -59,21 +57,10 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
-# --- [关键改动] 深度诊断与检查 ---
-echo "DEBUG: Checkpoint 1 - 主脚本逻辑启动"
-
-if (( BASH_VERSINFO[0] < 4 )); then
-    echo "致命错误: 此脚本需要 Bash 4.0 或更高版本才能运行。您当前的版本是 ${BASH_VERSION}。" >&2
-    exit 1
-fi
-echo "DEBUG: Checkpoint 2 - Bash 版本检查通过 (v${BASH_VERSINFO[0]})"
-
 # --- 主程序逻辑 ---
 if [ -f "$UTILS_PATH" ]; then
-    echo "DEBUG: Checkpoint 3 - 正在加载 utils.sh..."
     # shellcheck source=/dev/null
     source "$UTILS_PATH"
-    echo "DEBUG: Checkpoint 4 - utils.sh 加载成功"
 else
     echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2
     exit 1
@@ -346,13 +333,15 @@ display_and_process_menu() {
 }
 
 main() {
+    # --- [关键修复] ---
+    # 必须先检查依赖，再执行任何可能依赖外部命令的操作
+    check_and_install_dependencies
+
     load_config "$CONFIG_PATH"
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     trap 'flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true' EXIT
     
-    check_and_install_dependencies
-
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
@@ -378,5 +367,4 @@ main() {
     display_and_process_menu "$@"
 }
 
-echo "DEBUG: Checkpoint 5 - 函数定义完成，准备调用 main 函数..."
 main "$@"
