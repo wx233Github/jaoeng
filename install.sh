@@ -1,67 +1,47 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.17-深度调试版)
+# 🚀 VPS 一键安装脚本 (v74.17-修复初始化逻辑)
 # =============================================================
 
 # --- 脚本元数据 ---
 SCRIPT_VERSION="v74.17"
-
-# --- 开启调试模式 ---
-set -x # <<< 为调试目的添加，请将所有输出复制给我！
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
-# --- 加载通用工具函数库 ---
-UTILS_PATH="/opt/vps_install_modules/utils.sh"
-if [ -f "$UTILS_PATH" ]; then
-    source "$UTILS_PATH"
+# --- 定义临时日志函数 (在 utils.sh 加载前使用) ---
+# Check if colors are supported
+if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
+  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 else
-    log_err() { echo "[错误] $*" >&2; }
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
-    exit 1
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""
 fi
+_tmp_log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+_tmp_log_info()    { echo -e "$(_tmp_log_timestamp) ${BLUE}[信息]${NC} $*"; }
+_tmp_log_success() { echo -e "$(_tmp_log_timestamp) ${GREEN}[成功]${NC} $*"; }
+_tmp_log_warn()    { echo -e "$(_tmp_log_timestamp) ${YELLOW}[警告]${NC} $*"; }
+_tmp_log_err()     { echo -e "$(_tmp_log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 
-# --- 全局变量和配置加载 ---
+
+# --- 全局变量和配置路径 ---
 INSTALL_DIR="/opt/vps_install_modules"
 BIN_DIR="/usr/local/bin"
 LOCK_FILE="/tmp/vps_install_modules.lock"
 CONFIG_FILE="$INSTALL_DIR/config.json" # Path to config.json
+UTILS_PATH="$INSTALL_DIR/utils.sh"
 
 # Default values, will be overwritten by config.json
 ENABLE_AUTO_CLEAR="false"
 TIMEZONE="Asia/Shanghai"
-BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-
-# Function to load config.json (using jq)
-load_main_config() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log_err "配置文件 $CONFIG_FILE 未找到！"
-        exit 1
-    fi
-    
-    # Check for jq dependency
-    if ! command -v jq &>/dev/null; then
-        log_err "jq 工具未安装。请手动安装：sudo apt install jq 或 sudo yum install jq。"
-        exit 1
-    fi
-
-    ENABLE_AUTO_CLEAR=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
-    TIMEZONE=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
-    BASE_URL=$(jq -r '.base_url // "https://raw.githubusercontent.com/wx233Github/jaoeng/main"' "$CONFIG_FILE")
-    
-    # Export for sub-scripts
-    export JB_ENABLE_AUTO_CLEAR="$ENABLE_AUTO_CLEAR"
-    export JB_TIMEZONE="$TIMEZONE"
-    export JB_BASE_URL="$BASE_URL"
-}
+BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main" # This needs to be defined early for downloads
 
 # --- 锁文件机制 ---
 _acquire_lock() {
     exec 200>"$LOCK_FILE"
-    flock -n 200 || { log_warn "脚本已在运行，请勿重复启动。"; exit 1; }
+    flock -n 200 || { _tmp_log_warn "脚本已在运行，请勿重复启动。"; exit 1; }
 }
 _release_lock() {
     flock -u 200
@@ -69,8 +49,72 @@ _release_lock() {
 }
 trap _release_lock EXIT
 
-# --- 依赖检查函数 ---
-_check_dependencies() {
+# --- 核心文件下载函数 ---
+_download_core_files() {
+    _tmp_log_info "正在检查并下载核心文件..."
+    mkdir -p "$INSTALL_DIR" || { _tmp_log_err "无法创建安装目录: $INSTALL_DIR"; exit 1; }
+
+    local files_to_download=(
+        "install.sh"
+        "utils.sh"
+        "config.json"
+    )
+
+    for file in "${files_to_download[@]}"; do
+        local remote_url="${BASE_URL}/${file}"
+        local local_path="${INSTALL_DIR}/${file}"
+        _tmp_log_info "下载 ${file} 到 ${local_path}..."
+        if ! curl -fsSL -o "$local_path" "$remote_url"; then
+            _tmp_log_err "下载 ${file} 失败，请检查网络或URL: ${remote_url}"
+            exit 1
+        fi
+        chmod +x "$local_path" || _tmp_log_warn "无法设置 ${file} 的执行权限。"
+    done
+    _tmp_log_success "核心文件下载完成。"
+}
+
+# --- 检查并安装 jq ---
+_check_and_install_jq() {
+    if ! command -v jq &>/dev/null; then
+        _tmp_log_warn "jq 工具未安装，尝试自动安装..."
+        if command -v apt &>/dev/null; then
+            sudo apt update && sudo apt install -y jq
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y jq
+        else
+            _tmp_log_err "无法自动安装 jq。请手动安装：sudo apt install jq 或 sudo yum install jq。"
+            exit 1
+        fi
+        if ! command -v jq &>/dev/null; then
+            _tmp_log_err "jq 安装失败或未在 PATH 中找到。"
+            exit 1
+        fi
+        _tmp_log_success "jq 安装成功。"
+    fi
+}
+
+# Function to load config.json (using jq) - now needs to be called AFTER jq is ensured
+load_main_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        _tmp_log_err "配置文件 $CONFIG_FILE 未找到！(在下载核心文件后应存在)"
+        exit 1
+    fi
+    # jq is guaranteed to be installed at this point
+
+    ENABLE_AUTO_CLEAR=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
+    TIMEZONE=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
+    # BASE_URL is already set before this, but can be re-read if config.json can override it
+    # BASE_URL=$(jq -r '.base_url // "https://raw.githubusercontent.com/wx233Github/jaoeng/main"' "$CONFIG_FILE")
+    
+    # Export for sub-scripts
+    export JB_ENABLE_AUTO_CLEAR="$ENABLE_AUTO_CLEAR"
+    export JB_TIMEZONE="$TIMEZONE"
+    export JB_BASE_URL="$BASE_URL"
+}
+
+# --- 依赖检查函数 (需要 utils.sh 中的 log_err, log_info) ---
+# This function should be called after utils.sh is sourced.
+_check_dependencies_after_utils() {
     local common_deps
     common_deps=$(jq -r '.dependencies.common' "$CONFIG_FILE")
     
@@ -83,6 +127,7 @@ _check_dependencies() {
 }
 
 # --- 运行模块函数 ---
+# This function should be called after utils.sh is sourced.
 _run_module() {
     local module_path="$1"
     local module_display_name="$2" # 用于日志显示
@@ -122,6 +167,7 @@ unset_module_configs() {
 }
 
 # --- 状态检查辅助函数 (返回纯文本，不带颜色，由调用者添加颜色) ---
+# These need to be defined before main_menu
 _is_docker_daemon_running() {
     if JB_SUDO_LOG_QUIET="true" systemctl is-active --quiet docker &>/dev/null; then
         return 0 # Running
@@ -175,7 +221,9 @@ _is_watchtower_running() {
 confirm_and_force_update() {
     if confirm_action "警告: 这将强制更新所有脚本文件。您确定吗?"; then
         log_info "正在强制更新脚本..."
-        # TODO: Add actual force update logic here
+        # Re-download all core files and modules
+        _download_core_files # Re-download core files
+        # TODO: Add logic to download all other modules here
         log_success "脚本更新完成。请重新运行脚本。"
         exit 0
     else
@@ -187,8 +235,10 @@ confirm_and_force_update() {
 uninstall_script() {
     if confirm_action "警告: 这将卸载整个脚本系统。您确定吗?"; then
         log_info "正在卸载脚本..."
-        # TODO: Add actual uninstall logic here
-        log_success "脚本卸载完成。"
+        rm -rf "$INSTALL_DIR"
+        rm -f "$BIN_DIR/jb"
+        _release_lock # Ensure lock is released before exiting
+        log_success "脚本卸载完成。欢迎再次使用！"
         exit 0
     else
         log_info "操作已取消。"
@@ -381,7 +431,7 @@ render_main_menu() {
 
 # --- Main Menu Logic Function ---
 main_menu(){
-    log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
+    _tmp_log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}" # Use _tmp_log_info here before full utils.sh is sourced and log_info is defined
 
     while true; do
         if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
@@ -435,11 +485,37 @@ main_menu(){
 
 
 # --- Main entry point ---
-# Ensure main_menu is called AFTER all functions are defined
 main() {
     _acquire_lock
+    
+    # Check if core files exist, if not, download them
+    if [ ! -f "$UTILS_PATH" ] || [ ! -f "$CONFIG_FILE" ] || [ "${FORCE_REFRESH:-false}" = "true" ]; then
+        _download_core_files
+    fi
+
+    # Now that core files are guaranteed to exist, source utils.sh
+    if [ -f "$UTILS_PATH" ]; then
+        source "$UTILS_PATH"
+    else
+        _tmp_log_err "致命错误: 通用工具库 $UTILS_PATH 未找到，即使尝试下载后！"
+        exit 1
+    fi
+
+    # Ensure jq is installed (needed by load_main_config and other functions)
+    _check_and_install_jq
+    
+    # Load main configuration from config.json
     load_main_config
-    _check_dependencies
+    
+    # Create symlink for jb command
+    if [ ! -f "$BIN_DIR/jb" ] || ! readlink "$BIN_DIR/jb" | grep -q "$INSTALL_DIR/install.sh"; then
+        _tmp_log_info "创建快捷命令 'jb'..."
+        sudo ln -sf "$INSTALL_DIR/install.sh" "$BIN_DIR/jb" || _tmp_log_err "创建 'jb' 快捷命令失败！"
+        _tmp_log_success "快捷命令 'jb' 已创建。"
+    fi
+
+    # Check other dependencies defined in config.json
+    _check_dependencies_after_utils
     
     main_menu
     exit 0
