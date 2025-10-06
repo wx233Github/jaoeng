@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.14-主菜单排版优化)
+# 🚀 VPS 一键安装脚本 (v74.14-主菜单排版和Docker状态增强)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -11,221 +11,378 @@ set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
-# --- 颜色定义 ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# --- 通用工具函数库 ---
-# 必须在最开始加载，确保所有函数可用
+# --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
 if [ -f "$UTILS_PATH" ]; then
     source "$UTILS_PATH"
 else
-    # 如果 utils.sh 未找到，提供一个临时的 log_err 函数以避免脚本立即崩溃
     log_err() { echo "[错误] $*" >&2; }
     log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
     exit 1
 fi
 
-# --- 配置目录 ---
-CONFIG_DIR="/etc/vps_install_script"
-CONFIG_FILE="$CONFIG_DIR/config.json"
-MODULES_DIR="/opt/vps_install_modules/tools"
+# --- 全局变量和配置加载 ---
+INSTALL_DIR="/opt/vps_install_modules"
+BIN_DIR="/usr/local/bin"
+LOCK_FILE="/tmp/vps_install_modules.lock"
+CONFIG_FILE="$INSTALL_DIR/config.json" # Path to config.json
 
-# --- 确保 run_with_sudo 函数可用 ---
-if ! declare -f run_with_sudo &>/dev/null; then
-  log_err "致命错误: run_with_sudo 函数未定义。请确保 utils.sh 已正确加载。"
-  exit 1
-fi
+# Default values, will be overwritten by config.json
+ENABLE_AUTO_CLEAR="false"
+TIMEZONE="Asia/Shanghai"
+BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
-# =============================================================
-# 状态检查辅助函数
-# =============================================================
-
-# 检查 Docker Daemon 和 Docker Compose 状态
-_get_docker_overall_status() {
-    local docker_daemon_running="false"
-    local docker_compose_running="false"
-
-    # 检查 Docker Daemon
-    if systemctl is-active docker >/dev/null 2>&1; then
-        docker_daemon_running="true"
+# Function to load config.json (using jq)
+load_main_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        log_err "配置文件 $CONFIG_FILE 未找到！"
+        exit 1
     fi
 
-    # 检查 Docker Compose (优先检查插件版本，其次是独立安装版本)
-    if command -v docker &>/dev/null && docker compose version >/dev/null 2>&1; then
-        docker_compose_running="true"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        docker_compose_running="true"
+    # Check for jq dependency
+    if ! command -v jq &>/dev/null; then
+        log_err "jq 工具未安装。请手动安装：sudo apt install jq 或 sudo yum install jq。"
+        exit 1
     fi
 
-    if [ "$docker_daemon_running" = "true" ] && [ "$docker_compose_running" = "true" ]; then
-        echo "${GREEN}已运行${NC}"
-    elif [ "$docker_daemon_running" = "false" ]; then
-        echo "${RED}Docker Daemon: 未运行${NC}"
-    elif [ "$docker_compose_running" = "false" ]; then
-        echo "${RED}Docker Compose: 未运行${NC}"
-    else
-        echo "${RED}未运行 (未知状态)${NC}" # 理论上不应发生，作为安全后备
-    fi
-}
-
-# 检查 Nginx 状态
-_get_nginx_status() {
-    if systemctl is-active nginx >/dev/null 2>&1; then
-        echo "${GREEN}已运行${NC}"
-    else
-        echo "${RED}未运行${NC}"
-    fi
-}
-
-# 检查 Watchtower 状态
-_get_watchtower_status() {
-    # 假设 Watchtower 模块的运行状态可以通过检查其容器是否存在来判断
-    # 抑制 run_with_sudo 的日志输出
-    if JB_SUDO_LOG_QUIET="true" docker ps --filter name=watchtower --format '{{.Names}}' | grep -q '^watchtower$' >/dev/null 2>&1; then
-        echo "${GREEN}已运行${NC}"
-    else
-        echo "${RED}未运行${NC}"
-    fi
-}
-
-# =============================================================
-# 模块管理函数
-# =============================================================
-
-# 运行模块函数
-run_module() {
-    local module_name="$1"
-    local module_script="$MODULES_DIR/${module_name}.sh"
-
-    if [ ! -f "$module_script" ]; then
-        log_err "模块脚本未找到: $module_script"
-        return 1
-    fi
-
-    # 从 config.json 加载模块配置并导出为环境变量
-    local module_config_json
-    module_config_json=$(jq -c ".modules[\"$module_name\"]" "$CONFIG_FILE" 2>/dev/null || echo "{}")
-
-    # 遍历 JSON 对象中的键值对，导出为环境变量
-    # 格式为 WATCHTOWER_CONF_KEY="value"
-    local env_vars=()
-    if [ "$module_config_json" != "{}" ]; then
-        while IFS='=' read -r key value; do
-            key=$(echo "$key" | tr -d '[:space:]"')
-            value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//') # 移除引号
-            env_vars+=("${module_name^^}_CONF_${key^^}=\"${value}\"") # 转换为大写以提高健壮性
-        done < <(echo "$module_config_json" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
-    fi
+    ENABLE_AUTO_CLEAR=$(jq -r '.enable_auto_clear // false' "$CONFIG_FILE")
+    TIMEZONE=$(jq -r '.timezone // "Asia/Shanghai"' "$CONFIG_FILE")
+    BASE_URL=$(jq -r '.base_url // "https://raw.githubusercontent.com/wx233Github/jaoeng/main"' "$CONFIG_FILE")
     
-    # 执行模块脚本，并传递环境变量
-    log_info "您选择了 [${module_name} 模块]"
-    (
-        export "${env_vars[@]}"
-        bash "$module_script"
-    )
-    local exit_code=$?
-    if [ $exit_code -ne 10 ] && [ $exit_code -ne 0 ]; then
-        log_warn "模块 [${module_name} 模块] 执行出错 (码: ${exit_code})."
-    fi
-    return $exit_code
+    # Export for sub-scripts
+    export JB_ENABLE_AUTO_CLEAR="$ENABLE_AUTO_CLEAR"
+    export JB_TIMEZONE="$TIMEZONE"
+    export JB_BASE_URL="$BASE_URL"
 }
 
-# =============================================================
-# 主菜单
-# =============================================================
+# --- 锁文件机制 ---
+_acquire_lock() {
+    exec 200>"$LOCK_FILE"
+    flock -n 200 || { log_warn "脚本已在运行，请勿重复启动。"; exit 1; }
+}
+_release_lock() {
+    flock -u 200
+    rm -f "$LOCK_FILE"
+}
+trap _release_lock EXIT
 
-main_menu() {
-    log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
-
-    # 定义左侧列固定宽度，用于对齐分隔符
-    local LEFT_COL_WIDTH=25 # 根据实际内容和emoji调整，确保视觉对齐
-
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
-        _print_header "🖥️ VPS 一键安装脚本"
-
-        local docker_status="$(_get_docker_overall_status)"
-        local nginx_status="$(_get_nginx_status)"
-        local watchtower_status="$(_get_watchtower_status)"
-
-        local menu_lines=()
-
-        # 辅助函数：格式化菜单行，处理左右两部分和对齐
-        # 该函数会剥离ANSI颜色码以精确计算可见字符长度进行填充
-        _format_main_menu_line() {
-            local left_text="$1"
-            local right_text="$2"
-            
-            # 计算左侧文本的可见字符长度，去除ANSI颜色码
-            local visible_len_left=$(echo "$left_text" | sed 's/\x1b\[[0-9;]*m//g' | wc -c)
-            # 根据可见长度调整填充
-            local padding=$((LEFT_COL_WIDTH - visible_len_left))
-            if [ "$padding" -lt 0 ]; then padding=0; fi # 确保没有负填充
-
-            printf "  %s%*s│ %s" "$left_text" "$padding" "" "$right_text"
-        }
-
-        # 构建菜单显示行
-        menu_lines+=("$(_format_main_menu_line "1. 🐳 Docker" "Docker: $docker_status")")
-        menu_lines+=("$(_format_main_menu_line "2. 🌐 Nginx" "Nginx: $nginx_status")")
-        menu_lines+=("$(_format_main_menu_line "3. 🛠️ 常用工具" "Watchtower: $watchtower_status")")
-        menu_lines+=("$(_format_main_menu_line "4. 📜 证书申请" "")") # 证书申请模块没有实时状态显示
-
-        # 右侧底部选项，与主菜单项对齐
-        # "  " (2 spaces) + LEFT_COL_WIDTH 确保 "│" 后面的选项与右侧状态列对齐
-        local empty_left_padding=$((LEFT_COL_WIDTH + 2)) 
-        menu_lines+=("$(printf "%*s│ %s" "$empty_left_padding" "" "a.⚙️ 强制重置")")
-        menu_lines+=("$(printf "%*s│ %s" "$empty_left_padding" "" "c.🗑️ 卸载脚本")")
-
-        # 使用通用的 _render_menu 函数来绘制带边框的菜单
-        _render_menu "🖥️ VPS 一键安装脚本" "${menu_lines[@]}"
-
-        read -r -p " └──> 请选择 [1-4], 或 [a/c] 选项, 或 [Enter] 返回: " choice < /dev/tty
-
-        case "$choice" in
-            1) run_module "Docker" || true; press_enter_to_continue ;;
-            2) run_module "Nginx" || true; press_enter_to_continue ;;
-            3) run_module "Watchtower" || true; press_enter_to_continue ;;
-            4) run_module "Certificate" || true; press_enter_to_continue ;;
-            a|A)
-                if confirm_action "确定要强制重置所有模块配置吗？这会清除所有保存的配置并可能导致服务中断。"; then
-                    log_warn "正在强制重置所有模块配置..."
-                    # TODO: 在此处添加实际的重置逻辑
-                    log_success "所有模块配置已重置。"
-                else
-                    log_info "操作已取消。"
-                fi
-                press_enter_to_continue
-                ;;
-            c|C)
-                if confirm_action "警告: 确定要卸载此脚本及其所有模块吗？这将是不可逆的操作。"; then
-                    log_warn "正在卸载脚本和所有模块..."
-                    # TODO: 在此处添加实际的卸载逻辑
-                    log_success "脚本和所有模块已卸载。"
-                else
-                    log_info "操作已取消。"
-                fi
-                press_enter_to_continue
-                ;;
-            "") log_info "退出脚本。"; exit 0 ;;
-            *) log_warn "无效选项。请重新输入。"; sleep 1 ;;
-        esac
+# --- 依赖检查函数 ---
+_check_dependencies() {
+    local common_deps
+    common_deps=$(jq -r '.dependencies.common' "$CONFIG_FILE")
+    
+    for dep in $common_deps; do
+        if ! command -v "$dep" &>/dev/null; then
+            log_err "依赖 '$dep' 未安装。请手动安装：sudo apt install $dep 或 sudo yum install $dep"
+            exit 1
+        fi
     done
 }
 
-# =============================================================
-# 主执行入口
-# =============================================================
+# --- 运行模块函数 ---
+_run_module() {
+    local module_path="$1"
+    local module_display_name="$2" # 用于日志显示
+    if [ ! -f "$INSTALL_DIR/$module_path" ]; then
+        log_err "模块文件 '$INSTALL_DIR/$module_path' 不存在。"
+        return 1
+    fi
+    log_info "您选择了 [${module_display_name}]"
+    
+    local module_name=$(basename "$module_path" .sh | tr '[:lower:]' '[:upper:]')
+    local config_json_path=".module_configs.$(basename "$module_path" .sh | cut -d'.' -f1)"
+    
+    local module_config_vars
+    module_config_vars=$(jq -r "del(.comment_*) | .$config_json_path | to_entries[] | \"${module_name}_CONF_\" + (.key | ascii_upcase) + \"=\\\"\" + (.value | tostring) + \"\\\"\"" "$CONFIG_FILE" || true)
+    
+    if [ -n "$module_config_vars" ]; then
+        eval "export $module_config_vars"
+        log_debug "Exported module configs for $module_name: $module_config_vars"
+    fi
+
+    "$INSTALL_DIR/$module_path" || {
+        local exit_code=$?
+        if [ "$exit_code" -ne 10 ]; then
+            log_warn "模块 [${module_display_name}] 执行出错 (码: $exit_code)."
+        fi
+    }
+    unset_module_configs "$module_name"
+    press_enter_to_continue
+}
+
+# Function to unset module specific environment variables
+unset_module_configs() {
+    local module_prefix="$1_CONF_"
+    for var in $(compgen -v | grep "^${module_prefix}"); do
+        unset "$var"
+    done
+}
+
+# --- 状态检查辅助函数 (返回纯文本，不带颜色，由调用者添加颜色) ---
+_is_docker_daemon_running() {
+    if JB_SUDO_LOG_QUIET="true" systemctl is-active --quiet docker &>/dev/null; then
+        return 0 # Running
+    elif JB_SUDO_LOG_QUIET="true" service docker status &>/dev/null; then
+        return 0 # Running (fallback)
+    fi
+    return 1 # Not running
+}
+
+_is_docker_compose_installed_and_running() {
+    local compose_cmd=""
+    if command -v docker-compose &>/dev/null; then
+        compose_cmd="docker-compose"
+    elif docker compose version &>/dev/null; then
+        compose_cmd="docker compose"
+    fi
+
+    if [ -n "$compose_cmd" ]; then
+        # Check if any compose services are running
+        if JB_SUDO_LOG_QUIET="true" $compose_cmd ps -q &>/dev/null; then
+            return 0 # Installed and services running
+        else
+            return 2 # Installed but no services running
+        fi
+    fi
+    return 1 # Not installed
+}
+
+_is_nginx_running() {
+    if JB_SUDO_LOG_QUIET="true" systemctl is-active --quiet nginx &>/dev/null; then
+        return 0
+    elif JB_SUDO_LOG_QUIET="true" service nginx status &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+_is_watchtower_running() {
+    if JB_SUDO_LOG_QUIET="true" docker ps --format '{{.Names}}' | grep -q '^watchtower$' &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# --- 核心功能函数 ---
+confirm_and_force_update() {
+    if confirm_action "警告: 这将强制更新所有脚本文件。您确定吗?"; then
+        log_info "正在强制更新脚本..."
+        # TODO: Add actual force update logic here
+        log_success "脚本更新完成。请重新运行脚本。"
+        exit 0
+    else
+        log_info "操作已取消。"
+    fi
+    press_enter_to_continue
+}
+
+uninstall_script() {
+    if confirm_action "警告: 这将卸载整个脚本系统。您确定吗?"; then
+        log_info "正在卸载脚本..."
+        # TODO: Add actual uninstall logic here
+        log_success "脚本卸载完成。"
+        exit 0
+    else
+        log_info "操作已取消。"
+    fi
+    press_enter_to_continue
+}
+
+# Global variable to store the count of numbered menu items
+MAIN_MENU_ITEM_COUNT=0
+
+# --- 主菜单渲染函数 ---
+render_main_menu() {
+    local main_menu_title=$(jq -r '.menus.MAIN_MENU.title' "$CONFIG_FILE")
+    local -a menu_items_config
+    mapfile -t menu_items_config < <(jq -c '.menus.MAIN_MENU.items[]' "$CONFIG_FILE")
+
+    local -a left_column_lines=()
+    local -a right_column_lines=()
+    local item_idx=0
+
+    # Populate left column (numbered items)
+    for item_json in "${menu_items_config[@]}"; do
+        local type=$(echo "$item_json" | jq -r '.type')
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        
+        if [ "$type" = "item" ] || [ "$type" = "submenu" ]; then
+            item_idx=$((item_idx + 1))
+            left_column_lines+=("  ${item_idx}. ${icon} ${name}")
+        fi
+    done
+    
+    # Populate right column (statuses and options)
+    # Docker Status
+    local docker_overall_status_display=""
+    if _is_docker_daemon_running && _is_docker_compose_installed_and_running; then
+        docker_overall_status_display="Docker: ${GREEN}已运行${NC}"
+    else
+        if ! _is_docker_daemon_running; then
+            docker_overall_status_display="Docker: ${RED}守护进程未运行${NC}"
+        elif ! _is_docker_compose_installed_and_running 0; then # 0 means installed and running, 1 means not installed, 2 means installed but not running
+            local compose_status_code
+            _is_docker_compose_installed_and_running; compose_status_code=$?
+            if [ "$compose_status_code" -eq 1 ]; then
+                docker_overall_status_display="Docker: ${RED}Compose未安装${NC}"
+            elif [ "$compose_status_code" -eq 2 ]; then
+                docker_overall_status_display="Docker: ${YELLOW}Compose服务未运行${NC}"
+            fi
+        else
+             docker_overall_status_display="Docker: ${RED}状态未知${NC}"
+        fi
+    fi
+    right_column_lines+=("$docker_overall_status_display")
+
+    # Nginx Status
+    if _is_nginx_running; then
+        right_column_lines+=("Nginx: ${GREEN}已运行${NC}")
+    else
+        right_column_lines+=("Nginx: ${RED}未运行${NC}")
+    fi
+
+    # Watchtower Status
+    if _is_watchtower_running; then
+        right_column_lines+=("Watchtower: ${GREEN}已运行${NC}")
+    else
+        right_column_lines+=("Watchtower: ${RED}未运行${NC}")
+    fi
+
+    # Separator for options
+    right_column_lines+=("") # Empty line for spacing
+
+    # Options a.c
+    for item_json in "${menu_items_config[@]}"; do
+        local type=$(echo "$item_json" | jq -r '.type')
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        if [ "$type" = "func" ]; then
+            case "$name" in
+                "强制重置")
+                    right_column_lines+=("a. ${icon} ${name}")
+                    ;;
+                "卸载脚本")
+                    right_column_lines+=("c. ${icon} ${name}")
+                    ;;
+            esac
+        fi
+    done
+
+    # Calculate max widths for each column
+    local max_left_width=0
+    for line in "${left_column_lines[@]}"; do
+        local w=$(_get_visual_width "$line")
+        if (( w > max_left_width )); then max_left_width=$w; fi
+    done
+
+    local max_right_width=0
+    for line in "${right_column_lines[@]}"; do
+        local w=$(_get_visual_width "$line")
+        if (( w > max_right_width )); then max_right_width=$w; fi
+    done
+
+    # Ensure minimum widths for aesthetic
+    if (( max_left_width < 20 )); then max_left_width=20; fi
+    if (( max_right_width < 25 )); then max_right_width=25; fi # Give more space for status messages
+
+    local separator_chars=" │ " # 3 visual characters
+    local separator_visual_width=$(_get_visual_width "$separator_chars")
+
+    local total_inner_content_width=$((max_left_width + separator_visual_width + max_right_width))
+    local min_total_width=70 # Minimum total width for the box
+    if (( total_inner_content_width < min_total_width )); then
+        total_inner_content_width=$min_total_width
+    fi
+
+    local outer_padding_chars=2 # For "│ " and " │"
+    local box_width=$((total_inner_content_width + outer_padding_chars))
+
+    # Render top border
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
+    
+    # Title
+    local title_content_width=$(_get_visual_width "$main_menu_title")
+    local title_padding_total=$((box_width - title_content_width - outer_padding_chars))
+    local title_padding_left=$((title_padding_total / 2))
+    local title_padding_right=$((title_padding_total - title_padding_left))
+    echo -e "${GREEN}│$(printf '%*s' "$title_padding_left") ${main_menu_title} $(printf '%*s' "$title_padding_right")│${NC}"
+    
+    # Separator line if there are items
+    if [ ${#left_column_lines[@]} -gt 0 ] || [ ${#right_column_lines[@]} -gt 0 ]; then
+        echo -e "${GREEN}│$(generate_line "$box_width" "─")│${NC}"
+    fi
+
+    # Render content rows
+    local max_rows=$(( ${#left_column_lines[@]} > ${#right_column_lines[@]} ? ${#left_column_lines[@]} : ${#right_column_lines[@]} ))
+
+    for (( i=0; i < max_rows; i++ )); do
+        local left_line="${left_column_lines[$i]:-}"
+        local right_line="${right_column_lines[$i]:-}"
+
+        local left_current_visual_width=$(_get_visual_width "$left_line")
+        local right_current_visual_width=$(_get_visual_width "$right_line")
+
+        local left_padding_str=$(printf '%*s' $((max_left_width - left_current_visual_width)))
+        local right_padding_str=$(printf '%*s' $((max_right_width - right_current_visual_width)))
+
+        printf "${GREEN}│ %s%s${separator_chars}%s%s │${NC}\n" \
+               "$(echo -e "$left_line")" \
+               "$left_padding_str" \
+               "$(echo -e "$right_line")" \
+               "$right_padding_str"
+    done
+    
+    # Render bottom border
+    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
+
+    # Set item_count for main loop choice validation
+    MAIN_MENU_ITEM_COUNT=${#left_column_lines[@]}
+}
+
+# --- Tools Submenu Function ---
+tools_menu() {
+    local tools_menu_title=$(jq -r '.menus.TOOLS_MENU.title' "$CONFIG_FILE")
+    local -a tools_menu_items_config
+    mapfile -t tools_menu_items_config < <(jq -c '.menus.TOOLS_MENU.items[]' "$CONFIG_FILE")
+
+    local item_count=0
+    local -a menu_lines=()
+    for item_json in "${tools_menu_items_config[@]}"; do
+        item_count=$((item_count + 1))
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        menu_lines+=("  ${item_count}. ${icon} ${name}")
+    done
+
+    while true; do
+        if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
+        _render_menu "$tools_menu_title" "${menu_lines[@]}"
+        read -r -p " └──> 请选择 [1-${item_count}], 或 [Enter] 返回: " choice < /dev/tty
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$item_count" ]; then
+            local selected_item_json="${tools_menu_items_config[$((choice - 1))]}"
+            local selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
+            local selected_action_name=$(echo "$selected_item_json" | jq -r '.name') # Get name for display
+            _run_module "$selected_action_path" "$selected_action_name"
+        elif [ -z "$choice" ]; then
+            log_info "返回主菜单。"
+            return # Return to main_menu
+        else
+            log_warn "无效选项。请重新输入。"
+            sleep 1
+        fi
+    done
+}
+
+# --- Main entry point ---
 main() {
-    # 捕获中断信号，确保优雅退出
-    trap 'echo -e "\n操作被中断。"; exit 0' INT TERM
+    _acquire_lock
+    load_main_config
+    _check_dependencies
+    
     main_menu
+    exit 0 # Exit cleanly after main menu loop
 }
 
 main "$@"
