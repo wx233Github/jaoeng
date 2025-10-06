@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.4-加固更新机制与诊断)
-# - 强制统一换行符以防止“幻影更新”，并增加Debug日志
+# 🚀 VPS 一键安装与管理脚本 (v77.5-终极稳定版)
+# - 彻底移除不稳定的 exec 重启机制，改为明确的用户提示
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.4"
+SCRIPT_VERSION="v77.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -41,7 +41,6 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
-            # 在移动前就统一换行符
             sed -i 's/\r$//' "$temp_file" 2>/dev/null || true
             sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
         done
@@ -54,8 +53,9 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     fi
     
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
-    echo ""
-    exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+    # 【修复】不再使用 exec 自动启动，而是提示用户手动运行
+    echo_success "脚本已就绪。请运行 'jb' 命令启动管理菜单。"
+    exit 0
 fi
 
 # --- 主程序逻辑 (已在 /opt/vps_install_modules/install.sh 中运行) ---
@@ -117,15 +117,15 @@ self_update() {
     if ! curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$temp_script"; then
         log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"; rm -f "$temp_script"; return
     fi
-
-    # 【修复】强制将下载的文件转换为Unix换行符，防止因CRLF导致不必要的更新
     sed -i 's/\r$//' "$temp_script" 2>/dev/null || true
 
     if ! cmp -s "$FINAL_SCRIPT_PATH" "$temp_script"; then
-        log_success "主程序 (install.sh) 已更新。正在无缝重启...";
+        log_success "主程序 (install.sh) 已更新。";
         run_with_sudo mv "$temp_script" "$FINAL_SCRIPT_PATH"
         run_with_sudo chmod +x "$FINAL_SCRIPT_PATH"
-        flock -u 200; trap - EXIT; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+        # 【修复】不再使用 exec，而是提示用户并干净地退出
+        log_info "请重新运行 'jb' 以应用更新。"
+        exit 0
     fi
     rm -f "$temp_script"
 }
@@ -260,17 +260,14 @@ display_and_process_menu() {
 
 # --- 主程序入口 ---
 main() {
-    log_debug "Entering main function..."
     load_config
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     trap 'flock -u 200; rm -f "$LOCK_FILE"' EXIT
     
-    log_debug "Lock acquired. Checking dependencies..."
     check_and_install_dependencies
 
     if [ $# -gt 0 ]; then
-        log_debug "Headless mode detected. Command: $1"
         local command="$1"; shift
         case "$command" in
             update) log_info "正在以无头模式更新所有脚本..."; force_update_all "$@"; exit 0 ;;
@@ -284,13 +281,9 @@ main() {
         esac
     fi
 
-    log_debug "Entering interactive mode. Calling self_update..."
-    self_update "$@"
-    log_debug "self_update finished. Calling check_sudo_privileges..."
+    self_update
     check_sudo_privileges
-    log_debug "check_sudo_privileges finished. Calling display_and_process_menu..."
     display_and_process_menu "$@"
-    log_debug "display_and_process_menu exited. Main function finished."
 }
 
 main "$@"
