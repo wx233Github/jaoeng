@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.13-最终修复)
-# - 修正了 main 函数中 flock 在依赖检查前被调用的致命逻辑错误
+# 🚀 VPS 一键安装与管理脚本 (v77.14-终极稳定版)
+# - 修复了 utils.sh 中的 tr 依赖导致启动失败的根本问题
+# - 彻底移除了脚本中所有 tr 调用，增强了健壮性
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.13"
+SCRIPT_VERSION="v77.14"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -67,14 +68,14 @@ else
 fi
 
 # --- 变量与函数定义 ---
-BASE_URL="${BASE_URL:-${DEFAULT_BASE_URL:-https://raw.githubusercontent.com/wx233Github/jaoeng/main}}"
-INSTALL_DIR="${INSTALL_DIR:-${DEFAULT_INSTALL_DIR:-/opt/vps_install_modules}}"
-BIN_DIR="${BIN_DIR:-${DEFAULT_BIN_DIR:-/usr/local/bin}}"
-LOCK_FILE="${LOCK_FILE:-${DEFAULT_LOCK_FILE:-/tmp/vps_install_modules.lock}}"
-JB_ENABLE_AUTO_CLEAR="${JB_ENABLE_AUTO_CLEAR:-false}"
-JB_TIMEZONE="${JB_TIMEZONE:-${DEFAULT_TIMEZONE:-Asia/Shanghai}}"
+BASE_URL=""
+INSTALL_DIR=""
+BIN_DIR=""
+LOCK_FILE=""
+JB_ENABLE_AUTO_CLEAR=""
+JB_TIMEZONE=""
 CURRENT_MENU_NAME="MAIN_MENU"
-CONFIG_PATH="${CONFIG_PATH:-${INSTALL_DIR}/config.json}"
+CONFIG_PATH="${INSTALL_DIR}/config.json"
 UTILS_PATH="${UTILS_PATH:-${INSTALL_DIR}/utils.sh}"
 export JB_ENABLE_AUTO_CLEAR JB_TIMEZONE
 
@@ -333,15 +334,25 @@ display_and_process_menu() {
 }
 
 main() {
-    # --- [关键修复] ---
-    # 必须先检查依赖，再执行任何可能依赖外部命令的操作
+    # 确保在执行任何操作前加载配置和检查依赖
+    CONFIG_PATH="${INSTALL_DIR}/config.json"
+    load_config "$CONFIG_PATH"
     check_and_install_dependencies
 
-    load_config "$CONFIG_PATH"
+    # 设置默认值（如果配置文件中没有）
+    BASE_URL="${BASE_URL:-https://raw.githubusercontent.com/wx233Github/jaoeng/main}"
+    INSTALL_DIR="${INSTALL_DIR:-/opt/vps_install_modules}"
+    BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+    LOCK_FILE="${LOCK_FILE:-/tmp/vps_install_modules.lock}"
+    JB_ENABLE_AUTO_CLEAR="${JB_ENABLE_AUTO_CLEAR:-false}"
+    JB_TIMEZONE="${JB_TIMEZONE:-Asia/Shanghai}"
+    
+    # 锁定脚本实例
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     trap 'flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true' EXIT
     
+    # 处理无头模式
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
@@ -362,6 +373,7 @@ main() {
         esac
     fi
 
+    # 交互模式下的标准流程
     self_update
     check_sudo_privileges
     display_and_process_menu "$@"
