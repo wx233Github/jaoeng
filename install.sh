@@ -1,13 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.17-修复与优化)
-# - 修复: 通过 `export -f` 确保模块能正确调用 run_with_sudo
-# - 优化: 依赖检查通过时不再打印冗余信息
-# - 优化: 适配新的双列 UI 渲染引擎，实现动态宽度
+# 🚀 VPS 一键安装与管理脚本 (v77.18-稳定版)
+# - 修复: `check_and_install_dependencies` 中 `sha256sum` 的拼写错误
+# - 配合 utils.sh v2.3，确保脚本稳定运行
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.17"
+SCRIPT_VERSION="v77.18"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -71,18 +70,20 @@ run_with_sudo() {
         sudo "$@"
     fi
 }
-# --- [关键修复] 导出函数，使其在子脚本(模块)中可用 ---
 export -f run_with_sudo
 
 check_and_install_dependencies() {
-    local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "curl ln dirname flock jq sha2some mktemp sed")
+    # --- [关键修复] 修正 sha256sum 的拼写错误 ---
+    local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
+    local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "$default_deps")
+    if [ -z "$deps" ]; then deps="$default_deps"; fi
+
     local missing_pkgs=""
     declare -A pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
     for dep in $deps; do if ! command -v "$dep" &>/dev/null; then local pkg="${pkg_apt_map[$dep]:-$dep}"; missing_pkgs="${missing_pkgs} ${pkg}"; fi; done
     
     if [ -n "$missing_pkgs" ]; then
         missing_pkgs=$(echo "$missing_pkgs" | xargs)
-        # --- [优化] 仅在有缺失依赖时才打印列表 ---
         log_info "检查依赖..."
         log_warn "缺失依赖: ${missing_pkgs}"
         if confirm_action "是否尝试自动安装?"; then
@@ -184,7 +185,6 @@ display_and_process_menu() {
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            # --- [优化] 适配新的 _render_menu，传递原始数据而非格式化字符串 ---
             local status_text="${status_map[$action]:- }"
             items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
         done
