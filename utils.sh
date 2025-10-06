@@ -1,8 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.6-根源修复版)
-# - 修复: 使用高度可移植的 `sed` 替换不稳定的 `grep -Po`
-# - 此修复解决了在无 jq 环境下首次启动时脚本崩溃的根本问题
+# 🚀 通用工具函数库 (v2.7-UI对齐修正)
+# - 修复: 彻底修正单列菜单项的 UI 渲染对齐逻辑，确保右边界对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -70,7 +69,6 @@ load_config() {
         BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
     else
         log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; 
-        # --- [关键修复] 使用高度可移植的 `sed` 替换不稳定的 `grep -Po` ---
         BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
         INSTALL_DIR=$(_get_json_value_fallback "$config_path" "install_dir" "$INSTALL_DIR")
         BIN_DIR=$(_get_json_value_fallback "$config_path" "bin_dir" "$BIN_DIR")
@@ -100,7 +98,7 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0 has_separator=false
+    local max_left_width=0 max_right_width=0 max_line_width=0 has_separator=false
     
     local title_width; title_width=$(_get_visual_width "$title")
     
@@ -114,18 +112,24 @@ _render_menu() {
         
         if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
         if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
+
+        # 记录单列模式下的最大行宽
+        if ! $has_separator; then
+            if [ "${left_width:-0}" -gt "${max_line_width:-0}" ]; then max_line_width=$left_width; fi
+        fi
     done
 
     local box_inner_width
     if $has_separator; then
+        # 双列模式: 宽度 = 左列最大 + 右列最大 + 3个分隔符/空格
         box_inner_width=$((max_left_width + max_right_width + 3))
     else
-        if [ "${max_left_width:-0}" -gt "${title_width:-0}" ]; then
-            box_inner_width=$max_left_width
-        else
-            box_inner_width=$title_width
+        # 单列模式: 宽度 = 最大行宽 + 2个空格 (左右各一个)
+        local content_width=$max_line_width
+        if [ "${title_width:-0}" -gt "${content_width:-0}" ]; then
+            content_width=$title_width
         fi
-        box_inner_width=$((box_inner_width + 2))
+        box_inner_width=$((content_width + 2))
     fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
@@ -146,9 +150,10 @@ _render_menu() {
             local right_padding=$((max_right_width - right_width))
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            local padding=$((box_inner_width - left_width - 2))
+            # --- [关键修正] 修正单列模式下的 padding 计算和右侧边框对齐 ---
+            local padding=$((box_inner_width - left_width - 1)) # 1 是左侧的空格
             if [ $padding -lt 0 ]; then padding=0; fi
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding")│${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
