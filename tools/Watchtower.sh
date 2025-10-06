@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.5-修复致命拼写错误)
+# 🚀 Docker 自动更新助手 (v4.7.7-最终代码审查和逻辑固化)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.5"
+SCRIPT_VERSION="v4.7.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -35,29 +35,11 @@ if ! command -v docker &> /dev/null; then
     exit 10 # 以代码10退出，主脚本会将其识别为“正常返回”
 fi
 
-# --- 弹性初始化 ---
-# 优先使用 install.sh 传递的环境变量，如果不存在，则使用安全的硬编码后备值。
-# 这种方式确保即使 install.sh 传递失败，脚本也不会崩溃。
-WT_CONF_DEFAULT_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
-WT_CONF_DEFAULT_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
-WT_EXCLUDE_CONTAINERS_FROM_JSON="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
-WT_NOTIFY_ON_NO_UPDATES_FROM_JSON="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
-WATCHTOWER_EXTRA_ARGS_FROM_JSON="${WATCHTOWER_CONF_EXTRA_ARGS:-}"
-WATCHTOWER_DEBUG_ENABLED_FROM_JSON="${WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
-WATCHTOWER_CONFIG_INTERVAL_FROM_JSON="${WATCHTOWER_CONF_CONFIG_INTERVAL:-}"
-WATCHTOWER_ENABLED_FROM_JSON="${WATCHTOWER_CONF_ENABLED:-false}"
-DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON="${WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
-CRON_HOUR_FROM_JSON="${WATCHTOWER_CONF_CRON_HOUR:-}"
-CRON_TASK_ENABLED_FROM_JSON="${WATCHTOWER_CONF_TASK_ENABLED:-false}"
-TG_BOT_TOKEN_FROM_JSON="${WATCHTOWER_CONF_BOT_TOKEN:-}"
-TG_CHAT_ID_FROM_JSON="${WATCHTOWER_CONF_CHAT_ID:-}"
-EMAIL_TO_FROM_JSON="${WATCHTOWER_CONF_EMAIL_TO:-}"
-WATCHTOWER_EXCLUDE_LIST_FROM_JSON="${WATCHTOWER_CONF_EXCLUDE_LIST:-}"
-
 # 本地配置文件路径
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 
-# --- 初始化将由本地配置文件修改的变量 ---
+# --- 模块变量 ---
+# 预先声明所有变量，避免潜在的未定义错误
 TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 EMAIL_TO=""
@@ -71,26 +53,34 @@ CRON_HOUR=""
 CRON_TASK_ENABLED=""
 WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 
-# 加载本地配置文件 (config.conf)，它将覆盖上面的空值
+# 使用清晰、分步的优先级加载逻辑，取代不稳定的嵌套变量扩展
 load_config(){
+    # 优先级 3 (最低): 设置硬编码的后备默认值
+    local default_interval="300"
+    local default_cron_hour="4"
+
+    # 优先级 2: 从 install.sh 传递的环境变量加载配置
+    # 使用 `${VAR:-default}` 确保即使环境变量未设置，也不会出错
+    TG_BOT_TOKEN="${WATCHTOWER_CONF_BOT_TOKEN:-}"
+    TG_CHAT_ID="${WATCHTOWER_CONF_CHAT_ID:-}"
+    EMAIL_TO="${WATCHTOWER_CONF_EMAIL_TO:-}"
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_CONF_EXCLUDE_LIST:-}"
+    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_CONF_EXTRA_ARGS:-}"
+    WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONF_CONFIG_INTERVAL:-$default_interval}"
+    WATCHTOWER_ENABLED="${WATCHTOWER_CONF_ENABLED:-false}"
+    DOCKER_COMPOSE_PROJECT_DIR_CRON="${WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
+    CRON_HOUR="${WATCHTOWER_CONF_CRON_HOUR:-$default_cron_hour}"
+    CRON_TASK_ENABLED="${WATCHTOWER_CONF_TASK_ENABLED:-false}"
+    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
+
+    # 优先级 1 (最高): 如果存在本地配置文件，则加载它，覆盖以上所有设置
     if [ -f "$CONFIG_FILE" ]; then
+        # source 会直接修改当前 shell 的变量
         source "$CONFIG_FILE" &>/dev/null || true
     fi
-    # 确保所有变量都有最终值。优先级: 本地配置 > install.sh传入 > 硬编码默认值
-    TG_BOT_TOKEN="${TG_BOT_TOKEN:-${TG_BOT_TOKEN_FROM_JSON}}"
-    TG_CHAT_ID="${TG_CHAT_ID:-${TG_CHAT_ID_FROM_JSON}}"
-    EMAIL_TO="${EMAIL_TO:-${EMAIL_TO_FROM_JSON}}"
-    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_EXCLUDE_LIST_FROM_JSON}}"
-    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_EXTRA_ARGS_FROM_JSON}}"
-    WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_FROM_JSON}}"
-    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON:-${WT_CONF_DEFAULT_INTERVAL}}}"
-    WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_FROM_JSON}}"
-    # 终极修复：修正致命的拼写错误
-    DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}}"
-    CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_FROM_JSON:-${WT_CONF_DEFAULT_CRON_HOUR}}}"
-    CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_FROM_JSON}}"
-    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}}"
 }
+
 
 save_config(){
     mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
@@ -145,7 +135,7 @@ _start_watchtower_container_logic(){
         log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         
-        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDates" = "true" ]; then
             docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
             log_info "✅ 将启用 '无更新也通知' 模式。"
         else
@@ -184,21 +174,12 @@ EOF
         wt_args+=("${extra_tokens[@]}")
     fi
 
-    local final_exclude_list=""
-    local source_msg=""
-    # 优先级: 本地配置 > install.sh传入 > 硬编码默认值
-    if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
-        final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
-        source_msg="本地配置"
-    elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
-        final_exclude_list="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
-        source_msg="config.json"
-    fi
+    local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
     
     local included_containers
     # 优化：抑制 docker ps 的 run_with_sudo 日志
     if [ -n "$final_exclude_list" ]; then
-        log_info "发现排除规则 (来源: ${source_msg}): ${final_exclude_list}"
+        log_info "发现排除规则: ${final_exclude_list}"
         local exclude_pattern
         exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
         included_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower)$" || true)
@@ -283,7 +264,6 @@ _configure_telegram() {
     TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
     read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT < /dev/tty
     TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
-    # 修正：回车默认选择“是”
     read -r -p "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice < /dev/tty
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then
         WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"
@@ -1037,17 +1017,8 @@ main_menu(){
         local RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' | wc -l)
         local STOPPED=$((TOTAL - RUNNING))
 
-        local FINAL_EXCLUDE_LIST=""; local FINAL_EXCLUDE_SOURCE="";
-        if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
-            FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"
-            FINAL_EXCLUDE_SOURCE="本地"
-        elif [ -n "${WT_EXCLUDE_CONTAINERS_FROM_JSON:-}" ]; then
-            FINAL_EXCLUDE_LIST="${WT_EXCLUDE_CONTAINERS_FROM_JSON}"
-            FINAL_EXCLUDE_SOURCE="config.json"
-        else
-            FINAL_EXCLUDE_LIST="无"
-            FINAL_EXCLUDE_SOURCE=""
-        fi
+        # 修正：直接显示最终生效的排除列表，不再猜测其来源
+        local FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-无}"
 
         local NOTIFY_STATUS="";
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
@@ -1063,7 +1034,7 @@ main_menu(){
             " ⏳ 下次检查: ${COUNTDOWN}"
             " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
-        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC} (${CYAN}来源: ${FINAL_EXCLUDE_SOURCE}${NC})"); fi
+        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC}"); fi
         if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
         
         content_array+=(""
