@@ -1,102 +1,136 @@
 #!/bin/bash
 # =============================================================
-# 🚀 脚本工具库 (v2.0-移除tr依赖)
-# - 重写 load_config 函数，彻底移除 tr 依赖
+# 🚀 通用工具函数库 (v2.1-最终稳定版)
+# - 基于 v2.41 回归，确保所有模块功能完整
+# - 包含高级UI渲染、临时文件管理和时间处理函数
 # =============================================================
 
-# --- [颜色与日志] ---
-# shellcheck disable=SC2034
-{
-    BLACK='\033[0;30m'; RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m';
-    BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; WHITE='\033[0;37m';
-    NC='\033[0m'; BOLD='\033[1m'; UNDERLINE='\033[4m';
-}
+# --- 严格模式 ---
+set -eo pipefail
 
-log_info() { echo -e "$(date +"%Y-%m-%d %H:%M:%S") [${BLUE}信 息${NC}] $*"; }
-log_success() { echo -e "$(date +"%Y-%m-%d %H:%M:%S") [${GREEN}成 功${NC}] $*"; }
-log_warn() { echo -e "$(date +"%Y-%m-%d %H:%M:%S") [${YELLOW}警 告${NC}] $*" >&2; }
-log_err() { echo -e "$(date +"%Y-%m-%d %H:%M:%S") [${RED}错 误${NC}] $*" >&2; }
-log_debug() { if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then echo -e "[${PURPLE}调试${NC}] (L${BASH_LINENO[0]}) ${FUNCNAME[1]}: $*" >&2; fi; }
+# --- 默认配置（集中一处） ---
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+DEFAULT_INSTALL_DIR="/opt/vps_install_modules"
+DEFAULT_BIN_DIR="/usr/local/bin"
+DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
+DEFAULT_TIMEZONE="Asia/Shanghai"
+DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
 
-# --- [用户交互] ---
-confirm_action() {
-    local prompt="${1:-确定要执行此操作吗?}"
-    while true; do
-        read -r -p "$(log_info "${prompt} [y/N]: ")" response < /dev/tty
-        case "$response" in
-            [yY][eE][sS]|[yY]) return 0 ;;
-            [nN][oO]|[nN]|"") return 1 ;;
-            *) log_warn "无效输入，请输入 'y' 或 'n'。" ;;
-        esac
-    done
-}
-
-press_enter_to_continue() {
-    echo -e "${CYAN}------------------------------------${NC}"
-    read -r -p "请按 Enter 键返回菜单..." < /dev/tty
-}
-
-# --- [文件与系统] ---
+# --- 临时文件管理 ---
+TEMP_FILES=()
 create_temp_file() {
-    mktemp "/tmp/jb_temp.XXXXXX"
-}
-
-# --- [核心功能] ---
-load_config() {
-    local config_file="$1"
-    if [ ! -f "$config_file" ]; then
-        log_warn "配置文件 $config_file 不存在，将使用默认值。"
-        return
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-        log_warn "jq 命令未找到，无法加载配置文件，将使用默认值。"
-        return
-    fi
-
-    local config_content
-    config_content=$(jq '.' "$config_file" 2>/dev/null)
-    if [ -z "$config_content" ]; then
-        log_warn "无法解析配置文件 $config_file，将使用默认值。"
-        return
-    fi
-
-    _assign_from_json() {
-        local var_name="$1"
-        local json_key="$2"
-        local value
-        value=$(jq -r ".$json_key // \"\"" <<< "$config_content")
-        if [ -n "$value" ]; then
-            printf -v "$var_name" '%s' "$value"
-        fi
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
+        echo "[$(date '+%F %T')] [错误] 无法创建临时文件" >&2
+        return 1
     }
+    TEMP_FILES+=("$tmpfile")
+    echo "$tmpfile"
+}
+cleanup_temp_files() {
+    for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
+    TEMP_FILES=()
+}
+trap cleanup_temp_files EXIT INT TERM
 
-    _assign_from_json "BASE_URL" "base_url"
-    _assign_from_json "INSTALL_DIR" "install_dir"
-    _assign_from_json "BIN_DIR" "bin_dir"
-    _assign_from_json "LOCK_FILE" "lock_file"
-    _assign_from_json "JB_ENABLE_AUTO_CLEAR" "enable_auto_clear"
-    _assign_from_json "JB_TIMEZONE" "timezone"
+# --- 颜色定义 ---
+if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
+  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
+else
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD="";
+fi
+
+# --- 日志系统 ---
+log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+log_info()    { echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
+log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
+log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
+log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
+
+# --- 交互函数 ---
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
+confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
+
+# --- 配置加载（集中与容错） ---
+load_config() {
+    local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
+    
+    # 初始化默认值
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"
+    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+    BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"
+    LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"
+    JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"
+    CONFIG_PATH="${config_path}"
+
+    if [ ! -f "$config_path" ]; then
+        log_warn "配置文件 $config_path 未找到，使用默认配置。"
+        return 0
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL")
+        INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+        BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+        LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+        JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+    else
+        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"
+        BASE_URL=$(grep -Po '"base_url"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BASE_URL")
+        INSTALL_DIR=$(grep -Po '"install_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+        BIN_DIR=$(grep -Po '"bin_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+        LOCK_FILE=$(grep -Po '"lock_file"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+        JB_TIMEZONE=$(grep -Po '"timezone"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+    fi
 }
 
-# --- [UI 渲染] ---
+# --- UI 渲染 & 字符串处理 ---
+generate_line() {
+    local len=${1:-40}; local char=${2:-"─"}
+    if [ "$len" -le 0 ]; then echo ""; return; fi
+    printf "%${len}s" "" | sed "s/ /$char/g"
+}
+
+_get_visual_width() {
+    local text="$1"
+    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -z "$plain_text" ]; then echo 0; return; fi
+
+    if command -v python3 &>/dev/null; then
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
+    elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        echo -n "$plain_text" | wc -m
+    else
+        echo "${#plain_text}"
+    fi
+}
+
 _render_menu() {
-    local title="$1"; shift
-    local -a items=("$@")
-    local terminal_width; terminal_width=$(tput cols 2>/dev/null || echo 80)
-    
-    # 打印标题
-    local title_len=${#title}
-    local padding=$(( (terminal_width - title_len) / 2 ))
-    printf "\n%*s%s\n" "$padding" "" "${BOLD}${CYAN}${title}${NC}"
-    
-    # 打印分隔线
-    printf "%s\n" "${BLUE}$(printf '─%.0s' $(seq 1 "$terminal_width"))${NC}"
-    
-    # 打印菜单项
-    for item in "${items[@]}"; do
-        echo -e "  $item"
+    local title="$1"; shift; local -a lines=("$@")
+    local max_content_width=0; local title_content_width; title_content_width=$(_get_visual_width "$title")
+    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
+    for line in "${lines[@]}"; do
+        local line_content_width; line_content_width=$(_get_visual_width "$line")
+        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
     done
     
-    # 打印底部线
-    printf "%s\n" "${BLUE}$(printf '─%.0s' $(seq 1 "$terminal_width"))${NC}"
+    local inner_padding_chars=2; local box_inner_width=$((max_content_width + inner_padding_chars))
+    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi
+    
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    if [ -n "$title" ]; then
+        local padding_total=$((box_inner_width - title_content_width - 2))
+        local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+        echo -e "${GREEN}│ $(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right") │${NC}"
+    fi
+    
+    for line in "${lines[@]}"; do
+        local line_content_width; line_content_width=$(_get_visual_width "$line")
+        local padding_right_for_line=$((box_inner_width - line_content_width - 1))
+        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
+        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}"
+    done
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
