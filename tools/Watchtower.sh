@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.4-弹性初始化修复)
+# 🚀 Docker 自动更新助手 (v4.7.5-修复致命拼写错误)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.4"
+SCRIPT_VERSION="v4.7.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -85,7 +85,8 @@ load_config(){
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_DEBUG_ENABLED_FROM_JSON}}"
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONFIG_INTERVAL_FROM_JSON:-${WT_CONF_DEFAULT_INTERVAL}}}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_ENABLED_FROM_JSON}}"
-    DOCKER_COMpose_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}}"
+    # 终极修复：修正致命的拼写错误
+    DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${DOCKER_COMPOSE_PROJECT_DIR_CRON_FROM_JSON}}"
     CRON_HOUR="${CRON_HOUR:-${CRON_HOUR_FROM_JSON:-${WT_CONF_DEFAULT_CRON_HOUR}}}"
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${CRON_TASK_ENABLED_FROM_JSON}}"
     WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WT_NOTIFY_ON_NO_UPDATES_FROM_JSON}}"
@@ -798,7 +799,7 @@ _get_watchtower_remaining_time(){
     if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
     # 核心：使用 utils.sh 中的时间处理函数
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+    ts=$(_parse_watchtower_timestamp_from_log_line "$line")
     epoch=$(_date_to_epoch "$ts")
 
     if [ "$epoch" -gt 0 ]; then
