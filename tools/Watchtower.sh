@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.11-修复内部变量和移除调试)
+# 🚀 Docker 自动更新助手 (v4.7.9-修复函数定义顺序)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.11"
+SCRIPT_VERSION="v4.7.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -61,7 +61,7 @@ CRON_HOUR=""
 CRON_TASK_ENABLED=""
 WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 
-# 使用清晰、分步的优先级加载逻辑
+# --- 配置加载与保存 ---
 load_config(){
     local default_interval="300"
     local default_cron_hour="4"
@@ -101,16 +101,6 @@ CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
 WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
-}
-
-send_notify() {
-    local message="$1"
-    if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        (curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "text=${message}" \
-            -d "chat_id=${TG_CHAT_ID}" \
-            -d "parse_mode=Markdown" >/dev/null 2>&1) &
-    fi
 }
 
 # --- 辅助函数：确保在被调用前定义 ---
@@ -160,14 +150,14 @@ get_last_session_time(){
     local logs
     logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
     if [ -z "$logs" ]; then echo ""; return 1; fi
-    local log_line ts
+    local line ts
     if echo "$logs" | grep -qiE "permission denied|cannot connect"; then
         echo -e "${RED}错误:权限不足${NC}"
         return 1
     fi
-    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
-    if [ -n "$log_line" ]; then
-        ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+    line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    if [ -n "$line" ]; then
+        ts=$(_parse_watchtower_timestamp_from_log_line "$line")
         if [ -n "$ts" ]; then
             echo "$ts"
             return 0
@@ -175,6 +165,60 @@ get_last_session_time(){
     fi
     echo ""
     return 1
+}
+
+_get_watchtower_remaining_time(){
+    local int="$1"
+    local logs="$2"
+    if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${YELLOW}N/A${NC}"; return; fi
+
+    local log_line ts epoch rem
+    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+
+    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+    epoch=$(_date_to_epoch "$ts")
+
+    if [ "$epoch" -gt 0 ]; then
+        if [[ "$log_line" == *"Session done"* ]]; then
+            rem=$((int - ($(date +%s) - epoch) ))
+        elif [[ "$log_line" == *"Scheduling first run"* ]]; then
+            rem=$((epoch - $(date +%s)))
+        elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
+            echo -e "${YELLOW}等待首次调度...${NC}"; return;
+        fi
+
+        if [ "$rem" -gt 0 ]; then
+            printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
+        else
+            local overdue=$(( -rem ))
+            printf "%b已逾期 %02d分%02d秒, 正 在 等 待 ...%b" "$YELLOW" $((overdue / 60)) $((overdue % 60)) "$NC"
+        fi
+    else
+        echo -e "${YELLOW}计算中...${NC}"
+    fi
+}
+
+get_updates_last_24h(){
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+        echo ""
+        return 1
+    fi
+    local since
+    if date -d "24 hours ago" >/dev/null 2>&1; then
+        since=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
+    elif command -v gdate >/dev/null 2>&1; then
+        since=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
+    fi
+    local raw_logs
+    if [ -n "$since" ]; then
+        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
+    fi
+    if [ -z "$raw_logs" ]; then
+        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
+    fi
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
 }
 
 _format_and_highlight_log_line(){
@@ -231,59 +275,7 @@ _format_and_highlight_log_line(){
     esac
 }
 
-_get_watchtower_remaining_time(){
-    local int="$1"
-    local logs="$2"
-    if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${YELLOW}N/A${NC}"; return; fi
-
-    local log_line ts epoch rem
-    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
-
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
-
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line") # 修复：使用 log_line
-    epoch=$(_date_to_epoch "$ts")
-
-    if [ "$epoch" -gt 0 ]; then
-        if [[ "$log_line" == *"Session done"* ]]; then
-            rem=$((int - ($(date +%s) - epoch) ))
-        elif [[ "$log_line" == *"Scheduling first run"* ]]; then
-            rem=$((epoch - $(date +%s)))
-        elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
-            echo -e "${YELLOW}等待首次调度...${NC}"; return;
-        fi
-
-        if [ "$rem" -gt 0 ]; then
-            printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
-        else
-            local overdue=$(( -rem ))
-            printf "%b已逾期 %02d分%02d秒, 正 在 等 待 ...%b" "$YELLOW" $((overdue / 60)) $((overdue % 60)) "$NC"
-        fi
-    else
-        echo -e "${YELLOW}计算中...${NC}"
-    fi
-}
-
-get_updates_last_24h(){
-    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
-        echo ""
-        return 1
-    fi
-    local since
-    if date -d "24 hours ago" >/dev/null 2>&1; then
-        since=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
-    elif command -v gdate >/dev/null 2>&1; then
-        since=$(gdate -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
-    fi
-    local raw_logs
-    if [ -n "$since" ]; then
-        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true)
-    fi
-    if [ -z "$raw_logs" ]; then
-        raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
-    fi
-    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
-}
+# --- 核心逻辑函数 ---
 
 _start_watchtower_container_logic(){
     local wt_interval="$1"
@@ -422,6 +414,20 @@ _prompt_and_rebuild_watchtower_if_needed() {
         fi
     fi
 }
+
+run_watchtower_once(){
+    if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then
+        log_info "操作已取消。"
+        return 1
+    fi
+    echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"
+    if ! _start_watchtower_container_logic "" "一次性更新"; then
+        return 1
+    fi
+    return 0
+}
+
+# --- UI 菜单函数 ---
 
 _configure_telegram() {
     read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT < /dev/tty
@@ -736,7 +742,7 @@ manage_tasks(){
             "  1. › 停止/移除 Watchtower"
             "  2. › 重建 Watchtower"
         )
-        _render_menu "⚙️ 任 务 管 理 ⚙️" "${items_array[@]}"
+        _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"
         read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1)
@@ -830,18 +836,6 @@ show_watchtower_details(){
             *) return ;;
         esac
     done
-}
-
-run_watchtower_once(){
-    if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then
-        log_info "操作已取消。"
-        return 1
-    fi
-    echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"
-    if ! _start_watchtower_container_logic "" "一次性更新"; then
-        return 1
-    fi
-    return 0
 }
 
 view_and_edit_config(){
@@ -951,65 +945,77 @@ view_and_edit_config(){
 }
 
 main_menu(){
-    log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
+    log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}"
 
     while true; do
-        if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
+        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
         load_config
 
-        render_main_menu # Call the new render function
-
-        read -r -p " └──> 请选择 [1-${MAIN_MENU_ITEM_COUNT}], 或 [a/c] 选项, 或 [Enter] 返回: " choice < /dev/tty
+        local STATUS_RAW="未运行"; 
+        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
+        local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
         
-        local selected_item_json=""
-        local selected_action_type=""
-        local selected_action_name=""
-        local selected_action_path=""
-
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$MAIN_MENU_ITEM_COUNT" ]; then
-            selected_item_json=$(jq -c ".menus.MAIN_MENU.items[$((choice - 1))]" "$CONFIG_FILE")
-            selected_action_type=$(echo "$selected_item_json" | jq -r '.type')
-            selected_action_name=$(echo "$selected_item_json" | jq -r '.name')
-            selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
-
-            case "$selected_action_type" in
-                "item")
-                    _run_module "$selected_action_path" "$selected_action_name"
-                    ;;
-                "submenu")
-                    if [ "$selected_action_path" = "TOOLS_MENU" ]; then
-                        tools_menu
-                    else
-                        log_err "未知的子菜单动作: $selected_action_path"
-                        press_enter_to_continue
-                    fi
-                    ;;
-                *)
-                    log_warn "未知的菜单项类型: $selected_action_type"
-                    press_enter_to_continue
-                    ;;
-            esac
-        elif [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
-            confirm_and_force_update
-        elif [ "$choice" = "c" ] || [ "$choice" = "C" ]; then
-            uninstall_script
-        elif [ -z "$choice" ]; then
-            log_info "退出脚本。"
-            exit 0
-        else
-            log_warn "无效选项。请重新输入。"
-            sleep 1
+        local interval=""; local raw_logs="";
+        if [ "$STATUS_RAW" = "已启动" ]; then
+            interval=$(get_watchtower_inspect_summary)
+            raw_logs=$(get_watchtower_all_raw_logs)
         fi
+        
+        local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+        
+        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
+        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
+        local STOPPED=$((TOTAL - RUNNING))
+
+        local FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-无}"
+
+        local NOTIFY_STATUS="";
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
+        if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
+            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi
+        fi
+
+        local header_text="Watchtower 管理"
+        
+        local -a content_array=(
+            " 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)"
+            " ⏳ 下次检查: ${COUNTDOWN}"
+            " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
+        )
+        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC}"); fi
+        if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
+        
+        content_array+=(""
+            "主菜单："
+            "  1. › 配 置  Watchtower"
+            "  2. › 配 置 通 知"
+            "  3. › 任 务 管 理"
+            "  4. › 查 看 /编 辑 配 置  (底 层 )"
+            "  5. › 手 动 更 新 所 有 容 器"
+            "  6. › 详 情 与 管 理"
+        )
+        
+        _render_menu "$header_text" "${content_array[@]}"
+        read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty
+        case "$choice" in
+          1) configure_watchtower || true; press_enter_to_continue ;;
+          2) notification_menu ;;
+          3) manage_tasks ;;
+          4) view_and_edit_config ;;
+          5) run_watchtower_once; press_enter_to_continue ;;
+          6) show_watchtower_details ;;
+          "") exit 10 ;;
+          *) log_warn "无效选项。"; sleep 1 ;;
+        esac
     done
 }
 
 main(){ 
-    _acquire_lock
-    load_main_config
-    _check_dependencies
-    
+    trap 'echo -e "\n操作被中断。"; exit 10' INT
+    if [ "${1:-}" = "--run-once" ]; then run_watchtower_once; exit $?; fi
     main_menu
-    exit 0
+    exit 10
 }
 
 main "$@"
