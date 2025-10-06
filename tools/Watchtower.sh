@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.0-回归稳定版并集成修复)
+# 🚀 Docker 自动更新助手 (v4.7.1-增加Docker依赖检查)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.0"
+SCRIPT_VERSION="v4.7.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -28,6 +28,14 @@ if ! declare -f run_with_sudo &>/dev/null; then
   log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
   exit 1
 fi
+
+# --- 依赖检查 ---
+if ! command -v docker &> /dev/null; then
+    log_err "Docker 未安装。此模块需要 Docker 才能运行。"
+    log_err "请返回主菜单，先使用 Docker 模块进行安装。"
+    exit 10 # 以代码10退出，主脚本会将其识别为“正常返回”
+fi
+
 
 # --- 模块专属函数 ---
 
