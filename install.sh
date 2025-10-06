@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.2-集成sudo逻辑并移除依赖)
-# - 将 sudo_check.sh 功能合并入主脚本，不再需要外部文件
+# 🚀 VPS 一键安装与管理脚本 (v77.3-修复交互会话丢失)
+# - 分离安装与执行逻辑，解决 curl | bash 后无法显示菜单的问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.2"
+SCRIPT_VERSION="v77.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -50,10 +50,12 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         BIN_DIR="/usr/local/bin"
         sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
         echo_success "安装/更新完成！"
+        echo_info "请现在运行 'jb' 命令来启动脚本。"
+        # 【核心修复】安装完成后直接退出，不再尝试 exec 跳转
+        exit 0
     fi
     
-    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
-    echo ""
+    # 如果文件已存在，则直接跳转执行，这是 'jb' 命令的正常流程
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
