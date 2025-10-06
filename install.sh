@@ -1,16 +1,16 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.10-最终依赖修复)
-# - 修复了因移除 tr 引入 sed 但未检查 sed 依赖导致的启动失败
+# 🚀 VPS 一键安装与管理脚本 (v77.11-诊断模式)
+# - 增加了 --debug 标志，用于激活 set -x 跟踪，以诊断启动失败问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.10"
+SCRIPT_VERSION="v77.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF_8}
+export LC_ALL=${LC_ALL:-C_UTF_8}
 
 # --- [核心架构]: 智能自引导启动器 ---
 # 这里保留最小启动器逻辑，用于初次下载 / 刷新到最终路径
@@ -104,9 +104,6 @@ run_with_sudo() {
 }
 
 # --- 核心函数 ---
-# load_config 已在 utils.sh 中实现（集中默认与容错）
-# load_config "$CONFIG_PATH"  # will be called in main()
-
 check_and_install_dependencies() {
     local deps=""
     if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
@@ -119,7 +116,6 @@ check_and_install_dependencies() {
     log_info "检查依赖: ${deps}..."
     local missing_pkgs=""
 
-    # 映射命令 -> apt 包（Debian/Ubuntu 的常见映射）
     declare -A pkg_apt_map=(
         [curl]=curl
         [ln]=coreutils
@@ -139,7 +135,7 @@ check_and_install_dependencies() {
     done
 
     if [ -n "$missing_pkgs" ]; then
-        missing_pkgs=$(echo "$missing_pkgs" | xargs) # trim
+        missing_pkgs=$(echo "$missing_pkgs" | xargs)
         log_warn "缺失依赖: ${missing_pkgs}"
         if confirm_action "是否尝试自动安装?"; then
             if command -v apt-get &>/dev/null; then
@@ -175,7 +171,6 @@ self_update() {
         return
     fi
 
-    # 规范化 CRLF 再计算哈希
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_script" | sha256sum | awk '{print $1}')
     local local_hash; local_hash=""
     if [ -f "$FINAL_SCRIPT_PATH" ]; then
@@ -289,7 +284,7 @@ run_module(){
     fi
     
     local base_name; base_name=$(basename "$module_script" .sh)
-    local module_key="${base_name,,}" # 使用 Bash 4+ 参数扩展进行小写转换
+    local module_key="${base_name,,}"
     if command -v jq >/dev/null 2>&1 && jq -e ".module_configs.$module_key" "$CONFIG_PATH" >/dev/null 2>&1; then
         local keys; keys=$(jq -r ".module_configs.$module_key | keys[]" "$CONFIG_PATH")
         for key in $keys; do
@@ -357,7 +352,7 @@ display_and_process_menu() {
         
         local -a items_array=()
         local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
-        local -A status_prefix_map=( ["docker.sh"]="docker: " ["nginx.sh"]="Nginx: " ["TOOLS_MENU"]="Watchtower: " )
+        local -A status_prefix_map=( ["docker.sh"]="docker: " ["nginx.sh"]="Nginx: " )
         local num_primary=${#primary_items[@]}; local num_func=${#func_items[@]}
 
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
@@ -381,7 +376,7 @@ display_and_process_menu() {
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then
             item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else
-            for ((i=0; i<num_func; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done
+            for ((i=0; i<num_func; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$json"); break; fi; done
         fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
@@ -396,6 +391,14 @@ display_and_process_menu() {
 
 # --- 主程序入口 ---
 main() {
+    # --- [关键改动] 诊断模式 ---
+    if [ "${1:-}" = "--debug" ]; then
+        set -x
+        export JB_DEBUG_MODE=true
+        echo -e "\n\033[0;33m[DEBUG] 诊断模式已激活。正在跟踪所有命令...\033[0m\n"
+        shift # 消耗 --debug 参数
+    fi
+
     load_config "$CONFIG_PATH"
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
