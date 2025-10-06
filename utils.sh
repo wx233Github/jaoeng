@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.3-修复致命语法错误)
-# - 修复: _render_menu 中使用了不兼容的三元运算符
-# - 优化: 确保所有语法 POSIX 兼容，提升稳定性
+# 🚀 通用工具函数库 (v2.4-稳定版)
+# - 修复: 使用 POSIX 兼容的 `[ -gt ]` 代替 `((...))` 解决致命语法错误
+# - 修复: _render_menu 中单列菜单的 UI 渲染逻辑
 # =============================================================
 
 # --- 严格模式 ---
@@ -98,21 +98,21 @@ _render_menu() {
         local left_width; left_width=$(_get_visual_width "$left_part")
         local right_width; right_width=$(_get_visual_width "$right_part")
         
-        if (( left_width > max_left_width )); then max_left_width=$left_width; fi
-        if (( right_width > max_right_width )); then max_right_width=$right_width; fi
+        if [ "$left_width" -gt "$max_left_width" ]; then max_left_width=$left_width; fi
+        if [ "$right_width" -gt "$max_right_width" ]; then max_right_width=$right_width; fi
     done
 
     local box_inner_width
     if $has_separator; then
         box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
     else
-        # --- [关键修复] 使用标准的 if/else 结构代替三元运算符 ---
-        if (( max_left_width > title_width )); then
+        # --- [关键修复] 使用最稳定、兼容性最强的 `[ -gt ]` 进行数字比较 ---
+        if [ "$max_left_width" -gt "$title_width" ]; then
             box_inner_width=$max_left_width
         else
             box_inner_width=$title_width
         fi
-        box_inner_width=$((box_inner_width + 2)) # 2 = ' ' on both sides
+        box_inner_width=$((box_inner_width + 2)) # Padding: one space on each side
     fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
@@ -127,15 +127,17 @@ _render_menu() {
         [[ "$left_part" == "$right_part" ]] && right_part=""
         
         local left_width; left_width=$(_get_visual_width "$left_part")
-        local right_width; right_width=$(_get_visual_width "$right_part")
         
         if $has_separator; then
+            local right_width; right_width=$(_get_visual_width "$right_part")
             local left_padding=$((max_left_width - left_width))
             local right_padding=$((max_right_width - right_width))
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            local padding=$((box_inner_width - left_width - 2)) #左右各一个空格
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
+            # --- [关键修复] 修正单列菜单的渲染逻辑和 padding 计算 ---
+            local padding=$((box_inner_width - left_width - 1))
+            if [ $padding -lt 0 ]; then padding=0; fi
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding")│${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
