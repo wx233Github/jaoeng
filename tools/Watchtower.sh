@@ -944,6 +944,7 @@ view_and_edit_config(){
     done
 }
 
+# --- 主函数与入口 ---
 main_menu(){
     log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}"
 
