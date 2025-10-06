@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.19-根源修复版)
-# - 修复: 启动器主动安装核心依赖(jq,curl)，根除首次运行崩溃问题
-# - 优化: 确保主程序在完全准备好的环境中启动
+# 🚀 VPS 一键安装与管理脚本 (v77.20-修复条件语法)
+# - 修复: display_and_process_menu 函数中条件判断的语法错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.19"
+SCRIPT_VERSION="v77.20"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -197,8 +196,9 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
+        # --- [关键修复] 修正条件判断的语法错误：[[ "$type == "submenu" ]] -> [[ "$type" == "submenu" ]] ---
         while IFS=$'\t' read -r icon name type action; do
-            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
+            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=(); local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
