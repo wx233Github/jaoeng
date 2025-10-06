@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.41-回归稳定版并集成修复)
+# 🚀 通用工具函数库 (v2.42-修复log_debug退出码)
 # =============================================================
 
 # --- 严格模式 ---
@@ -21,7 +21,13 @@ log_success() { echo -e "$(log_timestamp) ${GREEN}[成功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警告]${NC} $*"; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 # 调试模式，可以通过 export JB_DEBUG_MODE=true 启用
-log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
+# 修复：确保 log_debug 始终返回 0，避免在 set -e 模式下因条件判断失败而导致脚本退出
+log_debug() {
+    if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
+        echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2
+    fi
+    return 0 # 始终返回成功
+}
 
 
 # --- 用户交互函数 ---
