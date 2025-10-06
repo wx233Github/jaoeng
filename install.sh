@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.9-移除 tr 依赖)
-# - 使用 sed 替代 tr -d '\r' 来处理换行符
-# - 使用 Bash 4+ 参数扩展替代 tr 进行大小写转换，提升效率
+# 🚀 VPS 一键安装与管理脚本 (v77.10-最终依赖修复)
+# - 修复了因移除 tr 引入 sed 但未检查 sed 依赖导致的启动失败
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.9"
+SCRIPT_VERSION="v77.10"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -114,7 +113,7 @@ check_and_install_dependencies() {
         deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "")
     fi
     if [ -z "$deps" ]; then
-        deps="curl ln dirname flock jq sha256sum mktemp"
+        deps="curl ln dirname flock jq sha256sum mktemp sed"
     fi
 
     log_info "检查依赖: ${deps}..."
@@ -129,6 +128,7 @@ check_and_install_dependencies() {
         [jq]=jq
         [sha256sum]=coreutils
         [mktemp]=coreutils
+        [sed]=sed
     )
 
     for dep in $deps; do
