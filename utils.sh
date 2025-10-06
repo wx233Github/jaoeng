@@ -1,10 +1,48 @@
 #!/bin/bash
 # =============================================================
 # 🚀 通用工具函数库 (v2.41-回归稳定版并集成修复)
+# - 集中默认路径与配置加载（容错）
+# - 临时文件管理（create_temp_file / cleanup_temp_files + trap）
+# - 字符宽度计算改进（优先 python）
+# - UI 渲染与交互函数
 # =============================================================
 
 # --- 严格模式 ---
 set -eo pipefail
+
+# --- 默认配置（集中一处） ---
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+DEFAULT_INSTALL_DIR="/opt/vps_install_modules"
+DEFAULT_BIN_DIR="/usr/local/bin"
+DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
+DEFAULT_TIMEZONE="Asia/Shanghai"
+# 默认 config 文件路径如果未在调用方设置，会使用 INSTALL_DIR/config.json
+DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
+
+# --- 临时文件管理 ---
+TEMP_FILES=()
+
+create_temp_file() {
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
+        echo "[$(date '+%F %T')] [错误] 无法创建临时文件" >&2
+        return 1
+    }
+    TEMP_FILES+=("$tmpfile")
+    echo "$tmpfile"
+}
+
+cleanup_temp_files() {
+    for f in "${TEMP_FILES[@]}"; do
+        [ -f "$f" ] && rm -f "$f"
+    done
+    # 清空数组
+    TEMP_FILES=()
+    log_debug "清理临时文件完成。"
+}
+
+# 确保脚本退出时清除临时文件
+trap cleanup_temp_files EXIT INT TERM
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -23,10 +61,52 @@ log_err()     { echo -e "$(log_timestamp) ${RED}[错误]${NC} $*" >&2; }
 # 调试模式，可以通过 export JB_DEBUG_MODE=true 启用
 log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
 
-
-# --- 用户交互函数 ---
+# --- 交互函数 ---
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
+
+# --- 配置加载（集中与容错） ---
+# 参数: $1 可选 - config 文件路径（优先）；若为空，使用 DEFAULT_CONFIG_PATH
+load_config() {
+    local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
+    log_debug "尝试加载配置文件: $config_path"
+
+    # 初始化默认值（集中）
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"
+    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+    BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"
+    LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"
+    JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"
+    CONFIG_PATH="${config_path:-${DEFAULT_CONFIG_PATH}}"
+
+    # 如果文件不存在，直接使用默认值
+    if [ ! -f "$config_path" ]; then
+        log_warn "配置文件 $config_path 未找到，使用默认配置。"
+        export BASE_URL INSTALL_DIR BIN_DIR LOCK_FILE JB_TIMEZONE CONFIG_PATH
+        log_debug "配置（回退默认）: base_url=$BASE_URL install_dir=$INSTALL_DIR bin_dir=$BIN_DIR lock_file=$LOCK_FILE timezone=$JB_TIMEZONE"
+        return 0
+    fi
+
+    # 如果 jq 可用，使用 jq 解析；否则用简单的 grep 提取
+    if command -v jq >/dev/null 2>&1; then
+        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL")
+        INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+        BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+        LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+        JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+    else
+        log_warn "未检测到 jq，使用轻量文本解析（可能不完整）。建议安装 jq 以获得完整功能。"
+        BASE_URL=$(grep -Po '"base_url"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BASE_URL")
+        INSTALL_DIR=$(grep -Po '"install_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+        BIN_DIR=$(grep -Po '"bin_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+        LOCK_FILE=$(grep -Po '"lock_file"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+        JB_TIMEZONE=$(grep -Po '"timezone"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+    fi
+
+    # 导出
+    export BASE_URL INSTALL_DIR BIN_DIR LOCK_FILE JB_TIMEZONE CONFIG_PATH
+    log_debug "配置已加载: base_url=$BASE_URL install_dir=$INSTALL_DIR bin_dir=$BIN_DIR lock_file=$LOCK_FILE timezone=$JB_TIMEZONE"
+}
 
 # --- UI 渲染 & 字符串处理 ---
 generate_line() {
@@ -50,7 +130,12 @@ _get_visual_width() {
     # 优先使用 Python 计算显示宽度，处理多字节字符 (East Asian Width)
     if command -v python3 &>/dev/null; then
         local width
-        width=$(python3 -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
+        width=$(python3 - <<'PY' 2>/dev/null
+import unicodedata,sys
+s=sys.stdin.read()
+print(sum(2 if unicodedata.east_asian_width(c) in ("W","F","A") else 1 for c in s.strip()))
+PY
+ <<< "$plain_text"  || true)
         if [ -n "$width" ] && [ "$width" -ge 0 ]; then
             log_debug "DEBUG: Python3 calculated width for '$plain_text': $width"
             echo "$width"
@@ -60,7 +145,12 @@ _get_visual_width() {
         fi
     elif command -v python &>/dev/null; then
         local width
-        width=$(python -c 'import unicodedata, sys; print(sum(2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in sys.stdin.read().strip()))' <<< "$plain_text" 2>/dev/null || true)
+        width=$(python - <<'PY' 2>/dev/null
+import unicodedata,sys
+s=sys.stdin.read()
+print(sum(2 if unicodedata.east_asian_width(c) in ("W","F","A") else 1 for c in s.strip()))
+PY
+ <<< "$plain_text"  || true)
         if [ -n "$width" ] && [ "$width" -ge 0 ]; then
             log_debug "DEBUG: Python calculated width for '$plain_text': $width"
             echo "$width"
@@ -141,7 +231,6 @@ _render_menu() {
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
 _print_header() { _render_menu "$1" ""; }
-
 
 # --- 时间处理函数 (Watchtower 模块现在统一使用这些函数) ---
 
