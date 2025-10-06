@@ -1,14 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.6-哈希校验稳定版 - 已整合补丁)
-# - 使用 sha256sum 替换 cmp 进行可靠的更新检测
-# - 恢复了基于可靠检测的无缝重启 (exec)
-# - 规范化 CRLF 处理以避免伪更新
-# - 使用 mktemp/create_temp_file 生成临时文件，并在 utils.sh 中统一清理
+# 🚀 VPS 一键安装与管理脚本 (v77.7-菜单健壮性修复)
+# - 修复了当 config.json 或 jq 读取失败时，菜单为空并立即退出的问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.6"
+SCRIPT_VERSION="v77.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -343,6 +340,14 @@ display_and_process_menu() {
             log_warn "菜单配置读取失败或为空，回退到默认 MAIN_MENU."
             CURRENT_MENU_NAME="MAIN_MENU"
             menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
+        fi
+
+        # --- [关键修复] ---
+        # 在渲染前增加对 menu_json 的最终检查，防止因配置错误导致空菜单并立即退出
+        if [ -z "$menu_json" ]; then
+            log_err "致命错误：无法从 '$CONFIG_PATH' 加载菜单 '$CURRENT_MENU_NAME'。"
+            log_err "请检查 config.json 文件是否存在、格式是否正确，以及 jq 是否已安装。"
+            exit 1
         fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json")
