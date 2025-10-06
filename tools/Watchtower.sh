@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.1-增加Docker依赖检查)
+# 🚀 Docker 自动更新助手 (v4.7.2-回归v4.6.23稳定逻辑)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.1"
+SCRIPT_VERSION="v4.7.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -36,37 +36,10 @@ if ! command -v docker &> /dev/null; then
     exit 10 # 以代码10退出，主脚本会将其识别为“正常返回”
 fi
 
-
-# --- 模块专属函数 ---
-
-# 新增：从主 config.json 文件中读取全局默认值
-_get_global_default_from_config() {
-    local key="$1"
-    local fallback_value="$2"
-    local config_file="/opt/vps_install_modules/config.json"
-    if [ -f "$config_file" ] && command -v jq &>/dev/null; then
-        local value
-        value=$(jq -r --arg key "$key" '.[$key] // ""' "$config_file" 2>/dev/null)
-        if echo "$value" | grep -qE '^[0-9]+$'; then
-            echo "$value"
-            return
-        fi
-    fi
-    echo "$fallback_value"
-}
-
 # --- config.json 传递的 Watchtower 模块配置 (由 install.sh 提供) ---
-# 模块特定配置
-WT_CONF_MODULE_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-}"
-WT_CONF_MODULE_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-}"
-# 全局配置（作为备用）
-WT_CONF_GLOBAL_INTERVAL="$(_get_global_default_from_config 'default_interval' '300')"
-WT_CONF_GLOBAL_CRON_HOUR="$(_get_global_default_from_config 'default_cron_hour' '4')"
-
-# 最终默认值：优先使用模块特定配置，其次是全局配置，最后是硬编码的后备值
-WT_CONF_DEFAULT_INTERVAL="${WT_CONF_MODULE_INTERVAL:-$WT_CONF_GLOBAL_INTERVAL}"
-WT_CONF_DEFAULT_CRON_HOUR="${WT_CONF_MODULE_CRON_HOUR:-$WT_CONF_GLOBAL_CRON_HOUR}"
-
+# 回归 v4.6.23 的简单逻辑，不再尝试读取全局配置
+WT_CONF_DEFAULT_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-300}"
+WT_CONF_DEFAULT_CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-4}"
 WT_EXCLUDE_CONTAINERS_FROM_JSON="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-}"
 WT_NOTIFY_ON_NO_UPDATES_FROM_JSON="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
 WATCHTOWER_EXTRA_ARGS_FROM_JSON="${WATCHTOWER_CONF_EXTRA_ARGS:-}"
