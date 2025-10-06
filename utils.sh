@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.1-最终稳定版)
-# - 基于 v2.41 回归，确保所有模块功能完整
-# - 包含高级UI渲染、临时文件管理和时间处理函数
+# 🚀 通用工具函数库 (v2.2-UI渲染重构)
+# - 重写 _render_menu 函数，支持双列对齐，彻底修复排版问题
+# - 优化 _get_visual_width 函数的健壮性
 # =============================================================
 
 # --- 严格模式 ---
@@ -56,33 +56,12 @@ confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice <
 # --- 配置加载（集中与容错） ---
 load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
-    
-    # 初始化默认值
-    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"
-    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-    BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"
-    LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"
-    JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"
-    CONFIG_PATH="${config_path}"
-
-    if [ ! -f "$config_path" ]; then
-        log_warn "配置文件 $config_path 未找到，使用默认配置。"
-        return 0
-    fi
-
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"
+    if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
     if command -v jq >/dev/null 2>&1; then
-        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL")
-        INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
-        BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR")
-        LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
-        JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
     else
-        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"
-        BASE_URL=$(grep -Po '"base_url"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BASE_URL")
-        INSTALL_DIR=$(grep -Po '"install_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
-        BIN_DIR=$(grep -Po '"bin_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BIN_DIR")
-        LOCK_FILE=$(grep -Po '"lock_file"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
-        JB_TIMEZONE=$(grep -Po '"timezone"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; BASE_URL=$(grep -Po '"base_url"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(grep -Po '"install_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(grep -Po '"bin_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(grep -Po '"lock_file"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(grep -Po '"timezone"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
     fi
 }
 
@@ -94,10 +73,8 @@ generate_line() {
 }
 
 _get_visual_width() {
-    local text="$1"
-    local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
-
     if command -v python3 &>/dev/null; then
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
@@ -109,28 +86,52 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_content_width=0; local title_content_width; title_content_width=$(_get_visual_width "$title")
-    if (( title_content_width > max_content_width )); then max_content_width=$title_content_width; fi
-    for line in "${lines[@]}"; do
-        local line_content_width; line_content_width=$(_get_visual_width "$line")
-        if (( line_content_width > max_content_width )); then max_content_width=$line_content_width; fi
-    done
+    local max_left_width=0 max_right_width=0 has_separator=false
     
-    local inner_padding_chars=2; local box_inner_width=$((max_content_width + inner_padding_chars))
-    if [ "$box_inner_width" -lt 38 ]; then box_inner_width=38; fi
+    local title_width; title_width=$(_get_visual_width "$title")
+    
+    for line in "${lines[@]}"; do
+        if [[ "$line" == *"│"* ]]; then has_separator=true; fi
+        local left_part="${line%%│*}"; local right_part="${line##*│}"
+        [[ "$left_part" == "$right_part" ]] && right_part=""
+        
+        local left_width; left_width=$(_get_visual_width "$left_part")
+        local right_width; right_width=$(_get_visual_width "$right_part")
+        
+        if (( left_width > max_left_width )); then max_left_width=$left_width; fi
+        if (( right_width > max_right_width )); then max_right_width=$right_width; fi
+    done
+
+    local box_inner_width
+    if $has_separator; then
+        box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
+    else
+        box_inner_width=$((max_left_width > title_width ? max_left_width : title_width))
+        box_inner_width=$((box_inner_width + 2)) # 2 = ' ' on both sides
+    fi
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
-        local padding_total=$((box_inner_width - title_content_width - 2))
-        local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
-        echo -e "${GREEN}│ $(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right") │${NC}"
+        local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+        echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
     fi
     
     for line in "${lines[@]}"; do
-        local line_content_width; line_content_width=$(_get_visual_width "$line")
-        local padding_right_for_line=$((box_inner_width - line_content_width - 1))
-        if [ "$padding_right_for_line" -lt 0 ]; then padding_right_for_line=0; fi
-        echo -e "${GREEN}│ ${line} $(printf '%*s' "$padding_right_for_line")${GREEN}│${NC}"
+        local left_part="${line%%│*}"; local right_part="${line##*│}"
+        [[ "$left_part" == "$right_part" ]] && right_part=""
+        
+        local left_width; left_width=$(_get_visual_width "$left_part")
+        local right_width; right_width=$(_get_visual_width "$right_part")
+        
+        if $has_separator; then
+            local left_padding=$((max_left_width - left_width))
+            local right_padding=$((max_right_width - right_width))
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
+        else
+            local padding=$((box_inner_width - left_width))
+            echo -e "${GREEN}│${left_part}$(printf '%*s' "$padding")│${NC}"
+        fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
