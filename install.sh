@@ -1,10 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.16-修复load_main_config语法错误)
+# 🚀 VPS 一键安装脚本 (v74.17-深度调试版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.16"
+SCRIPT_VERSION="v74.17"
+
+# --- 开启调试模式 ---
+set -x # <<< 为调试目的添加，请将所有输出复制给我！
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -37,7 +40,7 @@ load_main_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         log_err "配置文件 $CONFIG_FILE 未找到！"
         exit 1
-    fi # <<< 修复: 闭合 if 语句
+    fi
     
     # Check for jq dependency
     if ! command -v jq &>/dev/null; then
