@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.7-菜单健壮性修复)
-# - 修复了当 config.json 或 jq 读取失败时，菜单为空并立即退出的问题
+# 🚀 VPS 一键安装与管理脚本 (v77.9-移除 tr 依赖)
+# - 使用 sed 替代 tr -d '\r' 来处理换行符
+# - 使用 Bash 4+ 参数扩展替代 tr 进行大小写转换，提升效率
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.7"
+SCRIPT_VERSION="v77.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -43,7 +44,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             # 规范 CRLF
-            tr -d '\r' < "$temp_file" > "${temp_file}.unix" || true
+            sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
@@ -108,19 +109,19 @@ run_with_sudo() {
 # load_config "$CONFIG_PATH"  # will be called in main()
 
 check_and_install_dependencies() {
-    # 支持 config.json 不存在或 jq 不可用的情况
-    local deps
+    local deps=""
     if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
         deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "")
     fi
-    deps="${deps:-curl cmp ln dirname flock jq sha256sum mktemp}"
+    if [ -z "$deps" ]; then
+        deps="curl ln dirname flock jq sha256sum mktemp"
+    fi
 
     log_info "检查依赖: ${deps}..."
     local missing_pkgs=""
 
     # 映射命令 -> apt 包（Debian/Ubuntu 的常见映射）
     declare -A pkg_apt_map=(
-        [cmp]=diffutils
         [curl]=curl
         [ln]=coreutils
         [dirname]=coreutils
@@ -128,7 +129,6 @@ check_and_install_dependencies() {
         [jq]=jq
         [sha256sum]=coreutils
         [mktemp]=coreutils
-        [tr]=coreutils
     )
 
     for dep in $deps; do
@@ -162,7 +162,6 @@ check_and_install_dependencies() {
 
 self_update() {
     log_info "正在检查主程序更新..."
-    # 使用 utils 的 create_temp_file（如果可用），否则回退 mktemp
     local temp_script
     if command -v create_temp_file >/dev/null 2>&1; then
         temp_script=$(create_temp_file)
@@ -176,18 +175,17 @@ self_update() {
         return
     fi
 
-    # 规范化 CRLF 再计算哈希，避免 CRLF 导致伪变更
-    local remote_hash; remote_hash=$(tr -d '\r' < "$temp_script" | sha256sum | awk '{print $1}')
+    # 规范化 CRLF 再计算哈希
+    local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_script" | sha256sum | awk '{print $1}')
     local local_hash; local_hash=""
     if [ -f "$FINAL_SCRIPT_PATH" ]; then
-        local_hash=$(tr -d '\r' < "$FINAL_SCRIPT_PATH" | sha256sum | awk '{print $1}')
+        local_hash=$(sed 's/\r$//' < "$FINAL_SCRIPT_PATH" | sha256sum | awk '{print $1}')
     fi
 
     if [ "$local_hash" != "$remote_hash" ]; then
         log_success "主程序 (install.sh) 已更新。正在无缝重启..."
         run_with_sudo mv "$temp_script" "$FINAL_SCRIPT_PATH"
         run_with_sudo chmod +x "$FINAL_SCRIPT_PATH"
-        # 释放锁并 exec 新脚本
         flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     fi
     rm -f "$temp_script" 2>/dev/null || true
@@ -197,7 +195,6 @@ force_update_all() {
     log_info "开始强制更新所有组件..."
     self_update "$@"
     _update_core_files
-    # 更新 menus 指定的脚本
     local scripts_to_update=""
     if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
         scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
@@ -216,9 +213,9 @@ _update_core_files() {
     fi
 
     if curl -fsSL "${BASE_URL}/utils.sh?_=$(date +%s)" -o "$temp_utils"; then
-        local remote_hash; remote_hash=$(tr -d '\r' < "$temp_utils" | sha256sum | awk '{print $1}')
+        local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_utils" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"
-        [ -f "$UTILS_PATH" ] && local_hash=$(tr -d '\r' < "$UTILS_PATH" | sha256sum | awk '{print $1}')
+        [ -f "$UTILS_PATH" ] && local_hash=$(sed 's/\r$//' < "$UTILS_PATH" | sha256sum | awk '{print $1}')
         
         if [ "$local_hash" != "$remote_hash" ]; then
             log_success "核心工具库 (utils.sh) 已更新。"
@@ -248,9 +245,9 @@ download_module_to_cache() {
         return 1
     fi
     
-    local remote_hash; remote_hash=$(tr -d '\r' < "$tmp_file" | sha256sum | awk '{print $1}')
+    local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"
-    [ -f "$local_file" ] && local_hash=$(tr -d '\r' < "$local_file" | sha256sum | awk '{print $1}')
+    [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
 
     if [ "$local_hash" != "$remote_hash" ]; then
         log_success "     模块 (${script_name}) 已更新。"
@@ -291,7 +288,8 @@ run_module(){
         download_module_to_cache "$module_script"
     fi
     
-    local module_key; module_key=$(basename "$module_script" .sh | tr '[:upper:]' '[:lower:]')
+    local base_name; base_name=$(basename "$module_script" .sh)
+    local module_key="${base_name,,}" # 使用 Bash 4+ 参数扩展进行小写转换
     if command -v jq >/dev/null 2>&1 && jq -e ".module_configs.$module_key" "$CONFIG_PATH" >/dev/null 2>&1; then
         local keys; keys=$(jq -r ".module_configs.$module_key | keys[]" "$CONFIG_PATH")
         for key in $keys; do
@@ -342,8 +340,6 @@ display_and_process_menu() {
             menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
         fi
 
-        # --- [关键修复] ---
-        # 在渲染前增加对 menu_json 的最终检查，防止因配置错误导致空菜单并立即退出
         if [ -z "$menu_json" ]; then
             log_err "致命错误：无法从 '$CONFIG_PATH' 加载菜单 '$CURRENT_MENU_NAME'。"
             log_err "请检查 config.json 文件是否存在、格式是否正确，以及 jq 是否已安装。"
@@ -364,7 +360,6 @@ display_and_process_menu() {
         local -A status_prefix_map=( ["docker.sh"]="docker: " ["nginx.sh"]="Nginx: " ["TOOLS_MENU"]="Watchtower: " )
         local num_primary=${#primary_items[@]}; local num_func=${#func_items[@]}
 
-        # 生成 func_letters 动态字母表
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
 
         for (( i=0; i<num_primary; i++ )); do
@@ -401,7 +396,6 @@ display_and_process_menu() {
 
 # --- 主程序入口 ---
 main() {
-    # 先确保默认值与加载配置（load_config 在 utils.sh 中）
     load_config "$CONFIG_PATH"
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
