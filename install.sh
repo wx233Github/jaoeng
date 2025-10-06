@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.3-修复交互会话丢失)
-# - 分离安装与执行逻辑，解决 curl | bash 后无法显示菜单的问题
+# 🚀 VPS 一键安装与管理脚本 (v77.3-修复启动器路径判断)
+# - 使用 readlink 修复了导致无法进入主菜单的致命BUG
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -18,7 +18,12 @@ FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
 UTILS_PATH="${INSTALL_DIR}/utils.sh"
 
-if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
+# 使用 readlink -f 获取脚本的真实路径，以正确处理符号链接 (jb 命令)
+REAL_SCRIPT_PATH=""
+# 尝试获取真实路径，如果失败则优雅降级
+REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
+
+if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
@@ -50,12 +55,10 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         BIN_DIR="/usr/local/bin"
         sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
         echo_success "安装/更新完成！"
-        echo_info "请现在运行 'jb' 命令来启动脚本。"
-        # 【核心修复】安装完成后直接退出，不再尝试 exec 跳转
-        exit 0
     fi
     
-    # 如果文件已存在，则直接跳转执行，这是 'jb' 命令的正常流程
+    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
+    echo ""
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
