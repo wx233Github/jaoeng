@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.11-诊断模式)
-# - 增加了 --debug 标志，用于激活 set -x 跟踪，以诊断启动失败问题
+# 🚀 VPS 一键安装与管理脚本 (v77.12-深度诊断修复)
+# - 内置强制诊断检查点，以定位精确的失败位置
+# - 增加了 Bash 4+ 版本检查
+# - 修复了之前版本引入的多个潜在错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.11"
+SCRIPT_VERSION="v77.12"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -13,7 +15,6 @@ export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C_UTF_8}
 
 # --- [核心架构]: 智能自引导启动器 ---
-# 这里保留最小启动器逻辑，用于初次下载 / 刷新到最终路径
 INSTALL_DIR="/opt/vps_install_modules"
 FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
 CONFIG_PATH="${INSTALL_DIR}/config.json"
@@ -42,7 +43,6 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
-            # 规范 CRLF
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
@@ -59,16 +59,27 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
+# --- [关键改动] 深度诊断与检查 ---
+echo "DEBUG: Checkpoint 1 - 主脚本逻辑启动"
+
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "致命错误: 此脚本需要 Bash 4.0 或更高版本才能运行。您当前的版本是 ${BASH_VERSION}。" >&2
+    exit 1
+fi
+echo "DEBUG: Checkpoint 2 - Bash 版本检查通过 (v${BASH_VERSINFO[0]})"
+
 # --- 主程序逻辑 ---
 if [ -f "$UTILS_PATH" ]; then
+    echo "DEBUG: Checkpoint 3 - 正在加载 utils.sh..."
     # shellcheck source=/dev/null
     source "$UTILS_PATH"
+    echo "DEBUG: Checkpoint 4 - utils.sh 加载成功"
 else
     echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2
     exit 1
 fi
 
-# --- 使用 utils 中的默认值（如果外部没有覆盖） ---
+# --- 变量与函数定义 ---
 BASE_URL="${BASE_URL:-${DEFAULT_BASE_URL:-https://raw.githubusercontent.com/wx233Github/jaoeng/main}}"
 INSTALL_DIR="${INSTALL_DIR:-${DEFAULT_INSTALL_DIR:-/opt/vps_install_modules}}"
 BIN_DIR="${BIN_DIR:-${DEFAULT_BIN_DIR:-/usr/local/bin}}"
@@ -78,10 +89,8 @@ JB_TIMEZONE="${JB_TIMEZONE:-${DEFAULT_TIMEZONE:-Asia/Shanghai}}"
 CURRENT_MENU_NAME="MAIN_MENU"
 CONFIG_PATH="${CONFIG_PATH:-${INSTALL_DIR}/config.json}"
 UTILS_PATH="${UTILS_PATH:-${INSTALL_DIR}/utils.sh}"
-
 export JB_ENABLE_AUTO_CLEAR JB_TIMEZONE
 
-# --- 权限处理函数 ---
 check_sudo_privileges() {
     if [ "$(id -u)" -eq 0 ]; then
         JB_HAS_PASSWORDLESS_SUDO=true
@@ -103,7 +112,6 @@ run_with_sudo() {
     fi
 }
 
-# --- 核心函数 ---
 check_and_install_dependencies() {
     local deps=""
     if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
@@ -115,18 +123,10 @@ check_and_install_dependencies() {
 
     log_info "检查依赖: ${deps}..."
     local missing_pkgs=""
-
     declare -A pkg_apt_map=(
-        [curl]=curl
-        [ln]=coreutils
-        [dirname]=coreutils
-        [flock]=util-linux
-        [jq]=jq
-        [sha256sum]=coreutils
-        [mktemp]=coreutils
-        [sed]=sed
+        [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux
+        [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed
     )
-
     for dep in $deps; do
         if ! command -v "$dep" &>/dev/null; then
             local pkg="${pkg_apt_map[$dep]:-$dep}"
@@ -158,13 +158,7 @@ check_and_install_dependencies() {
 
 self_update() {
     log_info "正在检查主程序更新..."
-    local temp_script
-    if command -v create_temp_file >/dev/null 2>&1; then
-        temp_script=$(create_temp_file)
-    else
-        temp_script=$(mktemp) || temp_script="/tmp/install.sh.tmp.$$"
-    fi
-
+    local temp_script; temp_script=$(create_temp_file)
     if ! curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$temp_script"; then
         log_warn "主程序更新检查失败 (无法连接)。"
         rm -f "$temp_script" 2>/dev/null || true
@@ -172,7 +166,7 @@ self_update() {
     fi
 
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_script" | sha256sum | awk '{print $1}')
-    local local_hash; local_hash=""
+    local local_hash=""
     if [ -f "$FINAL_SCRIPT_PATH" ]; then
         local_hash=$(sed 's/\r$//' < "$FINAL_SCRIPT_PATH" | sha256sum | awk '{print $1}')
     fi
@@ -200,55 +194,34 @@ force_update_all() {
 
 _update_core_files() {
     log_info "检查并更新核心工具库..."
-    local temp_utils
-    if command -v create_temp_file >/dev/null 2>&1; then
-        temp_utils=$(create_temp_file)
-    else
-        temp_utils=$(mktemp) || temp_utils="/tmp/utils.sh.tmp.$$"
-    fi
-
+    local temp_utils; temp_utils=$(create_temp_file)
     if curl -fsSL "${BASE_URL}/utils.sh?_=$(date +%s)" -o "$temp_utils"; then
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_utils" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"
         [ -f "$UTILS_PATH" ] && local_hash=$(sed 's/\r$//' < "$UTILS_PATH" | sha256sum | awk '{print $1}')
-        
         if [ "$local_hash" != "$remote_hash" ]; then
             log_success "核心工具库 (utils.sh) 已更新。"
-            sudo mv "$temp_utils" "$UTILS_PATH"
-            sudo chmod +x "$UTILS_PATH"
+            sudo mv "$temp_utils" "$UTILS_PATH"; sudo chmod +x "$UTILS_PATH"
         else
             rm -f "$temp_utils"
         fi
     else
-        log_warn "核心工具库 (utils.sh) 更新检查失败。"
-        rm -f "$temp_utils" 2>/dev/null || true
+        log_warn "核心工具库 (utils.sh) 更新检查失败。"; rm -f "$temp_utils" 2>/dev/null || true
     fi
 }
 
 download_module_to_cache() {
-    local script_name="$1"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file=""
+    local script_name="$1"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
     log_info "  -> 检查/下载模块: ${script_name}"
-    if command -v create_temp_file >/dev/null 2>&1; then
-        tmp_file=$(create_temp_file)
-    else
-        tmp_file=$(mktemp) || tmp_file="/tmp/$(basename "$script_name").$$"
-    fi
-
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
-        log_err "     模块 (${script_name}) 下载失败。"
-        rm -f "$tmp_file" 2>/dev/null || true
-        return 1
+        log_err "     模块 (${script_name}) 下载失败。"; rm -f "$tmp_file" 2>/dev/null || true; return 1
     fi
-    
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"
     [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
-
     if [ "$local_hash" != "$remote_hash" ]; then
         log_success "     模块 (${script_name}) 已更新。"
-        sudo mkdir -p "$(dirname "$local_file")"
-        sudo mv "$tmp_file" "$local_file"
-        sudo chmod +x "$local_file"
+        sudo mkdir -p "$(dirname "$local_file")"; sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
     else
         rm -f "$tmp_file" 2>/dev/null || true
     fi
@@ -256,11 +229,8 @@ download_module_to_cache() {
 
 uninstall_script() {
     if confirm_action "警告：这将移除脚本、模块和快捷命令，确定吗？"; then
-        log_info "正在卸载..."
-        run_with_sudo rm -f "${BIN_DIR}/jb" || true
-        run_with_sudo rm -rf "$INSTALL_DIR" || true
-        log_success "卸载完成。"
-        exit 0
+        log_info "正在卸载..."; run_with_sudo rm -f "${BIN_DIR}/jb" || true
+        run_with_sudo rm -rf "$INSTALL_DIR" || true; log_success "卸载完成。"; exit 0
     else
         log_info "操作已取消。"
     fi
@@ -268,8 +238,7 @@ uninstall_script() {
 
 confirm_and_force_update() {
     if confirm_action "⚠️ 确认要强制更新所有组件并重启脚本吗？"; then
-        log_info "用户确认：开始强制更新所有组件..."
-        force_update_all "$@"
+        log_info "用户确认：开始强制更新所有组件..."; force_update_all "$@"
     else
         log_info "用户取消了强制更新。"
     fi
@@ -279,8 +248,7 @@ run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"
     log_info "您选择了 [${module_name}]"
     if [ ! -f "$module_path" ]; then
-        log_info "模块首次运行，正在下载..."
-        download_module_to_cache "$module_script"
+        log_info "模块首次运行，正在下载..."; download_module_to_cache "$module_script"
     fi
     
     local base_name; base_name=$(basename "$module_script" .sh)
@@ -290,18 +258,17 @@ run_module(){
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value; value=$(jq -r ".module_configs.$module_key.$key" "$CONFIG_PATH")
-            export "WATCHTOWER_CONF_$(echo "$key" | tr '[:lower:]' '[:upper:]')"="$value"
+            local upper_key="${key^^}"
+            export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
     fi
     
     set +e; bash "$module_path"; local exit_code=$?; set -e
     if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 10 ]; then
-        log_warn "模块 [${module_name}] 执行出错 (码: ${exit_code})."
-        press_enter_to_continue
+        log_warn "模块 [${module_name}] 执行出错 (码: ${exit_code})."; press_enter_to_continue
     fi
 }
 
-# --- 状态检查函数 ---
 _get_docker_status() {
     local docker_ok=false compose_ok=false status_str=""
     if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi
@@ -320,29 +287,19 @@ _get_watchtower_status() {
     else echo -e "${RED}Docker未运行${NC}"; fi
 }
 
-# --- 动态菜单引擎 ---
 display_and_process_menu() {
     while true; do
         if [ "$JB_ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
-        
-        local menu_json; menu_json=""
-        if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
-            menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
+        local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
+        if [ -z "$menu_json" ]; then
+            log_warn "菜单配置 '$CURRENT_MENU_NAME' 读取失败或为空，回退到 MAIN_MENU."
+            CURRENT_MENU_NAME="MAIN_MENU"; menu_json=$(jq -r --arg menu "MAIN_MENU" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
         fi
         if [ -z "$menu_json" ]; then
-            log_warn "菜单配置读取失败或为空，回退到默认 MAIN_MENU."
-            CURRENT_MENU_NAME="MAIN_MENU"
-            menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
-        fi
-
-        if [ -z "$menu_json" ]; then
-            log_err "致命错误：无法从 '$CONFIG_PATH' 加载菜单 '$CURRENT_MENU_NAME'。"
-            log_err "请检查 config.json 文件是否存在、格式是否正确，以及 jq 是否已安装。"
-            exit 1
+            log_err "致命错误：无法从 '$CONFIG_PATH' 加载任何菜单。"; exit 1
         fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json")
-        
         local -a primary_items=() func_items=()
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
@@ -352,9 +309,8 @@ display_and_process_menu() {
         
         local -a items_array=()
         local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
-        local -A status_prefix_map=( ["docker.sh"]="docker: " ["nginx.sh"]="Nginx: " )
+        local -A status_prefix_map=( ["docker.sh"]="docker: " ["nginx.sh"]="Nginx: " ["TOOLS_MENU"]="Watchtower: " )
         local num_primary=${#primary_items[@]}; local num_func=${#func_items[@]}
-
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
 
         for (( i=0; i<num_primary; i++ )); do
@@ -376,7 +332,7 @@ display_and_process_menu() {
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then
             item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else
-            for ((i=0; i<num_func; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$json"); break; fi; done
+            for ((i=0; i<num_func; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done
         fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
@@ -389,16 +345,7 @@ display_and_process_menu() {
     done
 }
 
-# --- 主程序入口 ---
 main() {
-    # --- [关键改动] 诊断模式 ---
-    if [ "${1:-}" = "--debug" ]; then
-        set -x
-        export JB_DEBUG_MODE=true
-        echo -e "\n\033[0;33m[DEBUG] 诊断模式已激活。正在跟踪所有命令...\033[0m\n"
-        shift # 消耗 --debug 参数
-    fi
-
     load_config "$CONFIG_PATH"
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
@@ -417,14 +364,10 @@ main() {
                     action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1)
                 fi
                 if [ -n "$action_to_run" ]; then
-                    local display_name
-                    display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1)
-                    log_info "正在以无头模式执行: ${display_name}"
-                    run_module "$action_to_run" "$display_name" "$@"
-                    exit $?
+                    local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1)
+                    log_info "正在以无头模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?
                 else
-                    log_err "未知命令: $command"
-                    exit 1
+                    log_err "未知命令: $command"; exit 1
                 fi
                 ;;
         esac
@@ -435,4 +378,5 @@ main() {
     display_and_process_menu "$@"
 }
 
+echo "DEBUG: Checkpoint 5 - 函数定义完成，准备调用 main 函数..."
 main "$@"
