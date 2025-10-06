@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.2-UI渲染重构)
-# - 重写 _render_menu 函数，支持双列对齐，彻底修复排版问题
-# - 优化 _get_visual_width 函数的健壮性
+# 🚀 通用工具函数库 (v2.3-修复致命语法错误)
+# - 修复: _render_menu 中使用了不兼容的三元运算符
+# - 优化: 确保所有语法 POSIX 兼容，提升稳定性
 # =============================================================
 
 # --- 严格模式 ---
@@ -106,7 +106,12 @@ _render_menu() {
     if $has_separator; then
         box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
     else
-        box_inner_width=$((max_left_width > title_width ? max_left_width : title_width))
+        # --- [关键修复] 使用标准的 if/else 结构代替三元运算符 ---
+        if (( max_left_width > title_width )); then
+            box_inner_width=$max_left_width
+        else
+            box_inner_width=$title_width
+        fi
         box_inner_width=$((box_inner_width + 2)) # 2 = ' ' on both sides
     fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
@@ -129,8 +134,8 @@ _render_menu() {
             local right_padding=$((max_right_width - right_width))
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            local padding=$((box_inner_width - left_width))
-            echo -e "${GREEN}│${left_part}$(printf '%*s' "$padding")│${NC}"
+            local padding=$((box_inner_width - left_width - 2)) #左右各一个空格
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
