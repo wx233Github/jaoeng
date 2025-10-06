@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.0-真正融合版)
-# - 动态渲染JSON菜单, 兼具灵活性、美观性与强大功能
+# 🚀 VPS 一键安装与管理脚本 (v77.2-集成sudo逻辑并移除依赖)
+# - 将 sudo_check.sh 功能合并入主脚本，不再需要外部文件
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.0"
+SCRIPT_VERSION="v77.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -32,7 +32,11 @@ if [ "$0" != "$FINAL_SCRIPT_PATH" ]; then
         sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
         
-        declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
+        declare -A core_files=( 
+            ["主程序"]="install.sh" 
+            ["配置文件"]="config.json" 
+            ["工具库"]="utils.sh"
+        )
         for name in "${!core_files[@]}"; do
             file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
@@ -63,7 +67,31 @@ BIN_DIR=""
 LOCK_FILE=""
 export JB_ENABLE_AUTO_CLEAR="false"
 export JB_TIMEZONE="Asia/Shanghai"
+export JB_HAS_PASSWORDLESS_SUDO=false # Sudo 状态变量
 CURRENT_MENU_NAME="MAIN_MENU"
+
+# --- 权限处理函数 (原 sudo_check.sh 内容) ---
+check_sudo_privileges() {
+    if [ "$(id -u)" -eq 0 ]; then
+        JB_HAS_PASSWORDLESS_SUDO=true
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        JB_HAS_PASSWORDLESS_SUDO=true
+        log_info "检测到免密 sudo 权限。"
+    else
+        JB_HAS_PASSWORDLESS_SUDO=false
+        log_warn "未检测到免密 sudo 权限。部分操作可能需要您输入密码。"
+    fi
+}
+run_with_sudo() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then log_debug "Executing with sudo: sudo $*"; fi
+        sudo "$@"
+    fi
+}
 
 # --- 核心函数 ---
 load_config() {
@@ -146,7 +174,7 @@ download_module_to_cache() {
 
 uninstall_script() {
     if confirm_action "警告：这将移除脚本、模块和快捷命令，确定吗？"; then
-        log_info "正在卸载..."; sudo rm -f "${BIN_DIR}/jb"; sudo rm -rf "$INSTALL_DIR"; log_success "卸载完成。"; exit 0
+        log_info "正在卸载..."; run_with_sudo rm -f "${BIN_DIR}/jb"; run_with_sudo rm -rf "$INSTALL_DIR"; log_success "卸载完成。"; exit 0
     else log_info "操作已取消。"; fi
 }
 
@@ -185,7 +213,7 @@ _get_docker_status() {
 _get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
 _get_watchtower_status() {
     if systemctl is-active --quiet docker 2>/dev/null; then
-        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then echo -e "${GREEN}已运行${NC}";
+        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then echo -e "${GREEN}已运行${NC}";
         else echo -e "${YELLOW}未运行${NC}"; fi
     else echo -e "${RED}Docker未运行${NC}"; fi
 }
@@ -205,7 +233,6 @@ display_and_process_menu() {
             elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json")
         
-        # 动态渲染菜单
         local -a items_array=()
         local -A status_map=(
             ["docker.sh"]="$(_get_docker_status)"
@@ -218,13 +245,7 @@ display_and_process_menu() {
             ["TOOLS_MENU"]="Watchtower: "
         )
 
-        local num_primary=${#primary_items[@]}
-        local num_func=${#func_items[@]}
-        local max_lines=$(( num_primary > num_func ? num_primary : num_func ))
-        if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then max_lines=$(( num_primary + num_func )); fi
-
-        local func_idx=0
-        local func_letters=("a" "c" "d" "e" "f" "g")
+        local num_primary=${#primary_items[@]}; local num_func=${#func_items[@]}; local func_letters=("a" "c" "d" "e" "f" "g")
 
         for (( i=0; i<num_primary; i++ )); do
             IFS='|' read -r icon name type action <<< "${primary_items[i]}"
@@ -241,9 +262,7 @@ display_and_process_menu() {
         
         _render_menu "$menu_title" "${items_array[@]}"
         
-        # 处理用户输入
-        local num_choices=${#primary_items[@]}
-        local func_choices_str; for ((i=0; i<num_func; i++)); do func_choices_str+="${func_letters[i]},"; done
+        local num_choices=${#primary_items[@]}; local func_choices_str; for ((i=0; i<num_func; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
         if [ -z "$choice" ]; then
@@ -263,8 +282,7 @@ display_and_process_menu() {
 
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        local type name action
-        type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
+        local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
         
         case "$type" in
             item) run_module "$action" "$name"; press_enter_to_continue ;;
@@ -283,7 +301,6 @@ main() {
     
     check_and_install_dependencies
 
-    # --- 无头命令解析器 ---
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
@@ -298,9 +315,7 @@ main() {
         esac
     fi
 
-    # --- 交互模式 ---
     self_update "$@"
-    source "${INSTALL_DIR}/sudo_check.sh"
     check_sudo_privileges
     display_and_process_menu "$@"
 }
