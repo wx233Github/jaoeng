@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.5-终极稳定版)
-# - 彻底移除不稳定的 exec 重启机制，改为明确的用户提示
+# 🚀 VPS 一键安装与管理脚本 (v77.6-哈希校验稳定版)
+# - 使用 sha256sum 替换 cmp 进行可靠的更新检测
+# - 恢复了基于可靠检测的无缝重启 (exec)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.5"
+SCRIPT_VERSION="v77.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -53,12 +54,10 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     fi
     
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
-    # 【修复】不再使用 exec 自动启动，而是提示用户手动运行
-    echo_success "脚本已就绪。请运行 'jb' 命令启动管理菜单。"
-    exit 0
+    exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
-# --- 主程序逻辑 (已在 /opt/vps_install_modules/install.sh 中运行) ---
+# --- 主程序逻辑 ---
 if [ -f "$UTILS_PATH" ]; then source "$UTILS_PATH"; else echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2; exit 1; fi
 
 # --- 全局变量 ---
@@ -115,17 +114,19 @@ self_update() {
     log_info "正在检查主程序更新..."
     local temp_script="/tmp/install.sh.tmp.$$"
     if ! curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$temp_script"; then
-        log_warn "主程序 (install.sh) 更新检查失败 (无法连接)。"; rm -f "$temp_script"; return
+        log_warn "主程序更新检查失败 (无法连接)。"; rm -f "$temp_script"; return
     fi
-    sed -i 's/\r$//' "$temp_script" 2>/dev/null || true
 
-    if ! cmp -s "$FINAL_SCRIPT_PATH" "$temp_script"; then
-        log_success "主程序 (install.sh) 已更新。";
+    # 【修复】使用 sha256sum 进行可靠的内容比较，忽略格式差异
+    local remote_hash; remote_hash=$(sha256sum "$temp_script" | awk '{print $1}')
+    local local_hash; local_hash=$(sha256sum "$FINAL_SCRIPT_PATH" | awk '{print $1}')
+
+    if [ "$local_hash" != "$remote_hash" ]; then
+        log_success "主程序 (install.sh) 已更新。正在无缝重启...";
         run_with_sudo mv "$temp_script" "$FINAL_SCRIPT_PATH"
         run_with_sudo chmod +x "$FINAL_SCRIPT_PATH"
-        # 【修复】不再使用 exec，而是提示用户并干净地退出
-        log_info "请重新运行 'jb' 以应用更新。"
-        exit 0
+        # 【恢复】基于可靠的哈希校验，恢复无缝重启
+        flock -u 200; trap - EXIT; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     fi
     rm -f "$temp_script"
 }
@@ -141,11 +142,18 @@ force_update_all() {
 _update_core_files() {
     local temp_utils="/tmp/utils.sh.tmp.$$"
     if curl -fsSL "${BASE_URL}/utils.sh?_=$(date +%s)" -o "$temp_utils"; then
-        sed -i 's/\r$//' "$temp_utils" 2>/dev/null || true
-        if [ ! -f "$UTILS_PATH" ] || ! cmp -s "$UTILS_PATH" "$temp_utils"; then
+        local remote_hash; remote_hash=$(sha256sum "$temp_utils" | awk '{print $1}')
+        local local_hash="no_local_file"
+        [ -f "$UTILS_PATH" ] && local_hash=$(sha256sum "$UTILS_PATH" | awk '{print $1}')
+        
+        if [ "$local_hash" != "$remote_hash" ]; then
             log_success "核心工具库 (utils.sh) 已更新。"; sudo mv "$temp_utils" "$UTILS_PATH"; sudo chmod +x "$UTILS_PATH"
-        else rm -f "$temp_utils"; fi
-    else log_warn "核心工具库 (utils.sh) 更新检查失败。"; fi
+        else
+            rm -f "$temp_utils"
+        fi
+    else
+        log_warn "核心工具库 (utils.sh) 更新检查失败。"
+    fi
 }
 
 download_module_to_cache() {
@@ -154,10 +162,15 @@ download_module_to_cache() {
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
         log_err "     模块 (${script_name}) 下载失败。"; rm -f "$tmp_file"; return 1
     fi
-    sed -i 's/\r$//' "$tmp_file" 2>/dev/null || true
-    if [ -f "$local_file" ] && cmp -s "$local_file" "$tmp_file"; then rm -f "$tmp_file";
-    else
+    
+    local remote_hash; remote_hash=$(sha256sum "$tmp_file" | awk '{print $1}')
+    local local_hash="no_local_file"
+    [ -f "$local_file" ] && local_hash=$(sha256sum "$local_file" | awk '{print $1}')
+
+    if [ "$local_hash" != "$remote_hash" ]; then
         log_success "     模块 (${script_name}) 已更新。"; sudo mkdir -p "$(dirname "$local_file")"; sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
+    else
+        rm -f "$tmp_file"
     fi
 }
 
@@ -170,7 +183,7 @@ uninstall_script() {
 run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"
     log_info "您选择了 [${module_name}]"
-    if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..."; download_module_to_cache "$script_name"; fi
+    if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..."; download_module_to_cache "$module_script"; fi
     
     local module_key; module_key=$(basename "$module_script" .sh | tr '[:upper:]' '[:lower:]')
     if jq -e ".module_configs.$module_key" "$CONFIG_PATH" >/dev/null; then
