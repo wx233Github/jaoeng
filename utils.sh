@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.5-最终稳定版)
-# - 修复: 使用 `${var:-0}` 防止空变量导致致命的语法错误
-# - 修复: 彻底修正单列菜单的 UI 渲染对齐逻辑
+# 🚀 通用工具函数库 (v2.6-根源修复版)
+# - 修复: 使用高度可移植的 `sed` 替换不稳定的 `grep -Po`
+# - 此修复解决了在无 jq 环境下首次启动时脚本崩溃的根本问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -54,14 +54,28 @@ press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继�
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
 # --- 配置加载（集中与容错） ---
+_get_json_value_fallback() {
+    local file="$1"; local key="$2"; local default_val="$3"
+    # 使用 sed 进行可移植的解析
+    local result; result=$(sed -n 's/.*"'"$key"'": *"\([^"]*\)".*/\1/p' "$file")
+    echo "${result:-$default_val}"
+}
+
 load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
     BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
+    
     if command -v jq >/dev/null 2>&1; then
         BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
     else
-        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; BASE_URL=$(grep -Po '"base_url"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(grep -Po '"install_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(grep -Po '"bin_dir"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(grep -Po '"lock_file"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(grep -Po '"timezone"\s*:\s*"\K[^"]+' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; 
+        # --- [关键修复] 使用高度可移植的 `sed` 替换不稳定的 `grep -Po` ---
+        BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
+        INSTALL_DIR=$(_get_json_value_fallback "$config_path" "install_dir" "$INSTALL_DIR")
+        BIN_DIR=$(_get_json_value_fallback "$config_path" "bin_dir" "$BIN_DIR")
+        LOCK_FILE=$(_get_json_value_fallback "$config_path" "lock_file" "$LOCK_FILE")
+        JB_TIMEZONE=$(_get_json_value_fallback "$config_path" "timezone" "$JB_TIMEZONE")
     fi
 }
 
@@ -75,7 +89,7 @@ generate_line() {
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
-    if command -v python3 &/dev/null; then
+    if command -v python3 &>/dev/null; then
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
         echo -n "$plain_text" | wc -m
@@ -98,21 +112,20 @@ _render_menu() {
         local left_width; left_width=$(_get_visual_width "$left_part")
         local right_width; right_width=$(_get_visual_width "$right_part")
         
-        # --- [关键修复] 使用 `${var:-0}` 确保即使变量为空也不会导致语法错误 ---
         if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
         if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
     done
 
     local box_inner_width
     if $has_separator; then
-        box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
+        box_inner_width=$((max_left_width + max_right_width + 3))
     else
         if [ "${max_left_width:-0}" -gt "${title_width:-0}" ]; then
             box_inner_width=$max_left_width
         else
             box_inner_width=$title_width
         fi
-        box_inner_width=$((box_inner_width + 2)) # Padding: one space on each side
+        box_inner_width=$((box_inner_width + 2))
     fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
@@ -133,8 +146,7 @@ _render_menu() {
             local right_padding=$((max_right_width - right_width))
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            # --- [关键修复] 修正单列菜单的渲染逻辑和 padding 计算 ---
-            local padding=$((box_inner_width - left_width - 2)) # 2 = space on left and right
+            local padding=$((box_inner_width - left_width - 2))
             if [ $padding -lt 0 ]; then padding=0; fi
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
         fi
