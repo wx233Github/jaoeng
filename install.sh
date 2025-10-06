@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.14-主菜单排版和Docker状态增强)
+# 🚀 VPS 一键安装脚本 (v74.15-修复函数定义顺序和主菜单排版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.14"
+SCRIPT_VERSION="v74.15"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -37,7 +37,7 @@ load_main_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         log_err "配置文件 $CONFIG_FILE 未找到！"
         exit 1
-    fi
+    }
 
     # Check for jq dependency
     if ! command -v jq &>/dev/null; then
@@ -132,19 +132,24 @@ _is_docker_compose_installed_and_running() {
     local compose_cmd=""
     if command -v docker-compose &>/dev/null; then
         compose_cmd="docker-compose"
-    elif docker compose version &>/dev/null; then
+    elif docker compose version &>/dev/null; then # docker compose (v2)
         compose_cmd="docker compose"
     fi
 
     if [ -n "$compose_cmd" ]; then
-        # Check if any compose services are running
+        # Check if any compose services are running. `ps -q` is quiet and lists IDs.
+        # If no services are running, `ps -q` might output nothing or an error,
+        # so we check if the command itself succeeds and produces output.
         if JB_SUDO_LOG_QUIET="true" $compose_cmd ps -q &>/dev/null; then
             return 0 # Installed and services running
         else
-            return 2 # Installed but no services running
+            # Check if it's just installed but no services are up
+            if JB_SUDO_LOG_QUIET="true" $compose_cmd version &>/dev/null; then
+                return 2 # Installed but no services running
+            fi
         fi
     fi
-    return 1 # Not installed
+    return 1 # Not installed or not working
 }
 
 _is_nginx_running() {
@@ -191,6 +196,41 @@ uninstall_script() {
 # Global variable to store the count of numbered menu items
 MAIN_MENU_ITEM_COUNT=0
 
+# --- Tools Submenu Function ---
+tools_menu() {
+    local tools_menu_title=$(jq -r '.menus.TOOLS_MENU.title' "$CONFIG_FILE")
+    local -a tools_menu_items_config
+    mapfile -t tools_menu_items_config < <(jq -c '.menus.TOOLS_MENU.items[]' "$CONFIG_FILE")
+
+    local item_count=0
+    local -a menu_lines=()
+    for item_json in "${tools_menu_items_config[@]}"; do
+        item_count=$((item_count + 1))
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        menu_lines+=("  ${item_count}. ${icon} ${name}")
+    done
+
+    while true; do
+        if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
+        _render_menu "$tools_menu_title" "${menu_lines[@]}"
+        read -r -p " └──> 请选择 [1-${item_count}], 或 [Enter] 返回: " choice < /dev/tty
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$item_count" ]; then
+            local selected_item_json="${tools_menu_items_config[$((choice - 1))]}"
+            local selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
+            local selected_action_name=$(echo "$selected_item_json" | jq -r '.name') # Get name for display
+            _run_module "$selected_action_path" "$selected_action_name"
+        elif [ -z "$choice" ]; then
+            log_info "返回主菜单。"
+            return # Return to main_menu
+        else
+            log_warn "无效选项。请重新输入。"
+            sleep 1
+        fi
+    done
+}
+
 # --- 主菜单渲染函数 ---
 render_main_menu() {
     local main_menu_title=$(jq -r '.menus.MAIN_MENU.title' "$CONFIG_FILE")
@@ -216,22 +256,18 @@ render_main_menu() {
     # Populate right column (statuses and options)
     # Docker Status
     local docker_overall_status_display=""
-    if _is_docker_daemon_running && _is_docker_compose_installed_and_running; then
-        docker_overall_status_display="Docker: ${GREEN}已运行${NC}"
-    else
-        if ! _is_docker_daemon_running; then
-            docker_overall_status_display="Docker: ${RED}守护进程未运行${NC}"
-        elif ! _is_docker_compose_installed_and_running 0; then # 0 means installed and running, 1 means not installed, 2 means installed but not running
-            local compose_status_code
-            _is_docker_compose_installed_and_running; compose_status_code=$?
-            if [ "$compose_status_code" -eq 1 ]; then
-                docker_overall_status_display="Docker: ${RED}Compose未安装${NC}"
-            elif [ "$compose_status_code" -eq 2 ]; then
-                docker_overall_status_display="Docker: ${YELLOW}Compose服务未运行${NC}"
-            fi
-        else
-             docker_overall_status_display="Docker: ${RED}状态未知${NC}"
+    if _is_docker_daemon_running; then
+        local compose_status_code
+        _is_docker_compose_installed_and_running; compose_status_code=$?
+        if [ "$compose_status_code" -eq 0 ]; then
+            docker_overall_status_display="Docker: ${GREEN}已运行${NC}"
+        elif [ "$compose_status_code" -eq 2 ]; then
+            docker_overall_status_display="Docker: ${YELLOW}Compose服务未运行${NC}"
+        elif [ "$compose_status_code" -eq 1 ]; then
+            docker_overall_status_display="Docker: ${RED}Compose未安装${NC}"
         fi
+    else
+        docker_overall_status_display="Docker: ${RED}守护进程未运行${NC}"
     fi
     right_column_lines+=("$docker_overall_status_display")
 
@@ -340,34 +376,53 @@ render_main_menu() {
     MAIN_MENU_ITEM_COUNT=${#left_column_lines[@]}
 }
 
-# --- Tools Submenu Function ---
-tools_menu() {
-    local tools_menu_title=$(jq -r '.menus.TOOLS_MENU.title' "$CONFIG_FILE")
-    local -a tools_menu_items_config
-    mapfile -t tools_menu_items_config < <(jq -c '.menus.TOOLS_MENU.items[]' "$CONFIG_FILE")
-
-    local item_count=0
-    local -a menu_lines=()
-    for item_json in "${tools_menu_items_config[@]}"; do
-        item_count=$((item_count + 1))
-        local name=$(echo "$item_json" | jq -r '.name')
-        local icon=$(echo "$item_json" | jq -r '.icon // ""')
-        menu_lines+=("  ${item_count}. ${icon} ${name}")
-    done
+# --- Main Menu Logic Function ---
+main_menu(){
+    log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
 
     while true; do
         if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
-        _render_menu "$tools_menu_title" "${menu_lines[@]}"
-        read -r -p " └──> 请选择 [1-${item_count}], 或 [Enter] 返回: " choice < /dev/tty
+        load_main_config # Re-load config in case it changed (e.g., enable_auto_clear)
 
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$item_count" ]; then
-            local selected_item_json="${tools_menu_items_config[$((choice - 1))]}"
-            local selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
-            local selected_action_name=$(echo "$selected_item_json" | jq -r '.name') # Get name for display
-            _run_module "$selected_action_path" "$selected_action_name"
+        render_main_menu # Call the new render function
+
+        read -r -p " └──> 请选择 [1-${MAIN_MENU_ITEM_COUNT}], 或 [a/c] 选项, 或 [Enter] 返回: " choice < /dev/tty
+        
+        local selected_item_json=""
+        local selected_action_type=""
+        local selected_action_name=""
+        local selected_action_path=""
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$MAIN_MENU_ITEM_COUNT" ]; then
+            selected_item_json=$(jq -c ".menus.MAIN_MENU.items[$((choice - 1))]" "$CONFIG_FILE")
+            selected_action_type=$(echo "$selected_item_json" | jq -r '.type')
+            selected_action_name=$(echo "$selected_item_json" | jq -r '.name')
+            selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
+
+            case "$selected_action_type" in
+                "item")
+                    _run_module "$selected_action_path" "$selected_action_name"
+                    ;;
+                "submenu")
+                    if [ "$selected_action_path" = "TOOLS_MENU" ]; then
+                        tools_menu
+                    else
+                        log_err "未知的子菜单动作: $selected_action_path"
+                        press_enter_to_continue
+                    fi
+                    ;;
+                *)
+                    log_warn "未知的菜单项类型: $selected_action_type"
+                    press_enter_to_continue
+                    ;;
+            esac
+        elif [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
+            confirm_and_force_update
+        elif [ "$choice" = "c" ] || [ "$choice" = "C" ]; then
+            uninstall_script
         elif [ -z "$choice" ]; then
-            log_info "返回主菜单。"
-            return # Return to main_menu
+            log_info "退出脚本。"
+            exit 0
         else
             log_warn "无效选项。请重新输入。"
             sleep 1
@@ -375,14 +430,15 @@ tools_menu() {
     done
 }
 
+
 # --- Main entry point ---
 main() {
     _acquire_lock
     load_main_config
     _check_dependencies
     
-    main_menu
-    exit 0 # Exit cleanly after main menu loop
+    main_menu # Call main_menu after all functions are defined
+    exit 0
 }
 
 main "$@"
