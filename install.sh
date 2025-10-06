@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.15-最终稳定版)
-# - 修复了 run_module 中遗留的 tr 调用，彻底解耦
-# - 兼容功能更全的 utils.sh (v2.1)，确保所有模块正常工作
+# 🚀 VPS 一键安装与管理脚本 (v77.16-融合版)
+# - 融合 v75.0 的用户友好信息与 v77.15 的现代化架构
+# - 增强了启动/退出日志、动态更新提示和危险操作确认
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.15"
+SCRIPT_VERSION="v77.16"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -136,7 +136,6 @@ check_and_install_dependencies() {
 }
 
 self_update() {
-    log_info "正在检查主程序更新..."
     local temp_script; temp_script=$(create_temp_file)
     if ! curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$temp_script"; then
         log_warn "主程序更新检查失败 (无法连接)。"
@@ -201,17 +200,33 @@ download_module_to_cache() {
 }
 
 uninstall_script() {
-    if confirm_action "警告：这将移除脚本、模块和快捷命令，确定吗？"; then
-        log_info "正在卸载..."; run_with_sudo rm -f "${BIN_DIR}/jb" || true
-        run_with_sudo rm -rf "$INSTALL_DIR" || true; log_success "卸载完成。"; exit 0
+    log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
+    log_warn "  - 安装目录: ${INSTALL_DIR}"
+    log_warn "  - 快捷方式: ${BIN_DIR}/jb"
+    local choice
+    read -r -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    if [ "$choice" = "yes" ]; then
+        log_info "开始卸载..."
+        run_with_sudo rm -f "${BIN_DIR}/jb" || true
+        run_with_sudo rm -rf "$INSTALL_DIR" || true
+        log_success "脚本已成功卸载。再见！"
+        exit 0
     else
-        log_info "操作已取消。"
+        log_info "卸载操作已取消."
     fi
 }
 
 confirm_and_force_update() {
-    if confirm_action "⚠️ 确认要强制更新所有组件并重启脚本吗？"; then
-        log_info "用户确认：开始强制更新所有组件..."; force_update_all "$@"
+    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"
+    log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
+    local choice
+    read -r -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    if [ "$choice" = "yes" ]; then
+        log_info "用户确认：开始强制更新所有组件..."
+        force_update_all "$@"
+        log_success "强制更新完成！脚本将自动重启以应用所有更新..."
+        sleep 2
+        flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     else
         log_info "用户取消了强制更新。"
     fi
@@ -231,15 +246,19 @@ run_module(){
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value; value=$(jq -r ".module_configs.$module_key.$key" "$CONFIG_PATH")
-            # --- [关键修复] 移除最后的 tr 调用 ---
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
     fi
     
     set +e; bash "$module_path"; local exit_code=$?; set -e
-    if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 10 ]; then
-        log_warn "模块 [${module_name}] 执行出错 (码: ${exit_code})."; press_enter_to_continue
+    
+    if [ "$exit_code" -eq 0 ]; then
+        log_success "模块 [${module_name}] 执行完毕。"
+    elif [ "$exit_code" -eq 10 ]; then
+        log_info "已从 [${module_name}] 返回。"
+    else
+        log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"
     fi
 }
 
@@ -313,10 +332,11 @@ display_and_process_menu() {
         
         local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
         case "$type" in
-            item) run_module "$action" "$name"; press_enter_to_continue ;;
+            item) run_module "$action" "$name" ;;
             submenu) CURRENT_MENU_NAME="$action" ;;
-            func) "$action" "$@"; press_enter_to_continue ;;
+            func) "$action" "$@" ;;
         esac
+        if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
     done
 }
 
@@ -326,12 +346,13 @@ main() {
     
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
+    trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})"' EXIT
     
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
-            update) log_info "正在以无头模式更新所有脚本..."; force_update_all "$@"; exit 0 ;;
-            uninstall) log_info "正在以无头模式执行卸载..."; uninstall_script; exit 0 ;;
+            update) log_info "正在以 Headless 模式更新所有脚本..."; force_update_all "$@"; exit 0 ;;
+            uninstall) log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0 ;;
             *)
                 local action_to_run=""
                 if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
@@ -339,7 +360,7 @@ main() {
                 fi
                 if [ -n "$action_to_run" ]; then
                     local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1)
-                    log_info "正在以无头模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?
+                    log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?
                 else
                     log_err "未知命令: $command"; exit 1
                 fi
@@ -347,7 +368,12 @@ main() {
         esac
     fi
 
+    log_info "脚本启动 (${SCRIPT_VERSION})"
+    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在智能更新 🕛"
+    sleep 0.5
     self_update
+    echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 智能更新检查完成 🔄"
+    
     check_sudo_privileges
     display_and_process_menu "$@"
 }
