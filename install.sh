@@ -1,16 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.18-强制调试与简化菜单)
+# 🚀 VPS 一键安装脚本 (v74.19-修复main函数日志调用顺序)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.18"
-
-# --- 强制开启调试模式并重定向输出 ---
-# 这会打印每一条执行的命令。请将所有输出复制给我！
-exec 7>&2 # 将文件描述符7重定向到标准错误
-BASH_XTRACEFD=7 # 将 set -x 的输出发送到文件描述符7
-set -x 
+SCRIPT_VERSION="v74.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -290,43 +284,163 @@ tools_menu() {
     done
 }
 
-# --- 简化版主菜单渲染函数 (用于调试) ---
+# --- 主菜单渲染函数 ---
 render_main_menu() {
-    log_debug "DEBUG: Entering simplified render_main_menu"
-    sleep 0.5 # 增加延迟，确保调试信息可见
+    log_debug "DEBUG: Entering render_main_menu"
+    local main_menu_title=$(jq -r '.menus.MAIN_MENU.title' "$CONFIG_FILE")
+    local -a menu_items_config
+    mapfile -t menu_items_config < <(jq -c '.menus.MAIN_MENU.items[]' "$CONFIG_FILE")
 
-    local main_menu_title="🖥️ VPS 一键安装脚本 (简 化 版 )"
-    local -a menu_lines=(
-        "  1. 🐳 Docker"
-        "  2. 🌐 Nginx"
-        "  3. 🛠️ 常 用 工 具 "
-        "  4. 📜 证 书 申 请 "
-        "" # 空行用于分隔
-        "a. ⚙️ 强 制 重 置 "
-        "c. 🗑️ 卸 载 脚 本 "
-    )
+    local -a left_column_lines=()
+    local -a right_column_lines=()
+    local item_idx=0
+
+    # Populate left column (numbered items)
+    for item_json in "${menu_items_config[@]}"; do
+        local type=$(echo "$item_json" | jq -r '.type')
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        
+        if [ "$type" = "item" ] || [ "$type" = "submenu" ]; then
+            item_idx=$((item_idx + 1))
+            left_column_lines+=("  ${item_idx}. ${icon} ${name}")
+        fi
+    done
     
-    _render_menu "$main_menu_title" "${menu_lines[@]}"
+    # Populate right column (statuses and options)
+    # Docker Status
+    local docker_overall_status_display=""
+    if _is_docker_daemon_running; then
+        local compose_status_code
+        _is_docker_compose_installed_and_running; compose_status_code=$?
+        if [ "$compose_status_code" -eq 0 ]; then
+            docker_overall_status_display="Docker: ${GREEN}已运行${NC}"
+        elif [ "$compose_status_code" -eq 2 ]; then
+            docker_overall_status_display="Docker: ${YELLOW}Compose服务未运行${NC}"
+        elif [ "$compose_status_code" -eq 1 ]; then
+            docker_overall_status_display="Docker: ${RED}Compose未安装${NC}"
+        fi
+    else
+        docker_overall_status_display="Docker: ${RED}守护进程未运行${NC}"
+    fi
+    right_column_lines+=("$docker_overall_status_display")
+
+    # Nginx Status
+    if _is_nginx_running; then
+        right_column_lines+=("Nginx: ${GREEN}已运行${NC}")
+    else
+        right_column_lines+=("Nginx: ${RED}未运行${NC}")
+    fi
+
+    # Watchtower Status
+    if _is_watchtower_running; then
+        right_column_lines+=("Watchtower: ${GREEN}已运行${NC}")
+    else
+        right_column_lines+=("Watchtower: ${RED}未运行${NC}")
+    fi
+
+    # Separator for options
+    right_column_lines+=("") # Empty line for spacing
+
+    # Options a.c
+    for item_json in "${menu_items_config[@]}"; do
+        local type=$(echo "$item_json" | jq -r '.type')
+        local name=$(echo "$item_json" | jq -r '.name')
+        local icon=$(echo "$item_json" | jq -r '.icon // ""')
+        if [ "$type" = "func" ]; then
+            case "$name" in
+                "强制重置")
+                    right_column_lines+=("a. ${icon} ${name}")
+                    ;;
+                "卸载脚本")
+                    right_column_lines+=("c. ${icon} ${name}")
+                    ;;
+            esac
+        fi
+    done
+
+    # Calculate max widths for each column
+    local max_left_width=0
+    for line in "${left_column_lines[@]}"; do
+        local w=$(_get_visual_width "$line")
+        if (( w > max_left_width )); then max_left_width=$w; fi
+    done
+
+    local max_right_width=0
+    for line in "${right_column_lines[@]}"; do
+        local w=$(_get_visual_width "$line")
+        if (( w > max_right_width )); then max_right_width=$w; fi
+    done
+
+    # Ensure minimum widths for aesthetic
+    if (( max_left_width < 20 )); then max_left_width=20; fi
+    if (( max_right_width < 25 )); then max_right_width=25; fi # Give more space for status messages
+
+    local separator_chars=" │ " # 3 visual characters
+    local separator_visual_width=$(_get_visual_width "$separator_chars")
+
+    local total_inner_content_width=$((max_left_width + separator_visual_width + max_right_width))
+    local min_total_width=70 # Minimum total width for the box
+    if (( total_inner_content_width < min_total_width )); then
+        total_inner_content_width=$min_total_width
+    fi
+
+    local outer_padding_chars=2 # For "│ " and " │"
+    local box_width=$((total_inner_content_width + outer_padding_chars))
+
+    # Render top border
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_width" "─")╮${NC}"
     
-    # 硬编码菜单项数量，用于 read 提示
-    MAIN_MENU_ITEM_COUNT=4 
-    log_debug "DEBUG: Exiting simplified render_main_menu"
-    sleep 0.5 # 增加延迟
+    # Title
+    local title_content_width=$(_get_visual_width "$main_menu_title")
+    local title_padding_total=$((box_width - title_content_width - outer_padding_chars))
+    local title_padding_left=$((title_padding_total / 2))
+    local title_padding_right=$((title_padding_total - title_padding_left))
+    echo -e "${GREEN}│$(printf '%*s' "$title_padding_left") ${main_menu_title} $(printf '%*s' "$title_padding_right")│${NC}"
+    
+    # Separator line if there are items
+    if [ ${#left_column_lines[@]} -gt 0 ] || [ ${#right_column_lines[@]} -gt 0 ]; then
+        echo -e "${GREEN}│$(generate_line "$box_width" "─")│${NC}"
+    fi
+
+    # Render content rows
+    local max_rows=$(( ${#left_column_lines[@]} > ${#right_column_lines[@]} ? ${#left_column_lines[@]} : ${#right_column_lines[@]} ))
+
+    for (( i=0; i < max_rows; i++ )); do
+        local left_line="${left_column_lines[$i]:-}"
+        local right_line="${right_column_lines[$i]:-}"
+
+        local left_current_visual_width=$(_get_visual_width "$left_line")
+        local right_current_visual_width=$(_get_visual_width "$right_line")
+
+        local left_padding_str=$(printf '%*s' $((max_left_width - left_current_visual_width)))
+        local right_padding_str=$(printf '%*s' $((max_right_width - right_current_visual_width)))
+
+        printf "${GREEN}│ %s%s${separator_chars}%s%s │${NC}\n" \
+               "$(echo -e "$left_line")" \
+               "$left_padding_str" \
+               "$(echo -e "$right_line")" \
+               "$right_padding_str"
+    done
+    
+    # Render bottom border
+    echo -e "${GREEN}╰$(generate_line "$box_width" "─")╯${NC}"
+
+    # Set item_count for main loop choice validation
+    MAIN_MENU_ITEM_COUNT=${#left_column_lines[@]}
+    log_debug "DEBUG: Exiting render_main_menu"
 }
 
 # --- Main Menu Logic Function ---
 main_menu(){
     log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
     log_debug "DEBUG: Entering main_menu loop"
-    sleep 0.5 # 增加延迟
 
     while true; do
         if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
         load_main_config # Re-load config in case it changed (e.g., enable_auto_clear)
-        log_debug "DEBUG: Calling render_main_menu"
-        render_main_menu # Call the simplified render function
-        log_debug "DEBUG: After render_main_menu, before read"
-        sleep 0.5 # 增加延迟
+
+        render_main_menu # Call the new render function
 
         read -r -p " └──> 请选择 [1-${MAIN_MENU_ITEM_COUNT}], 或 [a/c] 选项, 或 [Enter] 返回: " choice < /dev/tty
         
@@ -335,24 +449,47 @@ main_menu(){
         local selected_action_name=""
         local selected_action_path=""
 
-        # Hardcoded handling for simplified menu
-        case "$choice" in
-          1) _run_module "docker.sh" "Docker" ;;
-          2) _run_module "nginx.sh" "Nginx" ;;
-          3) tools_menu ;;
-          4) _run_module "cert.sh" "证书申请" ;;
-          a|A) confirm_and_force_update ;;
-          c|C) uninstall_script ;;
-          "") log_info "退出脚本。"; exit 0 ;;
-          *) log_warn "无效选项。请重新输入。"; sleep 1 ;;
-        esac
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$MAIN_MENU_ITEM_COUNT" ]; then
+            selected_item_json=$(jq -c ".menus.MAIN_MENU.items[$((choice - 1))]" "$CONFIG_FILE")
+            selected_action_type=$(echo "$selected_item_json" | jq -r '.type')
+            selected_action_name=$(echo "$selected_item_json" | jq -r '.name')
+            selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
+
+            case "$selected_action_type" in
+                "item")
+                    _run_module "$selected_action_path" "$selected_action_name"
+                    ;;
+                "submenu")
+                    if [ "$selected_action_path" = "TOOLS_MENU" ]; then
+                        tools_menu
+                    else
+                        log_err "未知的子菜单动作: $selected_action_path"
+                        press_enter_to_continue
+                    fi
+                    ;;
+                *)
+                    log_warn "未知的菜单项类型: $selected_action_type"
+                    press_enter_to_continue
+                    ;;
+            esac
+        elif [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
+            confirm_and_force_update
+        elif [ "$choice" = "c" ] || [ "$choice" = "C" ]; then
+            uninstall_script
+        elif [ -z "$choice" ]; then
+            log_info "退出脚本。"
+            exit 0
+        else
+            log_warn "无效选项。请重新输入。"
+            sleep 1
+        fi
     done
 }
 
 
 # --- Main entry point ---
 main() {
-    log_debug "DEBUG: Entering main function"
+    _tmp_log_debug "DEBUG: Entering main function" # Use _tmp_log_debug here
     _acquire_lock
     
     # Check if core files exist, if not, download them
@@ -384,9 +521,9 @@ main() {
     # Check other dependencies defined in config.json
     _check_dependencies_after_utils
     
-    log_debug "DEBUG: Calling main_menu"
+    _tmp_log_debug "DEBUG: Calling main_menu" # Use _tmp_log_debug here
     main_menu
-    log_debug "DEBUG: Exiting main function"
+    _tmp_log_debug "DEBUG: Exiting main function" # Use _tmp_log_debug here
     exit 0
 }
 
