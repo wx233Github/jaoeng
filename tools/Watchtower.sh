@@ -1,13 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 自动更新助手 (v4.7.10-深度调试版)
+# 🚀 Docker 自动更新助手 (v4.7.11-修复内部变量和移除调试)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.7.10"
-
-# --- 开启调试模式 ---
-set -x # <<< 为调试目的添加，请将所有输出复制给我！
+SCRIPT_VERSION="v4.7.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -51,7 +48,6 @@ fi
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 
 # --- 模块变量 ---
-# 预先声明所有变量，避免潜在的未定义错误
 TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 EMAIL_TO=""
@@ -245,7 +241,7 @@ _get_watchtower_remaining_time(){
 
     if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
+    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line") # 修复：使用 log_line
     epoch=$(_date_to_epoch "$ts")
 
     if [ "$epoch" -gt 0 ]; then
@@ -955,77 +951,65 @@ view_and_edit_config(){
 }
 
 main_menu(){
-    log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}"
+    log_info "欢迎使用 VPS 一键安装脚本 ${SCRIPT_VERSION}"
 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR}" = "true" ]; then clear; fi
+        if [ "$ENABLE_AUTO_CLEAR" = "true" ]; then clear; fi
         load_config
 
-        local STATUS_RAW="未运行"; 
-        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then STATUS_RAW="已启动"; fi
-        local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
+        render_main_menu # Call the new render function
+
+        read -r -p " └──> 请选择 [1-${MAIN_MENU_ITEM_COUNT}], 或 [a/c] 选项, 或 [Enter] 返回: " choice < /dev/tty
         
-        local interval=""; local raw_logs="";
-        if [ "$STATUS_RAW" = "已启动" ]; then
-            interval=$(get_watchtower_inspect_summary)
-            raw_logs=$(get_watchtower_all_raw_logs)
+        local selected_item_json=""
+        local selected_action_type=""
+        local selected_action_name=""
+        local selected_action_path=""
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$MAIN_MENU_ITEM_COUNT" ]; then
+            selected_item_json=$(jq -c ".menus.MAIN_MENU.items[$((choice - 1))]" "$CONFIG_FILE")
+            selected_action_type=$(echo "$selected_item_json" | jq -r '.type')
+            selected_action_name=$(echo "$selected_item_json" | jq -r '.name')
+            selected_action_path=$(echo "$selected_item_json" | jq -r '.action')
+
+            case "$selected_action_type" in
+                "item")
+                    _run_module "$selected_action_path" "$selected_action_name"
+                    ;;
+                "submenu")
+                    if [ "$selected_action_path" = "TOOLS_MENU" ]; then
+                        tools_menu
+                    else
+                        log_err "未知的子菜单动作: $selected_action_path"
+                        press_enter_to_continue
+                    fi
+                    ;;
+                *)
+                    log_warn "未知的菜单项类型: $selected_action_type"
+                    press_enter_to_continue
+                    ;;
+            esac
+        elif [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
+            confirm_and_force_update
+        elif [ "$choice" = "c" ] || [ "$choice" = "C" ]; then
+            uninstall_script
+        elif [ -z "$choice" ]; then
+            log_info "退出脚本。"
+            exit 0
+        else
+            log_warn "无效选项。请重新输入。"
+            sleep 1
         fi
-        
-        local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
-        
-        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
-        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
-        local STOPPED=$((TOTAL - RUNNING))
-
-        local FINAL_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-无}"
-
-        local NOTIFY_STATUS="";
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then NOTIFY_STATUS="Telegram"; fi
-        if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
-        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi
-        fi
-
-        local header_text="Watchtower 管理"
-        
-        local -a content_array=(
-            " 🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)"
-            " ⏳ 下次检查: ${COUNTDOWN}"
-            " 📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
-        )
-        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=(" 🚫 排 除 列 表 : ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC}"); fi
-        if [ -n "$NOTIFY_STATUS" ]; then content_array+=(" 🔔 通 知 已 启 用 : ${GREEN}${NOTIFY_STATUS}${NC}"); fi
-        
-        content_array+=(""
-            "主菜单："
-            "  1. › 配 置  Watchtower"
-            "  2. › 配 置 通 知"
-            "  3. › 任 务 管 理"
-            "  4. › 查 看 /编 辑 配 置  (底 层 )"
-            "  5. › 手 动 更 新 所 有 容 器"
-            "  6. › 详 情 与 管 理"
-        )
-        
-        _render_menu "$header_text" "${content_array[@]}"
-        read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty
-        case "$choice" in
-          1) configure_watchtower || true; press_enter_to_continue ;;
-          2) notification_menu ;;
-          3) manage_tasks ;;
-          4) view_and_edit_config ;;
-          5) run_watchtower_once; press_enter_to_continue ;;
-          6) show_watchtower_details ;;
-          "") exit 10 ;;
-          *) log_warn "无效选项。"; sleep 1 ;;
-        esac
     done
 }
 
 main(){ 
-    trap 'echo -e "\n操作被中断。"; exit 10' INT
-    if [ "${1:-}" = "--run-once" ]; then run_watchtower_once; exit $?; fi
+    _acquire_lock
+    load_main_config
+    _check_dependencies
+    
     main_menu
-    exit 10
+    exit 0
 }
 
 main "$@"
