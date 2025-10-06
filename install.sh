@@ -1,10 +1,10 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装脚本 (v74.15-修复函数定义顺序和主菜单排版)
+# 🚀 VPS 一键安装脚本 (v74.16-修复load_main_config语法错误)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v74.15"
+SCRIPT_VERSION="v74.16"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -37,8 +37,8 @@ load_main_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
         log_err "配置文件 $CONFIG_FILE 未找到！"
         exit 1
-    }
-
+    fi # <<< 修复: 闭合 if 语句
+    
     # Check for jq dependency
     if ! command -v jq &>/dev/null; then
         log_err "jq 工具未安装。请手动安装：sudo apt install jq 或 sudo yum install jq。"
@@ -432,12 +432,13 @@ main_menu(){
 
 
 # --- Main entry point ---
+# Ensure main_menu is called AFTER all functions are defined
 main() {
     _acquire_lock
     load_main_config
     _check_dependencies
     
-    main_menu # Call main_menu after all functions are defined
+    main_menu
     exit 0
 }
 
