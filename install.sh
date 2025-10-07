@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.24-修复致命拼写错误)
-# - 修复: display_and_process_menu 中致命的变量名拼写错误
+# 🚀 VPS 一键安装与管理脚本 (v77.21-UI数据修正)
+# - 优化: 为状态信息增加标签(如"Docker:")，为UI渲染提供完整数据
+# - 优化: 依赖检查通过时不再打印成功信息，保持界面整洁
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.24"
+SCRIPT_VERSION="v77.21"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -22,12 +23,10 @@ REAL_SCRIPT_PATH=""
 REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
-    # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
-
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
@@ -40,30 +39,23 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         fi
         echo_success "核心依赖安装完成。"
     fi
-
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
         sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-        
         declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
         for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"
-            echo_info "正在下载最新的 ${name} (${file_path})..."
+            file_path="${core_files[$name]}"; echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
-
         sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
-        BIN_DIR="/usr/local/bin"
-        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
-        echo_success "安装/更新完成！"
+        BIN_DIR="/usr/local/bin"; sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; echo_success "安装/更新完成！"
     fi
-    
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
@@ -95,7 +87,6 @@ check_and_install_dependencies() {
     local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
     local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "$default_deps")
     if [ -z "$deps" ]; then deps="$default_deps"; fi
-
     local missing_pkgs=""
     declare -A pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
     for dep in $deps; do if ! command -v "$dep" &>/dev/null; then local pkg="${pkg_apt_map[$dep]:-$dep}"; missing_pkgs="${missing_pkgs} ${pkg}"; fi; done
@@ -179,35 +170,12 @@ run_module(){
 }
 
 _get_docker_status() {
-    local docker_ok=false compose_ok=false status_str=""
-    if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi
-    if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then compose_ok=true; fi
-    
-    if [ "$docker_ok" = "true" ] && [ "$compose_ok" = "true" ]; then
-        echo -e "Docker: ${GREEN}已运行${NC}"
-    else
-        if ! [ "$docker_ok" = "true" ]; then status_str+="Docker ${RED}未运行${NC}, "; fi
-        if ! [ "$compose_ok" = "true" ]; then status_str+="Compose ${RED}未找到${NC}"; fi
-        echo -e "${status_str%, }"
-    fi
+    local docker_ok=false compose_ok=false status_str=""; if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi; if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then compose_ok=true; fi
+    if $docker_ok && $compose_ok; then echo -e "${GREEN}已运行${NC}"; else if ! $docker_ok; then status_str+="Docker${RED}未运行${NC} "; fi; if ! $compose_ok; then status_str+="Compose${RED}未找到${NC}"; fi; echo -e "$status_str"; fi
 }
-_get_nginx_status() {
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        echo -e "Nginx: ${GREEN}已运行${NC}"
-    else
-        echo -e "Nginx: ${RED}未运行${NC}"
-    fi
-}
+_get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
 _get_watchtower_status() {
-    if systemctl is-active --quiet docker 2>/dev/null; then
-        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then
-            echo -e "Watchtower: ${GREEN}已运行${NC}"
-        else
-            echo -e "Watchtower: ${YELLOW}未运行${NC}"
-        fi
-    else
-        echo -e "Watchtower: ${RED}Docker未运行${NC}"
-    fi
+    if systemctl is-active --quiet docker 2>/dev/null; then if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi; else echo -e "${RED}Docker未运行${NC}"; fi
 }
 
 display_and_process_menu() {
@@ -222,12 +190,22 @@ display_and_process_menu() {
             local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
-        local -a items_array=(); local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
+        local -a items_array=()
+        local -A status_map=(
+            ["docker.sh"]="Docker: $(_get_docker_status)"
+            ["nginx.sh"]="Nginx: $(_get_nginx_status)"
+            ["TOOLS_MENU"]="Watchtower: $(_get_watchtower_status)"
+        )
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            local status_text="${status_map[$action]:- }"
-            items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
+            local line_content; line_content="$(printf "%d. %s %s" "$index" "$icon" "$name")"
+            local status_text="${status_map[$action]:-}"
+            if [ -n "$status_text" ]; then
+                items_array+=("${line_content}│${status_text}")
+            else
+                items_array+=("${line_content}")
+            fi
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
@@ -244,9 +222,7 @@ display_and_process_menu() {
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        # --- [关键修复] 修正致命的变量名拼写错误 ---
         local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
-        
         case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
         if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
     done
