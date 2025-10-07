@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.22-UI状态显示增强)
-# - 优化: 主菜单右侧状态栏增加服务名称（如 "Docker: 已运行"）
+# 🚀 VPS 一键安装与管理脚本 (v77.23-修复致命语法)
+# - 修复: _get_docker_status 中致命的布尔判断语法错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.22"
+SCRIPT_VERSION="v77.23"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -28,7 +28,6 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
-    # --- [关键修复] 在启动器中主动、非交互式地安装核心依赖 ---
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
@@ -179,17 +178,17 @@ run_module(){
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [${module_name}] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [${module_name}] 返回。"; else log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; fi
 }
 
-# --- [关键修正] 修改以下三个函数，使其返回带服务名的状态 ---
 _get_docker_status() {
     local docker_ok=false compose_ok=false status_str=""
     if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi
     if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then compose_ok=true; fi
     
-    if $docker_ok && $compose_ok; then
+    # --- [关键修复] 使用正确的 [ "$var" = "true" ] 语法 ---
+    if [ "$docker_ok" = "true" ] && [ "$compose_ok" = "true" ]; then
         echo -e "Docker: ${GREEN}已运行${NC}"
     else
-        if ! $docker_ok; then status_str+="Docker ${RED}未运行${NC}, "; fi
-        if ! $compose_ok; then status_str+="Compose ${RED}未找到${NC}"; fi
+        if ! [ "$docker_ok" = "true" ]; then status_str+="Docker ${RED}未运行${NC}, "; fi
+        if ! [ "$compose_ok" = "true" ]; then status_str+="Compose ${RED}未找到${NC}"; fi
         echo -e "${status_str%, }" # 移除末尾的逗号和空格
     fi
 }
@@ -246,7 +245,7 @@ display_and_process_menu() {
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
+        local type name action; type=$(jq -r .type <<< "$json_item"); name=$(jq -r .name <<< "$json_item"); action=$(jq -r .action <<< "$json_item")
         case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
         if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
     done
