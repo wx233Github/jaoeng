@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.22-状态栏信息增强)
-# - 增强: 状态栏函数返回更丰富的信息（包含服务名称/配置）
-# - 优化: 依赖检查成功时，日志改为 DEBUG 级别，减少冗余输出
+# 🚀 VPS 一键安装与管理脚本 (v77.23-最终语法修正)
+# - 修复: 简化 display_and_process_menu 中的复杂条件判断，增强兼容性
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.22"
+SCRIPT_VERSION="v77.23"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -222,8 +221,14 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
+        
+        # --- [关键修复] 简化循环逻辑，避免复杂条件判断在不同 Bash 版本上崩溃 ---
         while IFS=$'\t' read -r icon name type action; do
-            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
+            local item_data="$icon|$name|$type|$action"
+            case "$type" in
+                item|submenu) primary_items+=("$item_data") ;;
+                func) func_items+=("$item_data") ;;
+            esac
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=(); local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
