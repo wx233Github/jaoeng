@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.7-UI对齐修正)
-# - 修复: 彻底修正单列菜单项的 UI 渲染对齐逻辑，确保右边界对齐
+# 🚀 通用工具函数库 (v2.9-单列UI对齐修正)
+# - 修复: 修正单列菜单项的右侧边框对齐问题 (v2.8引入的额外空格)
 # =============================================================
 
 # --- 严格模式 ---
@@ -88,6 +88,7 @@ _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
     if command -v python3 &>/dev/null; then
+        # Python 脚本用于计算东亚字符宽度 (2)
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
         echo -n "$plain_text" | wc -m
@@ -113,7 +114,6 @@ _render_menu() {
         if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
         if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
 
-        # 记录单列模式下的最大行宽
         if ! $has_separator; then
             if [ "${left_width:-0}" -gt "${max_line_width:-0}" ]; then max_line_width=$left_width; fi
         fi
@@ -121,7 +121,7 @@ _render_menu() {
 
     local box_inner_width
     if $has_separator; then
-        # 双列模式: 宽度 = 左列最大 + 右列最大 + 3个分隔符/空格
+        # 双列模式: 宽度 = 左列最大 + 右列最大 + 3个分隔符/空格 ( ' ' + '│' + ' ' )
         box_inner_width=$((max_left_width + max_right_width + 3))
     else
         # 单列模式: 宽度 = 最大行宽 + 2个空格 (左右各一个)
@@ -148,11 +148,13 @@ _render_menu() {
             local right_width; right_width=$(_get_visual_width "$right_part")
             local left_padding=$((max_left_width - left_width))
             local right_padding=$((max_right_width - right_width))
+            # 渲染双列：左侧 | 左侧填充 | 分隔符 | 右侧 | 右侧填充 | 右边框
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            # --- [关键修正] 修正单列模式下的 padding 计算和右侧边框对齐 ---
-            local padding=$((box_inner_width - left_width - 1)) # 1 是左侧的空格
+            # --- [关键修正] 修正单列模式下的 padding 计算：只减去左侧的 1 个空格 ---
+            local padding=$((box_inner_width - left_width - 1)) 
             if [ $padding -lt 0 ]; then padding=0; fi
+            # 渲染单列：左侧 | 填充 | 右边框
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding")│${NC}"
         fi
     done
