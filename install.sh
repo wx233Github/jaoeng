@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.23-最终语法修正)
-# - 修复: 简化 display_and_process_menu 中的复杂条件判断，增强兼容性
+# 🚀 VPS 一键安装与管理脚本 (v77.22-UI状态显示增强)
+# - 优化: 主菜单右侧状态栏增加服务名称（如 "Docker: 已运行"）
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.23"
+SCRIPT_VERSION="v77.22"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -179,37 +179,36 @@ run_module(){
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [${module_name}] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [${module_name}] 返回。"; else log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; fi
 }
 
+# --- [关键修正] 修改以下三个函数，使其返回带服务名的状态 ---
 _get_docker_status() {
-    local docker_ok=false compose_ok=false status_str=""; 
-    if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi; 
+    local docker_ok=false compose_ok=false status_str=""
+    if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi
     if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then compose_ok=true; fi
     
-    if $docker_ok && $compose_ok; then 
-        echo -e "Docker/Compose: ${GREEN}已运行${NC}"
-    else 
-        if ! $docker_ok; then status_str+="Docker${RED}未运行${NC} "; fi; 
-        if ! $compose_ok; then status_str+="Compose${RED}未找到${NC}"; fi; 
-        echo -e "$status_str"
+    if $docker_ok && $compose_ok; then
+        echo -e "Docker: ${GREEN}已运行${NC}"
+    else
+        if ! $docker_ok; then status_str+="Docker ${RED}未运行${NC}, "; fi
+        if ! $compose_ok; then status_str+="Compose ${RED}未找到${NC}"; fi
+        echo -e "${status_str%, }" # 移除末尾的逗号和空格
     fi
 }
-
-_get_nginx_status() { 
-    if systemctl is-active --quiet nginx 2>/dev/null; then 
+_get_nginx_status() {
+    if systemctl is-active --quiet nginx 2>/dev/null; then
         echo -e "Nginx: ${GREEN}已运行${NC}"
-    else 
+    else
         echo -e "Nginx: ${RED}未运行${NC}"
     fi
 }
-
 _get_watchtower_status() {
-    if systemctl is-active --quiet docker 2>/dev/null; then 
-        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then 
+    if systemctl is-active --quiet docker 2>/dev/null; then
+        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then
             echo -e "Watchtower: ${GREEN}已运行${NC}"
-        else 
+        else
             echo -e "Watchtower: ${YELLOW}未运行${NC}"
         fi
-    else 
-        echo -e "Docker: ${RED}未运行${NC}"
+    else
+        echo -e "Watchtower: ${RED}Docker未运行${NC}"
     fi
 }
 
@@ -221,14 +220,8 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
-        
-        # --- [关键修复] 简化循环逻辑，避免复杂条件判断在不同 Bash 版本上崩溃 ---
         while IFS=$'\t' read -r icon name type action; do
-            local item_data="$icon|$name|$type|$action"
-            case "$type" in
-                item|submenu) primary_items+=("$item_data") ;;
-                func) func_items+=("$item_data") ;;
-            esac
+            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=(); local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
@@ -261,7 +254,6 @@ display_and_process_menu() {
 
 main() {
     load_config "$CONFIG_PATH"
-    # 现在 check_and_install_dependencies 主要负责检查次要依赖
     check_and_install_dependencies
     
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
