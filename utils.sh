@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.9-单列UI对齐修正)
-# - 修复: 修正单列菜单项的右侧边框对齐问题 (v2.8引入的额外空格)
+# 🚀 通用工具函数库 (v2.10-配置容错与UI最终修正)
+# - 修复: 增强 load_config 函数的容错性，防止 jq 解析失败导致脚本崩溃 (set -e)
+# - 修复: 修正单列菜单项的 UI 渲染（v2.9的修复仍有微小错误）
 # =============================================================
 
 # --- 严格模式 ---
@@ -66,7 +67,16 @@ load_config() {
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
     
     if command -v jq >/dev/null 2>&1; then
-        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        # --- [关键修复] 增加 jq 容错性，防止 JSON 解析失败导致脚本崩溃 ---
+        # 使用 subshell 隔离 set -e 模式，确保 jq 失败时脚本不退出
+        (
+            set +e # 在 subshell 中关闭 set -e
+            BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL")
+            INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+            BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+            LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+            JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        )
     else
         log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; 
         BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
@@ -151,11 +161,11 @@ _render_menu() {
             # 渲染双列：左侧 | 左侧填充 | 分隔符 | 右侧 | 右侧填充 | 右边框
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            # --- [关键修正] 修正单列模式下的 padding 计算：只减去左侧的 1 个空格 ---
-            local padding=$((box_inner_width - left_width - 1)) 
+            # --- [关键修正] 修正单列模式下的 padding 计算：确保右侧边框对齐 ---
+            local padding=$((box_inner_width - left_width - 2)) # 2 = 左侧空格(1) + 右侧空格(1)
             if [ $padding -lt 0 ]; then padding=0; fi
             # 渲染单列：左侧 | 填充 | 右边框
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding")│${NC}"
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$padding") │${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
