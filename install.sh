@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.24-最终稳定版)
-# - 修复: display_and_process_menu 中一个致命的变量名拼写错误
+# 🚀 VPS 一键安装与管理脚本 (v77.25-更新机制升级)
+# - 优化: 每次启动时检查并更新所有核心文件(install/utils/config)
+# - 修复: 确保模块调用逻辑无误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.24"
+SCRIPT_VERSION="v77.25"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -46,7 +47,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
         
-        declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
+        declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
         for name in "${!core_files[@]}"; do
             file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
@@ -114,41 +115,57 @@ check_and_install_dependencies() {
     fi
 }
 
-self_update() {
-    local temp_script; temp_script=$(create_temp_file)
-    if ! curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)" -o "$temp_script"; then log_warn "主程序更新检查失败 (无法连接)。"; return; fi
-    local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_script" | sha256sum | awk '{print $1}')
-    local local_hash=""; if [ -f "$FINAL_SCRIPT_PATH" ]; then local_hash=$(sed 's/\r$//' < "$FINAL_SCRIPT_PATH" | sha256sum | awk '{print $1}'); fi
-    if [ "$local_hash" != "$remote_hash" ]; then
-        log_success "主程序 (install.sh) 已更新。正在无缝重启..."
-        run_with_sudo mv "$temp_script" "$FINAL_SCRIPT_PATH"; run_with_sudo chmod +x "$FINAL_SCRIPT_PATH"
-        flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+# --- [优化] 升级为全面的自动更新函数 ---
+run_auto_update() {
+    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在智能更新 🕛"
+    local updated=false
+    declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
+    
+    for file in "${!core_files[@]}"; do
+        local local_path="${core_files[$file]}"
+        local temp_file; temp_file=$(create_temp_file)
+        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then
+            log_warn "\n    -> 更新检查失败 (无法连接): ${file}"; continue
+        fi
+        
+        local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
+        local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
+        
+        if [ "$local_hash" != "$remote_hash" ]; then
+            updated=true
+            sudo mv "$temp_file" "$local_path"
+            [ "$file" != "config.json" ] && sudo chmod +x "$local_path"
+            if [ "$file" = "install.sh" ]; then
+                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序已更新，正在无缝重启... 🚀"
+                flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+            fi
+        else
+            rm -f "$temp_file"
+        fi
+    done
+    
+    if $updated; then
+        echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 核心文件更新完成! 🔄          "
+    else
+        echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 智能更新检查完成 (已是最新) 🔄"
     fi
 }
 
 force_update_all() {
-    log_info "开始强制更新所有组件..."; self_update "$@"; _update_core_files
+    log_info "开始强制更新所有组件..."; run_auto_update "$@"
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do download_module_to_cache "$script_name"; done
     log_success "所有组件更新检查完成！"
 }
 
-_update_core_files() {
-    log_info "检查并更新核心工具库..."; local temp_utils; temp_utils=$(create_temp_file)
-    if curl -fsSL "${BASE_URL}/utils.sh?_=$(date +%s)" -o "$temp_utils"; then
-        local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_utils" | sha256sum | awk '{print $1}')
-        local local_hash="no_local_file"; [ -f "$UTILS_PATH" ] && local_hash=$(sed 's/\r$//' < "$UTILS_PATH" | sha256sum | awk '{print $1}')
-        if [ "$local_hash" != "$remote_hash" ]; then log_success "核心工具库 (utils.sh) 已更新。"; sudo mv "$temp_utils" "$UTILS_PATH"; sudo chmod +x "$UTILS_PATH"; fi
-    else log_warn "核心工具库 (utils.sh) 更新检查失败。"; fi
-}
-
 download_module_to_cache() {
     local script_name="$1"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
     log_info "  -> 检查/下载模块: ${script_name}"
+    sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then log_err "     模块 (${script_name}) 下载失败。"; return 1; fi
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
-    if [ "$local_hash" != "$remote_hash" ]; then log_success "     模块 (${script_name}) 已更新。"; sudo mkdir -p "$(dirname "$local_file")"; sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"; fi
+    if [ "$local_hash" != "$remote_hash" ]; then log_success "     模块 (${script_name}) 已更新。"; sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"; else rm -f "$tmp_file"; fi
 }
 
 uninstall_script() {
@@ -236,7 +253,6 @@ display_and_process_menu() {
         local type name action
         type=$(jq -r .type <<< "$item_json")
         name=$(jq -r .name <<< "$item_json")
-        # --- [关键修复] 修正了致命的变量名拼写错误 ($json -> $item_json) ---
         action=$(jq -r .action <<< "$item_json")
         
         case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
@@ -259,7 +275,7 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在智能更新 🕛"; sleep 0.5; self_update; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 智能更新检查完成 🔄"
+    log_info "脚本启动 (${SCRIPT_VERSION})"; run_auto_update "$@"
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
