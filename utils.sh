@@ -1,8 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.10-根源修复版)
-# - 修复: 重写 log_debug 函数，使其在 debug 关闭时返回 0，
-# - 根除了在 set -e 模式下导致脚本无声崩溃的最终根源
+# 🚀 通用工具函数库 (v2.11-UI最终修复)
+# - 修复: _render_menu 引擎，确保纯单列菜单也能完美对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -47,8 +46,6 @@ log_info()    { echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
-
-# --- [关键修复] 使用 if 结构确保函数在任何情况下都返回 0 ---
 log_debug()   {
     if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
         echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2
@@ -104,30 +101,30 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0 max_single_col_width=0
+    local max_left_width=0 max_right_width=0 max_line_width=0
     
     local title_width; title_width=$(_get_visual_width "$title")
     
     for line in "${lines[@]}"; do
+        local current_line_width
         if [[ "$line" == *"│"* ]]; then
             local left_part="${line%%│*}"; local right_part="${line##*│}"
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
             if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
             if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
+            current_line_width=$(( ${left_width:-0} + ${right_width:-0} + 3 ))
         else
             local line_width; line_width=$(_get_visual_width "$line")
-            if [ "${line_width:-0}" -gt "${max_single_col_width:-0}" ]; then max_single_col_width=$line_width; fi
+            current_line_width=$(( ${line_width:-0} + 2 ))
+        fi
+        if [ "${current_line_width:-0}" -gt "${max_line_width:-0}" ]; then
+            max_line_width=$current_line_width
         fi
     done
 
-    local two_col_width=$(( ${max_left_width:-0} + ${max_right_width:-0} + 3 ))
-    local single_col_width=$(( ${max_single_col_width:-0} + 2 ))
+    local box_inner_width=${max_line_width:-0}
     local title_check_width=$(( ${title_width:-0} + 2 ))
-
-    local box_inner_width=0
-    if [ "$two_col_width" -gt "$box_inner_width" ]; then box_inner_width=$two_col_width; fi
-    if [ "$single_col_width" -gt "$box_inner_width" ]; then box_inner_width=$single_col_width; fi
     if [ "$title_check_width" -gt "$box_inner_width" ]; then box_inner_width=$title_check_width; fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
@@ -142,11 +139,11 @@ _render_menu() {
             local left_part="${line%%│*}"; local right_part="${line##*│}"
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
+            local total_content_width=$((max_left_width + 3 + right_width))
+            local padding=$((box_inner_width - total_content_width))
             local left_padding=$((max_left_width - left_width))
-            local right_padding=$((box_inner_width - max_left_width - 3 - right_width))
-            if [ $left_padding -lt 0 ]; then left_padding=0; fi
-            if [ $right_padding -lt 0 ]; then right_padding=0; fi
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
+            if [ $padding -lt 0 ]; then padding=0; fi
+            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$padding") │${NC}"
         else
             local line_width; line_width=$(_get_visual_width "$line")
             local padding=$((box_inner_width - line_width - 2))
