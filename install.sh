@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.30-最终稳定版)
+# 🚀 VPS 一键安装与管理脚本 (v77.31-最终稳定版)
 # - 修复: run_module 中灾难性的 jq 语法错误，确保 config.json 被正确读取
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.30"
+SCRIPT_VERSION="v77.31"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -183,10 +183,16 @@ run_module(){
     
     # --- [关键修复] 使用正确的 jq 语法来检查和读取配置 ---
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
-        local keys; keys=$(jq -r --arg key "$module_key" '.module_configs[$key] | keys[]' "$CONFIG_PATH")
+        local module_config_json
+        module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
+        
+        local keys
+        keys=$(echo "$module_config_json" | jq -r 'keys[]')
+
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
-            local value; value=$(jq -r --arg mkey "$module_key" --arg skey "$key" '.module_configs[$mkey][$skey]' "$CONFIG_PATH")
+            local value
+            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
