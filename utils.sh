@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.8-UI引擎重构)
-# - 重构: _render_menu 引擎，完美对齐混合单/双列菜单
+# 🚀 通用工具函数库 (v2.9-稳定版)
+# - 修复: 在数值比较中使用 `${var:-0}`，彻底根除空变量导致的致命崩溃
 # =============================================================
 
 # --- 严格模式 ---
@@ -98,7 +98,6 @@ _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_left_width=0 max_right_width=0
 
-    # Pass 1: Determine the maximum required widths for both columns across all lines
     for line in "${lines[@]}"; do
         local left_part="${line%%│*}"; local right_part="${line##*│}"
         [[ "$left_part" == "$right_part" ]] && right_part=""
@@ -108,20 +107,18 @@ _render_menu() {
         if [ "${right_width:-0}" -gt "$max_right_width" ]; then max_right_width=$right_width; fi
     done
 
-    # Calculate the final box width
     local title_width; title_width=$(_get_visual_width "$title")
     local box_inner_width
     if [ "$max_right_width" -gt 0 ]; then
-        box_inner_width=$((max_left_width + max_right_width + 3)) # 3 = ' │ '
+        box_inner_width=$((max_left_width + max_right_width + 3))
     else
-        box_inner_width=$((max_left_width + 2)) # 2 = padding ' '
+        box_inner_width=$((max_left_width + 2))
     fi
     if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then
         box_inner_width=$((title_width + 2))
     fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
 
-    # Pass 2: Render the box with perfectly aligned content
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
@@ -137,11 +134,13 @@ _render_menu() {
             local right_width; right_width=$(_get_visual_width "$right_part")
             local left_padding=$((max_left_width - left_width))
             local right_padding=$((box_inner_width - max_left_width - 3 - right_width))
-            if [ $right_padding -lt 0 ]; then right_padding=0; fi
+            # --- [关键修复] 使用 `${var:-0}` 保护变量 ---
+            if [ "${right_padding:-0}" -lt 0 ]; then right_padding=0; fi
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
             local total_padding=$((box_inner_width - left_width - 1))
-            if [ $total_padding -lt 0 ]; then total_padding=0; fi
+            # --- [关键修复] 使用 `${var:-0}` 保护变量 ---
+            if [ "${total_padding:-0}" -lt 0 ]; then total_padding=0; fi
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$total_padding")│${NC}"
         fi
     done
