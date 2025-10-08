@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.28-逻辑炸弹拆除)
-# - 修复: 全面更新函数因错误的返回值处理而导致的启动崩溃
+# 🚀 VPS 一键安装与管理脚本 (v77.29-最终修复版)
+# - 修复: 使用更健壮的方式解析模块名，确保 config.json 被正确读取
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.28"
+SCRIPT_VERSION="v77.29"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -115,7 +115,6 @@ check_and_install_dependencies() {
 }
 
 run_comprehensive_auto_update() {
-    # 1. 更新核心文件
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
@@ -132,10 +131,8 @@ run_comprehensive_auto_update() {
             rm -f "$temp_file"
         fi
     done
-    # 2. 更新所有模块脚本
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
-        # --- [关键修复] 加上 || true 防止在无更新时脚本因 set -e 崩溃 ---
         download_module_to_cache "$script_name" "auto" &>/dev/null || true
     done
 }
@@ -179,11 +176,22 @@ confirm_and_force_update() {
 run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"; log_info "您选择了 [${module_name}]"
     if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..."; download_module_to_cache "$module_script"; fi
-    local base_name; base_name=$(basename "$module_script" .sh); local module_key="${base_name,,}"
-    if command -v jq >/dev/null 2>&1 && jq -e ".module_configs.$module_key" "$CONFIG_PATH" >/dev/null 2>&1; then
-        local keys; keys=$(jq -r ".module_configs.$module_key | keys[]" "$CONFIG_PATH")
-        for key in $keys; do if [[ "$key" == "comment_"* ]]; then continue; fi; local value; value=$(jq -r ".module_configs.$module_key.$key" "$CONFIG_PATH"); local upper_key="${key^^}"; export "WATCHTOWER_CONF_${upper_key}"="$value"; done
+    
+    # --- [关键修复] 使用纯 Shell 字符串操作代替 basename, 确保兼容性 ---
+    local filename_only="${module_script##*/}"
+    local key_base="${filename_only%.sh}"
+    local module_key="${key_base,,}"
+    
+    if command -v jq >/dev/null 2>&1 && jq -e ".module_configs.\"$module_key\"" "$CONFIG_PATH" >/dev/null 2>&1; then
+        local keys; keys=$(jq -r ".module_configs.\"$module_key\" | keys[]" "$CONFIG_PATH")
+        for key in $keys; do
+            if [[ "$key" == "comment_"* ]]; then continue; fi
+            local value; value=$(jq -r ".module_configs.\"$module_key\".$key" "$CONFIG_PATH")
+            local upper_key="${key^^}"
+            export "WATCHTOWER_CONF_${upper_key}"="$value"
+        done
     fi
+    
     set +e; bash "$module_path"; local exit_code=$?; set -e
     if [ "$exit_code" -eq 0 ]; then log_success "模块 [${module_name}] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [${module_name}] 返回。"; else log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; fi
 }
