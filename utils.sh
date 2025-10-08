@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.12-UI最终修复)
-# - 重构: _render_menu 引擎，采用更可靠的逻辑，确保所有菜单完美对齐
+# 🚀 通用工具函数库 (v2.13-UI最终修复)
+# - 重构: _render_menu 引擎，采用更可靠的单遍扫描逻辑，确保所有菜单完美对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -101,43 +101,41 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0 max_line_width=0
+    local max_left_width=0 max_right_width=0 max_single_width=0
     
-    local title_width; title_width=$(_get_visual_width "$title")
-    
-    # --- [关键重构] 第一遍扫描，计算出最大左列宽度和最大总行宽 ---
+    # --- [关键重构] 单遍扫描计算所有最大宽度 ---
     for line in "${lines[@]}"; do
-        local current_total_width
         if [[ "$line" == *"│"* ]]; then
             local left_part="${line%%│*}"; local right_part="${line##*│}"
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
             if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
             if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
-            current_total_width=$(( ${left_width:-0} + ${right_width:-0} + 3 ))
         else
             local line_width; line_width=$(_get_visual_width "$line")
-            current_total_width=$(( ${line_width:-0} + 2 ))
+            if [ "${line_width:-0}" -gt "${max_single_width:-0}" ]; then max_single_width=$line_width; fi
         fi
-        if [ "${current_total_width:-0}" -gt "${max_line_width:-0}" ]; then max_line_width=$current_total_width; fi
     done
 
-    # --- [关键重构] 第二遍扫描，修正双列的总宽度计算 ---
-    local two_col_total_width=$(( ${max_left_width:-0} + ${max_right_width:-0} + 3 ))
-    if [ "${two_col_total_width:-0}" -gt "${max_line_width:-0}" ]; then max_line_width=$two_col_total_width; fi
-    
-    local box_inner_width=${max_line_width:-0}
-    local title_check_width=$(( ${title_width:-0} + 2 ))
-    if [ "$title_check_width" -gt "$box_inner_width" ]; then box_inner_width=$title_check_width; fi
+    # --- [关键重构] 基于所有最大宽度计算最终的盒子宽度 ---
+    local double_col_needed=0; [ "$max_left_width" -gt 0 ] && double_col_needed=$((max_left_width + max_right_width + 3))
+    local single_col_needed=$((max_single_width + 2))
+    local title_width; title_width=$(_get_visual_width "$title")
+    local title_needed=$((title_width + 2))
+
+    local box_inner_width=0
+    if [ "$double_col_needed" -gt "$box_inner_width" ]; then box_inner_width=$double_col_needed; fi
+    if [ "$single_col_needed" -gt "$box_inner_width" ]; then box_inner_width=$single_col_needed; fi
+    if [ "$title_needed" -gt "$box_inner_width" ]; then box_inner_width=$title_needed; fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
-        local padding_total=$((box_inner_width - ${title_width:-0})); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+        local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
         echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
     fi
     
-    # --- [关键重构] 第三遍，渲染所有行，确保它们都填充到 box_inner_width ---
+    # --- [关键重构] 使用统一的盒子宽度进行渲染 ---
     for line in "${lines[@]}"; do
         if [[ "$line" == *"│"* ]]; then
             local left_part="${line%%│*}"; local right_part="${line##*│}"
