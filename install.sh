@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.34-更新日志重构)
-# - 重构: run_comprehensive_auto_update 更新日志逻辑，确保输出清晰、高亮
+# 🚀 VPS 一键安装与管理脚本 (v77.36-强制更新锁修复)
+# - 修复: confirm_and_force_update 函数在重启前未释放 flock 锁，导致脚本退出
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.34"
+SCRIPT_VERSION="v77.36"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -176,9 +176,16 @@ confirm_and_force_update() {
     local choice; read -r -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
         log_info "用户确认：开始强制更新所有组件..."; 
+        
+        # --- [关键修复] 在执行强制更新前，必须释放当前进程的锁 ---
+        flock -u 200 2>/dev/null || true
+        trap - EXIT # 禁用退出时的锁清理
+
         FORCE_REFRESH=true bash -c "$(curl -fsSL ${BASE_URL}/install.sh?_=$(date +%s))"
+        
+        # 如果上一步成功执行，脚本应该已经通过 exec 重启，不会执行到这里
         log_success "强制更新完成！脚本将自动重启以应用所有更新..."; sleep 2
-        flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+        exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     else log_info "用户取消了强制更新。"; fi
 }
 
@@ -291,7 +298,6 @@ main() {
         esac
     fi
     log_info "脚本启动 (${SCRIPT_VERSION})"
-    # --- [关键修复] 重构更新日志输出逻辑 ---
     echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 "
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
