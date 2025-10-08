@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.26-全面自动更新)
-# - 优化: 启动时自动检查并更新所有核心文件及所有模块脚本
+# 🚀 VPS 一键安装与管理脚本 (v77.27-最终修复版)
+# - 恢复: 启动时使用简洁的单行更新提示
+# - 优化: 全面更新函数在无更新时保持静默
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.26"
+SCRIPT_VERSION="v77.27"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -114,78 +115,47 @@ check_and_install_dependencies() {
     fi
 }
 
-# --- [核心升级] 全面自动更新函数 ---
 run_comprehensive_auto_update() {
-    echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新..."
-    
     # 1. 更新核心文件
-    local core_updated=false
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" )
     for file in "${!core_files[@]}"; do
-        local local_path="${core_files[$file]}"
-        local temp_file; temp_file=$(create_temp_file)
-        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then
-            log_warn "  -> 核心更新检查失败 (无法连接): ${file}"; continue
-        fi
+        local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
+        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then continue; fi
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
-        
         if [ "$local_hash" != "$remote_hash" ]; then
-            core_updated=true
-            log_success "  -> 核心文件已更新: ${file}"
             sudo mv "$temp_file" "$local_path"; sudo chmod +x "$local_path"
             if [ "$file" = "install.sh" ]; then
-                log_success "主程序已更新，正在无缝重启... 🚀"
+                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序已更新，正在无缝重启... 🚀"
                 flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
             fi
         else
             rm -f "$temp_file"
         fi
     done
-    if $core_updated; then log_info "核心文件更新完成。"; fi
-
     # 2. 更新所有模块脚本
-    log_info "检查所有模块脚本更新..."
-    local modules_updated_count=0
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
-        if download_module_to_cache "$script_name" "auto"; then
-            modules_updated_count=$((modules_updated_count + 1))
-        fi
+        download_module_to_cache "$script_name" "auto" &>/dev/null
     done
-    
-    if [ "$modules_updated_count" -gt 0 ]; then
-        log_success "共 ${modules_updated_count} 个模块已更新。"
-    else
-        log_info "所有模块均已是最新版本。"
-    fi
-    log_success "全面智能更新检查完成! 🔄"
 }
 
 download_module_to_cache() {
-    local script_name="$1" 
-    local mode="${2:-}" # 'auto' for quiet mode
-    local local_file="${INSTALL_DIR}/$script_name"
-    local tmp_file; tmp_file=$(create_temp_file)
-    
+    local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
     if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}"; fi
-
     sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
         if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。"; fi
         return 1
     fi
-    
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
-    
     if [ "$local_hash" != "$remote_hash" ]; then
-        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。"; else log_success "  -> 模块已更新: ${script_name}"; fi
+        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。"; fi
         sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
-        return 0 # Return 0 to indicate an update happened
+        return 0
     else
-        rm -f "$tmp_file"
-        return 1 # Return 1 to indicate no update
+        rm -f "$tmp_file"; return 1
     fi
 }
 
@@ -298,7 +268,8 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})"; run_comprehensive_auto_update "$@"
+    # --- [恢复] 使用简洁的单行更新提示 ---
+    log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛"; run_comprehensive_auto_update "$@"; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成! 🔄"
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
