@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.20-终极UI引擎修复)
-# - 重构: _render_menu 采用稳定版逻辑并分离颜色，彻底解决所有对齐和颜色问题
+# 🚀 通用工具函数库 (v2.21-UI引擎稳定版)
+# - 修复: 恢复并稳定多列渲染逻辑，确保所有菜单（包括复杂表格）的完美对齐和着色
 # =============================================================
 
 # --- 严格模式 ---
@@ -100,7 +100,6 @@ _get_visual_width() {
 }
 
 _render_menu() {
-    # --- [终极UI修复] 稳定版多列渲染引擎 ---
     local title="$1"; shift; local -a lines=("$@")
     local -a max_col_widths=()
     local num_cols=1
@@ -123,9 +122,10 @@ _render_menu() {
         for width in "${max_col_widths[@]}"; do
             box_inner_width=$((box_inner_width + width))
         done
-        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2)) # ` | ` (3) and ` ` (2)
-    else
-        box_inner_width=$((max_col_widths[0] + 2)) # ` ` (2)
+        # 加上 ` ` + 分隔符 `│` + ` ` (共3个字符) 和两边的 ` ` (共2个字符)
+        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2))
+    elif [ "$num_cols" -eq 1 ]; then
+        box_inner_width=$((max_col_widths[0] + 2)) # 加上两边的 ` ` (2个字符)
     fi
 
     local title_width; title_width=$(_get_visual_width "$title")
