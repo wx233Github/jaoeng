@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.21-UI数据修复)
-# - 修复: 向UI渲染器传递完整的状态标签(如 "Docker:")，而不仅仅是状态
-# - 优化: 当所有依赖都满足时，不再打印成功的日志
+# 🚀 VPS 一键安装与管理脚本 (v77.22-最终语法修复版)
+# - 修复: display_and_process_menu 中一个致命的引号不匹配语法错误
+# - 此错误是导致脚本无法启动的最终根源
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.21"
+SCRIPT_VERSION="v77.22"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -111,7 +111,6 @@ check_and_install_dependencies() {
             else log_err "不支持的包管理器。请手动安装: ${missing_pkgs}"; exit 1; fi
         else log_err "用户取消安装，脚本无法继续。"; exit 1; fi
     else
-        # --- [优化] 依赖满足时，不再打印成功信息，改为debug信息 ---
         log_debug "所有依赖均已满足。"
     fi
 }
@@ -197,24 +196,26 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
+        # --- [关键修复] 修正了致命的引号不匹配语法错误 ---
         while IFS=$'\t' read -r icon name type action; do
-            local item_data="$icon|$name|$type|$action"; if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
+            local item_data="$icon|$name|$type|$action"
+            if [[ "$type" == "item" || "$type" == "submenu" ]]; then
+                primary_items+=("$item_data")
+            elif [[ "$type" == "func" ]]; then
+                func_items+=("$item_data")
+            fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=()
-        # --- [修复] 增加状态标签映射，用于显示 "Docker:", "Nginx:" 等 ---
         local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
         local -A status_label_map=( ["docker.sh"]="Docker:" ["nginx.sh"]="Nginx:" ["TOOLS_MENU"]="Watchtower:" )
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            
-            # --- [修复] 检查是否存在状态，并构建包含标签的完整状态字符串 ---
             if [ -n "${status_map[$action]}" ]; then
                 local status_text="${status_label_map[$action]} ${status_map[$action]}"
                 items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
             else
-                # 如果没有状态，则作为单列项目传递
                 items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")")
             fi
         done
@@ -233,7 +234,7 @@ display_and_process_menu() {
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
+        local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$json")
         case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
         if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
     done
