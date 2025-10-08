@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.0-配置加载修复)
-# - 修复: load_config 函数中环境变量名错误，导致无法从 config.json 加载配置
+# 🚀 Watchtower 管理模块 (v4.9.1-Docker连接修复)
+# - 修复: 在root权限下，简化Docker服务连接检查，避免权限继承问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.0"
+SCRIPT_VERSION="v4.9.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -45,7 +45,8 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # --- Docker 服务 (daemon) 状态检查 ---
-if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker info >/dev/null 2&>1; then
+# [关键修复] 由于主脚本已是root权限, 直接执行docker info即可, 避免sudo权限继承问题
+if ! docker info >/dev/null 2>&1; then
     log_err "无法连接到 Docker 服务 (daemon)。"
     log_err "请确保 Docker 正在运行，您可以使用以下命令尝试启动它："
     log_info "  sudo systemctl start docker"
@@ -73,7 +74,6 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 
 # --- 配置加载与保存 ---
 load_config(){
-    # --- [关键修复] 修正了所有 WATCHTOWER_CONF_* 变量名以匹配 install.sh 的导出
     # 优先级: 
     # 1. 本地配置文件 ($CONFIG_FILE)
     # 2. 从 config.json 传入的环境变量 (WATCHTOWER_CONF_*)
@@ -564,12 +564,10 @@ show_watchtower_details(){
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local title="📊 Watchtower 详情与管理 📊"; local interval raw_logs countdown updates
         
-        # --- [关键修复] 暂时禁用 set -e, 防止在容器不存在时脚本崩溃 ---
         set +e
         interval=$(get_watchtower_inspect_summary)
         raw_logs=$(get_watchtower_all_raw_logs)
         set -e
-        # --- 修复结束 ---
         
         countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
         local -a content_lines_array=("上次活动: $(get_last_session_time || echo 'N/A')" "下次检查: $countdown" "" "最近 24h 摘要：")
