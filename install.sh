@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.31-最终稳定版)
-# - 修复: run_module 中灾难性的 jq 语法错误，确保 config.json 被正确读取
+# 🚀 VPS 一键安装与管理脚本 (v77.32-更新日志增强)
+# - 优化: run_comprehensive_auto_update 现在会明确列出所有被更新的文件
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.31"
+SCRIPT_VERSION="v77.32"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -25,7 +25,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
+    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARNC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
@@ -115,6 +115,7 @@ check_and_install_dependencies() {
 }
 
 run_comprehensive_auto_update() {
+    local updated_files=""
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
@@ -122,6 +123,7 @@ run_comprehensive_auto_update() {
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
         if [ "$local_hash" != "$remote_hash" ]; then
+            updated_files+="${file} "
             sudo mv "$temp_file" "$local_path"; sudo chmod +x "$local_path"
             if [ "$file" = "install.sh" ]; then
                 echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序已更新，正在无缝重启... 🚀"
@@ -133,8 +135,13 @@ run_comprehensive_auto_update() {
     done
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
-        download_module_to_cache "$script_name" "auto" &>/dev/null || true
+        if download_module_to_cache "$script_name" "auto"; then
+            updated_files+="${script_name} "
+        fi
     done
+    if [ -n "$updated_files" ]; then
+        log_success "检测到更新并已应用: ${updated_files}"
+    fi
 }
 
 download_module_to_cache() {
@@ -150,9 +157,9 @@ download_module_to_cache() {
     if [ "$local_hash" != "$remote_hash" ]; then
         if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。"; fi
         sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
-        return 0
+        return 0 # 返回0表示有更新
     else
-        rm -f "$tmp_file"; return 1
+        rm -f "$tmp_file"; return 1 # 返回1表示无更新
     fi
 }
 
@@ -181,7 +188,6 @@ run_module(){
     local key_base="${filename_only%.sh}"
     local module_key="${key_base,,}"
     
-    # --- [关键修复] 使用正确的 jq 语法来检查和读取配置 ---
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
         local module_config_json
         module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
@@ -282,7 +288,7 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛"; run_comprehensive_auto_update "$@"; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成! 🔄"
+    log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛"; run_comprehensive_auto_update "$@"; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄"
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
