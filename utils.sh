@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.8-UI引擎重构)
-# - 重构: _render_menu 引擎，使其能完美处理混合单/双列菜单的对齐
+# 🚀 通用工具函数库 (v2.9-最终稳定版)
+# - 修复: 重写所有宽度比较逻辑，使用最健壮的语法，根除启动崩溃问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -97,13 +97,12 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0 max_single_col_width=0 has_separator=false
+    local max_left_width=0 max_right_width=0 max_single_col_width=0
     
     local title_width; title_width=$(_get_visual_width "$title")
     
     for line in "${lines[@]}"; do
         if [[ "$line" == *"│"* ]]; then
-            has_separator=true
             local left_part="${line%%│*}"; local right_part="${line##*│}"
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
@@ -115,19 +114,20 @@ _render_menu() {
         fi
     done
 
-    local box_inner_width
-    local two_col_width=$((max_left_width + max_right_width + 3))
-    local single_col_width=$((max_single_col_width + 2))
-    
-    # --- [关键重构] 动态计算盒子宽度，兼容单列、双列和标题 ---
-    box_inner_width=$two_col_width
+    # --- [关键修复] 使用最安全、最可移植的语法进行所有宽度计算 ---
+    local two_col_width=$(( ${max_left_width:-0} + ${max_right_width:-0} + 3 ))
+    local single_col_width=$(( ${max_single_col_width:-0} + 2 ))
+    local title_check_width=$(( ${title_width:-0} + 2 ))
+
+    local box_inner_width=0
+    if [ "$two_col_width" -gt "$box_inner_width" ]; then box_inner_width=$two_col_width; fi
     if [ "$single_col_width" -gt "$box_inner_width" ]; then box_inner_width=$single_col_width; fi
-    if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then box_inner_width=$((title_width + 2)); fi
+    if [ "$title_check_width" -gt "$box_inner_width" ]; then box_inner_width=$title_check_width; fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
-        local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+        local padding_total=$((box_inner_width - ${title_width:-0})); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
         echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
     fi
     
@@ -136,15 +136,16 @@ _render_menu() {
             local left_part="${line%%│*}"; local right_part="${line##*│}"
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
-            # --- [关键重构] 双列的右侧填充现在基于总宽度，确保对齐 ---
-            local right_padding=$((box_inner_width - max_left_width - 3 - right_width))
             local left_padding=$((max_left_width - left_width))
+            local right_padding=$((box_inner_width - max_left_width - 3 - right_width))
+            if [ $left_padding -lt 0 ]; then left_padding=0; fi
+            if [ $right_padding -lt 0 ]; then right_padding=0; fi
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
             local line_width; line_width=$(_get_visual_width "$line")
-            local padding=$((box_inner_width - line_width - 1))
+            local padding=$((box_inner_width - line_width - 2))
             if [ $padding -lt 0 ]; then padding=0; fi
-            echo -e "${GREEN}│ ${line}$(printf '%*s' "$padding")│${NC}"
+            echo -e "${GREEN}│ ${line}$(printf '%*s' "$padding") │${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
