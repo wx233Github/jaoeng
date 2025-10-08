@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.16-UI对齐修复)
-# - 修复: _render_menu 中双列菜单的右侧填充计算错误，确保完美对齐
+# 🚀 通用工具函数库 (v2.17-完美UI对齐修复)
+# - 修复: _render_menu 中双列菜单宽度计算偏差，实现所有菜单的完美对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -116,8 +116,10 @@ _render_menu() {
         fi
     done
 
-    # The total width of separators for a double-column line is 4: space-L-space | space-R
-    local double_col_needed=0; [ "$max_left_width" -gt 0 ] && double_col_needed=$((max_left_width + max_right_width + 4))
+    # --- [关键修复] 修正了双列布局的总间距计算 (从4改为5) ---
+    # 布局: │ ` ` L ` ` │ ` ` R ` ` │ (5个字符的 "chrome": space, space, │, space, space)
+    local double_col_needed=0; [ "$max_left_width" -gt 0 ] && double_col_needed=$((max_left_width + max_right_width + 5))
+    # 布局: │ ` ` S ` ` │ (2个字符的 "chrome": space, space)
     local single_col_needed=$((max_single_width + 2))
     local title_width; title_width=$(_get_visual_width "$title")
     local title_needed=$((title_width + 2))
@@ -140,8 +142,8 @@ _render_menu() {
             local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
             local left_padding=$((max_left_width - left_width))
-            # --- [关键修复] 分隔符总宽度为4 (space L space | space R), 所以这里是-4 ---
-            local right_padding=$((box_inner_width - max_left_width - 4 - right_width))
+            # --- [关键修复] 同样修正右侧填充计算的偏移量 (从4改为5) ---
+            local right_padding=$((box_inner_width - max_left_width - 5 - right_width))
             if [ $left_padding -lt 0 ]; then left_padding=0; fi
             if [ $right_padding -lt 0 ]; then right_padding=0; fi
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
