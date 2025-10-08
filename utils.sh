@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.9-最终稳定版)
-# - 修复: 重写所有宽度比较逻辑，使用最健壮的语法，根除启动崩溃问题
+# 🚀 通用工具函数库 (v2.10-根源修复版)
+# - 修复: 重写 log_debug 函数，使其在 debug 关闭时返回 0，
+# - 根除了在 set -e 模式下导致脚本无声崩溃的最终根源
 # =============================================================
 
 # --- 严格模式 ---
@@ -46,7 +47,13 @@ log_info()    { echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*"; }
 log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
-log_debug()   { [ "${JB_DEBUG_MODE:-false}" = "true" ] && echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2; }
+
+# --- [关键修复] 使用 if 结构确保函数在任何情况下都返回 0 ---
+log_debug()   {
+    if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
+        echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2
+    fi
+}
 
 # --- 交互函数 ---
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
@@ -114,7 +121,6 @@ _render_menu() {
         fi
     done
 
-    # --- [关键修复] 使用最安全、最可移植的语法进行所有宽度计算 ---
     local two_col_width=$(( ${max_left_width:-0} + ${max_right_width:-0} + 3 ))
     local single_col_width=$(( ${max_single_col_width:-0} + 2 ))
     local title_check_width=$(( ${title_width:-0} + 2 ))
