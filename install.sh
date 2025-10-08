@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.33-精细化更新日志)
-# - 优化: 更新检查现在会逐一列出更新的文件，并对核心文件更新提供额外提示
+# 🚀 VPS 一键安装与管理脚本 (v77.34-更新日志重构)
+# - 重构: run_comprehensive_auto_update 更新日志逻辑，确保输出清晰、高亮
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.33"
+SCRIPT_VERSION="v77.34"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -115,7 +115,7 @@ check_and_install_dependencies() {
 }
 
 run_comprehensive_auto_update() {
-    local updated_files_str=""
+    local updated_files=()
     # 检查核心文件和配置文件
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
     for file in "${!core_files[@]}"; do
@@ -124,11 +124,11 @@ run_comprehensive_auto_update() {
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
         if [ "$local_hash" != "$remote_hash" ]; then
-            updated_files_str+="${file} "
+            updated_files+=("$file")
             sudo mv "$temp_file" "$local_path"
             if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
             if [ "$file" = "install.sh" ]; then
-                log_success "主程序 (install.sh) 已更新，正在无缝重启... 🚀"
+                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀"
                 flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
             fi
         else
@@ -139,22 +139,11 @@ run_comprehensive_auto_update() {
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
         if download_module_to_cache "$script_name" "auto"; then
-            updated_files_str+="${script_name} "
+            updated_files+=("$script_name")
         fi
     done
-    # 如果有任何文件被更新，则打印详细日志
-    if [ -n "$updated_files_str" ]; then
-        log_info "检测到脚本更新并已应用："
-        for updated_file in $updated_files_str; do
-            log_success "  - ${updated_file} 已更新。"
-        done
-        if [[ "$updated_files_str" == *"config.json"* ]]; then
-            log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。"
-        fi
-        if [[ "$updated_files_str" == *"utils.sh"* ]]; then
-            log_info "  > 核心工具库 utils.sh 已更新，UI或核心功能可能已变更。"
-        fi
-    fi
+    # 返回更新的文件列表
+    echo "${updated_files[@]}"
 }
 
 download_module_to_cache() {
@@ -301,7 +290,23 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛"; run_comprehensive_auto_update "$@"; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄"
+    log_info "脚本启动 (${SCRIPT_VERSION})"
+    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 "
+    local updated_files_list
+    updated_files_list=$(run_comprehensive_auto_update "$@")
+    echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          "
+    if [ -n "$updated_files_list" ]; then
+        for file in $updated_files_list; do
+            local filename; filename=$(basename "$file")
+            log_success "${GREEN}${filename}${NC} 已更新"
+        done
+        if [[ "$updated_files_list" == *"config.json"* ]]; then
+            log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。"
+        fi
+        if [[ "$updated_files_list" == *"utils.sh"* ]]; then
+            log_info "  > 核心工具库 utils.sh 已更新，UI或核心功能可能已变更。"
+        fi
+    fi
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
