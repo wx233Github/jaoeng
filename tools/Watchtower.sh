@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.2-配置加载修复)
-# - 修复: 重写 load_config 函数，确保配置加载优先级正确 (本地 > 全局 > 内置)
+# 🚀 Watchtower 管理模块 (v4.9.3-兼容性与UI增强)
+# - 修复: configure_exclusion_list 中数组转换的兼容性问题，防止脚本崩溃
+# - 优化: 间隔输入提示现在会显示配置来源 (本地或全局)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.2"
+SCRIPT_VERSION="v4.9.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -73,7 +74,6 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 
 # --- 配置加载与保存 ---
 load_config(){
-    # --- [关键修复] 重新设计配置加载优先级 ---
     # 优先级: 
     # 1. 本地配置文件 ($CONFIG_FILE) - 用户自定义的最高优先级
     # 2. 从 config.json 传入的环境变量 (WATCHTOWER_CONF_*) - 全局默认值
@@ -164,7 +164,20 @@ _prompt_for_interval() {
     local human_readable_current
     human_readable_current=$(_format_seconds_to_human "$current_val")
     
-    read -r -p "$prompt_text (例如: 5m, 2h, 1d, 300s), 当前: ${human_readable_current}: " user_input < /dev/tty
+    # --- [功能优化] 显示配置来源 ---
+    local source_info=""
+    if [ -f "$CONFIG_FILE" ]; then
+        # 检查当前值是否来自本地文件
+        local local_val; local_val=$(grep '^WATCHTOWER_CONFIG_INTERVAL=' "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+        if [ "$local_val" = "$current_val" ]; then
+            source_info="${CYAN} (来自本地配置)${NC}"
+        fi
+    fi
+    if [ -z "$source_info" ]; then
+         source_info="${CYAN} (来自 config.json)${NC}"
+    fi
+
+    read -r -p "$prompt_text (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: " user_input < /dev/tty
     user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]' | xargs)
     
     if [ -z "$user_input" ]; then
@@ -509,7 +522,13 @@ configure_exclusion_list() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a all_containers_array=(); while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); local -a items_array=(); local i=0
         while [ $i -lt ${#all_containers_array[@]} ]; do local container="${all_containers_array[$i]}"; local is_excluded=" "; if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; items_array+=("  $((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); i=$((i + 1)); done
-        items_array+=(""); local current_excluded_display=""; if [ ${#excluded_map[@]} -gt 0 ]; then current_excluded_display=$(IFS=,; echo "${!excluded_map[*]:-}"); fi; items_array+=("${CYAN}当前排除: ${current_excluded_display:-无}${NC}")
+        items_array+=("")
+        # --- [关键修复] 使用更安全的方式将数组转换为字符串，防止崩溃 ---
+        local current_excluded_display="无"
+        if [ ${#excluded_map[@]} -gt 0 ]; then
+            local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; current_excluded_display="${keys[*]}"; IFS="$old_ifs"
+        fi
+        items_array+=("${CYAN}当前排除: ${current_excluded_display}${NC}")
         _render_menu "配置排除列表" "${items_array[@]}"; read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]清空: " choice < /dev/tty
         case "$choice" in
             c|C) break ;;
@@ -525,7 +544,7 @@ configure_exclusion_list() {
                 ;;
         esac
     done
-    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then final_excluded_list=$(IFS=,; echo "${!excluded_map[*]:-}"); fi
+    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; final_excluded_list="${keys[*]}"; IFS="$old_ifs"; fi
     WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
 
