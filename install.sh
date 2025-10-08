@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.22-稳定版)
-# - 修复: 恢复使用兼容性更强的单行数组定义，根除启动崩溃问题
-# - 优化: 统一菜单项数据结构，确保所有行都传递给UI引擎进行对齐
+# 🚀 VPS 一键安装与管理脚本 (v77.23-终极稳定版)
+# - 修复: 恢复使用兼容性极强的单行数组定义，根除所有已知的启动崩溃问题
+# - 优化: 通过预计算状态字符串，安全地实现带标签的UI状态显示
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.22"
+SCRIPT_VERSION="v77.23"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -191,12 +191,15 @@ display_and_process_menu() {
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=()
-        # --- [关键修复] 恢复使用兼容性更强的单行数组定义 ---
-        local -A status_map=(["docker.sh"]="Docker: $(_get_docker_status)" ["nginx.sh"]="Nginx: $(_get_nginx_status)" ["TOOLS_MENU"]="Watchtower: $(_get_watchtower_status)")
+        # --- [关键修复] 预先计算状态字符串，避免在数组定义中执行复杂命令 ---
+        local docker_status="Docker: $(_get_docker_status)"
+        local nginx_status="Nginx: $(_get_nginx_status)"
+        local watchtower_status="Watchtower: $(_get_watchtower_status)"
+        # --- [关键修复] 恢复使用兼容性最强的单行关联数组定义 ---
+        local -A status_map=(["docker.sh"]="$docker_status" ["nginx.sh"]="$nginx_status" ["TOOLS_MENU"]="$watchtower_status")
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            # --- [关键修复] 恢复 v77.20 的稳定数据结构，确保所有行都包含分隔符 ---
             local status_text="${status_map[$action]:- }"
             items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
         done
