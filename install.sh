@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.27-最终修复版)
-# - 恢复: 启动时使用简洁的单行更新提示
-# - 优化: 全面更新函数在无更新时保持静默
+# 🚀 VPS 一键安装与管理脚本 (v77.28-逻辑炸弹拆除)
+# - 修复: 全面更新函数因错误的返回值处理而导致的启动崩溃
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.27"
+SCRIPT_VERSION="v77.28"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -136,7 +135,8 @@ run_comprehensive_auto_update() {
     # 2. 更新所有模块脚本
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
-        download_module_to_cache "$script_name" "auto" &>/dev/null
+        # --- [关键修复] 加上 || true 防止在无更新时脚本因 set -e 崩溃 ---
+        download_module_to_cache "$script_name" "auto" &>/dev/null || true
     done
 }
 
@@ -268,7 +268,6 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    # --- [恢复] 使用简洁的单行更新提示 ---
     log_info "脚本启动 (${SCRIPT_VERSION})"; echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛"; run_comprehensive_auto_update "$@"; echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成! 🔄"
     check_sudo_privileges; display_and_process_menu "$@"
 }
