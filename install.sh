@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.23-最终修复版)
-# - 修复: display_and_process_menu 中一个致命的引号不匹配语法错误
+# 🚀 VPS 一键安装与管理脚本 (v77.24-最终稳定版)
 # - 修复: display_and_process_menu 中一个致命的变量名拼写错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.23"
+SCRIPT_VERSION="v77.24"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -197,7 +196,6 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
-        # --- [关键修复] 修正了致命的引号不匹配语法错误 ---
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then
