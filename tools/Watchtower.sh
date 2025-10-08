@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.5-兼容性与UI修复)
-# - 修复: manage_tasks 中致命的语法错误
-# - 优化: 修复了输入提示中 ANSI 颜色代码泄露的问题
+# 🚀 Watchtower 管理模块 (v4.9.6-UI与输入修复)
+# - 修复: _prompt_for_interval 中输入提示符逻辑，确保输入框正确出现
+# - 优化: UI 渲染数据结构，以适应新的 utils.sh 稳定引擎
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.5"
+SCRIPT_VERSION="v4.9.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -175,7 +175,7 @@ _prompt_for_interval() {
          source_info="${CYAN} (来自 config.json)${NC}"
     fi
 
-    # --- [关键修复] 使用 echo -e 打印带颜色的提示，避免转义符泄露 ---
+    # --- [关键修复] 打印提示信息，并使用 read -r user_input 接收输入 ---
     echo -ne "$prompt_text (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: "
     read -r user_input < /dev/tty
     user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -282,7 +282,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -533,37 +533,6 @@ show_container_info() {
             ;;
         esac
     done
-}
-
-configure_exclusion_list() {
-    declare -A excluded_map; local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
-    if [ -n "$initial_exclude_list" ]; then local IFS=,; for container_name in $initial_exclude_list; do container_name=$(echo "$container_name" | xargs); if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; done; unset IFS; fi
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a all_containers_array=(); while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); local -a items_array=(); local i=0
-        while [ $i -lt ${#all_containers_array[@]} ]; do local container="${all_containers_array[$i]}"; local is_excluded=" "; if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); i=$((i + 1)); done
-        items_array+=("")
-        local current_excluded_display="无"
-        if [ ${#excluded_map[@]} -gt 0 ]; then
-            local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; current_excluded_display="${keys[*]}"; IFS="$old_ifs"
-        fi
-        items_array+=("${CYAN}当前排除: ${current_excluded_display}${NC}")
-        _render_menu "配置排除列表" "${items_array[@]}"; read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]清空: " choice < /dev/tty
-        case "$choice" in
-            c|C) break ;;
-            "") excluded_map=(); log_info "已清空排除列表。"; sleep 1.5; break ;;
-            *)
-                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
-                for index in "${selected_indices[@]}"; do
-                    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le ${#all_containers_array[@]} ]; then
-                        local target_container="${all_containers_array[$((index - 1))]}"; if [ -n "${excluded_map[$target_container]+_}" ]; then unset excluded_map["$target_container"]; else excluded_map["$target_container"]=1; fi
-                    elif [ -n "$index" ]; then has_invalid_input=true; fi
-                done
-                if [ "$has_invalid_input" = "true" ]; then log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; fi
-                ;;
-        esac
-    done
-    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; final_excluded_list="${keys[*]}"; IFS="$old_ifs"; fi
-    WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
 
 configure_watchtower(){
