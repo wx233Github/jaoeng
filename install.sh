@@ -291,6 +291,7 @@ main() {
         esac
     fi
     log_info "脚本启动 (${SCRIPT_VERSION})"
+    # --- [关键修复] 重构更新日志输出逻辑 ---
     echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 "
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
