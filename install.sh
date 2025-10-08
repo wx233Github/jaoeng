@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.22-最终语法修复版)
+# 🚀 VPS 一键安装与管理脚本 (v77.23-最终修复版)
 # - 修复: display_and_process_menu 中一个致命的引号不匹配语法错误
-# - 此错误是导致脚本无法启动的最终根源
+# - 修复: display_and_process_menu 中一个致命的变量名拼写错误
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.22"
+SCRIPT_VERSION="v77.23"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -196,6 +196,7 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
+        
         # --- [关键修复] 修正了致命的引号不匹配语法错误 ---
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
@@ -234,7 +235,12 @@ display_and_process_menu() {
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        local type name action; type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$json")
+        local type name action
+        type=$(jq -r .type <<< "$item_json")
+        name=$(jq -r .name <<< "$item_json")
+        # --- [关键修复] 修正了致命的变量名拼写错误 ($json -> $item_json) ---
+        action=$(jq -r .action <<< "$item_json")
+        
         case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
         if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
     done
