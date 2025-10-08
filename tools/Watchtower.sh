@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.4-兼容性与UI增强)
-# - 修复: configure_exclusion_list 中数组转换的兼容性问题，防止脚本崩溃
-# - 优化: 间隔输入提示现在会显示配置来源 (本地或全局)
+# 🚀 Watchtower 管理模块 (v4.9.5-兼容性与UI修复)
+# - 修复: manage_tasks 中致命的语法错误
+# - 优化: 修复了输入提示中 ANSI 颜色代码泄露的问题
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.4"
+SCRIPT_VERSION="v4.9.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -491,9 +491,7 @@ notification_menu() {
 
 show_container_info() { 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local -a content_lines_array=()
-        # --- [关键修复] 使用 │ 分隔符传递原始数据给新的 _render_menu 引擎 ---
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a content_lines_array=()
         content_lines_array+=("编号│名称│镜像│状态")
         local -a containers=()
         local i=1
@@ -590,8 +588,29 @@ manage_tasks(){
         local -a items_array=("1. › 停止/移除 Watchtower" "2. › 重建 Watchtower")
         _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
-            1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then if confirm_action "确定移除 Watchtower？"; then set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null; set -e; WATCHTOWER_}ℹ️ Watchtower 未运行。${NC}"; fi; press_enter_to_continue ;;
-            "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
+            1) 
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
+                    if confirm_action "确定移除 Watchtower？"; then 
+                        set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null; set -e
+                        WATCHTOWER_ENABLED="false"; save_config
+                        send_notify "🗑️ Watchtower 已从您的服务器移除。"
+                        echo -e "${GREEN}✅ 已移除。${NC}"
+                    fi
+                else 
+                    echo -e "${YELLOW}ℹ️ Watchtower 未运行。${NC}"
+                fi
+                press_enter_to_continue 
+                ;;
+            2) 
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
+                    _rebuild_watchtower
+                else 
+                    echo -e "${YELLOW}ℹ️ Watchtower 未运行。${NC}"
+                fi
+                press_enter_to_continue
+                ;;
+            "") return ;; 
+            *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
 }
