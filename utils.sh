@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.19-终极UI引擎重构)
-# - 重构: _render_menu 采用通用多列渲染引擎，彻底解决所有对齐和颜色问题
+# 🚀 通用工具函数库 (v2.20-终极UI引擎修复)
+# - 重构: _render_menu 采用稳定版逻辑并分离颜色，彻底解决所有对齐和颜色问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -100,9 +100,10 @@ _get_visual_width() {
 }
 
 _render_menu() {
-    # --- [终极UI修复] 通用多列渲染引擎 ---
+    # --- [终极UI修复] 稳定版多列渲染引擎 ---
     local title="$1"; shift; local -a lines=("$@")
-    local -a max_col_widths=(); local num_cols=0
+    local -a max_col_widths=()
+    local num_cols=1
 
     # 1. 预扫描以确定最大列数和每列的最大宽度
     for line in "${lines[@]}"; do
@@ -122,11 +123,9 @@ _render_menu() {
         for width in "${max_col_widths[@]}"; do
             box_inner_width=$((box_inner_width + width))
         done
-        # 加上 ` | ` 分隔符 (3个字符) 和两边的 ` ` (2个字符)
-        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2))
-    elif [ "$num_cols" -eq 1 ]; then
-        # 加上两边的 ` ` (2个字符)
-        box_inner_width=$((max_col_widths[0] + 2))
+        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2)) # ` | ` (3) and ` ` (2)
+    else
+        box_inner_width=$((max_col_widths[0] + 2)) # ` ` (2)
     fi
 
     local title_width; title_width=$(_get_visual_width "$title")
@@ -145,21 +144,20 @@ _render_menu() {
     for line in "${lines[@]}"; do
         local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
         local line_content=""
-        if [ "${#parts[@]}" -gt 1 ]; then
-            for i in "${!parts[@]}"; do
-                local part_width; part_width=$(_get_visual_width "${parts[i]}")
-                local padding=$((max_col_widths[i] - part_width))
-                line_content+="${parts[i]}$(printf '%*s' "$padding")"
-                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
-                    line_content+=" ${GREEN}│${NC} "
-                fi
-            done
-        else
-            line_content="$line"
-        fi
         
-        local total_width; total_width=$(_get_visual_width "$line_content")
-        local total_padding=$((box_inner_width - total_width - 2))
+        # 构建行内容
+        for i in "${!parts[@]}"; do
+            local part_width; part_width=$(_get_visual_width "${parts[i]}")
+            local padding=$((max_col_widths[i] - part_width))
+            line_content+="${parts[i]}$(printf '%*s' "$padding")"
+            if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
+                line_content+=" ${GREEN}│${NC} "
+            fi
+        done
+        
+        # 计算整行填充
+        local content_width; content_width=$(_get_visual_width "$line_content")
+        local total_padding=$((box_inner_width - content_width - 2))
         if [ $total_padding -lt 0 ]; then total_padding=0; fi
         
         echo -e "${GREEN}│${NC} ${line_content}$(printf '%*s' "$total_padding") ${GREEN}│${NC}"
