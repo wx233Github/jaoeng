@@ -35,6 +35,11 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh
 curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee jb_a_$(date +%Y%m%d_%H%M%S).log
 ```
 
+诊断
+
+```
+sudo bash -x /opt/vps_install_modules/install.sh
+```
 
 ---
 
