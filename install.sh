@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.29-最终修复版)
-# - 修复: 使用更健壮的方式解析模块名，确保 config.json 被正确读取
+# 🚀 VPS 一键安装与管理脚本 (v77.30-最终修复版)
+# - 修复: run_module 中灾难性的 jq 语法错误，确保 config.json 被正确读取
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.29"
+SCRIPT_VERSION="v77.30"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -177,16 +177,16 @@ run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"; log_info "您选择了 [${module_name}]"
     if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..."; download_module_to_cache "$module_script"; fi
     
-    # --- [关键修复] 使用纯 Shell 字符串操作代替 basename, 确保兼容性 ---
     local filename_only="${module_script##*/}"
     local key_base="${filename_only%.sh}"
     local module_key="${key_base,,}"
     
-    if command -v jq >/dev/null 2>&1 && jq -e ".module_configs.\"$module_key\"" "$CONFIG_PATH" >/dev/null 2>&1; then
-        local keys; keys=$(jq -r ".module_configs.\"$module_key\" | keys[]" "$CONFIG_PATH")
+    # --- [关键修复] 使用正确的 jq 语法来检查和读取配置 ---
+    if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
+        local keys; keys=$(jq -r --arg key "$module_key" '.module_configs[$key] | keys[]' "$CONFIG_PATH")
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
-            local value; value=$(jq -r ".module_configs.\"$module_key\".$key" "$CONFIG_PATH")
+            local value; value=$(jq -r --arg key "$module_key" --arg subkey "$key" '.module_configs[$key][$subkey]' "$CONFIG_PATH")
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
