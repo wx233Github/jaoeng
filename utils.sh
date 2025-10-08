@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.9-稳定版)
-# - 修复: 在数值比较中使用 `${var:-0}`，彻底根除空变量导致的致命崩溃
+# 🚀 通用工具函数库 (v2.8-UI引擎重构)
+# - 重构: _render_menu 引擎，使其能完美处理混合单/双列菜单的对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -63,6 +63,7 @@ load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
     BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
+    
     if command -v jq >/dev/null 2>&1; then
         BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
     else
@@ -96,52 +97,54 @@ _get_visual_width() {
 
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0
-
+    local max_left_width=0 max_right_width=0 max_single_col_width=0 has_separator=false
+    
+    local title_width; title_width=$(_get_visual_width "$title")
+    
     for line in "${lines[@]}"; do
-        local left_part="${line%%│*}"; local right_part="${line##*│}"
-        [[ "$left_part" == "$right_part" ]] && right_part=""
-        local left_width; left_width=$(_get_visual_width "$left_part")
-        local right_width; right_width=$(_get_visual_width "$right_part")
-        if [ "${left_width:-0}" -gt "$max_left_width" ]; then max_left_width=$left_width; fi
-        if [ "${right_width:-0}" -gt "$max_right_width" ]; then max_right_width=$right_width; fi
+        if [[ "$line" == *"│"* ]]; then
+            has_separator=true
+            local left_part="${line%%│*}"; local right_part="${line##*│}"
+            local left_width; left_width=$(_get_visual_width "$left_part")
+            local right_width; right_width=$(_get_visual_width "$right_part")
+            if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
+            if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
+        else
+            local line_width; line_width=$(_get_visual_width "$line")
+            if [ "${line_width:-0}" -gt "${max_single_col_width:-0}" ]; then max_single_col_width=$line_width; fi
+        fi
     done
 
-    local title_width; title_width=$(_get_visual_width "$title")
     local box_inner_width
-    if [ "$max_right_width" -gt 0 ]; then
-        box_inner_width=$((max_left_width + max_right_width + 3))
-    else
-        box_inner_width=$((max_left_width + 2))
-    fi
-    if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then
-        box_inner_width=$((title_width + 2))
-    fi
+    local two_col_width=$((max_left_width + max_right_width + 3))
+    local single_col_width=$((max_single_col_width + 2))
+    
+    # --- [关键重构] 动态计算盒子宽度，兼容单列、双列和标题 ---
+    box_inner_width=$two_col_width
+    if [ "$single_col_width" -gt "$box_inner_width" ]; then box_inner_width=$single_col_width; fi
+    if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then box_inner_width=$((title_width + 2)); fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
-
+    
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
         echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
     fi
-
+    
     for line in "${lines[@]}"; do
-        local left_part="${line%%│*}"; local right_part="${line##*│}"
-        [[ "$left_part" == "$right_part" ]] && right_part=""
-        local left_width; left_width=$(_get_visual_width "$left_part")
-
-        if [ -n "$right_part" ]; then
+        if [[ "$line" == *"│"* ]]; then
+            local left_part="${line%%│*}"; local right_part="${line##*│}"
+            local left_width; left_width=$(_get_visual_width "$left_part")
             local right_width; right_width=$(_get_visual_width "$right_part")
-            local left_padding=$((max_left_width - left_width))
+            # --- [关键重构] 双列的右侧填充现在基于总宽度，确保对齐 ---
             local right_padding=$((box_inner_width - max_left_width - 3 - right_width))
-            # --- [关键修复] 使用 `${var:-0}` 保护变量 ---
-            if [ "${right_padding:-0}" -lt 0 ]; then right_padding=0; fi
+            local left_padding=$((max_left_width - left_width))
             echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$left_padding") │ ${right_part}$(printf '%*s' "$right_padding") │${NC}"
         else
-            local total_padding=$((box_inner_width - left_width - 1))
-            # --- [关键修复] 使用 `${var:-0}` 保护变量 ---
-            if [ "${total_padding:-0}" -lt 0 ]; then total_padding=0; fi
-            echo -e "${GREEN}│ ${left_part}$(printf '%*s' "$total_padding")│${NC}"
+            local line_width; line_width=$(_get_visual_width "$line")
+            local padding=$((box_inner_width - line_width - 1))
+            if [ $padding -lt 0 ]; then padding=0; fi
+            echo -e "${GREEN}│ ${line}$(printf '%*s' "$padding")│${NC}"
         fi
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
