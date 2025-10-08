@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.25-更新机制升级)
-# - 优化: 每次启动时检查并更新所有核心文件(install/utils/config)
-# - 修复: 确保模块调用逻辑无误
+# 🚀 VPS 一键安装与管理脚本 (v77.26-全面自动更新)
+# - 优化: 启动时自动检查并更新所有核心文件及所有模块脚本
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.25"
+SCRIPT_VERSION="v77.26"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -115,57 +114,79 @@ check_and_install_dependencies() {
     fi
 }
 
-# --- [优化] 升级为全面的自动更新函数 ---
-run_auto_update() {
-    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在智能更新 🕛"
-    local updated=false
-    declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
+# --- [核心升级] 全面自动更新函数 ---
+run_comprehensive_auto_update() {
+    echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新..."
     
+    # 1. 更新核心文件
+    local core_updated=false
+    declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"
         local temp_file; temp_file=$(create_temp_file)
         if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then
-            log_warn "\n    -> 更新检查失败 (无法连接): ${file}"; continue
+            log_warn "  -> 核心更新检查失败 (无法连接): ${file}"; continue
         fi
-        
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
         
         if [ "$local_hash" != "$remote_hash" ]; then
-            updated=true
-            sudo mv "$temp_file" "$local_path"
-            [ "$file" != "config.json" ] && sudo chmod +x "$local_path"
+            core_updated=true
+            log_success "  -> 核心文件已更新: ${file}"
+            sudo mv "$temp_file" "$local_path"; sudo chmod +x "$local_path"
             if [ "$file" = "install.sh" ]; then
-                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序已更新，正在无缝重启... 🚀"
+                log_success "主程序已更新，正在无缝重启... 🚀"
                 flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
             fi
         else
             rm -f "$temp_file"
         fi
     done
-    
-    if $updated; then
-        echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 核心文件更新完成! 🔄          "
-    else
-        echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 智能更新检查完成 (已是最新) 🔄"
-    fi
-}
+    if $core_updated; then log_info "核心文件更新完成。"; fi
 
-force_update_all() {
-    log_info "开始强制更新所有组件..."; run_auto_update "$@"
+    # 2. 更新所有模块脚本
+    log_info "检查所有模块脚本更新..."
+    local modules_updated_count=0
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
-    for script_name in $scripts_to_update; do download_module_to_cache "$script_name"; done
-    log_success "所有组件更新检查完成！"
+    for script_name in $scripts_to_update; do
+        if download_module_to_cache "$script_name" "auto"; then
+            modules_updated_count=$((modules_updated_count + 1))
+        fi
+    done
+    
+    if [ "$modules_updated_count" -gt 0 ]; then
+        log_success "共 ${modules_updated_count} 个模块已更新。"
+    else
+        log_info "所有模块均已是最新版本。"
+    fi
+    log_success "全面智能更新检查完成! 🔄"
 }
 
 download_module_to_cache() {
-    local script_name="$1"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
-    log_info "  -> 检查/下载模块: ${script_name}"
+    local script_name="$1" 
+    local mode="${2:-}" # 'auto' for quiet mode
+    local local_file="${INSTALL_DIR}/$script_name"
+    local tmp_file; tmp_file=$(create_temp_file)
+    
+    if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}"; fi
+
     sudo mkdir -p "$(dirname "$local_file")"
-    if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then log_err "     模块 (${script_name}) 下载失败。"; return 1; fi
+    if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
+        if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。"; fi
+        return 1
+    fi
+    
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
-    if [ "$local_hash" != "$remote_hash" ]; then log_success "     模块 (${script_name}) 已更新。"; sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"; else rm -f "$tmp_file"; fi
+    
+    if [ "$local_hash" != "$remote_hash" ]; then
+        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。"; else log_success "  -> 模块已更新: ${script_name}"; fi
+        sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
+        return 0 # Return 0 to indicate an update happened
+    else
+        rm -f "$tmp_file"
+        return 1 # Return 1 to indicate no update
+    fi
 }
 
 uninstall_script() {
@@ -178,7 +199,9 @@ confirm_and_force_update() {
     log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。"; log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
     local choice; read -r -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
-        log_info "用户确认：开始强制更新所有组件..."; force_update_all "$@"; log_success "强制更新完成！脚本将自动重启以应用所有更新..."; sleep 2
+        log_info "用户确认：开始强制更新所有组件..."; 
+        FORCE_REFRESH=true bash -c "$(curl -fsSL ${BASE_URL}/install.sh?_=$(date +%s))"
+        log_success "强制更新完成！脚本将自动重启以应用所有更新..."; sleep 2
         flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     else log_info "用户取消了强制更新。"; fi
 }
@@ -201,7 +224,7 @@ _get_docker_status() {
 }
 _get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
 _get_watchtower_status() {
-    if systemctl is-active --quiet docker 2>/dev/null; then if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^watchtower$'; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi; else echo -e "${RED}Docker未运行${NC}"; fi
+    if systemctl is-active --quiet docker 2>/dev/null; then if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower'; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi; else echo -e "${RED}Docker未运行${NC}"; fi
 }
 
 display_and_process_menu() {
@@ -269,13 +292,13 @@ main() {
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
-            update) log_info "正在以 Headless 模式更新所有脚本..."; force_update_all "$@"; exit 0 ;;
+            update) log_info "正在以 Headless 模式更新所有脚本..."; run_comprehensive_auto_update "$@"; exit 0 ;;
             uninstall) log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0 ;;
             *) local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1)
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})"; run_auto_update "$@"
+    log_info "脚本启动 (${SCRIPT_VERSION})"; run_comprehensive_auto_update "$@"
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
