@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.30-最终修复版)
+# 🚀 VPS 一键安装与管理脚本 (v77.30-最终稳定版)
 # - 修复: run_module 中灾难性的 jq 语法错误，确保 config.json 被正确读取
 # =============================================================
 
@@ -186,7 +186,7 @@ run_module(){
         local keys; keys=$(jq -r --arg key "$module_key" '.module_configs[$key] | keys[]' "$CONFIG_PATH")
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
-            local value; value=$(jq -r --arg key "$module_key" --arg subkey "$key" '.module_configs[$key][$subkey]' "$CONFIG_PATH")
+            local value; value=$(jq -r --arg mkey "$module_key" --arg skey "$key" '.module_configs[$mkey][$skey]' "$CONFIG_PATH")
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
