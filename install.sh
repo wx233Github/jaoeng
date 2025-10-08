@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.21-UI数据修正)
-# - 优化: 为状态信息增加标签(如"Docker:")，为UI渲染提供完整数据
-# - 优化: 依赖检查通过时不再打印成功信息，保持界面整洁
+# 🚀 VPS 一键安装与管理脚本 (v77.22-稳定版)
+# - 修复: 恢复使用兼容性更强的单行数组定义，根除启动崩溃问题
+# - 优化: 统一菜单项数据结构，确保所有行都传递给UI引擎进行对齐
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.21"
+SCRIPT_VERSION="v77.22"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -191,25 +191,21 @@ display_and_process_menu() {
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=()
-        local -A status_map=(
-            ["docker.sh"]="Docker: $(_get_docker_status)"
-            ["nginx.sh"]="Nginx: $(_get_nginx_status)"
-            ["TOOLS_MENU"]="Watchtower: $(_get_watchtower_status)"
-        )
+        # --- [关键修复] 恢复使用兼容性更强的单行数组定义 ---
+        local -A status_map=(["docker.sh"]="Docker: $(_get_docker_status)" ["nginx.sh"]="Nginx: $(_get_nginx_status)" ["TOOLS_MENU"]="Watchtower: $(_get_watchtower_status)")
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            local line_content; line_content="$(printf "%d. %s %s" "$index" "$icon" "$name")"
-            local status_text="${status_map[$action]:-}"
-            if [ -n "$status_text" ]; then
-                items_array+=("${line_content}│${status_text}")
-            else
-                items_array+=("${line_content}")
-            fi
+            # --- [关键修复] 恢复 v77.20 的稳定数据结构，确保所有行都包含分隔符 ---
+            local status_text="${status_map[$action]:- }"
+            items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
+        for i in "${!func_items[@]}"; do 
+            IFS='|' read -r icon name type action <<< "${func_items[i]}"
+            items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")│ ")
+        done
         
         _render_menu "$menu_title" "${items_array[@]}"
         
