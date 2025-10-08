@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.23-终极稳定版)
-# - 修复: 恢复使用兼容性极强的单行数组定义，根除所有已知的启动崩溃问题
-# - 优化: 通过预计算状态字符串，安全地实现带标签的UI状态显示
+# 🚀 VPS 一键安装与管理脚本 (v77.21-UI数据修复)
+# - 修复: 向UI渲染器传递完整的状态标签(如 "Docker:")，而不仅仅是状态
+# - 优化: 当所有依赖都满足时，不再打印成功的日志
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.23"
+SCRIPT_VERSION="v77.21"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -23,10 +23,12 @@ REAL_SCRIPT_PATH=""
 REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
+    # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
@@ -39,23 +41,30 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         fi
         echo_success "核心依赖安装完成。"
     fi
+
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
         sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+        
         declare -A core_files=( ["主程序"]="install.sh" ["配置文件"]="config.json" ["工具库"]="utils.sh" )
         for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"; echo_info "正在下载最新的 ${name} (${file_path})..."
+            file_path="${core_files[$name]}"
+            echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
+
         sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
-        BIN_DIR="/usr/local/bin"; sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"; echo_success "安装/更新完成！"
+        BIN_DIR="/usr/local/bin"
+        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
+        echo_success "安装/更新完成！"
     fi
+    
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
@@ -87,6 +96,7 @@ check_and_install_dependencies() {
     local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
     local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "$default_deps")
     if [ -z "$deps" ]; then deps="$default_deps"; fi
+
     local missing_pkgs=""
     declare -A pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
     for dep in $deps; do if ! command -v "$dep" &>/dev/null; then local pkg="${pkg_apt_map[$dep]:-$dep}"; missing_pkgs="${missing_pkgs} ${pkg}"; fi; done
@@ -101,6 +111,7 @@ check_and_install_dependencies() {
             else log_err "不支持的包管理器。请手动安装: ${missing_pkgs}"; exit 1; fi
         else log_err "用户取消安装，脚本无法继续。"; exit 1; fi
     else
+        # --- [优化] 依赖满足时，不再打印成功信息，改为debug信息 ---
         log_debug "所有依赖均已满足。"
     fi
 }
@@ -191,24 +202,25 @@ display_and_process_menu() {
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a items_array=()
-        # --- [关键修复] 预先计算状态字符串，避免在数组定义中执行复杂命令 ---
-        local docker_status="Docker: $(_get_docker_status)"
-        local nginx_status="Nginx: $(_get_nginx_status)"
-        local watchtower_status="Watchtower: $(_get_watchtower_status)"
-        # --- [关键修复] 恢复使用兼容性最强的单行关联数组定义 ---
-        local -A status_map=(["docker.sh"]="$docker_status" ["nginx.sh"]="$nginx_status" ["TOOLS_MENU"]="$watchtower_status")
+        # --- [修复] 增加状态标签映射，用于显示 "Docker:", "Nginx:" 等 ---
+        local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
+        local -A status_label_map=( ["docker.sh"]="Docker:" ["nginx.sh"]="Nginx:" ["TOOLS_MENU"]="Watchtower:" )
         
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
-            local status_text="${status_map[$action]:- }"
-            items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
+            
+            # --- [修复] 检查是否存在状态，并构建包含标签的完整状态字符串 ---
+            if [ -n "${status_map[$action]}" ]; then
+                local status_text="${status_label_map[$action]} ${status_map[$action]}"
+                items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
+            else
+                # 如果没有状态，则作为单列项目传递
+                items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")")
+            fi
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do 
-            IFS='|' read -r icon name type action <<< "${func_items[i]}"
-            items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")│ ")
-        done
+        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
         
         _render_menu "$menu_title" "${items_array[@]}"
         
