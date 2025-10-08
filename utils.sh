@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.18-终极UI修复)
-# - 重构: _render_menu 彻底分离边框与内容的颜色渲染，实现完美对齐与着色
+# 🚀 通用工具函数库 (v2.19-终极UI引擎重构)
+# - 重构: _render_menu 采用通用多列渲染引擎，彻底解决所有对齐和颜色问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -100,56 +100,69 @@ _get_visual_width() {
 }
 
 _render_menu() {
+    # --- [终极UI修复] 通用多列渲染引擎 ---
     local title="$1"; shift; local -a lines=("$@")
-    local max_left_width=0 max_right_width=0 max_single_width=0
-    
+    local -a max_col_widths=(); local num_cols=0
+
+    # 1. 预扫描以确定最大列数和每列的最大宽度
     for line in "${lines[@]}"; do
-        if [[ "$line" == *"│"* ]]; then
-            local left_part="${line%%│*}"; local right_part="${line##*│}"
-            local left_width; left_width=$(_get_visual_width "$left_part")
-            local right_width; right_width=$(_get_visual_width "$right_part")
-            if [ "${left_width:-0}" -gt "${max_left_width:-0}" ]; then max_left_width=$left_width; fi
-            if [ "${right_width:-0}" -gt "${max_right_width:-0}" ]; then max_right_width=$right_width; fi
-        else
-            local line_width; line_width=$(_get_visual_width "$line")
-            if [ "${line_width:-0}" -gt "${max_single_width:-0}" ]; then max_single_width=$line_width; fi
-        fi
+        local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
+        if [ "${#parts[@]}" -gt "$num_cols" ]; then num_cols=${#parts[@]}; fi
+        for i in "${!parts[@]}"; do
+            local part_width; part_width=$(_get_visual_width "${parts[i]}")
+            if [ "${part_width:-0}" -gt "${max_col_widths[i]:-0}" ]; then
+                max_col_widths[i]=$part_width
+            fi
+        done
     done
 
-    local double_col_needed=0; [ "$max_left_width" -gt 0 ] && double_col_needed=$((max_left_width + max_right_width + 5))
-    local single_col_needed=$((max_single_width + 2))
-    local title_width; title_width=$(_get_visual_width "$title")
-    local title_needed=$((title_width + 2))
-
+    # 2. 计算盒子总宽度
     local box_inner_width=0
-    if [ "$double_col_needed" -gt "$box_inner_width" ]; then box_inner_width=$double_col_needed; fi
-    if [ "$single_col_needed" -gt "$box_inner_width" ]; then box_inner_width=$single_col_needed; fi
-    if [ "$title_needed" -gt "$box_inner_width" ]; then box_inner_width=$title_needed; fi
+    if [ "$num_cols" -gt 1 ]; then
+        for width in "${max_col_widths[@]}"; do
+            box_inner_width=$((box_inner_width + width))
+        done
+        # 加上 ` | ` 分隔符 (3个字符) 和两边的 ` ` (2个字符)
+        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2))
+    elif [ "$num_cols" -eq 1 ]; then
+        # 加上两边的 ` ` (2个字符)
+        box_inner_width=$((max_col_widths[0] + 2))
+    fi
+
+    local title_width; title_width=$(_get_visual_width "$title")
+    if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then
+        box_inner_width=$((title_width + 2))
+    fi
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
-    
+
+    # 3. 渲染
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
-    
+
     for line in "${lines[@]}"; do
-        if [[ "$line" == *"│"* ]]; then
-            local left_part="${line%%│*}"; local right_part="${line##*│}"
-            local left_width; left_width=$(_get_visual_width "$left_part")
-            local right_width; right_width=$(_get_visual_width "$right_part")
-            local left_padding=$((max_left_width - left_width))
-            local right_padding=$((box_inner_width - max_left_width - 5 - right_width))
-            if [ $left_padding -lt 0 ]; then left_padding=0; fi
-            if [ $right_padding -lt 0 ]; then right_padding=0; fi
-            # --- [关键修复] 彻底分离边框和内容的颜色渲染 ---
-            echo -e "${GREEN}│${NC} ${left_part}$(printf '%*s' "$left_padding") ${GREEN}│${NC} ${right_part}$(printf '%*s' "$right_padding") ${GREEN}│${NC}"
+        local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
+        local line_content=""
+        if [ "${#parts[@]}" -gt 1 ]; then
+            for i in "${!parts[@]}"; do
+                local part_width; part_width=$(_get_visual_width "${parts[i]}")
+                local padding=$((max_col_widths[i] - part_width))
+                line_content+="${parts[i]}$(printf '%*s' "$padding")"
+                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
+                    line_content+=" ${GREEN}│${NC} "
+                fi
+            done
         else
-            local line_width; line_width=$(_get_visual_width "$line")
-            local padding=$((box_inner_width - line_width - 2))
-            if [ $padding -lt 0 ]; then padding=0; fi
-            echo -e "${GREEN}│${NC} ${line}$(printf '%*s' "$padding") ${GREEN}│${NC}"
+            line_content="$line"
         fi
+        
+        local total_width; total_width=$(_get_visual_width "$line_content")
+        local total_padding=$((box_inner_width - total_width - 2))
+        if [ $total_padding -lt 0 ]; then total_padding=0; fi
+        
+        echo -e "${GREEN}│${NC} ${line_content}$(printf '%*s' "$total_padding") ${GREEN}│${NC}"
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
