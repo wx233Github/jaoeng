@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.8.1-崩溃修复版)
-# - 修复: show_watchtower_details 函数在容器不存在时因 set -e 而崩溃的问题
+# 🚀 Watchtower 管理模块 (v4.9.0-配置加载修复)
+# - 修复: load_config 函数中环境变量名错误，导致无法从 config.json 加载配置
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.8.1"
+SCRIPT_VERSION="v4.9.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -45,7 +45,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # --- Docker 服务 (daemon) 状态检查 ---
-if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker info >/dev/null 2>&1; then
+if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker info >/dev/null 2&>1; then
     log_err "无法连接到 Docker 服务 (daemon)。"
     log_err "请确保 Docker 正在运行，您可以使用以下命令尝试启动它："
     log_info "  sudo systemctl start docker"
@@ -73,22 +73,33 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 
 # --- 配置加载与保存 ---
 load_config(){
-    local default_interval="300"
-    local default_cron_hour="4"
+    # --- [关键修复] 修正了所有 WATCHTOWER_CONF_* 变量名以匹配 install.sh 的导出
+    # 优先级: 
+    # 1. 本地配置文件 ($CONFIG_FILE)
+    # 2. 从 config.json 传入的环境变量 (WATCHTOWER_CONF_*)
+    # 3. 脚本内部的硬编码默认值
 
+    # 1. 设置硬编码的最终默认值
+    local default_interval="21600" # 6 hours
+    local default_cron_hour="4"
+    local default_exclude_list="portainer,portainer_agent"
+    local default_notify_on_no_updates="true"
+
+    # 2. 从 config.json (通过环境变量) 加载配置
     TG_BOT_TOKEN="${WATCHTOWER_CONF_BOT_TOKEN:-}"
     TG_CHAT_ID="${WATCHTOWER_CONF_CHAT_ID:-}"
     EMAIL_TO="${WATCHTOWER_CONF_EMAIL_TO:-}"
-    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_CONF_EXCLUDE_LIST:-}"
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-$default_exclude_list}"
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_CONF_EXTRA_ARGS:-}"
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_CONF_DEBUG_ENABLED:-false}"
-    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONF_CONFIG_INTERVAL:-$default_interval}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONF_DEFAULT_INTERVAL:-$default_interval}"
     WATCHTOWER_ENABLED="${WATCHTOWER_CONF_ENABLED:-false}"
     DOCKER_COMPOSE_PROJECT_DIR_CRON="${WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}"
-    CRON_HOUR="${WATCHTOWER_CONF_CRON_HOUR:-$default_cron_hour}"
+    CRON_HOUR="${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-$default_cron_hour}"
     CRON_TASK_ENABLED="${WATCHTOWER_CONF_TASK_ENABLED:-false}"
-    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-false}"
+    WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-$default_notify_on_no_updates}"
 
+    # 3. 如果存在本地配置文件，则用它覆盖以上所有设置
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE" &>/dev/null || true
