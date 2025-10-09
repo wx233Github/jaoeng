@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.6-UI与提示修复)
-# - 修复: configure_watchtower 中提示框消失的问题 (移除多余的 _print_header)
-# - 修复: manage_tasks 函数末尾的语法错误
+# 🚀 Watchtower 管理模块 (v4.9.7-语法与提示修复)
+# - 修复: _get_watchtower_remaining_time 函数中的语法错误 (line 285)
+# - 修复: configure_watchtower 提示框消失的问题 (移除多余的 _print_header)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.6"
+SCRIPT_VERSION="v4.9.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -282,7 +282,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi # 修复了这里的语法错误
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -325,7 +325,7 @@ get_updates_last_24h(){
     if [ -z "$raw_logs" ]; then
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
     fi
-    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could could not use configured notification template" || true
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
 }
 
 _format_and_highlight_log_line(){
@@ -567,7 +567,7 @@ configure_exclusion_list() {
 }
 
 configure_watchtower(){
-    # --- [修复] 移除 _print_header，避免空行和提示符消失 ---
+    # 修复：移除 _print_header，避免空行和提示符消失
     log_info "🚀 Watchtower 配置"
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     local WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"; log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1
