@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.14-状态显示与格式修复)
-# - 修复: _get_watchtower_remaining_time 优化逾期时间格式，精确到秒。
+# 🚀 Watchtower 管理模块 (v4.9.15-状态显示与格式修复)
 # - 修复: main_menu 移除 Watchtower 状态行中的 '│' 分隔符。
+# - 修复: _get_watchtower_remaining_time 优化逾期时间格式，确保精确到秒。
 # - 优化: 采用 utils.sh v2.23 的 _prompt_user_input 确保输入稳定。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.14"
+SCRIPT_VERSION="v4.9.15"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -310,10 +310,9 @@ _get_watchtower_remaining_time(){
             printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
         else
             local overdue=$(( -rem ))
-            local overdue_mins=$((overdue / 60))
-            local overdue_secs=$((overdue % 60))
-            # 修复: 确保逾期时间格式正确
-            printf "%b已逾期 %02d分%02d秒, 正在等待...%b" "$YELLOW" "$overdue_mins" "$overdue_secs" "$NC"
+            local overdue_human=$(_format_seconds_to_human "$overdue")
+            # 修复: 使用标准的格式化函数来显示逾期时间
+            echo -e "${YELLOW}已逾期 ${overdue_human}, 正在等待...${NC}"
         fi
     else
         echo -e "${YELLOW}计算中...${NC}"
@@ -749,7 +748,7 @@ main_menu(){
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi; fi
         local header_text="Watchtower 管理"
         local -a content_array=(
-            # 修复: 移除状态行中的 '│'
+            # 修复: 移除 Watchtower 状态行中的 '│'，使其成为单列行
             "🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" 
             "⏳ 下次检查:│${COUNTDOWN}" 
             "📦 容器概览:│总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
