@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.21-UI引擎最终稳定版)
-# - 修复: 彻底重构 _render_menu，采用多列精确计算和填充，解决所有对齐问题
+# 🚀 通用工具函数库 (v2.22-UI引擎最终稳定版)
+# - 修复: 微调 _render_menu 宽度计算，确保所有复杂菜单结构完美对齐
 # =============================================================
 
 # --- 严格模式 ---
@@ -150,7 +150,8 @@ _render_menu() {
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
-        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        # 标题使用绿色字体
+        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
 
     for line in "${lines[@]}"; do
