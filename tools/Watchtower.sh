@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.12-输入提示与来源明确化)
+# 🚀 Watchtower 管理模块 (v4.9.13-输入函数重构)
+# - 修复: 采用 utils.sh 的 _prompt_user_input 解决输入提示符消失问题。
 # - 修复: 优化 _prompt_for_interval 逻辑，明确显示配置来源（本地/config.json）。
-# - 优化: 移除 configure_watchtower 中可能干扰输入提示的 log_info。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.12"
+SCRIPT_VERSION="v4.9.13"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -177,9 +177,12 @@ _prompt_for_interval() {
         source_info="${CYAN} (当前值)${NC}"
     fi
 
-    # 确保提示符在当前行等待输入
-    echo -ne "$prompt_text (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: "
-    read -r user_input < /dev/tty
+    local final_prompt="${prompt_text} (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: "
+    
+    # 使用新的通用输入函数
+    local user_input
+    user_input=$(_prompt_user_input "$final_prompt" "")
+    
     user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]' | xargs)
     
     if [ -z "$user_input" ]; then
@@ -466,15 +469,23 @@ run_watchtower_once(){
 }
 
 _configure_telegram() {
-    read -r -p "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " TG_BOT_TOKEN_INPUT < /dev/tty; TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT:-$TG_BOT_TOKEN}"
-    read -r -p "请输入 Chat ID (当前: ${TG_CHAT_ID}): " TG_CHAT_ID_INPUT < /dev/tty; TG_CHAT_ID="${TG_CHAT_ID_INPUT:-$TG_CHAT_ID}"
-    read -r -p "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " notify_on_no_updates_choice < /dev/tty
+    local TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN_INPUT=$(_prompt_user_input "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " "$TG_BOT_TOKEN")
+    TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT}"
+    local TG_CHAT_ID_INPUT; TG_CHAT_ID_INPUT=$(_prompt_user_input "请输入 Chat ID (当前: ${TG_CHAT_ID}): " "$TG_CHAT_ID")
+    TG_CHAT_ID="${TG_CHAT_ID_INPUT}"
+    
+    local notify_on_no_updates_choice
+    notify_on_no_updates_choice=$(_prompt_user_input "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
+    
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
     log_info "Telegram 配置已更新。"
 }
 
 _configure_email() {
-    read -r -p "请输入接收邮箱 (当前: ${EMAIL_TO}): " EMAIL_TO_INPUT < /dev/tty; EMAIL_TO="${EMAIL_TO_INPUT:-$EMAIL_TO}"; log_info "Email 配置已更新。"
+    local EMAIL_TO_INPUT
+    EMAIL_TO_INPUT=$(_prompt_user_input "请输入接收邮箱 (当前: ${EMAIL_TO}): " "$EMAIL_TO")
+    EMAIL_TO="${EMAIL_TO_INPUT}"
+    log_info "Email 配置已更新。"
 }
 
 notification_menu() {
@@ -522,7 +533,7 @@ show_container_info() {
         case "$choice" in 
             "") return ;;
             a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
-            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
             *)
                 if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
                 local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -573,7 +584,7 @@ configure_exclusion_list() {
 }
 
 configure_watchtower(){
-    # 移除 log_info "🚀 Watchtower 配置"，让菜单标题和提示框紧密连接，避免干扰
+    # 修复：移除 log_info "🚀 Watchtower 配置"，让菜单标题和提示框紧密连接，避免干扰
     
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     
@@ -585,10 +596,21 @@ configure_watchtower(){
     sleep 1
     
     configure_exclusion_list
-    read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice < /dev/tty; local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
-    if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then read -r -p "请输入额外参数: " temp_extra_args < /dev/tty; fi
-    read -r -p "是否启用调试模式? (y/N, 当前: ${WATCHTOWER_DEBUG_ENABLED}): " debug_choice < /dev/tty; local temp_debug_enabled="false"
+    
+    local extra_args_choice
+    extra_args_choice=$(_prompt_user_input "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " "")
+    local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
+    if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then 
+        local temp_extra_args_input
+        temp_extra_args_input=$(_prompt_user_input "请输入额外参数: " "$temp_extra_args")
+        temp_extra_args="${temp_extra_args_input}"
+    fi
+    
+    local debug_choice
+    debug_choice=$(_prompt_user_input "是否启用调试模式? (y/N, 当前: ${WATCHTOWER_DEBUG_ENABLED}): " "")
+    local temp_debug_enabled="false"
     if echo "$debug_choice" | grep -qE '^[Yy]$'; then temp_debug_enabled="true"; fi
+    
     local final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST:-无}"
     local -a confirm_array=("检查间隔│$(_format_seconds_to_human "$WT_INTERVAL_TMP")" "排除列表│${final_exclude_list_display//,/, }" "额外参数│${temp_extra_args:-无}" "调试模式│$temp_debug_enabled")
     _render_menu "配置确认" "${confirm_array[@]}"; read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice < /dev/tty
@@ -673,13 +695,38 @@ view_and_edit_config(){
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
+        
+        # 使用新的输入函数
         case "$type" in
-            string|string_list) read -r -p "请输入新的 '$label' (当前: $current_value): " new_value < /dev/tty; declare "$var_name"="${new_value:-$current_value}" ;;
-            bool) read -r -p "是否启用 '$label'? (y/N, 当前: $current_value): " new_value < /dev/tty; if echo "$new_value" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;;
-            interval) new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;;
+            string|string_list) 
+                local new_value_input
+                new_value_input=$(_prompt_user_input "请输入新的 '$label' (当前: $current_value): " "$current_value")
+                declare "$var_name"="${new_value_input}" 
+                ;;
+            bool) 
+                local new_value_input
+                new_value_input=$(_prompt_user_input "是否启用 '$label'? (y/N, 当前: $current_value): " "")
+                if echo "$new_value_input" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi 
+                ;;
+            interval) 
+                new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔")
+                if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi 
+                ;;
             number_range)
                 local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2)
-                while true; do read -r -p "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " new_value < /dev/tty; if [ -z "$new_value" ]; then break; fi; if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then declare "$var_name"="$new_value"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi; done ;;
+                while true; do 
+                    local new_value_input
+                    new_value_input=$(_prompt_user_input "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " "$current_value")
+                    new_value="${new_value_input}"
+                    if [ -z "$new_value" ]; then break; fi
+                    if echo "$new_value" | grep -qE '^[0-9]+$' && [ "$new_value" -ge "$min" ] && [ "$new_value" -le "$max" ]; then 
+                        declare "$var_name"="$new_value"; 
+                        break; 
+                    else 
+                        log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; 
+                    fi
+                done 
+                ;;
         esac
         save_config; log_info "'$label' 已更新。"; sleep 1
     done
