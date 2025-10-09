@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.19-UI 和倒计时逻辑最终修复)
+# 🚀 Watchtower 管理模块 (v4.9.20-UI 和倒计时逻辑最终修复)
 # - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐，解决 UI 混乱。
-# - 修复: _get_watchtower_remaining_time 倒计时逻辑，当已逾期时显示“正在检查中...”。
+# - 修复: _get_watchtower_remaining_time 倒计时逻辑，始终显示距离下一次预期检查的倒计时或“正在检查中...”。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.19"
+SCRIPT_VERSION="v4.9.20"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -284,35 +284,57 @@ get_last_session_time(){
 }
 
 _get_watchtower_remaining_time(){
-    local int="$1"
-    local logs="$2"
-    if [ -z "$int" ] || [ -z "$logs" ]; then echo -e "${YELLOW}N/A${NC}"; return; fi
+    local interval_seconds="$1" # Watchtower 配置的检查间隔，秒
+    local raw_logs="$2"         # Watchtower 容器的最新日志
+    local current_epoch=$(date +%s)
 
-    local log_line ts epoch rem
-    log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    if [ -z "$interval_seconds" ] || [ -z "$raw_logs" ]; then
+        echo -e "${YELLOW}N/A${NC}"
+        return
+    fi
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+    local last_session_line
+    last_session_line=$(echo "$raw_logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
-    epoch=$(_date_to_epoch "$ts")
+    if [ -z "$last_session_line" ]; then
+        echo -e "${YELLOW}等待首次扫描...${NC}"
+        return
+    fi
 
-    if [ "$epoch" -gt 0 ]; then
-        if [[ "$log_line" == *"Session done"* ]]; then
-            rem=$((int - ($(date +%s) - epoch) ))
-        elif [[ "$log_line" == *"Scheduling first run"* ]]; then
-            rem=$((epoch - $(date +%s)))
-        elif [[ "$log_line" == *"Starting Watchtower"* ]]; then
-            echo -e "${YELLOW}等待首次调度...${NC}"; return;
-        fi
+    local last_event_timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_session_line")
+    local last_event_epoch=$(_date_to_epoch "$last_event_timestamp_str")
 
-        if [ "$rem" -gt 0 ]; then
-            printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
-        else
-            # 修复: 当 rem <= 0 时，显示“正在检查中...”而不是“已逾期”
-            echo -e "${YELLOW}正在检查中...${NC}"
-        fi
-    else
+    if [ "$last_event_epoch" -eq 0 ]; then
         echo -e "${YELLOW}计算中...${NC}"
+        return
+    fi
+
+    local next_expected_check_epoch=0
+    local remaining_seconds=0
+
+    if [[ "$last_session_line" == *"Session done"* ]]; then
+        # 上次会话完成，下次检查时间是上次完成时间 + 间隔
+        next_expected_check_epoch=$((last_event_epoch + interval_seconds))
+        remaining_seconds=$((next_expected_check_epoch - current_epoch))
+    elif [[ "$last_session_line" == *"Scheduling first run"* ]]; then
+        # 首次运行已调度，下次检查时间就是调度时间
+        next_expected_check_epoch="$last_event_epoch"
+        remaining_seconds=$((next_expected_check_epoch - current_epoch))
+    elif [[ "$last_session_line" == *"Starting Watchtower"* ]]; then
+        # Watchtower 刚启动，可能还在初始化或等待首次调度
+        echo -e "${YELLOW}等待首次调度...${NC}"
+        return
+    fi
+
+    if [ "$remaining_seconds" -gt 0 ]; then
+        # 还有剩余时间，显示倒计时
+        local hours=$((remaining_seconds / 3600))
+        local minutes=$(( (remaining_seconds % 3600) / 60 ))
+        local seconds=$(( remaining_seconds % 60 ))
+        printf "%b%02d时%02d分%02d秒%b" "$GREEN" "$hours" "$minutes" "$seconds" "$NC"
+    else
+        # 剩余时间小于等于0，表示已到检查点或已逾期，显示正在检查中
+        echo -e "${YELLOW}正在检查中...${NC}"
     fi
 }
 
