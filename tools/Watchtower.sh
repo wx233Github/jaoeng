@@ -1,12 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.16-状态显示与格式修复)
+# 🚀 Watchtower 管理模块 (v4.9.17-关键语法修复与全面审查)
+# - 修复: _get_watchtower_remaining_time 函数中 if 语句的语法错误 (原第 333 行)。
 # - 修复: _get_watchtower_remaining_time 优化逾期时间格式，精确到小时、分钟、秒。
 # - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐。
+# - 增强: 对整个脚本进行了全面、严格的语法审查，以消除所有已知的 if/fi 不匹配问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.16"
+SCRIPT_VERSION="v4.9.17"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -291,7 +293,8 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
+    # 修复: 这里的 '}' 应该是 'fi'
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -701,7 +704,7 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        if [ -z "$choice" ]; then return; }
+        if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
         
