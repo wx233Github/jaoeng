@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.25-菜单渲染优化与注释清理)
-# - 优化: _render_menu 改进列宽计算和渲染逻辑，更健壮地处理混合列数行。
+# 🚀 通用工具函数库 (v2.26-菜单渲染健壮性与注释清理)
+# - 优化: _render_menu 改进列宽计算和渲染逻辑，更健壮地处理混合列数行，解决 UI 混乱问题。
 # - 修复: 移除 generate_line 函数中误导性注释。
 # =============================================================
 
@@ -110,7 +110,7 @@ generate_line() {
 
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    if [ -z "$plain_text" ]; then echo 0; return; fi
+    if [ -z "$plain_text" ]; then echo 0; return; }
     if command -v python3 &>/dev/null; then
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
