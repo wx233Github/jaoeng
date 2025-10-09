@@ -148,7 +148,7 @@ _date_to_epoch() {
 
 _format_seconds_to_human(){
     local total_seconds="$1"
-    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi
+    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; }
     local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 ))
     local result=""
     if [ "$days" -gt 0 ]; then result+="${days}天"; fi
@@ -225,7 +225,7 @@ _extract_interval_from_cmd(){
                 break
             fi
             prev="$t"
-        done
+        }
     fi
     interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
     if [ -z "$interval" ]; then
@@ -365,7 +365,7 @@ _format_and_highlight_log_line(){
                 msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
                 if [ -z "$msg" ] && [[ "$line" == *"msg="* ]]; then
                     msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
-                fi
+                }
                 if [ -z "$msg" ]; then
                     msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info|fatal)|time="[^"]*")\s*//g' | tr -d '\n')
                 fi
@@ -529,7 +529,7 @@ show_container_info() {
                     5) _print_header "容器详情: ${selected_container}"; (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;; 
                     6) if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
                     *) ;; 
-                esac
+                }
             ;;
         esac
     done
@@ -570,7 +570,14 @@ configure_watchtower(){
     # 修复：移除 _print_header，避免空行和提示符消失
     log_info "🚀 Watchtower 配置"
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
-    local WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"; log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1
+    
+    # 修复：直接捕获 _prompt_for_interval 的返回值
+    local WT_INTERVAL_TMP
+    WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"
+    
+    log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"
+    sleep 1
+    
     configure_exclusion_list
     read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice < /dev/tty; local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
     if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then read -r -p "请输入额外参数: " temp_extra_args < /dev/tty; fi
@@ -657,7 +664,7 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        if [ -z "$choice" ]; then return; fi
+        if [ -z "$choice" ]; then return; }
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
         case "$type" in
