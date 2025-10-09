@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.41-最终语法修复)
-# - 修复: 修复 check_sudo_privileges 函数中 if 语句的语法错误 (line 83)
+# 🚀 VPS 一键安装与管理脚本 (v77.42-修复模块返回双回车)
+# - 修复: 模块返回代码为 10 时，跳过 press_enter_to_continue，解决双回车问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.41"
+SCRIPT_VERSION="v77.42"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -80,7 +80,6 @@ fi
 CURRENT_MENU_NAME="MAIN_MENU"
 
 check_sudo_privileges() {
-    # 修复: 这里的 '}' 应该是 'fi'
     if [ "$(id -u)" -eq 0 ]; then 
         JB_HAS_PASSWORDLESS_SUDO=true; 
         log_info "以 root 用户运行（拥有完整权限）。"; 
@@ -226,7 +225,17 @@ run_module(){
     fi
     
     set +e; bash "$module_path"; local exit_code=$?; set -e
-    if [ "$exit_code" -eq 0 ]; then log_success "模块 [${module_name}] 执行完毕。"; elif [ "$exit_code" -eq 10 ]; then log_info "已从 [${module_name}] 返回。"; else log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; fi
+    if [ "$exit_code" -eq 0 ]; then 
+        log_success "模块 [${module_name}] 执行完毕。"; 
+    elif [ "$exit_code" -eq 10 ]; then 
+        # 修复: 模块返回代码 10 表示“返回上级”，此时不执行 press_enter_to_continue
+        log_info "已从 [${module_name}] 返回。"; 
+    else 
+        log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; 
+        press_enter_to_continue # 只有出错时才暂停
+    fi
+    # 返回模块的退出代码，供 display_and_process_menu 判断是否需要暂停
+    return $exit_code
 }
 
 _get_docker_status() {
@@ -271,7 +280,6 @@ display_and_process_menu() {
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        # 修复: 确保 for 循环正确关闭
         for i in "${!func_items[@]}"; do 
             IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
             items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); 
@@ -288,13 +296,21 @@ display_and_process_menu() {
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
         if [ -z "$item_json" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         
-        local type name action
+        local type name action exit_code=0
         type=$(jq -r .type <<< "$item_json")
         name=$(jq -r .name <<< "$item_json")
         action=$(jq -r .action <<< "$item_json")
         
-        case "$type" in item) run_module "$action" "$name" ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@" ;; esac
-        if [ "$type" != "submenu" ]; then press_enter_to_continue; fi
+        case "$type" in 
+            item) run_module "$action" "$name"; exit_code=$? ;; 
+            submenu) CURRENT_MENU_NAME="$action" ;; 
+            func) "$action" "$@"; exit_code=$? ;; 
+        esac
+        
+        # 修复: 只有当模块执行成功 (0) 或不是返回上级 (10) 时，才执行 press_enter_to_continue
+        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then 
+            press_enter_to_continue; 
+        fi
     done
 }
 
