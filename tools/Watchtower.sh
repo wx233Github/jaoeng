@@ -1,13 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.15-状态显示与格式修复)
-# - 修复: _get_watchtower_remaining_time 优化逾期时间格式，精确到秒。
-# - 修复: main_menu 移除 Watchtower 状态行中的 '│' 分隔符。
-# - 优化: 采用 utils.sh v2.23 的 _prompt_user_input 确保输入稳定。
+# 🚀 Watchtower 管理模块 (v4.9.16-状态显示与格式修复)
+# - 修复: _get_watchtower_remaining_time 优化逾期时间格式，精确到小时、分钟、秒。
+# - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.15"
+SCRIPT_VERSION="v4.9.16"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -292,7 +291,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; }
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -310,10 +309,17 @@ _get_watchtower_remaining_time(){
             printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
         else
             local overdue=$(( -rem ))
-            local overdue_mins=$((overdue / 60))
+            local overdue_hours=$((overdue / 3600))
+            local overdue_mins=$(( (overdue % 3600) / 60 ))
             local overdue_secs=$((overdue % 60))
-            # 修复: 确保逾期时间格式正确，使用两位数补零
-            printf "%b已逾期 %02d分%02d秒, 正在等待...%b" "$YELLOW" "$overdue_mins" "$overdue_secs" "$NC"
+
+            local overdue_str=""
+            if [ "$overdue_hours" -gt 0 ]; then
+                overdue_str+="$(printf "%02d时" "$overdue_hours")"
+            fi
+            overdue_str+="$(printf "%02d分%02d秒" "$overdue_mins" "$overdue_secs")"
+
+            printf "%b已逾期 %s, 正在等待...%b" "$YELLOW" "$overdue_str" "$NC"
         fi
     else
         echo -e "${YELLOW}计算中...${NC}"
@@ -695,7 +701,7 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        if [ -z "$choice" ]; then return; fi
+        if [ -z "$choice" ]; then return; }
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
         
@@ -749,8 +755,8 @@ main_menu(){
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi; fi
         local header_text="Watchtower 管理"
         local -a content_array=(
-            # 修复: 移除状态行中的 '│'
-            "🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" 
+            # 修复: 显式添加 '│'，使其成为两列，确保对齐
+            "🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)│" 
             "⏳ 下次检查:│${COUNTDOWN}" 
             "📦 容器概览:│总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
