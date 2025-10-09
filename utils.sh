@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.21-UI引擎稳定版)
-# - 修复: 恢复并稳定多列渲染逻辑，确保所有菜单（包括复杂表格）的完美对齐和着色
+# 🚀 通用工具函数库 (v2.21-UI引擎最终稳定版)
+# - 修复: 彻底重构 _render_menu，采用多列精确计算和填充，解决所有对齐问题
 # =============================================================
 
 # --- 严格模式 ---
@@ -103,30 +103,42 @@ _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local -a max_col_widths=()
     local num_cols=1
+    local has_multi_col=0
 
     # 1. 预扫描以确定最大列数和每列的最大宽度
     for line in "${lines[@]}"; do
-        local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
-        if [ "${#parts[@]}" -gt "$num_cols" ]; then num_cols=${#parts[@]}; fi
-        for i in "${!parts[@]}"; do
-            local part_width; part_width=$(_get_visual_width "${parts[i]}")
-            if [ "${part_width:-0}" -gt "${max_col_widths[i]:-0}" ]; then
-                max_col_widths[i]=$part_width
-            fi
-        done
+        if [[ "$line" == *"│"* ]]; then
+            has_multi_col=1
+            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
+            if [ "${#parts[@]}" -gt "$num_cols" ]; then num_cols=${#parts[@]}; fi
+            for i in "${!parts[@]}"; do
+                local part_width; part_width=$(_get_visual_width "${parts[i]}")
+                if [ "${part_width:-0}" -gt "${max_col_widths[i]:-0}" ]; then
+                    max_col_widths[i]=$part_width
+                fi
+            done
+        fi
     done
 
     # 2. 计算盒子总宽度
     local box_inner_width=0
-    if [ "$num_cols" -gt 1 ]; then
+    if [ "$has_multi_col" -eq 1 ]; then
         for width in "${max_col_widths[@]}"; do
             box_inner_width=$((box_inner_width + width))
         done
-        # 加上 ` ` + 分隔符 `│` + ` ` (共3个字符) 和两边的 ` ` (共2个字符)
+        # 加上分隔符和空格: (N-1) * (空格 + │ + 空格) + 左右两边空格
         box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2))
-    elif [ "$num_cols" -eq 1 ]; then
-        box_inner_width=$((max_col_widths[0] + 2)) # 加上两边的 ` ` (2个字符)
     fi
+    
+    # 考虑单列行和标题
+    for line in "${lines[@]}"; do
+        if [[ "$line" != *"│"* ]]; then
+            local line_width; line_width=$(_get_visual_width "$line")
+            if [ "$((line_width + 2))" -gt "$box_inner_width" ]; then
+                box_inner_width=$((line_width + 2))
+            fi
+        fi
+    done
 
     local title_width; title_width=$(_get_visual_width "$title")
     if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then
@@ -142,18 +154,22 @@ _render_menu() {
     fi
 
     for line in "${lines[@]}"; do
-        local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
         local line_content=""
-        
-        # 构建行内容
-        for i in "${!parts[@]}"; do
-            local part_width; part_width=$(_get_visual_width "${parts[i]}")
-            local padding=$((max_col_widths[i] - part_width))
-            line_content+="${parts[i]}$(printf '%*s' "$padding")"
-            if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
-                line_content+=" ${GREEN}│${NC} "
-            fi
-        done
+        if [[ "$line" == *"│"* ]]; then
+            # 多列行处理
+            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
+            for i in "${!parts[@]}"; do
+                local part_width; part_width=$(_get_visual_width "${parts[i]}")
+                local padding=$((max_col_widths[i] - part_width))
+                line_content+="${parts[i]}$(printf '%*s' "$padding")"
+                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
+                    line_content+=" ${GREEN}│${NC} "
+                fi
+            done
+        else
+            # 单列行处理
+            line_content="$line"
+        fi
         
         # 计算整行填充
         local content_width; content_width=$(_get_visual_width "$line_content")
