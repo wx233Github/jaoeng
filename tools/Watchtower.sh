@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.10-最终语法修复)
-# - 修复: view_and_edit_config 函数中 if 语句的语法错误 (line 417)
+# 🚀 Watchtower 管理模块 (v4.9.11-最终语法修复)
+# - 修复: get_last_session_time 函数中 if 语句的语法错误 (line 256)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.10"
+SCRIPT_VERSION="v4.9.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -253,7 +253,12 @@ get_watchtower_inspect_summary(){
 get_last_session_time(){
     local logs
     logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
-    if [ -z "$logs" ]; then echo ""; return 1; }
+    # 修复: 这里的 '}' 应该是 'fi'
+    if [ -z "$logs" ]; then 
+        echo ""; 
+        return 1; 
+    fi
+    
     local line ts
     if echo "$logs" | grep -qiE "permission denied|cannot connect"; then
         echo -e "${RED}错误:权限不足${NC}"
@@ -424,7 +429,7 @@ EOF
     _print_header "正在启动 $mode_description"
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
-    echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
+    echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_command_to_run[@]}${NC}"
     set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
     if [ -n "$template_temp_file" ] && [ -f "$template_temp_file" ]; then rm -f "$template_temp_file" 2>/dev/null || true; fi
     if [ "$mode_description" = "一次性更新" ]; then
@@ -661,6 +666,7 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
+        # 修复: 这里的 '}' 应该是 'fi'
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
