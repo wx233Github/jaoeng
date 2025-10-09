@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.6-UI与输入修复)
-# - 修复: _prompt_for_interval 中输入提示符逻辑，确保输入框正确出现
-# - 优化: UI 渲染数据结构，以适应新的 utils.sh 稳定引擎
+# 🚀 Watchtower 管理模块 (v4.9.6-UI与提示修复)
+# - 修复: configure_watchtower 中提示框消失的问题 (移除多余的 _print_header)
+# - 修复: manage_tasks 函数末尾的语法错误
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -175,7 +175,7 @@ _prompt_for_interval() {
          source_info="${CYAN} (来自 config.json)${NC}"
     fi
 
-    # --- [关键修复] 打印提示信息，并使用 read -r user_input 接收输入 ---
+    # 使用 echo -ne 打印带颜色的提示，避免转义符泄露
     echo -ne "$prompt_text (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: "
     read -r user_input < /dev/tty
     user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -325,7 +325,7 @@ get_updates_last_24h(){
     if [ -z "$raw_logs" ]; then
         raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true)
     fi
-    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could not use configured notification template" || true
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal|permission denied|cannot connect|Could not do a head request|Notification template error|Could could not use configured notification template" || true
 }
 
 _format_and_highlight_log_line(){
@@ -535,8 +535,41 @@ show_container_info() {
     done
 }
 
+configure_exclusion_list() {
+    declare -A excluded_map; local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
+    if [ -n "$initial_exclude_list" ]; then local IFS=,; for container_name in $initial_exclude_list; do container_name=$(echo "$container_name" | xargs); if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; done; unset IFS; fi
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a all_containers_array=(); while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); local -a items_array=(); local i=0
+        while [ $i -lt ${#all_containers_array[@]} ]; do local container="${all_containers_array[$i]}"; local is_excluded=" "; if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); i=$((i + 1)); done
+        items_array+=("")
+        local current_excluded_display="无"
+        if [ ${#excluded_map[@]} -gt 0 ]; then
+            local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; current_excluded_display="${keys[*]}"; IFS="$old_ifs"
+        fi
+        items_array+=("${CYAN}当前排除: ${current_excluded_display}${NC}")
+        _render_menu "配置排除列表" "${items_array[@]}"; read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]清空: " choice < /dev/tty
+        case "$choice" in
+            c|C) break ;;
+            "") excluded_map=(); log_info "已清空排除列表。"; sleep 1.5; break ;;
+            *)
+                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
+                for index in "${selected_indices[@]}"; do
+                    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le ${#all_containers_array[@]} ]; then
+                        local target_container="${all_containers_array[$((index - 1))]}"; if [ -n "${excluded_map[$target_container]+_}" ]; then unset excluded_map["$target_container"]; else excluded_map["$target_container"]=1; fi
+                    elif [ -n "$index" ]; then has_invalid_input=true; fi
+                done
+                if [ "$has_invalid_input" = "true" ]; then log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; fi
+                ;;
+        esac
+    done
+    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; final_excluded_list="${keys[*]}"; IFS="$old_ifs"; fi
+    WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
+}
+
 configure_watchtower(){
-    _print_header "🚀 Watchtower 配置"; local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
+    # --- [修复] 移除 _print_header，避免空行和提示符消失 ---
+    log_info "🚀 Watchtower 配置"
+    local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     local WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"; log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"; sleep 1
     configure_exclusion_list
     read -r -p "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " extra_args_choice < /dev/tty; local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
