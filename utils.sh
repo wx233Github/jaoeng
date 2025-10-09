@@ -1,8 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.23-输入稳定性修复)
-# - 新增: _prompt_user_input 确保交互式输入在任何环境下都稳定可见。
-# - 修复: 修复 generate_line 函数中的语法错误
+# 🚀 通用工具函数库 (v2.24-清理遗留注释)
+# - 修复: 移除 generate_line 函数中误导性注释。
 # =============================================================
 
 # --- 严格模式 ---
@@ -104,7 +103,6 @@ load_config() {
 # --- UI 渲染 & 字符串处理 ---
 generate_line() {
     local len=${1:-40}; local char=${2:-"─"}
-    # 修复: 这里的 '}' 应该是 'fi'
     if [ "$len" -le 0 ]; then echo ""; return; fi
     printf "%${len}s" "" | sed "s/ /$char/g"
 }
@@ -154,11 +152,25 @@ _render_menu() {
     
     # 考虑单列行和标题
     for line in "${lines[@]}"; do
-        if [[ "$line" != *"│"* ]]; then
-            local line_width; line_width=$(_get_visual_width "$line")
-            if [ "$((line_width + 2))" -gt "$box_inner_width" ]; then
-                box_inner_width=$((line_width + 2))
-            fi
+        local line_width
+        if [[ "$line" == *"│"* ]]; then
+            # 对于多列行，计算其完整内容宽度
+            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
+            local current_line_content_width=0
+            for i in "${!parts[@]}"; do
+                current_line_content_width=$((current_line_content_width + max_col_widths[i]))
+                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
+                    current_line_content_width=$((current_line_content_width + 3)) # space + │ + space
+                fi
+            done
+            line_width="$current_line_content_width"
+        else
+            # 对于单列行，直接计算其内容宽度
+            line_width=$(_get_visual_width "$line")
+        fi
+
+        if [ "$((line_width + 2))" -gt "$box_inner_width" ]; then
+            box_inner_width=$((line_width + 2))
         fi
     done
 
