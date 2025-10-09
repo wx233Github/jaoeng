@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.9-输入框与语法最终修复)
-# - 修复: _extract_interval_from_cmd 缺失 'fi' 关键字
-# - 修复: configure_watchtower 确保输入提示符正确显示，并捕获返回值
+# 🚀 Watchtower 管理模块 (v4.9.10-最终语法修复)
+# - 修复: view_and_edit_config 函数中 if 语句的语法错误 (line 417)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.9"
+SCRIPT_VERSION="v4.9.10"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -165,14 +164,12 @@ _prompt_for_interval() {
     human_readable_current=$(_format_seconds_to_human "$current_val")
     
     local source_info=""
-    if [ -f "$CONFIG_FILE" ]; then
-        local local_val; local_val=$(grep '^WATCHTOWER_CONFIG_INTERVAL=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
-        if [ "$local_val" = "$current_val" ]; then
-            source_info="${CYAN} (来自本地配置)${NC}"
-        fi
-    fi
-    if [ -z "$source_info" ]; then
-         source_info="${CYAN} (来自 config.json)${NC}"
+    # 检查是否来自本地配置文件
+    local local_val; local_val=$(grep '^WATCHTOWER_CONFIG_INTERVAL=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+    if [ -n "$local_val" ] && [ "$local_val" = "$current_val" ]; then
+        source_info="${CYAN} (来自本地配置)${NC}"
+    else
+        source_info="${CYAN} (来自 config.json)${NC}"
     fi
 
     # 使用 echo -ne 打印带颜色的提示，避免转义符泄露
@@ -256,7 +253,7 @@ get_watchtower_inspect_summary(){
 get_last_session_time(){
     local logs
     logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
-    if [ -z "$logs" ]; then echo ""; return 1; fi
+    if [ -z "$logs" ]; then echo ""; return 1; }
     local line ts
     if echo "$logs" | grep -qiE "permission denied|cannot connect"; then
         echo -e "${RED}错误:权限不足${NC}"
@@ -414,7 +411,7 @@ EOF
         template_temp_file="/tmp/watchtower_notification_template.$$.gohtml"; chmod 644 "$template_temp_file"
         docker_run_args+=(-v "${template_temp_file}:/etc/watchtower/notification.gohtml:ro"); docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
     fi
-    if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); }
+    if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; local included_containers
     if [ -n "$final_exclude_list" ]; then
@@ -537,7 +534,7 @@ show_container_info() {
 
 configure_exclusion_list() {
     declare -A excluded_map; local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
-    if [ -n "$initial_exclude_list" ]; then local IFS=,; for container_name in $initial_exclude_list; do container_name=$(echo "$container_name" | xargs); if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; done; unset IFS; }
+    if [ -n "$initial_exclude_list" ]; then local IFS=,; for container_name in $initial_exclude_list; do container_name=$(echo "$container_name" | xargs); if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; done; unset IFS; fi
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a all_containers_array=(); while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); local -a items_array=(); local i=0
         while [ $i -lt ${#all_containers_array[@]} ]; do local container="${all_containers_array[$i]}"; local is_excluded=" "; if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); i=$((i + 1)); done
