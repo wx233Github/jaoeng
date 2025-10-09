@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.37-更新日志精简)
-# - 优化: 移除 utils.sh 和 config.json 更新时的冗余警告信息
+# 🚀 VPS 一键安装与管理脚本 (v77.38-主菜单UI微调)
+# - 优化: 调整主菜单状态行格式，确保与 utils.sh 的 V2.22 引擎完美对齐
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.37"
+SCRIPT_VERSION="v77.38"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -231,7 +231,7 @@ display_and_process_menu() {
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
         if [ -z "$menu_json" ]; then log_warn "菜单配置 '$CURRENT_MENU_NAME' 读取失败，回退到主菜单."; CURRENT_MENU_NAME="MAIN_MENU"; menu_json=$(jq -r --arg menu "MAIN_MENU" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || ""); fi
-        if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
+        if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; }
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
