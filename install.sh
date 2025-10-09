@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.38-主菜单UI微调)
-# - 优化: 调整主菜单状态行格式，确保与 utils.sh 的 V2.22 引擎完美对齐
+# 🚀 VPS 一键安装与管理脚本 (v77.39-核心语法修复)
+# - 修复: 移除 run_module 函数末尾多余的 '}'，解决 syntax error
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.38"
+SCRIPT_VERSION="v77.39"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -231,7 +231,7 @@ display_and_process_menu() {
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
         if [ -z "$menu_json" ]; then log_warn "菜单配置 '$CURRENT_MENU_NAME' 读取失败，回退到主菜单."; CURRENT_MENU_NAME="MAIN_MENU"; menu_json=$(jq -r --arg menu "MAIN_MENU" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || ""); fi
-        if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; }
+        if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。"; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
@@ -259,7 +259,7 @@ display_and_process_menu() {
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
+        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); }
         
         _render_menu "$menu_title" "${items_array[@]}"
         
