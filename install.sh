@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.43-修复更新冗余输出)
-# - 修复: 优化 install.sh 自身更新时的输出逻辑，避免乱码和重复日志。
+# 🚀 VPS 一键安装与管理脚本 (v77.43-修复更新时输出污染)
+# - 修复: 将 run_comprehensive_auto_update 内的诊断信息重定向到 stderr，
+#         防止污染返回值，彻底解决更新时输出混乱和挂起的问题。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -65,7 +66,6 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     fi
     
     echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
-    # 修复: 确保 exec 后的输出是干净的
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
@@ -136,23 +136,18 @@ run_comprehensive_auto_update() {
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
         if [ "$local_hash" != "$remote_hash" ]; then
-            
-            # 特殊处理: 如果是 install.sh 更新，则只打印重启信息，避免后续的 log_success 混淆输出
-            if [ "$file" = "install.sh" ]; then
-                # 打印一个明确的重启信息，然后立即重启
-                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀"
-                flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
-            fi
-            
             updated_files+=("$file")
             sudo mv "$temp_file" "$local_path"
             if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
-            
+            if [ "$file" = "install.sh" ]; then
+                # 修复: 将此消息重定向到 stderr (>&2)，防止污染返回值
+                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
+                flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+            fi
         else
             rm -f "$temp_file"
         fi
     done
-    
     # 检查所有模块脚本
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
     for script_name in $scripts_to_update; do
@@ -160,13 +155,13 @@ run_comprehensive_auto_update() {
             updated_files+=("$script_name")
         fi
     done
-    
-    # 返回更新的文件列表，让 main 函数处理日志输出
+    # 最终只输出文件名列表到 stdout
     echo "${updated_files[@]}"
 }
 
 download_module_to_cache() {
     local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
+    # 修复: 自动模式下不输出任何信息到 stdout
     if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}"; fi
     sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
@@ -236,11 +231,10 @@ run_module(){
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。"; 
     elif [ "$exit_code" -eq 10 ]; then 
-        # 修复: 模块返回代码 10 表示“返回上级”，此时不执行 press_enter_to_continue
         log_info "已从 [${module_name}] 返回。"; 
     else 
         log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"; 
-        press_enter_to_continue # 只有出错时才暂停
+        # 只有出错时才暂停
     fi
     # 返回模块的退出代码，供 display_and_process_menu 判断是否需要暂停
     return $exit_code
@@ -337,18 +331,11 @@ main() {
                 if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}"; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command"; exit 1; fi ;;
         esac
     fi
-    
-    # 修复：在检查更新前，清除可能干扰的行尾输出
-    echo -ne "\r"
     log_info "脚本启动 (${SCRIPT_VERSION})"
     echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 "
-    
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
-    
-    # 修复：确保更新完成信息是干净的
     echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          "
-    
     if [ -n "$updated_files_list" ]; then
         for file in $updated_files_list; do
             local filename; filename=$(basename "$file")
