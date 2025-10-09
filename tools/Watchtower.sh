@@ -1,14 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.17-关键语法修复与全面审查)
-# - 修复: _get_watchtower_remaining_time 函数中 if 语句的语法错误 (原第 333 行)。
-# - 修复: _get_watchtower_remaining_time 优化逾期时间格式，精确到小时、分钟、秒。
-# - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐。
-# - 增强: 对整个脚本进行了全面、严格的语法审查，以消除所有已知的 if/fi 不匹配问题。
+# 🚀 Watchtower 管理模块 (v4.9.19-UI 和倒计时逻辑最终修复)
+# - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐，解决 UI 混乱。
+# - 修复: _get_watchtower_remaining_time 倒计时逻辑，当已逾期时显示“正在检查中...”。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.17"
+SCRIPT_VERSION="v4.9.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -293,7 +291,6 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    # 修复: 这里的 '}' 应该是 'fi'
     if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
@@ -311,18 +308,8 @@ _get_watchtower_remaining_time(){
         if [ "$rem" -gt 0 ]; then
             printf "%b%02d时%02d分%02d秒%b" "$GREEN" $((rem / 3600)) $(((rem % 3600) / 60)) $((rem % 60)) "$NC"
         else
-            local overdue=$(( -rem ))
-            local overdue_hours=$((overdue / 3600))
-            local overdue_mins=$(( (overdue % 3600) / 60 ))
-            local overdue_secs=$((overdue % 60))
-
-            local overdue_str=""
-            if [ "$overdue_hours" -gt 0 ]; then
-                overdue_str+="$(printf "%02d时" "$overdue_hours")"
-            fi
-            overdue_str+="$(printf "%02d分%02d秒" "$overdue_mins" "$overdue_secs")"
-
-            printf "%b已逾期 %s, 正在等待...%b" "$YELLOW" "$overdue_str" "$NC"
+            # 修复: 当 rem <= 0 时，显示“正在检查中...”而不是“已逾期”
+            echo -e "${YELLOW}正在检查中...${NC}"
         fi
     else
         echo -e "${YELLOW}计算中...${NC}"
@@ -682,7 +669,7 @@ show_watchtower_details(){
         case "$pick" in
             1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
-            3) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
+            3) if JB_SUDO_LOG_QUIET="TRUE" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
             *) return ;;
         esac
     done
@@ -758,8 +745,8 @@ main_menu(){
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi; fi
         local header_text="Watchtower 管理"
         local -a content_array=(
-            # 修复: 显式添加 '│'，使其成为两列，确保对齐
-            "🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)│" 
+            # 修复: 显式将状态行分为两列，确保对齐
+            "🕝 Watchtower 状态:│${STATUS_COLOR} (名称排除模式)" 
             "⏳ 下次检查:│${COUNTDOWN}" 
             "📦 容器概览:│总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
