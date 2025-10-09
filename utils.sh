@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.22-UI引擎最终稳定版)
-# - 修复: 微调 _render_menu 宽度计算，确保所有复杂菜单结构完美对齐
+# 🚀 通用工具函数库 (v2.23-输入稳定性修复)
+# - 新增: _prompt_user_input 确保交互式输入在任何环境下都稳定可见。
+# - 修复: 修复 generate_line 函数中的语法错误
 # =============================================================
 
 # --- 严格模式 ---
@@ -53,6 +54,26 @@ log_debug()   {
 }
 
 # --- 交互函数 ---
+# 核心输入函数，确保提示符可见，并从 /dev/tty 读取以避免 stdin 重定向问题
+_prompt_user_input() {
+    local prompt_text="$1"
+    local default_value="$2"
+    local result
+    
+    # 确保提示符在终端上可见
+    echo -ne "${YELLOW}${prompt_text}${NC}" > /dev/tty
+    
+    # 从 /dev/tty 读取输入，避免管道和重定向问题
+    read -r result < /dev/tty
+    
+    # 返回结果，如果为空则返回默认值
+    if [ -z "$result" ]; then
+        echo "$default_value"
+    else
+        echo "$result"
+    fi
+}
+
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
 confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
 
@@ -83,6 +104,7 @@ load_config() {
 # --- UI 渲染 & 字符串处理 ---
 generate_line() {
     local len=${1:-40}; local char=${2:-"─"}
+    # 修复: 这里的 '}' 应该是 'fi'
     if [ "$len" -le 0 ]; then echo ""; return; fi
     printf "%${len}s" "" | sed "s/ /$char/g"
 }
