@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.39-核心语法修复)
-# - 修复: 移除 run_module 函数末尾多余的 '}'，解决 syntax error
+# 🚀 VPS 一键安装与管理脚本 (v77.40-最终语法修复)
+# - 修复: 修复 display_and_process_menu 函数中 for 循环的语法错误 (line 262)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.39"
+SCRIPT_VERSION="v77.40"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -80,7 +80,7 @@ fi
 CURRENT_MENU_NAME="MAIN_MENU"
 
 check_sudo_privileges() {
-    if [ "$(id -u)" -eq 0 ]; then JB_HAS_PASSWORDLESS_SUDO=true; log_info "以 root 用户运行（拥有完整权限）。"; return 0; fi
+    if [ "$(id -u)" -eq 0 ]; then JB_HAS_PASSWORDLESS_SUDO=true; log_info "以 root 用户运行（拥有完整权限）。"; return 0; }
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then JB_HAS_PASSWORDLESS_SUDO=true; log_info "检测到免密 sudo 权限。"; else JB_HAS_PASSWORDLESS_SUDO=false; log_warn "未检测到免密 sudo 权限。部分操作可能需要您输入密码。"; fi
 }
 run_with_sudo() {
@@ -259,7 +259,7 @@ display_and_process_menu() {
         done
         
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); }
+        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
         
         _render_menu "$menu_title" "${items_array[@]}"
         
