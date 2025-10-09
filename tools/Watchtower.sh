@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.11-最终语法修复)
-# - 修复: get_last_session_time 函数中 if 语句的语法错误 (line 256)
+# 🚀 Watchtower 管理模块 (v4.9.12-输入提示与来源明确化)
+# - 修复: 优化 _prompt_for_interval 逻辑，明确显示配置来源（本地/config.json）。
+# - 优化: 移除 configure_watchtower 中可能干扰输入提示的 log_info。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.11"
+SCRIPT_VERSION="v4.9.12"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -164,15 +165,19 @@ _prompt_for_interval() {
     human_readable_current=$(_format_seconds_to_human "$current_val")
     
     local source_info=""
-    # 检查是否来自本地配置文件
+    # 1. 获取本地配置文件中的值
     local local_val; local_val=$(grep '^WATCHTOWER_CONFIG_INTERVAL=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
-    if [ -n "$local_val" ] && [ "$local_val" = "$current_val" ]; then
+    
+    # 2. 确定配置来源并设置提示信息
+    if [ -f "$CONFIG_FILE" ] && [ -n "$local_val" ] && [ "$local_val" = "$current_val" ]; then
         source_info="${CYAN} (来自本地配置)${NC}"
+    elif [ "$current_val" = "${WATCHTOWER_CONF_DEFAULT_INTERVAL:-21600}" ]; then
+        source_info="${CYAN} (来自 config.json 默认值)${NC}"
     else
-        source_info="${CYAN} (来自 config.json)${NC}"
+        source_info="${CYAN} (当前值)${NC}"
     fi
 
-    # 使用 echo -ne 打印带颜色的提示，避免转义符泄露
+    # 确保提示符在当前行等待输入
     echo -ne "$prompt_text (例如: 5m, 2h, 1d), 当前: ${human_readable_current}${source_info}: "
     read -r user_input < /dev/tty
     user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -253,7 +258,6 @@ get_watchtower_inspect_summary(){
 get_last_session_time(){
     local logs
     logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
-    # 修复: 这里的 '}' 应该是 'fi'
     if [ -z "$logs" ]; then 
         echo ""; 
         return 1; 
@@ -518,7 +522,7 @@ show_container_info() {
         case "$choice" in 
             "") return ;;
             a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
-            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
             *)
                 if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
                 local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -569,8 +573,8 @@ configure_exclusion_list() {
 }
 
 configure_watchtower(){
-    # 修复：移除 _print_header，避免空行和提示符消失
-    log_info "🚀 Watchtower 配置"
+    # 移除 log_info "🚀 Watchtower 配置"，让菜单标题和提示框紧密连接，避免干扰
+    
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     
     # 修复：直接捕获 _prompt_for_interval 的返回值
@@ -637,7 +641,7 @@ show_watchtower_details(){
         set -e
         
         countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
-        local -a content_lines_array=("上次活动:│$(get_last_session_time || echo 'N/A')" "下次检查:│$countdown" "" "最近 24h 摘要：")
+        local -a content_lines_array=("上次活动:│$(get_last_session_time || echo 'N/A')" "下次检查:│${COUNTDOWN}" "" "最近 24h 摘要：")
         updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then content_lines_array+=("  无日志事件。"); else while IFS= read -r line; do content_lines_array+=("  $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
         _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick < /dev/tty
@@ -666,7 +670,6 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        # 修复: 这里的 '}' 应该是 'fi'
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
