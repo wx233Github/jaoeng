@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.7-语法与提示修复)
-# - 修复: _get_watchtower_remaining_time 函数中的语法错误 (line 285)
-# - 修复: configure_watchtower 提示框消失的问题 (移除多余的 _print_header)
+# 🚀 Watchtower 管理模块 (v4.9.8-核心语法修复)
+# - 修复: _extract_interval_from_cmd 函数中缺失的 'fi' 关键字，解决语法错误 (line 151)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.7"
+SCRIPT_VERSION="v4.9.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -148,7 +147,7 @@ _date_to_epoch() {
 
 _format_seconds_to_human(){
     local total_seconds="$1"
-    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; }
+    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi
     local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 ))
     local result=""
     if [ "$days" -gt 0 ]; then result+="${days}天"; fi
@@ -225,7 +224,7 @@ _extract_interval_from_cmd(){
                 break
             fi
             prev="$t"
-        }
+        done
     fi
     interval=$(echo "$interval" | sed 's/[^0-9].*$//; s/[^0-9]*//g')
     if [ -z "$interval" ]; then
@@ -282,7 +281,7 @@ _get_watchtower_remaining_time(){
     local log_line ts epoch rem
     log_line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi # 修复了这里的语法错误
+    if [ -z "$log_line" ]; then echo -e "${YELLOW}等待首次扫描...${NC}"; return; fi
 
     ts=$(_parse_watchtower_timestamp_from_log_line "$log_line")
     epoch=$(_date_to_epoch "$ts")
@@ -365,7 +364,7 @@ _format_and_highlight_log_line(){
                 msg=$(echo "$line" | sed -n 's/.*error="\([^"]*\)".*/\1/p' | tr -d '\n')
                 if [ -z "$msg" ] && [[ "$line" == *"msg="* ]]; then
                     msg=$(echo "$line" | sed -n 's/.*msg="\([^"]*\)".*/\1/p' | tr -d '\n')
-                }
+                fi
                 if [ -z "$msg" ]; then
                     msg=$(echo "$line" | sed -E 's/.*(level=(error|warn|info|fatal)|time="[^"]*")\s*//g' | tr -d '\n')
                 fi
@@ -529,7 +528,7 @@ show_container_info() {
                     5) _print_header "容器详情: ${selected_container}"; (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;; 
                     6) if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
                     *) ;; 
-                }
+                esac
             ;;
         esac
     done
@@ -664,7 +663,7 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        if [ -z "$choice" ]; then return; }
+        if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
         case "$type" in
