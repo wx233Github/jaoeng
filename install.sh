@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.48-修复启动器 local 错误)
-# - 修复: 移除启动器代码块（全局作用域）中的 `local` 关键字，解决安装时的语法错误。
+# 🚀 VPS 一键安装与管理脚本 (v77.49-适配新 UI 风格，手动实现两列)
+# - 修复: 适配 utils.sh v2.30 的新 UI 风格 (仅标题带边框，内容左对齐)。
+# - 优化: display_and_process_menu 手动计算并添加空格和分隔符，实现两列对齐。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.48"
+SCRIPT_VERSION="v77.49"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -25,10 +26,9 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
+    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARter_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
-    # 修复: 移除启动器中的 local 关键字
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
@@ -49,10 +49,8 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         
         declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
         for name in "${!core_files[@]}"; do
-            # 修复: 移除 local
             file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
-            # 修复: 移除 local
             temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
@@ -329,6 +327,7 @@ display_and_process_menu() {
             if [ -n "$second_col" ]; then
                 # 如果有第二列内容，则进行两列对齐
                 local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
+                # 修复: 移除多余的空格，确保分隔符紧凑
                 formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
             else
                 # 如果没有第二列内容，则作为单列项添加
@@ -348,11 +347,11 @@ display_and_process_menu() {
         local num_choices=${#primary_items[@]}; local func_choices_str=""; for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
-        if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi; fi
+        if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi; }
         local item_json=""
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
-        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi
+        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; }
         
         local type name action exit_code=0
         type=$(jq -r .type <<< "$item_json")
