@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.49-适配新 UI 风格，手动实现两列)
-# - 修复: 适配 utils.sh v2.30 的新 UI 风格 (仅标题带边框，内容左对齐)。
-# - 优化: display_and_process_menu 手动计算并添加空格和分隔符，实现两列对齐。
+# 🚀 VPS 一键安装与管理脚本 (v77.50-修复关键语法错误)
+# - 修复: `display_and_process_menu` 函数中错误的 if 语句闭合符号 '}' 替换为 'fi'，解决语法错误。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.49"
+SCRIPT_VERSION="v77.50"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -26,7 +25,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
     echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARter_NC} $1" >&2; }
+    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
@@ -295,12 +294,15 @@ display_and_process_menu() {
             IFS='|' read -r icon name type action <<< "$item_data"
             local status_text=""
             local status_key="" # 用于映射 action 到简化的 status_map 键
-            case "$action" in
-                "docker.sh") status_key="docker" ;;
-                "nginx.sh") status_key="nginx" ;;
-                "TOOLS_MENU") status_key="watchtower" ;;
-                *) status_key="" ;; # 其他模块没有状态
-            esac
+            
+            # 只有在主菜单 (MAIN_MENU) 时，才计算状态
+            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
+                case "$action" in
+                    "docker.sh") status_key="docker" ;;
+                    "nginx.sh") status_key="nginx" ;;
+                    "TOOLS_MENU") status_key="watchtower" ;;
+                esac
+            fi
 
             if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then
                 status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"
@@ -325,12 +327,11 @@ display_and_process_menu() {
             local second_col="${second_cols_content[i]}"
             
             if [ -n "$second_col" ]; then
-                # 如果有第二列内容，则进行两列对齐
+                # 如果有第二列内容，则进行两列对齐 (仅在主菜单)
                 local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
-                # 修复: 移除多余的空格，确保分隔符紧凑
                 formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
             else
-                # 如果没有第二列内容，则作为单列项添加
+                # 如果没有第二列内容，则作为单列项添加 (子菜单或无状态项)
                 formatted_items_for_render+=("${first_col}")
             fi
         done
@@ -347,11 +348,11 @@ display_and_process_menu() {
         local num_choices=${#primary_items[@]}; local func_choices_str=""; for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
-        if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi; }
+        if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi; fi
         local item_json=""
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
-        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; }
+        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi
         
         local type name action exit_code=0
         type=$(jq -r .type <<< "$item_json")
