@@ -1,15 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.46-修复 jq 语法、更新输出污染及子菜单 UI 布局)
-# - 修复: `run_module` 中 `jq` 命令引用变量的语法错误 (.[subkey] -> .[$subkey])。
-# - 修复: `run_comprehensive_auto_update` 和 `download_module_to_cache` 中的所有 `log_*` 输出重定向到 stderr，
-#         避免污染 `updated_files_list` 变量，解决更新时输出混乱问题。
-# - 修复: `display_and_process_menu` 仅在第二列有内容时才使用 `│` 分隔符，
-#         确保子菜单和无状态项为单列布局。
+# 🚀 VPS 一键安装与管理脚本 (v77.47-修复无限重启循环)
+# - 修复: 彻底修复 install.sh 自我更新后的无限重启循环问题。
+#         确保只有在哈希值确实不匹配时才执行 exec 重启。
+# - 修复: 确保所有日志输出重定向到 stderr，避免污染返回值。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.46"
+SCRIPT_VERSION="v77.47"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -28,17 +26,17 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1"; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1"; }
+    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
+    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2 # 重定向到 stderr
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq >&2 # 重定向到 stderr
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq >&2
         elif command -v yum &>/dev/null; then
-            sudo yum install -y curl jq >&2 # 重定向到 stderr
+            sudo yum install -y curl jq >&2
         else
             echo_error "无法自动安装 curl 和 jq。请手动安装后再试。"
         fi
@@ -52,9 +50,9 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         
         declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
         for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"
+            local file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
-            temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
+            local temp_file; temp_file=$(mktemp) || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
@@ -68,7 +66,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         echo_success "安装/更新完成。"
     fi
     
-    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}"
+    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}" >&2
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
@@ -86,21 +84,21 @@ CURRENT_MENU_NAME="MAIN_MENU"
 check_sudo_privileges() {
     if [ "$(id -u)" -eq 0 ]; then 
         JB_HAS_PASSWORDLESS_SUDO=true; 
-        log_info "以 root 用户运行（拥有完整权限）。" >&2; # 重定向到 stderr
+        log_info "以 root 用户运行（拥有完整权限）。" >&2;
         return 0; 
     fi
     
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then 
         JB_HAS_PASSWORDLESS_SUDO=true; 
-        log_info "检测到免密 sudo 权限。" >&2; # 重定向到 stderr
+        log_info "检测到免密 sudo 权限。" >&2;
     else 
         JB_HAS_PASSWORDLESS_SUDO=false; 
-        log_warn "未检测到免密 sudo 权限。部分操作可能需要您输入密码。" >&2; # 重定向到 stderr
+        log_warn "未检测到免密 sudo 权限。部分操作可能需要您输入密码。" >&2;
     fi
 }
 run_with_sudo() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else
-        if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then log_debug "Executing with sudo: sudo $*" >&2; fi # 重定向到 stderr
+        if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then log_debug "Executing with sudo: sudo $*" >&2; fi
         sudo "$@"
     fi
 }
@@ -117,15 +115,15 @@ check_and_install_dependencies() {
     
     if [ -n "$missing_pkgs" ]; then
         missing_pkgs=$(echo "$missing_pkgs" | xargs)
-        log_info "检查附加依赖..." >&2 # 重定向到 stderr
-        log_warn "缺失依赖: ${missing_pkgs}" >&2 # 重定向到 stderr
+        log_info "检查附加依赖..." >&2
+        log_warn "缺失依赖: ${missing_pkgs}" >&2
         if confirm_action "是否尝试自动安装?"; then
             if command -v apt-get &>/dev/null; then run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get update >&2; run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing_pkgs >&2
             elif command -v yum &>/dev/null; then run_with_sudo yum install -y $missing_pkgs >&2
             else log_err "不支持的包管理器。请手动安装: ${missing_pkgs}" >&2; exit 1; fi
         else log_err "用户取消安装，脚本无法继续。" >&2; exit 1; fi
     else
-        log_debug "所有依赖均已满足。" >&2 # 重定向到 stderr
+        log_debug "所有依赖均已满足。" >&2
     fi
 }
 
@@ -135,14 +133,24 @@ run_comprehensive_auto_update() {
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
-        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。" >&2; fi # 重定向到 stderr
-        sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
-        sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
-        rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
-        if [ "$file" = "install.sh" ]; then
-            # 修复: 将此消息重定向到 stderr (>&2)，防止污染返回值
-            echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
-            flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+        
+        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。" >&2; continue; fi # 确保错误输出到 stderr
+        
+        local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
+        local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
+        
+        if [ "$local_hash" != "$remote_hash" ]; then
+            updated_files+=("$file")
+            sudo mv "$temp_file" "$local_path"
+            if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
+            
+            if [ "$file" = "install.sh" ]; then
+                # 修复: 将此消息重定向到 stderr (>&2)，防止污染返回值
+                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
+                flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+            fi
+        else
+            rm -f "$temp_file"
         fi
     done
     # 检查所有模块脚本
@@ -159,16 +167,16 @@ run_comprehensive_auto_update() {
 download_module_to_cache() {
     local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
     # 修复: 自动模式下不输出任何信息到 stdout
-    if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}" >&2; fi # 重定向到 stderr
+    if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}" >&2; fi
     sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
-        if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。" >&2; fi # 重定向到 stderr
+        if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。" >&2; fi
         return 1
     fi
     local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
     if [ "$local_hash" != "$remote_hash" ]; then
-        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi # 重定向到 stderr
+        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi
         sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
         return 0 # 返回0表示有更新
     else
@@ -201,7 +209,7 @@ confirm_and_force_update() {
 }
 
 run_module(){
-    local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"; log_info "您选择了 [${module_name}]" >&2 # 重定向到 stderr
+    local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"; log_info "您选择了 [${module_name}]" >&2
     if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..." >&2; download_module_to_cache "$module_script"; fi
     
     local filename_only="${module_script##*/}"
@@ -227,11 +235,11 @@ run_module(){
     
     set +e; bash "$module_path"; local exit_code=$?; set -e
     if [ "$exit_code" -eq 0 ]; then 
-        log_success "模块 [${module_name}] 执行完毕。" >&2; # 重定向到 stderr
+        log_success "模块 [${module_name}] 执行完毕。" >&2;
     elif [ "$exit_code" -eq 10 ]; then 
-        log_info "已从 [${module_name}] 返回。" >&2; # 重定向到 stderr
+        log_info "已从 [${module_name}] 返回。" >&2;
     else 
-        log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。" >&2; # 重定向到 stderr
+        log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。" >&2;
         # 只有出错时才暂停
     fi
     # 返回模块的退出代码，供 display_and_process_menu 判断是否需要暂停
@@ -303,9 +311,12 @@ display_and_process_menu() {
             first_cols_content+=("$first_col_display_content")
             second_cols_content+=("$status_text")
             
-            local current_visual_width=$(_get_visual_width "$first_col_display_content")
-            if [ "$current_visual_width" -gt "$max_first_col_width" ]; then
-                max_first_col_width="$current_visual_width"
+            # 只有当第二列有内容时，才计算第一列宽度用于对齐
+            if [ -n "$status_text" ]; then
+                local current_visual_width=$(_get_visual_width "$first_col_display_content")
+                if [ "$current_visual_width" -gt "$max_first_col_width" ]; then
+                    max_first_col_width="$current_visual_width"
+                fi
             fi
         done
 
@@ -340,7 +351,7 @@ display_and_process_menu() {
         local item_json=""
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
-        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi # 重定向到 stderr
+        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi
         
         local type name action exit_code=0
         type=$(jq -r .type <<< "$item_json")
@@ -364,29 +375,32 @@ main() {
     load_config "$CONFIG_PATH"
     check_and_install_dependencies
     
-    exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi # 重定向到 stderr
-    trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT # 重定向到 stderr
+    # 修复: 确保锁文件逻辑正确，并在启动时检查是否已经运行
+    exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
+    trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT
+    
     if [ $# -gt 0 ]; then
         local command="$1"; shift
         case "$command" in
-            update) log_info "正在以 Headless 模式更新所有脚本..." >&2; run_comprehensive_auto_update "$@"; exit 0 ;; # 重定向到 stderr
-            uninstall) log_info "正在以 Headless 模式执行卸载..." >&2; uninstall_script; exit 0 ;; # 重定向到 stderr
+            update) log_info "正在以 Headless 模式更新所有脚本..." >&2; run_comprehensive_auto_update "$@"; exit 0 ;;
+            uninstall) log_info "正在以 Headless 模式执行卸载..." >&2; uninstall_script; exit 0 ;;
             *) local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1)
-                if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}" >&2; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command" >&2; exit 1; fi ;; # 重定向到 stderr
+                if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}" >&2; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command" >&2; exit 1; fi ;;
         esac
     fi
-    log_info "脚本启动 (${SCRIPT_VERSION})" >&2 # 重定向到 stderr
-    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2 # 重定向到 stderr
+    
+    log_info "脚本启动 (${SCRIPT_VERSION})" >&2
+    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
-    echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          " >&2 # 重定向到 stderr
+    echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          " >&2
     if [ -n "$updated_files_list" ]; then
         for file in $updated_files_list; do
             local filename; filename=$(basename "$file")
-            log_success "${GREEN}${filename}${NC} 已更新" >&2 # 重定向到 stderr
+            log_success "${GREEN}${filename}${NC} 已更新" >&2
         done
         if [[ "$updated_files_list" == *"config.json"* ]]; then
-            log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。" >&2 # 重定向到 stderr
+            log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。" >&2
         fi
     fi
     check_sudo_privileges; display_and_process_menu "$@"
