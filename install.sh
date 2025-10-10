@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.45-修复算术运算符错误，适配新版菜单渲染)
-# - 修复: 调整 status_map 键以避免算术运算符错误，并明确映射 action。
-# - 优化: display_and_process_menu 手动实现两列布局，适配 utils.sh 新版 _render_menu。
+# 🚀 VPS 一键安装与管理脚本 (v77.45-修复 jq 语法及子菜单 UI 布局)
+# - 修复: `run_module` 中 `jq` 命令引用变量的语法错误 (.[subkey] -> .[$subkey])。
+# - 修复: `display_and_process_menu` 仅在第二列有内容时才使用 `│` 分隔符，
+#         确保子菜单和无状态项为单列布局。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -221,7 +222,8 @@ run_module(){
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value
-            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[subkey]')
+            # 修复: jq 引用变量应使用 $ 符号
+            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
@@ -311,13 +313,19 @@ display_and_process_menu() {
             fi
         done
 
-        # 3. 格式化主菜单项为两列，并添加到渲染数组
+        # 3. 格式化主菜单项为两列（如果有状态）或单列（无状态），并添加到渲染数组
         for i in "${!first_cols_content[@]}"; do
             local first_col="${first_cols_content[i]}"
             local second_col="${second_cols_content[i]}"
             
-            local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
-            formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
+            if [ -n "$second_col" ]; then
+                # 如果有第二列内容，则进行两列对齐
+                local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
+                formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
+            else
+                # 如果没有第二列内容，则作为单列项添加
+                formatted_items_for_render+=("${first_col}")
+            fi
         done
 
         # 4. 格式化功能项为单列，并添加到渲染数组
