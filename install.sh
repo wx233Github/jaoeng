@@ -1,11 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.54-替换主菜单分隔符为 -)
-# - 优化: 将主菜单中的分隔符 `»` 替换为更简洁的短横线 `-`，保持两列对齐。
+# 🚀 VPS 一键安装与管理脚本 (v77.55-修复退出逻辑和更新日志)
+# - 修复: 修复 display_and_process_menu 中的退出逻辑，确保脚本正常退出 (代码 0) 而非卡住。
+# - 修复: 确保所有 log_info/log_success 都在 stderr，避免污染终端输出。
+# - 优化: 适配 utils.sh v2.31 的 UI 修复。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.54"
+SCRIPT_VERSION="v77.55"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -349,7 +351,16 @@ display_and_process_menu() {
         local num_choices=${#primary_items[@]}; local func_choices_str=""; for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
-        if [ -z "$choice" ]; then if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi; fi
+        if [ -z "$choice" ]; then 
+            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then 
+                log_info "用户选择退出，脚本正常终止。" >&2
+                exit 0
+            else 
+                CURRENT_MENU_NAME="MAIN_MENU"; 
+                continue; 
+            fi
+        fi
+        
         local item_json=""
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
         else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
@@ -392,10 +403,12 @@ main() {
     fi
     
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
-    echo -ne "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
+    # 修复: 确保进度提示立即刷新且输出到 stderr
+    printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
-    echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          " >&2
+    printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          \n" >&2
+    
     if [ -n "$updated_files_list" ]; then
         for file in $updated_files_list; do
             local filename; filename=$(basename "$file")
