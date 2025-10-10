@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.24-修复语法错误)
-# - 修复: configure_exclusion_list 函数中 for 循环的错误闭合符号 '}' 替换为 'done'。
-# - 修复: _extract_interval_from_cmd 函数中 if 语句的错误闭合符号 '}' 替换为 'fi'。
+# 🚀 Watchtower 管理模块 (v4.9.25-修复语法错误)
+# - 修复: _format_seconds_to_human 函数中 if 语句的错误闭合符号 '}' 替换为 'fi'。
+# - 修复: configure_exclusion_list 函数中 if 语句的错误闭合符号 '}' 替换为 'fi'。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.24"
+SCRIPT_VERSION="v4.9.25"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -148,7 +148,7 @@ _date_to_epoch() {
 
 _format_seconds_to_human(){
     local total_seconds="$1"
-    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; }
+    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi # <-- 修复: 确保 if 语句正确闭合
     local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 ))
     local result=""
     if [ "$days" -gt 0 ]; then result+="${days}天"; fi
@@ -603,7 +603,7 @@ configure_exclusion_list() {
             fi; 
         done; 
         unset IFS; 
-    fi # <-- 修复: 确保 if 语句正确闭合
+    fi
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
         local -a all_containers_array=(); 
