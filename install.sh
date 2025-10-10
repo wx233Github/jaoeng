@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.43-修复更新时输出污染)
-# - 修复: 将 run_comprehensive_auto_update 内的诊断信息重定向到 stderr，
-#         防止污染返回值，彻底解决更新时输出混乱和挂起的问题。
+# 🚀 VPS 一键安装与管理脚本 (v77.44-主菜单两列布局实现)
+# - 优化: display_and_process_menu 手动实现两列布局，适配 utils.sh 新版 _render_menu。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.43"
+SCRIPT_VERSION="v77.44"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -267,27 +266,46 @@ display_and_process_menu() {
             fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
-        local -a items_array=()
-        local -A status_map=( ["docker.sh"]="$(_get_docker_status)" ["nginx.sh"]="$(_get_nginx_status)" ["TOOLS_MENU"]="$(_get_watchtower_status)" )
-        local -A status_label_map=( ["docker.sh"]="Docker:" ["nginx.sh"]="Nginx:" ["TOOLS_MENU"]="Watchtower:" )
-        
+        local -a formatted_items_for_render=()
+        local -a first_cols_content=()
+        local -a second_cols_content=()
+        local max_first_col_width=0
+
+        # 1. 收集主菜单项的第一列和第二列内容，并计算第一列的最大宽度
         for item_data in "${primary_items[@]}"; do
-            IFS='|' read -r icon name type action <<< "$item_data"; local index=$(( ${#items_array[@]} + 1 ))
+            IFS='|' read -r icon name type action <<< "$item_data"
+            local status_text=""
             if [ -n "${status_map[$action]}" ]; then
-                local status_text="${status_label_map[$action]} ${status_map[$action]}"
-                items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")│${status_text}")
-            else
-                items_array+=("$(printf "%d. %s %s" "$index" "$icon" "$name")")
+                status_text="${status_label_map[$action]} ${status_map[$action]}"
+            fi
+            
+            local first_col_display_content="$(printf "%d. %s %s" "$(( ${#first_cols_content[@]} + 1 ))" "$icon" "$name")"
+            first_cols_content+=("$first_col_display_content")
+            second_cols_content+=("$status_text")
+            
+            local current_visual_width=$(_get_visual_width "$first_col_display_content")
+            if [ "$current_visual_width" -gt "$max_first_col_width" ]; then
+                max_first_col_width="$current_visual_width"
             fi
         done
-        
+
+        # 2. 格式化主菜单项为两列，并添加到渲染数组
+        for i in "${!first_cols_content[@]}"; do
+            local first_col="${first_cols_content[i]}"
+            local second_col="${second_cols_content[i]}"
+            
+            local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
+            formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
+        done
+
+        # 3. 格式化功能项为单列，并添加到渲染数组
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
         for i in "${!func_items[@]}"; do 
             IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
-            items_array+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); 
+            formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); 
         done
         
-        _render_menu "$menu_title" "${items_array[@]}"
+        _render_menu "$menu_title" "${formatted_items_for_render[@]}"
         
         local num_choices=${#primary_items[@]}; local func_choices_str=""; for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
