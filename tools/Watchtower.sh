@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.20-UI 和倒计时逻辑最终修复)
-# - 修复: main_menu 中 Watchtower 状态行格式，确保 '│' 正确对齐，解决 UI 混乱。
-# - 修复: _get_watchtower_remaining_time 倒计时逻辑，始终显示距离下一次预期检查的倒计时或“正在检查中...”。
+# 🚀 Watchtower 管理模块 (v4.9.21-UI 简化为单列，倒计时逻辑优化)
+# - 优化: 所有菜单项不再使用 '│' 分隔符，适配 utils.sh 新版 _render_menu。
+# - 优化: _get_watchtower_remaining_time 倒计时逻辑，始终显示距离下一个预期检查的倒计时。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.20"
+SCRIPT_VERSION="v4.9.21"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -312,28 +312,29 @@ _get_watchtower_remaining_time(){
     local next_expected_check_epoch=0
     local remaining_seconds=0
 
+    # 计算下一个预期检查时间点，使其始终在当前时间之后
     if [[ "$last_session_line" == *"Session done"* ]]; then
-        # 上次会话完成，下次检查时间是上次完成时间 + 间隔
         next_expected_check_epoch=$((last_event_epoch + interval_seconds))
+        # 如果已经逾期，则计算距离再下一个周期还有多久
+        while [ "$next_expected_check_epoch" -le "$current_epoch" ]; do
+            next_expected_check_epoch=$((next_expected_check_epoch + interval_seconds))
+        done
         remaining_seconds=$((next_expected_check_epoch - current_epoch))
     elif [[ "$last_session_line" == *"Scheduling first run"* ]]; then
-        # 首次运行已调度，下次检查时间就是调度时间
         next_expected_check_epoch="$last_event_epoch"
         remaining_seconds=$((next_expected_check_epoch - current_epoch))
     elif [[ "$last_session_line" == *"Starting Watchtower"* ]]; then
-        # Watchtower 刚启动，可能还在初始化或等待首次调度
         echo -e "${YELLOW}等待首次调度...${NC}"
         return
     fi
 
     if [ "$remaining_seconds" -gt 0 ]; then
-        # 还有剩余时间，显示倒计时
         local hours=$((remaining_seconds / 3600))
         local minutes=$(( (remaining_seconds % 3600) / 60 ))
         local seconds=$(( remaining_seconds % 60 ))
         printf "%b%02d时%02d分%02d秒%b" "$GREEN" "$hours" "$minutes" "$seconds" "$NC"
     else
-        # 剩余时间小于等于0，表示已到检查点或已逾期，显示正在检查中
+        # 理论上 remaining_seconds 不会小于等于 0 了，但作为保险，如果出现，也显示正在检查中
         echo -e "${YELLOW}正在检查中...${NC}"
     fi
 }
@@ -516,8 +517,14 @@ notification_menu() {
         local tg_status="${RED}未配置${NC}"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then tg_status="${GREEN}已配置${NC}"; fi
         local email_status="${RED}未配置${NC}"; if [ -n "$EMAIL_TO" ]; then email_status="${GREEN}已配置${NC}"; fi
         local notify_on_no_updates_status="${CYAN}否${NC}"; if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then notify_on_no_updates_status="${GREEN}是${NC}"; fi
-        local -a items_array=("1. › 配置 Telegram│$tg_status, 无更新也通知: $notify_on_no_updates_status" "2. › 配置 Email│$email_status" "3. › 发送测试通知" "4. › 清空所有通知配置")
-        _render_menu "⚙️ 通知配置 ⚙️" "${items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
+        
+        local -a content_array=(
+            "1. 配置 Telegram (状态: $tg_status, 无更新也通知: $notify_on_no_updates_status)"
+            "2. 配置 Email (状态: $email_status)"
+            "3. 发送测试通知"
+            "4. 清空所有通知配置"
+        )
+        _render_menu "⚙️ 通知配置 ⚙️" "${content_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1) _configure_telegram; save_config; _prompt_and_rebuild_watchtower_if_needed; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
@@ -530,8 +537,10 @@ notification_menu() {
 
 show_container_info() { 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a content_lines_array=()
-        content_lines_array+=("编号│名称│镜像│状态")
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        local -a content_lines_array=()
+        content_lines_array+=("编号 名称           镜像                               状态") # 简化为单行头
+        
         local -a containers=()
         local i=1
         while IFS='|' read -r name image status; do 
@@ -544,7 +553,8 @@ show_container_info() {
             else 
                 status_colored="${YELLOW}${status}${NC}"
             fi
-            content_lines_array+=("$i│$name│$image│$status_colored")
+            # 格式化为单列字符串，不含 '|'
+            content_lines_array+=("$(printf "%2d   %-15s %-35s %s" "$i" "$name" "$image" "$status_colored")")
             i=$((i + 1))
         done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
         
@@ -559,7 +569,15 @@ show_container_info() {
             *)
                 if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
                 local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-                local -a action_items_array=("1. › 查看日志 (Logs)" "2. › 重启 (Restart)" "3. › 停止 (Stop)" "4. › 删除 (Remove)" "5. › 查看详情 (Inspect)" "6. › 进入容器 (Exec)"); _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " action < /dev/tty
+                local -a action_items_array=(
+                    "1. 查看日志 (Logs)" 
+                    "2. 重启 (Restart)" 
+                    "3. 停止 (Stop)" 
+                    "4. 删除 (Remove)" 
+                    "5. 查看详情 (Inspect)" 
+                    "6. 进入容器 (Exec)"
+                )
+                _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " action < /dev/tty
                 case "$action" in 
                     1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;;
                     2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
@@ -578,8 +596,17 @@ configure_exclusion_list() {
     declare -A excluded_map; local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
     if [ -n "$initial_exclude_list" ]; then local IFS=,; for container_name in $initial_exclude_list; do container_name=$(echo "$container_name" | xargs); if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; done; unset IFS; fi
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; local -a all_containers_array=(); while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); local -a items_array=(); local i=0
-        while [ $i -lt ${#all_containers_array[@]} ]; do local container="${all_containers_array[$i]}"; local is_excluded=" "; if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); i=$((i + 1)); done
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        local -a all_containers_array=(); 
+        while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); 
+        local -a items_array=(); local i=0
+        while [ $i -lt ${#all_containers_array[@]} ]; do 
+            local container="${all_containers_array[$i]}"; 
+            local is_excluded=" "; 
+            if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; 
+            items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); 
+            i=$((i + 1)); 
+        done
         items_array+=("")
         local current_excluded_display="无"
         if [ ${#excluded_map[@]} -gt 0 ]; then
@@ -633,7 +660,12 @@ configure_watchtower(){
     if echo "$debug_choice" | grep -qE '^[Yy]$'; then temp_debug_enabled="true"; fi
     
     local final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST:-无}"
-    local -a confirm_array=("检查间隔│$(_format_seconds_to_human "$WT_INTERVAL_TMP")" "排除列表│${final_exclude_list_display//,/, }" "额外参数│${temp_extra_args:-无}" "调试模式│$temp_debug_enabled")
+    local -a confirm_array=(
+        "检查间隔: $(_format_seconds_to_human "$WT_INTERVAL_TMP")" 
+        "排除列表: ${final_exclude_list_display//,/, }" 
+        "额外参数: ${temp_extra_args:-无}" 
+        "调试模式: $temp_debug_enabled"
+    )
     _render_menu "配置确认" "${confirm_array[@]}"; read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice < /dev/tty
     if echo "$confirm_choice" | grep -qE '^[Nn]$'; then log_info "操作已取消。"; return 10; fi
     WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TMP"; WATCHTOWER_EXTRA_ARGS="$temp_extra_args"; WATCHTOWER_DEBUG_ENABLED="$temp_debug_enabled"; WATCHTOWER_ENABLED="true"; save_config
@@ -643,7 +675,10 @@ configure_watchtower(){
 manage_tasks(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local -a items_array=("1. › 停止/移除 Watchtower" "2. › 重建 Watchtower")
+        local -a items_array=(
+            "1. 停止/移除 Watchtower" 
+            "2. 重建 Watchtower"
+        )
         _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
             1) 
@@ -684,12 +719,21 @@ show_watchtower_details(){
         set -e
         
         countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
-        local -a content_lines_array=("上次活动:│$(get_last_session_time || echo 'N/A')" "下次检查:│${COUNTDOWN}" "" "最近 24h 摘要：")
+        local -a content_lines_array=(
+            "上次活动: $(get_last_session_time || echo 'N/A')" 
+            "下次检查: ${COUNTDOWN}" 
+            "" 
+            "最近 24h 摘要："
+        )
         updates=$(get_updates_last_24h || true)
-        if [ -z "$updates" ]; then content_lines_array+=("  无日志事件。"); else while IFS= read -r line; do content_lines_array+=("  $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
+        if [ -z "$updates" ]; then 
+            content_lines_array+=("  无日志事件。"); 
+        else 
+            while IFS= read -r line; do content_lines_array+=("  $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; 
+        fi
         _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick < /dev/tty
         case "$pick" in
-            1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 -f watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
+            1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
             3) if JB_SUDO_LOG_QUIET="TRUE" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
             *) return ;;
@@ -700,7 +744,8 @@ show_watchtower_details(){
 view_and_edit_config(){
     local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "排除列表|WATCHTOWER_EXCLUDE_LIST|string_list" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "Cron 项目目录|DOCKER_COMPOSE_PROJECT_DIR_CRON|string" "Cron 任务启用状态|CRON_TASK_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; local -a content_lines_array=(); local i
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
+        local -a content_lines_array=(); local i
         for i in "${!config_items[@]}"; do
             local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local extra; extra=$(echo "$item" | cut -d'|' -f4); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"
             case "$type" in
@@ -710,7 +755,8 @@ view_and_edit_config(){
                 interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ] && [ -n "$current_value" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;;
                 number_range) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;;
             esac
-            content_lines_array+=("$(printf "%2d. %s" "$((i + 1))" "$label")│${color}${display_text}${NC}")
+            # 格式化为单列字符串，不含 '|'
+            content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
         if [ -z "$choice" ]; then return; fi
@@ -766,15 +812,23 @@ main_menu(){
         if [ -n "$EMAIL_TO" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS, Email"; else NOTIFY_STATUS="Email"; fi; fi
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then if [ -n "$NOTIFY_STATUS" ]; then NOTIFY_STATUS="$NOTIFY_STATUS (无更新也通知)"; else NOTIFY_STATUS="(无更新也通知)"; fi; fi
         local header_text="Watchtower 管理"
+        
         local -a content_array=(
-            # 修复: 显式将状态行分为两列，确保对齐
-            "🕝 Watchtower 状态:│${STATUS_COLOR} (名称排除模式)" 
-            "⏳ 下次检查:│${COUNTDOWN}" 
-            "📦 容器概览:│总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
+            "🕝 Watchtower 状态: ${STATUS_COLOR} (名称排除模式)" 
+            "⏳ 下次检查: ${COUNTDOWN}" 
+            "📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
-        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=("🚫 排 除 列 表 :│${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC}"); fi
-        if [ -n "$NOTIFY_STATUS" ]; then content_array+=("🔔 通 知 已 启 用 :│${GREEN}${NOTIFY_STATUS}${NC}"); fi
-        content_array+=("" "主菜单：" "1. › 配 置  Watchtower" "2. › 配 置 通 知" "3. › 任 务 管 理" "4. › 查 看 /编 辑 配 置  (底 层 )" "5. › 手 动 更 新 所 有 容 器" "6. › 详 情 与 管 理")
+        if [ "$FINAL_EXCLUDE_LIST" != "无" ]; then content_array+=("🚫 排除列表: ${YELLOW}${FINAL_EXCLUDE_LIST//,/, }${NC}"); fi
+        if [ -n "$NOTIFY_STATUS" ]; then content_array+=("🔔 通知已启用: ${GREEN}${NOTIFY_STATUS}${NC}"); fi
+        
+        content_array+=("" "主菜单：" 
+            "1. 配置 Watchtower" 
+            "2. 配置通知" 
+            "3. 任务管理" 
+            "4. 查看/编辑配置 (底层)" 
+            "5. 手动更新所有容器" 
+            "6. 详情与管理"
+        )
         _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
           1) configure_watchtower || true; press_enter_to_continue ;;
