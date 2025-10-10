@@ -1,13 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.47-修复无限重启循环)
-# - 修复: 彻底修复 install.sh 自我更新后的无限重启循环问题。
-#         确保只有在哈希值确实不匹配时才执行 exec 重启。
-# - 修复: 确保所有日志输出重定向到 stderr，避免污染返回值。
+# 🚀 VPS 一键安装与管理脚本 (v77.48-修复启动器 local 错误)
+# - 修复: 移除启动器代码块（全局作用域）中的 `local` 关键字，解决安装时的语法错误。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.47"
+SCRIPT_VERSION="v77.48"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -30,6 +28,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
+    # 修复: 移除启动器中的 local 关键字
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get &>/dev/null; then
@@ -50,9 +49,11 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         
         declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
         for name in "${!core_files[@]}"; do
-            local file_path="${core_files[$name]}"
+            # 修复: 移除 local
+            file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
-            local temp_file; temp_file=$(mktemp) || temp_file="/tmp/$(basename "${file_path}").$$"
+            # 修复: 移除 local
+            temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
@@ -134,7 +135,7 @@ run_comprehensive_auto_update() {
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
         
-        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。" >&2; continue; fi # 确保错误输出到 stderr
+        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。" >&2; continue; fi
         
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
