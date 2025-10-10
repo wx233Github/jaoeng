@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.44-主菜单两列布局实现)
+# 🚀 VPS 一键安装与管理脚本 (v77.45-修复算术运算符错误，适配新版菜单渲染)
+# - 修复: 调整 status_map 键以避免算术运算符错误，并明确映射 action。
 # - 优化: display_and_process_menu 手动实现两列布局，适配 utils.sh 新版 _render_menu。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.44"
+SCRIPT_VERSION="v77.45"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -220,7 +221,7 @@ run_module(){
         for key in $keys; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value
-            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
+            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[subkey]')
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
@@ -257,6 +258,7 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
+        # 1. 解析菜单项，将带有状态的项和功能项分开
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then
@@ -271,12 +273,32 @@ display_and_process_menu() {
         local -a second_cols_content=()
         local max_first_col_width=0
 
-        # 1. 收集主菜单项的第一列和第二列内容，并计算第一列的最大宽度
+        # 定义状态映射，使用简化键名
+        local -A status_map=(
+            ["docker"]="$(_get_docker_status)"
+            ["nginx"]="$(_get_nginx_status)"
+            ["watchtower"]="$(_get_watchtower_status)"
+        )
+        local -A status_label_map=(
+            ["docker"]="Docker:"
+            ["nginx"]="Nginx:"
+            ["watchtower"]="Watchtower:"
+        )
+
+        # 2. 收集主菜单项的第一列和第二列内容，并计算第一列的最大宽度
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"
             local status_text=""
-            if [ -n "${status_map[$action]}" ]; then
-                status_text="${status_label_map[$action]} ${status_map[$action]}"
+            local status_key="" # 用于映射 action 到简化的 status_map 键
+            case "$action" in
+                "docker.sh") status_key="docker" ;;
+                "nginx.sh") status_key="nginx" ;;
+                "TOOLS_MENU") status_key="watchtower" ;;
+                *) status_key="" ;; # 其他模块没有状态
+            esac
+
+            if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then
+                status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"
             fi
             
             local first_col_display_content="$(printf "%d. %s %s" "$(( ${#first_cols_content[@]} + 1 ))" "$icon" "$name")"
@@ -289,7 +311,7 @@ display_and_process_menu() {
             fi
         done
 
-        # 2. 格式化主菜单项为两列，并添加到渲染数组
+        # 3. 格式化主菜单项为两列，并添加到渲染数组
         for i in "${!first_cols_content[@]}"; do
             local first_col="${first_cols_content[i]}"
             local second_col="${second_cols_content[i]}"
@@ -298,7 +320,7 @@ display_and_process_menu() {
             formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${GREEN}│${NC} ${second_col}")
         done
 
-        # 3. 格式化功能项为单列，并添加到渲染数组
+        # 4. 格式化功能项为单列，并添加到渲染数组
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
         for i in "${!func_items[@]}"; do 
             IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
@@ -327,7 +349,7 @@ display_and_process_menu() {
             func) "$action" "$@"; exit_code=$? ;; 
         esac
         
-        # 修复: 只有当模块执行成功 (0) 或不是返回上级 (10) 时，才执行 press_enter_to_continue
+        # 只有当模块执行成功 (0) 或不是返回上级 (10) 时，才执行 press_enter_to_continue
         if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then 
             press_enter_to_continue; 
         fi
