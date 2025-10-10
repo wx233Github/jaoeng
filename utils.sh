@@ -1,8 +1,9 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.28-关键语法修复与菜单渲染健壮性)
+# 🚀 通用工具函数库 (v2.29-简化菜单渲染核心，修复语法)
 # - 修复: _get_visual_width 函数中 if 语句的语法错误。
-# - 优化: _render_menu 改进列宽计算和渲染逻辑，更健壮地处理混合列数行。
+# - 优化: _render_menu 简化为纯粹的盒子渲染器，不再处理多列布局逻辑。
+#         多列布局的格式化责任移交给调用方（如 install.sh）。
 # =============================================================
 
 # --- 严格模式 ---
@@ -110,7 +111,7 @@ generate_line() {
 
 _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    if [ -z "$plain_text" ]; then echo 0; return; fi # <-- 修复: 将 '}' 改为 'fi'
+    if [ -z "$plain_text" ]; then echo 0; return; fi
     if command -v python3 &>/dev/null; then
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
@@ -120,99 +121,44 @@ _get_visual_width() {
     fi
 }
 
+# 简化后的 _render_menu: 不再处理多列布局，只渲染一个左对齐的盒子。
+# 多列布局的格式化责任移交给调用方。
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
-    local -a max_col_widths=()
-    local num_cols=1
-    local has_multi_col=0
-
-    # 1. 预扫描以确定最大列数和每列的最大宽度
-    for line in "${lines[@]}"; do
-        if [[ "$line" == *"│"* ]]; then
-            has_multi_col=1
-            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
-            if [ "${#parts[@]}" -gt "$num_cols" ]; then num_cols=${#parts[@]}; fi
-            for i in "${!parts[@]}"; do
-                local part_width; part_width=$(_get_visual_width "${parts[i]}")
-                if [ "${part_width:-0}" -gt "${max_col_widths[i]:-0}" ]; then
-                    max_col_widths[i]=$part_width
-                fi
-            done
-        fi
-    done
-
-    # 2. 计算盒子总宽度
     local box_inner_width=0
-    if [ "$has_multi_col" -eq 1 ]; then
-        for width in "${max_col_widths[@]}"; do
-            box_inner_width=$((box_inner_width + width))
-        done
-        # 加上分隔符和空格: (N-1) * (空格 + │ + 空格) + 左右两边空格
-        box_inner_width=$((box_inner_width + (num_cols - 1) * 3 + 2))
-    fi
-    
-    # 考虑单列行和标题
-    for line in "${lines[@]}"; do
-        local line_width
-        if [[ "$line" == *"│"* ]]; then
-            # 对于多列行，计算其完整内容宽度
-            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
-            local current_line_content_width=0
-            for i in "${!parts[@]}"; do
-                current_line_content_width=$((current_line_content_width + max_col_widths[i]))
-                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
-                    current_line_content_width=$((current_line_content_width + 3)) # space + │ + space
-                fi
-            done
-            line_width="$current_line_content_width"
-        else
-            # 对于单列行，直接计算其内容宽度
-            line_width=$(_get_visual_width "$line")
-        fi
 
-        if [ "$((line_width + 2))" -gt "$box_inner_width" ]; then
-            box_inner_width=$((line_width + 2))
+    # 确定盒子内部的最大内容宽度
+    local current_line_visual_width
+    for line in "${lines[@]}"; do
+        current_line_visual_width=$(_get_visual_width "$line")
+        if [ "$current_line_visual_width" -gt "$box_inner_width" ]; then
+            box_inner_width="$current_line_visual_width"
         fi
     done
 
-    local title_width; title_width=$(_get_visual_width "$title")
-    if [ "$((title_width + 2))" -gt "$box_inner_width" ]; then
-        box_inner_width=$((title_width + 2))
+    local title_width=$(_get_visual_width "$title")
+    if [ "$title_width" -gt "$box_inner_width" ]; then
+        box_inner_width="$title_width"
     fi
-    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 最小宽度
 
-    # 3. 渲染
+    # 加上左右各一个空格的边距
+    box_inner_width=$((box_inner_width + 2))
+
     echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     if [ -n "$title" ]; then
-        local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
-        # 标题使用绿色字体
-        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        local padding_total=$((box_inner_width - title_width - 2)); # -2 for the spaces around title
+        local padding_left=$((padding_total / 2));
+        local padding_right=$((padding_total - padding_left));
+        echo -e "${GREEN}│${NC} $(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right") ${GREEN}│${NC}"
     fi
 
     for line in "${lines[@]}"; do
-        local line_content=""
-        if [[ "$line" == *"│"* ]]; then
-            # 多列行处理
-            local old_ifs="$IFS"; IFS='│'; read -r -a parts <<< "$line"; IFS="$old_ifs"
-            for i in "${!parts[@]}"; do
-                local part_width; part_width=$(_get_visual_width "${parts[i]}")
-                local padding=$((max_col_widths[i] - part_width))
-                line_content+="${parts[i]}$(printf '%*s' "$padding")"
-                if [ "$i" -lt "$((${#parts[@]} - 1))" ]; then
-                    line_content+=" ${GREEN}│${NC} "
-                fi
-            done
-        else
-            # 单列行处理
-            line_content="$line"
-        fi
-        
-        # 计算整行填充
-        local content_width; content_width=$(_get_visual_width "$line_content")
-        local total_padding=$((box_inner_width - content_width - 2))
+        local content_width=$(_get_visual_width "$line")
+        local total_padding=$((box_inner_width - content_width - 2)) # -2 for the spaces around content
         if [ $total_padding -lt 0 ]; then total_padding=0; fi
         
-        echo -e "${GREEN}│${NC} ${line_content}$(printf '%*s' "$total_padding") ${GREEN}│${NC}"
+        echo -e "${GREEN}│${NC} ${line}$(printf '%*s' "$total_padding") ${GREEN}│${NC}"
     done
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 }
