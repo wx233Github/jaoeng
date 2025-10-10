@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.31-修复 UI 盒子对齐)
-# - 修复: 确保 _render_menu 正确计算最大宽度，解决标题盒子右侧对齐偏移问题。
+# 🚀 通用工具函数库 (v2.32-最终修复 UI 盒子对齐)
+# - 修复: 确保 _render_menu 标题和内容的最大宽度计算一致，解决标题盒子右侧对齐偏移问题。
 # =============================================================
 
 # --- 严格模式 ---
@@ -104,6 +104,7 @@ load_config() {
 generate_line() {
     local len=${1:-40}; local char=${2:-"─"}
     if [ "$len" -le 0 ]; then echo ""; return; fi
+    # 使用 printf 创建一个指定长度的字符串，然后用 sed 替换空格
     printf "%${len}s" "" | sed "s/ /$char/g"
 }
 
@@ -111,48 +112,62 @@ _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
     if command -v python3 &>/dev/null; then
+        # 使用 Python 3 处理 Unicode 宽度 (全角/半角)
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        # 尝试使用 wc -m (字符数)
         echo -n "$plain_text" | wc -m
     else
+        # 默认使用 bash 字符串长度
         echo "${#plain_text}"
     fi
 }
 
-# 重构后的 _render_menu: 仅包裹标题，内容左对齐，底部使用分隔线。
+# 最终修复后的 _render_menu: 确保标题和底部横线对齐
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_content_width=0
 
     # 1. 确定所有行的最大视觉宽度（包括标题）
     local current_line_visual_width
+    
+    # a. 检查标题宽度
+    local title_width=$(_get_visual_width "$title")
+    if [ "$title_width" -gt "$max_content_width" ]; then
+        max_content_width="$title_width"
+    fi
+
+    # b. 检查内容行宽度
     for line in "${lines[@]}"; do
         current_line_visual_width=$(_get_visual_width "$line")
         if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
             max_content_width="$current_line_visual_width"
         fi
     done
-
-    local title_width=$(_get_visual_width "$title")
-    if [ "$title_width" -gt "$max_content_width" ]; then
-        max_content_width="$title_width"
-    fi
     
     local box_inner_width=$max_content_width
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 最小宽度
 
-    # 加上左右各一个空格的边距
-    local box_total_width=$((box_inner_width + 2))
+    # 加上左右各一个空格和边框的宽度
+    # 标题行格式: │ <padding> TITLE <padding> │
+    # 边框宽度 = 2 (左右边框) + 2 (左右空格) = 4
+    local box_total_width=$((box_inner_width + 2)) # 标题宽度 + 2个空格
 
     # 2. 渲染标题盒子
-    echo ""; echo -e "${GREEN}╭$(generate_line "$box_total_width" "─")╮${NC}"
+    echo ""; 
+    # 顶部边框: ╭───────╮
+    echo -e "${GREEN}╭$(generate_line "$box_total_width" "─")╮${NC}"
+    
     if [ -n "$title" ]; then
+        # 计算标题填充
         local padding_total=$((box_inner_width - title_width));
         local padding_left=$((padding_total / 2));
         local padding_right=$((padding_total - padding_left));
-        # 确保标题行也被填充到 box_total_width 的宽度，以保证右侧边框对齐
+        # 标题行: │ <padding> TITLE <padding> │
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
+    
+    # 底部边框: ╰───────╯
     echo -e "${GREEN}╰$(generate_line "$box_total_width" "─")╯${NC}"
 
     # 3. 渲染内容（左对齐，不包裹）
