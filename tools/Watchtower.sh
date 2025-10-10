@@ -227,7 +227,7 @@ _extract_interval_from_cmd(){
             if [ "$prev" = "--interval" ]; then
                 interval="$t"
                 break
-            }
+            fi
             prev="$t"
         done
     fi
