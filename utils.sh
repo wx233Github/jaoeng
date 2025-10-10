@@ -1,10 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.30-菜单 UI 风格大重构)
-# - 重构: _render_menu 彻底修改 UI 风格。
-#         - 仅标题使用边框包裹。
-#         - 菜单内容左对齐，不包裹。
-#         - 底部使用动态分隔线。
+# 🚀 通用工具函数库 (v2.31-修复 UI 盒子对齐)
+# - 修复: 确保 _render_menu 正确计算最大宽度，解决标题盒子右侧对齐偏移问题。
 # =============================================================
 
 # --- 严格模式 ---
@@ -127,7 +124,7 @@ _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_content_width=0
 
-    # 1. 确定最大内容宽度（用于标题边框和底部横线）
+    # 1. 确定所有行的最大视觉宽度（包括标题）
     local current_line_visual_width
     for line in "${lines[@]}"; do
         current_line_visual_width=$(_get_visual_width "$line")
@@ -137,12 +134,11 @@ _render_menu() {
     done
 
     local title_width=$(_get_visual_width "$title")
-    
-    # 标题盒子宽度取内容和标题的最大值，加上两边各一个空格
-    local box_inner_width=$max_content_width
-    if [ "$title_width" -gt "$box_inner_width" ]; then
-        box_inner_width="$title_width"
+    if [ "$title_width" -gt "$max_content_width" ]; then
+        max_content_width="$title_width"
     fi
+    
+    local box_inner_width=$max_content_width
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 最小宽度
 
     # 加上左右各一个空格的边距
@@ -154,6 +150,7 @@ _render_menu() {
         local padding_total=$((box_inner_width - title_width));
         local padding_left=$((padding_total / 2));
         local padding_right=$((padding_total - padding_left));
+        # 确保标题行也被填充到 box_total_width 的宽度，以保证右侧边框对齐
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
     echo -e "${GREEN}╰$(generate_line "$box_total_width" "─")╯${NC}"
@@ -163,6 +160,6 @@ _render_menu() {
         echo -e "${line}"
     done
     
-    # 4. 渲染底部横线（使用内容最大宽度）
+    # 4. 渲染底部横线（使用盒子总宽度）
     echo -e "${GREEN}$(generate_line "$box_total_width" "─")${NC}"
 }
