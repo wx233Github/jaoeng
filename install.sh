@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.56-健壮性优化)
-# - 优化: 重构 run_module 函数中的循环逻辑，使用更安全的 `while read` 代替 `for` 循环，以提高处理模块配置项的健壮性。
+# 🚀 VPS 一键安装与管理脚本 (v77.57-修复重启逻辑)
+# - 修复: 彻底修复因在子进程中执行 `exec` 导致的脚本重启混乱和输出污染问题。
+# - 优化: 将重启决策逻辑移至主函数流程，确保更新与重启的流程正确分离。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.56"
+SCRIPT_VERSION="v77.57"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -141,12 +142,6 @@ run_comprehensive_auto_update() {
             updated_files+=("$file")
             sudo mv "$temp_file" "$local_path"
             if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
-            
-            if [ "$file" = "install.sh" ]; then
-                # 修复: 将此消息重定向到 stderr (>&2)，防止污染返回值
-                echo -e "\r$(log_timestamp) ${GREEN}[成 功]${NC} 主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
-                flock -u 200 2>/dev/null || true; trap - EXIT || true; exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
-            fi
         else
             rm -f "$temp_file"
         fi
@@ -383,7 +378,7 @@ main() {
     load_config "$CONFIG_PATH"
     check_and_install_dependencies
     
-    # 修复: 确保锁文件逻辑正确，并在启动时检查是否已经运行
+    # 确保锁文件逻辑正确，并在启动时检查是否已经运行
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
     trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT
     
@@ -398,13 +393,22 @@ main() {
     fi
     
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
-    # 修复: 确保进度提示立即刷新且输出到 stderr
+    # 确保进度提示立即刷新且输出到 stderr
     printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
     local updated_files_list
     updated_files_list=$(run_comprehensive_auto_update "$@")
     printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          \n" >&2
     
     if [ -n "$updated_files_list" ]; then
+        # 核心修复：检查主程序是否已更新，如果是，则在此处执行重启
+        if [[ " ${updated_files_list} " == *" install.sh "* ]]; then
+            log_success "主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
+            # 释放锁并禁用陷阱，以确保平稳交接
+            flock -u 200 2>/dev/null || true
+            trap - EXIT
+            exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+        fi
+
         for file in $updated_files_list; do
             local filename; filename=$(basename "$file")
             log_success "${GREEN}${filename}${NC} 已更新" >&2
