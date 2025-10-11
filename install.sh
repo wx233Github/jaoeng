@@ -1,13 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.55-修复退出逻辑和更新日志)
-# - 修复: 修复 display_and_process_menu 中的退出逻辑，确保脚本正常退出 (代码 0) 而非卡住。
-# - 修复: 确保所有 log_info/log_success 都在 stderr，避免污染终端输出。
-# - 优化: 适配 utils.sh v2.31 的 UI 修复。
+# 🚀 VPS 一键安装与管理脚本 (v77.56-健壮性优化)
+# - 优化: 重构 run_module 函数中的循环逻辑，使用更安全的 `while read` 代替 `for` 循环，以提高处理模块配置项的健壮性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.55"
+SCRIPT_VERSION="v77.56"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -220,13 +218,10 @@ run_module(){
         local module_config_json
         module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
         
-        local keys
-        keys=$(echo "$module_config_json" | jq -r 'keys[]')
-
-        for key in $keys; do
+        # 优化: 使用更健壮的 `while read` 循环来处理可能包含特殊字符的键名
+        echo "$module_config_json" | jq -r 'keys_unsorted[]' | while IFS= read -r key; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value
-            # 修复: jq 引用变量应使用 $ 符号
             value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
             local upper_key="${key^^}"
             export "WATCHTOWER_CONF_${upper_key}"="$value"
