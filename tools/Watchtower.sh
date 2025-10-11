@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.30-修复通知模板)
-# - 修复: 修复了因使用临时文件导致美化通知模板失效的严重 Bug。
-# - 回退: 根据用户要求，移除了“详情与管理”界面的实时刷新功能。
+# 🚀 Watchtower 管理模块 (v4.9.32-增加交互确认)
+# - 优化: 为“触发扫描”功能增加了 Y/n 确认提示，防止误操作。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.30"
+SCRIPT_VERSION="v4.9.32"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -305,9 +304,7 @@ _get_watchtower_remaining_time(){
     local last_event_timestamp_str=""
     local next_expected_check_epoch=0
     
-    # 修复: 增强解析，以处理首次调度日志
     if [[ "$last_event_line" == *"Scheduling first run"* ]]; then
-        # 从 'msg="Scheduling first run: 2025-10-12 02:12:12 +0800 CST"' 中提取时间
         last_event_timestamp_str=$(echo "$last_event_line" | sed -n 's/.*Scheduling first run: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\).*/\1/p')
         next_expected_check_epoch=$(_date_to_epoch "$last_event_timestamp_str")
     else
@@ -429,26 +426,35 @@ _format_and_highlight_log_line(){
 _start_watchtower_container_logic(){
     local wt_interval="$1"
     local mode_description="$2"
+    local interactive_mode="${3:-false}"
+    
     local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
     local wt_image="containrrr/watchtower"; local wt_args=("--cleanup"); local container_names=()
-    if [ "$mode_description" = "一次性更新" ]; then
-        docker_run_args+=(--rm --name watchtower-once); wt_args+=(--run-once)
+
+    if [ "$interactive_mode" = "true" ]; then
+        docker_run_args+=(--rm --name watchtower-once)
+        wt_args+=(--run-once)
     else
-        docker_run_args+=(-d --name watchtower --restart unless-stopped); wt_args+=(--interval "${wt_interval:-300}")
+        docker_run_args+=(-d --name watchtower --restart unless-stopped)
+        wt_args+=(--interval "${wt_interval:-300}")
     fi
+
     docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     
-    # 修复: 使用永久文件代替临时文件来存储通知模板
     local template_file="${INSTALL_DIR}/watchtower_notification.gohtml"
     
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
+        if [ "$interactive_mode" = "false" ]; then
+            log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
+        fi
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true); log_info "✅ 将启用 '无更新也通知' 模式。"
-        else log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
+            docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
+            if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
+        else
+            if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
+        fi
         
-        # 将模板写入永久文件
         cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
@@ -467,7 +473,7 @@ EOF
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; local included_containers
     if [ -n "$final_exclude_list" ]; then
-        log_info "正在应用排除规则: ${final_exclude_list}"
+        if [ "$interactive_mode" = "false" ]; then log_info "正在应用排除规则: ${final_exclude_list}"; fi
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
         included_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true)
         
@@ -477,23 +483,34 @@ EOF
         fi
         
         mapfile -t container_names < <(echo "$included_containers")
-        log_info "计算后的监控范围: ${container_names[*]}"
+        if [ "$interactive_mode" = "false" ]; then log_info "计算后的监控范围: ${container_names[*]}"; fi
     else 
-        log_info "未发现排除规则，Watchtower 将监控所有容器。"
+        if [ "$interactive_mode" = "false" ]; then log_info "未发现排除规则，Watchtower 将监控所有容器。"; fi
     fi
-    echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
-    _print_header "正在启动 $mode_description"
+    if [ "$interactive_mode" = "false" ]; then echo "⬇️ 正在拉取 Watchtower 镜像..."; fi
+    set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
+    
+    if [ "$interactive_mode" = "false" ]; then _print_header "正在启动 $mode_description"; fi
+    
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
-    local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
-    echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_command_to_run[@]}${NC}"
+    
+    if [ "$JB_DEBUG_MODE" = "true" ] && [ "$interactive_mode" = "false" ]; then
+        echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_command_to_run[@]}${NC}"
+    fi
+
     set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
     
-    # 不再需要删除临时文件
-    
-    if [ "$mode_description" = "一次性更新" ]; then
-        if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi; return $rc
+    if [ "$interactive_mode" = "true" ]; then
+        if [ $rc -eq 0 ]; then log_success "一次性扫描完成。"; else log_err "一次性扫描失败。"; fi
+        return $rc
     else
-        sleep 3; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "${GREEN}✅ $mode_description 启动成功。${NC}"; else echo -e "${RED}❌ $mode_description 启动失败。${NC}"; fi; return 0
+        sleep 3
+        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
+            log_success "$mode_description 启动成功。"
+        else
+            log_err "$mode_description 启动失败。"
+        fi
+        return 0
     fi
 }
 
@@ -503,7 +520,7 @@ _rebuild_watchtower() {
     if ! _start_watchtower_container_logic "$interval" "Watchtower模式"; then
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
-    send_notify "🔄 Watchtower 服务已重建并启动。"; log_success "Watchtower 重建成功。"
+    send_notify "🔄 Watchtower 服务已重建并启动。"
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
@@ -514,9 +531,7 @@ _prompt_and_rebuild_watchtower_if_needed() {
 
 run_watchtower_once(){
     if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 1; fi
-    echo -e "${YELLOW}🆕 运行一次 Watchtower${NC}"
-    if ! _start_watchtower_container_logic "" "一次性更新"; then return 1; fi
-    return 0
+    _start_watchtower_container_logic "" "" true
 }
 
 _configure_telegram() {
@@ -750,6 +765,16 @@ manage_tasks(){
     done
 }
 
+_trigger_scan_interactive() {
+    if ! confirm_action "确定要立即触发一次性扫描吗？"; then
+        log_info "操作已取消。"
+        return 0
+    fi
+    log_info "正在启动一次性扫描... (日志将实时显示)"
+    _start_watchtower_container_logic "" "" true
+    press_enter_to_continue
+}
+
 show_watchtower_details(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -784,7 +809,7 @@ show_watchtower_details(){
         case "$pick" in
             1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
-            3) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
+            3) _trigger_scan_interactive ;;
             *) return ;;
         esac
     done
