@@ -1,11 +1,12 @@
+#!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.26-修复变量错误)
-# - 修复: 修复 show_watchtower_details 函数中 countdown 变量的大小写不一致问题。
-# - 修复: 修复 show_watchtower_details 函数中 JB_SUDO_LOG_QUIET 变量值的大小写错误。
+# 🚀 Watchtower 管理模块 (v4.9.27-逻辑修复与UX优化)
+# - 修复: 修复了一个关键逻辑错误：当用户排除所有容器时，脚本不再错误地启动Watchtower去监控所有容器，而是会报错并中止。
+# - 优化: 优化了排除列表菜单的用户体验，按回车清空后会刷新菜单显示结果，而不是直接退出。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.26"
+SCRIPT_VERSION="v4.9.27"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -449,11 +450,20 @@ EOF
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; local included_containers
     if [ -n "$final_exclude_list" ]; then
-        log_info "发现排除规则: ${final_exclude_list}"
+        log_info "正在应用排除规则: ${final_exclude_list}"
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
         included_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true)
-        if [ -n "$included_containers" ]; then log_info "计算后的监控范围: ${included_containers}"; read -r -a container_names <<< "$included_containers"; else log_warn "排除规则导致监控列表为空！"; fi
-    else log_info "未发现排除规则，Watchtower 将监控所有容器。"; fi
+        
+        # 修复: 如果排除后列表为空，则中止操作，防止 Watchtower 监控所有容器
+        if [ -z "$included_containers" ]; then
+            log_err "排除规则导致监控列表为空，Watchtower 无法启动。"
+            return 1
+        fi
+        
+        log_info "计算后的监控范围: ${included_containers}"; read -r -a container_names <<< "$included_containers"
+    else 
+        log_info "未发现排除规则，Watchtower 将监控所有容器。"
+    fi
     echo "⬇️ 正在拉取 Watchtower 镜像..."; set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1 || true; set -e
     _print_header "正在启动 $mode_description"
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
@@ -624,7 +634,12 @@ configure_exclusion_list() {
         _render_menu "配置排除列表" "${items_array[@]}"; read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]清空: " choice < /dev/tty
         case "$choice" in
             c|C) break ;;
-            "") excluded_map=(); log_info "已清空排除列表。"; sleep 1.5; break ;;
+            "") 
+                excluded_map=()
+                log_info "已清空排除列表。"
+                sleep 1
+                continue # 优化: 刷新菜单显示清空后的状态
+                ;;
             *)
                 local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
                 for index in "${selected_indices[@]}"; do
