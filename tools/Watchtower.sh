@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.33-修复通知逻辑)
-# - 修复: 使用了正确的环境变量 `WATCHTOWER_NOTIFICATION_REPORT`，解决了“无更新时不通知”的 Bug。
-# - 优化: 增加了 `WATCHTOWER_NO_STARTUP_MESSAGE` 以禁止发送原始的启动日志通知。
+# 🚀 Watchtower 管理模块 (v4.9.34-修复模板逻辑)
+# - 修复: 重构通知模板的 `if/else` 逻辑，解决因模板渲染失败导致 `notify=no` 的核心 Bug。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.33"
+SCRIPT_VERSION="v4.9.34"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -449,27 +448,29 @@ _start_watchtower_container_logic(){
             log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
         fi
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
-        
-        # 修复: 增加禁止启动通知的变量
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            # 修复: 使用正确的环境变量 WATCHTOWER_NOTIFICATION_REPORT
             docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
         fi
         
+        # 修复: 使用更健壮的 if/else 模板逻辑
         cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
-{{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*
+{{if .Updated}}
+✅ *扫描完成！共更新 {{len .Updated}} 个容器。*
 {{range .Updated}}- 🔄 *{{.Name}}*
   🖼️ *镜像:* `{{.ImageName}}`
-  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`{{end}}{{else if .Scanned}}✅ *扫描完成！未发现可更新的容器。*
-  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{else if .Failed}}❌ *扫描失败！*
-  (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}
+  🆔 *ID:* `{{.OldImageID.Short}}` -> `{{.NewImageID.Short}}`
+{{end}}
+{{else}}
+✅ *扫描完成！未发现可更新的容器。*
+  (共扫描 {{len .Scanned}} 个, 失败 {{len .Failed}} 个)
+{{end}}
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
         chmod 644 "$template_file"
@@ -839,7 +840,7 @@ view_and_edit_config(){
             # 格式化为单列字符串，不含 '|'
             content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
         done
-        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
+        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local extra; extra=$(echo "$item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
