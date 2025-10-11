@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.37-修复回车退出与重建输出)
-# - 修复: 修正了主菜单按回车键直接退出脚本的逻辑 Bug。
-# - 修复: 为重建 Watchtower 容器操作增加了终端成功提示。
+# 🚀 Watchtower 管理模块 (v4.9.38-修复UI与交互)
+# - 修复: 解决了重建后倒计时显示延迟的问题。
+# - 优化: 为重建操作增加了交互确认并移除了重复的成功消息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.37"
+SCRIPT_VERSION="v4.9.38"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -528,7 +528,7 @@ _rebuild_watchtower() {
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
     send_notify "🔄 Watchtower 服务已重建并启动。"
-    log_success "Watchtower 重建成功。"
+    sleep 2 # 修复: 增加短暂延迟以确保日志写入
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
@@ -761,7 +761,11 @@ manage_tasks(){
                 ;;
             2) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
-                    _rebuild_watchtower
+                    if confirm_action "确定要重建 Watchtower 吗？"; then
+                        _rebuild_watchtower
+                    else
+                        log_info "操作已取消。"
+                    fi
                 else 
                     echo -e "${YELLOW}ℹ️ Watchtower 未运行。${NC}"
                 fi
@@ -931,7 +935,10 @@ main(){
     log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}" >&2
     if [ "${1:-}" = "--run-once" ]; then run_watchtower_once; exit $?; fi
     main_menu
-    exit 10
+    # 修复: 确保从模块返回时使用正确的退出码
+    if [ $? -eq 0 ]; then
+        exit 10 # 返回主菜单的特定代码
+    fi
 }
 
 main "$@"
