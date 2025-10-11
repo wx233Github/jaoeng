@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.36-根本性修复)
-# - 修复: 使用了正确的 `--report` 命令行标志代替无效的环境变量，彻底解决了`notify=no`的根本问题。
+# 🚀 Watchtower 管理模块 (v4.9.37-修复回车退出与重建输出)
+# - 修复: 修正了主菜单按回车键直接退出脚本的逻辑 Bug。
+# - 修复: 为重建 Watchtower 容器操作增加了终端成功提示。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.36"
+SCRIPT_VERSION="v4.9.37"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -451,7 +452,6 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            # 修复: 使用正确的 `--report` 命令行标志
             wt_args+=(--report)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
@@ -528,6 +528,7 @@ _rebuild_watchtower() {
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
     send_notify "🔄 Watchtower 服务已重建并启动。"
+    log_success "Watchtower 重建成功。"
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
@@ -578,7 +579,7 @@ notification_menu() {
         case "$choice" in
             1) _configure_telegram; save_config; _prompt_and_rebuild_watchtower_if_needed; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
-            3) if [ -z "$TG_BOT_TOKEN" ] && [ -z "$EMAIL_TO" ]; then log_warn "请先配置至少一种通知方式。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} 的*测试消息*。"; log_info "测试通知已发送。请检查你的 Telegram 或邮箱。"; fi; press_enter_to_continue ;;
+            3) if [ -z "$TG_BOT_TOKEN" ] && [ -z "$EMAIL_TO" ]; then log_warn "请先配置至少一种通知方式。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*测试消息*。"; log_info "测试通知已发送。请检查你的 Telegram 或邮箱。"; fi; press_enter_to_continue ;;
             4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; _prompt_and_rebuild_watchtower_if_needed; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
@@ -919,7 +920,7 @@ main_menu(){
           4) view_and_edit_config ;;
           5) run_watchtower_once; press_enter_to_continue ;;
           6) show_watchtower_details ;;
-          "") exit 10 ;;
+          "") return 0 ;;
           *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
