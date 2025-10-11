@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.35-纠正环境变量)
-# - 修复: 使用了正确的环境变量 `WATCHTOWER_REPORT`，彻底解决了“无更新时不通知”的根本问题。
+# 🚀 Watchtower 管理模块 (v4.9.36-根本性修复)
+# - 修复: 使用了正确的 `--report` 命令行标志代替无效的环境变量，彻底解决了`notify=no`的根本问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.35"
+SCRIPT_VERSION="v4.9.36"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -451,8 +451,8 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            # 修复: 使用正确的环境变量 WATCHTOWER_REPORT
-            docker_run_args+=(-e WATCHTOWER_REPORT=true)
+            # 修复: 使用正确的 `--report` 命令行标志
+            wt_args+=(--report)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
