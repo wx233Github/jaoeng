@@ -1,12 +1,11 @@
-#!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.25-修复语法错误)
-# - 修复: _format_seconds_to_human 函数中 if 语句的错误闭合符号 '}' 替换为 'fi'。
-# - 修复: configure_exclusion_list 函数中 if 语句的错误闭合符号 '}' 替换为 'fi'。
+# 🚀 Watchtower 管理模块 (v4.9.26-修复变量错误)
+# - 修复: 修复 show_watchtower_details 函数中 countdown 变量的大小写不一致问题。
+# - 修复: 修复 show_watchtower_details 函数中 JB_SUDO_LOG_QUIET 变量值的大小写错误。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.25"
+SCRIPT_VERSION="v4.9.26"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -148,7 +147,7 @@ _date_to_epoch() {
 
 _format_seconds_to_human(){
     local total_seconds="$1"
-    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi # <-- 修复: 确保 if 语句正确闭合
+    if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi
     local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 ))
     local result=""
     if [ "$days" -gt 0 ]; then result+="${days}天"; fi
@@ -720,14 +719,14 @@ manage_tasks(){
 show_watchtower_details(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local title="📊 Watchtower 详情与管理 📊"; local interval raw_logs countdown updates
+        local title="📊 Watchtower 详情与管理 📊"; local interval raw_logs COUNTDOWN updates
         
         set +e
         interval=$(get_watchtower_inspect_summary)
         raw_logs=$(get_watchtower_all_raw_logs)
         set -e
         
-        countdown=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+        COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
         local -a content_lines_array=(
             "上次活动: $(get_last_session_time || echo 'N/A')" 
             "下次检查: ${COUNTDOWN}" 
@@ -744,7 +743,7 @@ show_watchtower_details(){
         case "$pick" in
             1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
-            3) if JB_SUDO_LOG_QUIET="TRUE" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
+            3) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then log_info "正在发送 SIGHUP 信号以触发扫描..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker kill -s SIGHUP watchtower; then log_success "信号已发送！请在下方查看实时日志..."; echo -e "按 Ctrl+C 停止..."; sleep 2; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; else log_err "发送信号失败！"; fi; else log_warn "Watchtower 未运行，无法触发扫描。"; fi; press_enter_to_continue ;;
             *) return ;;
         esac
     done
