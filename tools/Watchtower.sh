@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.34-修复模板逻辑)
-# - 修复: 重构通知模板的 `if/else` 逻辑，解决因模板渲染失败导致 `notify=no` 的核心 Bug。
+# 🚀 Watchtower 管理模块 (v4.9.35-纠正环境变量)
+# - 修复: 使用了正确的环境变量 `WATCHTOWER_REPORT`，彻底解决了“无更新时不通知”的根本问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.34"
+SCRIPT_VERSION="v4.9.35"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -451,13 +451,13 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
+            # 修复: 使用正确的环境变量 WATCHTOWER_REPORT
+            docker_run_args+=(-e WATCHTOWER_REPORT=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
         fi
         
-        # 修复: 使用更健壮的 if/else 模板逻辑
         cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
