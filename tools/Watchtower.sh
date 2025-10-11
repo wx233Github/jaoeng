@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.32-增加交互确认)
-# - 优化: 为“触发扫描”功能增加了 Y/n 确认提示，防止误操作。
+# 🚀 Watchtower 管理模块 (v4.9.33-修复通知逻辑)
+# - 修复: 使用了正确的环境变量 `WATCHTOWER_NOTIFICATION_REPORT`，解决了“无更新时不通知”的 Bug。
+# - 优化: 增加了 `WATCHTOWER_NO_STARTUP_MESSAGE` 以禁止发送原始的启动日志通知。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.32"
+SCRIPT_VERSION="v4.9.33"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -448,8 +449,13 @@ _start_watchtower_container_logic(){
             log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
         fi
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
+        
+        # 修复: 增加禁止启动通知的变量
+        docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
+
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true)
+            # 修复: 使用正确的环境变量 WATCHTOWER_NOTIFICATION_REPORT
+            docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
@@ -768,6 +774,7 @@ manage_tasks(){
 _trigger_scan_interactive() {
     if ! confirm_action "确定要立即触发一次性扫描吗？"; then
         log_info "操作已取消。"
+        press_enter_to_continue
         return 0
     fi
     log_info "正在启动一次性扫描... (日志将实时显示)"
