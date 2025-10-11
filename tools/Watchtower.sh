@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.38-修复UI与交互)
-# - 修复: 解决了重建后倒计时显示延迟的问题。
-# - 优化: 为重建操作增加了交互确认并移除了重复的成功消息。
+# 🚀 Watchtower 管理模块 (v4.9.39-终极修复)
+# - 修复: 使用主动轮询代替 sleep，确保重建后能立即获取并显示倒计时。
+# - 优化: 恢复了重建时的详细命令输出，增强了操作的透明度。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.38"
+SCRIPT_VERSION="v4.9.39"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -501,8 +501,10 @@ EOF
     
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    if [ "$JB_DEBUG_MODE" = "true" ] && [ "$interactive_mode" = "false" ]; then
-        echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_command_to_run[@]}${NC}"
+    # 修复: 恢复详细命令输出
+    if [ "$interactive_mode" = "false" ]; then
+        local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
+        echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
     fi
 
     set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
@@ -511,7 +513,7 @@ EOF
         if [ $rc -eq 0 ]; then log_success "一次性扫描完成。"; else log_err "一次性扫描失败。"; fi
         return $rc
     else
-        sleep 3
+        sleep 1 # 短暂等待容器ID写入
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "$mode_description 启动成功。"
         else
@@ -528,7 +530,20 @@ _rebuild_watchtower() {
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
     send_notify "🔄 Watchtower 服务已重建并启动。"
-    sleep 2 # 修复: 增加短暂延迟以确保日志写入
+    
+    # 修复: 使用主动轮询代替不可靠的 sleep
+    local counter=0
+    local max_wait=10 # 最多等待10秒
+    log_info "正在等待 Watchtower 初始化以获取首次运行时间..."
+    while [ $counter -lt $max_wait ]; do
+        if JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs watchtower 2>&1 | grep -q "Scheduling first run"; then
+            log_success "Watchtower 初始化完成。"
+            return 0
+        fi
+        sleep 1
+        counter=$((counter + 1))
+    done
+    log_warn "无法在 ${max_wait} 秒内获取到首次运行时间，菜单可能显示不准确。"
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
@@ -935,9 +950,8 @@ main(){
     log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}" >&2
     if [ "${1:-}" = "--run-once" ]; then run_watchtower_once; exit $?; fi
     main_menu
-    # 修复: 确保从模块返回时使用正确的退出码
     if [ $? -eq 0 ]; then
-        exit 10 # 返回主菜单的特定代码
+        exit 10
     fi
 }
 
