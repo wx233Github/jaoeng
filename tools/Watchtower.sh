@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.42-终极正确修复)
-# - 修复: 使用了唯一正确的环境变量`WATCHTOWER_REPORT_ON_NO_UPDATES=true`，彻底解决了通知问题。
-# - 移除: 删除了所有导致容器崩溃的无效命令行标志。
+# 🚀 Watchtower 管理模块 (v4.9.43-最终修复)
+# - 修复: 解决了“一次性扫描”模式因与自定义模板冲突而无法发送通知的最终问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.42"
+SCRIPT_VERSION="v4.9.43"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -452,14 +451,15 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            # 修复: 使用唯一正确的环境变量
             docker_run_args+=(-e WATCHTOWER_REPORT_ON_NO_UPDATES=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
         fi
         
-        cat <<'EOF' > "$template_file"
+        # 修复: 仅在后台服务模式下加载自定义模板，以避免与一次性扫描冲突
+        if [ "$interactive_mode" = "false" ]; then
+            cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
 {{if .Updated}}
@@ -474,8 +474,10 @@ _start_watchtower_container_logic(){
 {{end}}
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
-        chmod 644 "$template_file"
-        docker_run_args+=(-v "${template_file}:/etc/watchtower/notification.gohtml:ro"); docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
+            chmod 644 "$template_file"
+            docker_run_args+=(-v "${template_file}:/etc/watchtower/notification.gohtml:ro")
+            docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
+        fi
     fi
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
