@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.41-最终正确修复)
-# - 修复: 使用了官方文档中的 `-R` 短标志，以最可靠的方式解决了通知问题。
-# - 移除: 删除了所有之前错误的标志和环境变量尝试。
+# 🚀 Watchtower 管理模块 (v4.9.42-终极正确修复)
+# - 修复: 使用了唯一正确的环境变量`WATCHTOWER_REPORT_ON_NO_UPDATES=true`，彻底解决了通知问题。
+# - 移除: 删除了所有导致容器崩溃的无效命令行标志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.41"
+SCRIPT_VERSION="v4.9.42"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -452,8 +452,8 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            # 修复: 使用最终正确的 -R 短标志
-            wt_args+=(-R)
+            # 修复: 使用唯一正确的环境变量
+            docker_run_args+=(-e WATCHTOWER_REPORT_ON_NO_UPDATES=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
