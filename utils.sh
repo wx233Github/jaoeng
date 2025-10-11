@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.32-最终修复 UI 盒子对齐)
-# - 修复: 确保 _render_menu 标题和内容的最大宽度计算一致，解决标题盒子右侧对齐偏移问题。
+# 🚀 通用工具函数库 (v2.33-修复UI盒子对齐)
+# - 修复: 重构 _render_menu 函数的宽度计算逻辑，确保标题框的顶/底部横线与标题内容宽度精确匹配，解决右侧边框偏移问题。
 # =============================================================
 
 # --- 严格模式 ---
@@ -123,58 +123,50 @@ _get_visual_width() {
     fi
 }
 
-# 最终修复后的 _render_menu: 确保标题和底部横线对齐
+# 修复后的 _render_menu: 确保标题和底部横线对齐
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_content_width=0
 
-    # 1. 确定所有行的最大视觉宽度（包括标题）
-    local current_line_visual_width
-    
-    # a. 检查标题宽度
+    # 1. 确定所有内容（包括标题和菜单项）的最大视觉宽度
     local title_width=$(_get_visual_width "$title")
-    if [ "$title_width" -gt "$max_content_width" ]; then
-        max_content_width="$title_width"
-    fi
+    max_content_width=$title_width
 
-    # b. 检查内容行宽度
     for line in "${lines[@]}"; do
-        current_line_visual_width=$(_get_visual_width "$line")
+        local current_line_visual_width=$(_get_visual_width "$line")
         if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
             max_content_width="$current_line_visual_width"
         fi
     done
     
+    # 2. 定义盒子内部内容的统一宽度。此宽度用于填充标题和绘制横线。
     local box_inner_width=$max_content_width
-    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 最小宽度
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 强制最小宽度
 
-    # 加上左右各一个空格和边框的宽度
-    # 标题行格式: │ <padding> TITLE <padding> │
-    # 边框宽度 = 2 (左右边框) + 2 (左右空格) = 4
-    local box_total_width=$((box_inner_width + 2)) # 标题宽度 + 2个空格
-
-    # 2. 渲染标题盒子
-    echo ""; 
-    # 顶部边框: ╭───────╮
-    echo -e "${GREEN}╭$(generate_line "$box_total_width" "─")╮${NC}"
+    # 3. 渲染标题盒子
+    echo ""
+    # 顶部边框: 横线宽度与内部内容宽度一致
+    echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
     
     if [ -n "$title" ]; then
-        # 计算标题填充
-        local padding_total=$((box_inner_width - title_width));
-        local padding_left=$((padding_total / 2));
-        local padding_right=$((padding_total - padding_left));
-        # 标题行: │ <padding> TITLE <padding> │
+        # 计算填充，使标题在 'box_inner_width' 内居中
+        local padding_total=$((box_inner_width - title_width))
+        local padding_left=$((padding_total / 2))
+        local padding_right=$((padding_total - padding_left))
+        # 标题行: │ + (居中后的标题内容) + │
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${GREEN}${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
     
-    # 底部边框: ╰───────╯
-    echo -e "${GREEN}╰$(generate_line "$box_total_width" "─")╯${NC}"
+    # 底部边框: 横线宽度与内部内容宽度一致
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
 
-    # 3. 渲染内容（左对齐，不包裹）
+    # 4. 渲染菜单项
     for line in "${lines[@]}"; do
         echo -e "${line}"
     done
     
-    # 4. 渲染底部横线（使用盒子总宽度）
-    echo -e "${GREEN}$(generate_line "$box_total_width" "─")${NC}"
+    # 5. 渲染下方的分隔线，其总长度应匹配盒子的总视觉宽度
+    # 总视觉宽度 = 内部宽度 + 2个边框字符 (例如 '│' 和 '│')
+    local box_total_physical_width=$(( box_inner_width + 2 ))
+    echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
