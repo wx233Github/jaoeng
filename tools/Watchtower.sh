@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.27-逻辑修复与UX优化)
-# - 修复: 修复了一个关键逻辑错误：当用户排除所有容器时，脚本不再错误地启动Watchtower去监控所有容器，而是会报错并中止。
-# - 优化: 优化了排除列表菜单的用户体验，按回车清空后会刷新菜单显示结果，而不是直接退出。
+# 🚀 Watchtower 管理模块 (v4.9.28-修复监控范围与倒计时)
+# - 修复: 修复了因错误处理多行输入导致监控范围不正确的严重 Bug。
+# - 修复: 增强了日志解析能力，现在可以从首次调度日志中提取时间，实现即时倒计时。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.27"
+SCRIPT_VERSION="v4.9.28"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -284,49 +284,62 @@ get_last_session_time(){
 }
 
 _get_watchtower_remaining_time(){
-    local interval_seconds="$1" # Watchtower 配置的检查间隔，秒
-    local raw_logs="$2"         # Watchtower 容器的最新日志
-    local current_epoch=$(date +%s)
+    local interval_seconds="$1"
+    local raw_logs="$2"
+    local current_epoch
+    current_epoch=$(date +%s)
 
-    if [ -z "$interval_seconds" ] || [ -z "$raw_logs" ]; then
+    if [ -z "$raw_logs" ]; then
         echo -e "${YELLOW}N/A${NC}"
         return
     fi
 
-    local last_session_line
-    last_session_line=$(echo "$raw_logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    local last_event_line
+    last_event_line=$(echo "$raw_logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
 
-    if [ -z "$last_session_line" ]; then
+    if [ -z "$last_event_line" ]; then
         echo -e "${YELLOW}等待首次扫描...${NC}"
         return
     fi
 
-    local last_event_timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_session_line")
-    local last_event_epoch=$(_date_to_epoch "$last_event_timestamp_str")
+    local last_event_timestamp_str=""
+    local next_expected_check_epoch=0
+    
+    # 修复: 增强解析，以处理首次调度日志
+    if [[ "$last_event_line" == *"Scheduling first run"* ]]; then
+        # 从 'msg="Scheduling first run: 2025-10-12 02:03:57 +0800 CST"' 中提取时间
+        last_event_timestamp_str=$(echo "$last_event_line" | sed -n 's/.*Scheduling first run: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\).*/\1/p')
+        next_expected_check_epoch=$(_date_to_epoch "$last_event_timestamp_str")
+    else
+        if [ -z "$interval_seconds" ]; then
+             echo -e "${YELLOW}N/A${NC}"
+             return
+        fi
+        last_event_timestamp_str=$(_parse_watchtower_timestamp_from_log_line "$last_event_line")
+        local last_event_epoch=$(_date_to_epoch "$last_event_timestamp_str")
+        
+        if [ "$last_event_epoch" -eq 0 ]; then
+            echo -e "${YELLOW}计算中...${NC}"
+            return
+        fi
 
-    if [ "$last_event_epoch" -eq 0 ]; then
+        if [[ "$last_event_line" == *"Session done"* ]]; then
+            next_expected_check_epoch=$((last_event_epoch + interval_seconds))
+            while [ "$next_expected_check_epoch" -le "$current_epoch" ]; do
+                next_expected_check_epoch=$((next_expected_check_epoch + interval_seconds))
+            done
+        elif [[ "$last_event_line" == *"Starting Watchtower"* ]]; then
+            echo -e "${YELLOW}等待首次调度...${NC}"
+            return
+        fi
+    fi
+
+    if [ "$next_expected_check_epoch" -eq 0 ]; then
         echo -e "${YELLOW}计算中...${NC}"
         return
     fi
 
-    local next_expected_check_epoch=0
-    local remaining_seconds=0
-
-    # 计算下一个预期检查时间点，使其始终在当前时间之后
-    if [[ "$last_session_line" == *"Session done"* ]]; then
-        next_expected_check_epoch=$((last_event_epoch + interval_seconds))
-        # 如果已经逾期，则计算距离再下一个周期还有多久
-        while [ "$next_expected_check_epoch" -le "$current_epoch" ]; do
-            next_expected_check_epoch=$((next_expected_check_epoch + interval_seconds))
-        done
-        remaining_seconds=$((next_expected_check_epoch - current_epoch))
-    elif [[ "$last_session_line" == *"Scheduling first run"* ]]; then
-        next_expected_check_epoch="$last_event_epoch"
-        remaining_seconds=$((next_expected_check_epoch - current_epoch))
-    elif [[ "$last_session_line" == *"Starting Watchtower"* ]]; then
-        echo -e "${YELLOW}等待首次调度...${NC}"
-        return
-    fi
+    local remaining_seconds=$((next_expected_check_epoch - current_epoch))
 
     if [ "$remaining_seconds" -gt 0 ]; then
         local hours=$((remaining_seconds / 3600))
@@ -334,7 +347,6 @@ _get_watchtower_remaining_time(){
         local seconds=$(( remaining_seconds % 60 ))
         printf "%b%02d时%02d分%02d秒%b" "$GREEN" "$hours" "$minutes" "$seconds" "$NC"
     else
-        # 理论上 remaining_seconds 不会小于等于 0 了，但作为保险，如果出现，也显示正在检查中
         echo -e "${YELLOW}正在检查中...${NC}"
     fi
 }
@@ -454,13 +466,14 @@ EOF
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
         included_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true)
         
-        # 修复: 如果排除后列表为空，则中止操作，防止 Watchtower 监控所有容器
         if [ -z "$included_containers" ]; then
             log_err "排除规则导致监控列表为空，Watchtower 无法启动。"
             return 1
         fi
         
-        log_info "计算后的监控范围: ${included_containers}"; read -r -a container_names <<< "$included_containers"
+        # 修复: 使用 mapfile (readarray) 安全地将多行容器名读入数组
+        mapfile -t container_names < <(echo "$included_containers")
+        log_info "计算后的监控范围: ${container_names[*]}"
     else 
         log_info "未发现排除规则，Watchtower 将监控所有容器。"
     fi
