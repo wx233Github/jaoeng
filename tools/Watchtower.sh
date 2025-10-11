@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.43-最终修复)
-# - 修复: 解决了“一次性扫描”模式因与自定义模板冲突而无法发送通知的最终问题。
+# 🚀 Watchtower 管理模块 (v4.9.44-终极修复)
+# - 修复: 为“一次性扫描”模式添加 --wait-on-exit 标志，解决因容器过早退出导致通知发送失败的竞态条件问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.43"
+SCRIPT_VERSION="v4.9.44"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -434,6 +434,8 @@ _start_watchtower_container_logic(){
     if [ "$interactive_mode" = "true" ]; then
         docker_run_args+=(--rm --name watchtower-once)
         wt_args+=(--run-once)
+        # 修复: 添加 --wait-on-exit 标志以确保通知有时间发送
+        wt_args+=(--wait-on-exit)
     else
         docker_run_args+=(-d --name watchtower --restart unless-stopped)
         wt_args+=(--interval "${wt_interval:-300}")
@@ -457,7 +459,6 @@ _start_watchtower_container_logic(){
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
         fi
         
-        # 修复: 仅在后台服务模式下加载自定义模板，以避免与一次性扫描冲突
         if [ "$interactive_mode" = "false" ]; then
             cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
