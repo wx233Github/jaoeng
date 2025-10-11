@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.39-终极修复)
-# - 修复: 使用主动轮询代替 sleep，确保重建后能立即获取并显示倒计时。
-# - 优化: 恢复了重建时的详细命令输出，增强了操作的透明度。
+# 🚀 Watchtower 管理模块 (v4.9.40-最终正确修复)
+# - 修复: 使用了唯一正确的环境变量`WATCHTOWER_REPORT_ON_NO_UPDATES`，彻底解决了通知问题。
+# - 移除: 删除了导致容器崩溃的无效 `--report` 标志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.39"
+SCRIPT_VERSION="v4.9.40"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -452,7 +452,8 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
-            wt_args+=(--report)
+            # 修复: 使用唯一正确的环境变量
+            docker_run_args+=(-e WATCHTOWER_REPORT_ON_NO_UPDATES=true)
             if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
         else
             if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
@@ -501,7 +502,6 @@ EOF
     
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    # 修复: 恢复详细命令输出
     if [ "$interactive_mode" = "false" ]; then
         local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
         echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
@@ -513,7 +513,7 @@ EOF
         if [ $rc -eq 0 ]; then log_success "一次性扫描完成。"; else log_err "一次性扫描失败。"; fi
         return $rc
     else
-        sleep 1 # 短暂等待容器ID写入
+        sleep 1
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "$mode_description 启动成功。"
         else
@@ -531,9 +531,8 @@ _rebuild_watchtower() {
     fi
     send_notify "🔄 Watchtower 服务已重建并启动。"
     
-    # 修复: 使用主动轮询代替不可靠的 sleep
     local counter=0
-    local max_wait=10 # 最多等待10秒
+    local max_wait=10
     log_info "正在等待 Watchtower 初始化以获取首次运行时间..."
     while [ $counter -lt $max_wait ]; do
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs watchtower 2>&1 | grep -q "Scheduling first run"; then
