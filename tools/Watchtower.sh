@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.28-修复监控范围与倒计时)
-# - 修复: 修复了因错误处理多行输入导致监控范围不正确的严重 Bug。
-# - 修复: 增强了日志解析能力，现在可以从首次调度日志中提取时间，实现即时倒计时。
+# 🚀 Watchtower 管理模块 (v4.9.30-修复通知模板)
+# - 修复: 修复了因使用临时文件导致美化通知模板失效的严重 Bug。
+# - 回退: 根据用户要求，移除了“详情与管理”界面的实时刷新功能。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.28"
+SCRIPT_VERSION="v4.9.30"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -307,7 +307,7 @@ _get_watchtower_remaining_time(){
     
     # 修复: 增强解析，以处理首次调度日志
     if [[ "$last_event_line" == *"Scheduling first run"* ]]; then
-        # 从 'msg="Scheduling first run: 2025-10-12 02:03:57 +0800 CST"' 中提取时间
+        # 从 'msg="Scheduling first run: 2025-10-12 02:12:12 +0800 CST"' 中提取时间
         last_event_timestamp_str=$(echo "$last_event_line" | sed -n 's/.*Scheduling first run: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\).*/\1/p')
         next_expected_check_epoch=$(_date_to_epoch "$last_event_timestamp_str")
     else
@@ -437,14 +437,19 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-d --name watchtower --restart unless-stopped); wt_args+=(--interval "${wt_interval:-300}")
     fi
     docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
-    local template_temp_file=""
+    
+    # 修复: 使用永久文件代替临时文件来存储通知模板
+    local template_file="${INSTALL_DIR}/watchtower_notification.gohtml"
+    
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "✅ 检测到 Telegram 配置，将为 Watchtower 启用通知。"
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             docker_run_args+=(-e WATCHTOWER_REPORT_NO_UPDATES=true); log_info "✅ 将启用 '无更新也通知' 模式。"
         else log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
-        cat <<'EOF' > "/tmp/watchtower_notification_template.$$.gohtml"
+        
+        # 将模板写入永久文件
+        cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
 {{if .Updated}}✅ *扫描完成！共更新 {{len .Updated}} 个容器。*
@@ -455,8 +460,8 @@ _start_watchtower_container_logic(){
   (共扫描 {{.Scanned}} 个, 失败 {{.Failed}} 个){{end}}
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
-        template_temp_file="/tmp/watchtower_notification_template.$$.gohtml"; chmod 644 "$template_temp_file"
-        docker_run_args+=(-v "${template_temp_file}:/etc/watchtower/notification.gohtml:ro"); docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
+        chmod 644 "$template_file"
+        docker_run_args+=(-v "${template_file}:/etc/watchtower/notification.gohtml:ro"); docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
     fi
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
@@ -471,7 +476,6 @@ EOF
             return 1
         fi
         
-        # 修复: 使用 mapfile (readarray) 安全地将多行容器名读入数组
         mapfile -t container_names < <(echo "$included_containers")
         log_info "计算后的监控范围: ${container_names[*]}"
     else 
@@ -483,7 +487,9 @@ EOF
     local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
     echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_command_to_run[@]}${NC}"
     set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
-    if [ -n "$template_temp_file" ] && [ -f "$template_temp_file" ]; then rm -f "$template_temp_file" 2>/dev/null || true; fi
+    
+    # 不再需要删除临时文件
+    
     if [ "$mode_description" = "一次性更新" ]; then
         if [ $rc -eq 0 ]; then echo -e "${GREEN}✅ $mode_description 完成。${NC}"; else echo -e "${RED}❌ $mode_description 失败。${NC}"; fi; return $rc
     else
@@ -747,7 +753,8 @@ manage_tasks(){
 show_watchtower_details(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local title="📊 Watchtower 详情与管理 📊"; local interval raw_logs COUNTDOWN updates
+        local title="📊 Watchtower 详情与管理 📊"
+        local interval raw_logs COUNTDOWN updates
         
         set +e
         interval=$(get_watchtower_inspect_summary)
@@ -755,19 +762,25 @@ show_watchtower_details(){
         set -e
         
         COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+        
         local -a content_lines_array=(
-            "上次活动: $(get_last_session_time || echo 'N/A')" 
-            "下次检查: ${COUNTDOWN}" 
+            "⏱️  ${CYAN}当前状态${NC}"
+            "    ${YELLOW}上次活动:${NC} $(get_last_session_time || echo 'N/A')" 
+            "    ${YELLOW}下次检查:${NC} ${COUNTDOWN}" 
             "" 
-            "最近 24h 摘要："
+            "📜  ${CYAN}最近 24h 摘要${NC}"
         )
+        
         updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then 
-            content_lines_array+=("  无日志事件。"); 
+            content_lines_array+=("    无日志事件。"); 
         else 
-            while IFS= read -r line; do content_lines_array+=("  $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; 
+            while IFS= read -r line; do content_lines_array+=("    $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; 
         fi
-        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触 发 扫 描 , [Enter] 返 回 : " pick < /dev/tty
+        
+        _render_menu "$title" "${content_lines_array[@]}"
+        
+        read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick < /dev/tty
         case "$pick" in
             1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
