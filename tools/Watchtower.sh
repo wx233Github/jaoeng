@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.1-UI调整)
-# - 移除: 根据要求，从主菜单中移除了“手动触发一次性扫描”选项，并对菜单进行了重新排序。
+# 🚀 Watchtower 管理模块 (v6.1.2-最终完整修复)
+# - 修复: 恢复了因合并失误而丢失的 `configure_watchtower` 函数，解决了 `command not found` 的致命错误。
+# - 优化: 强化了 `stop_log_monitor` 函数，使其能更可靠地终止后台进程，避免不必要的警告。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.1"
+SCRIPT_VERSION="v6.1.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -468,23 +469,42 @@ start_log_monitor() {
 }
 
 stop_log_monitor() {
-    if [ -f "$LOG_MONITOR_PID_FILE" ]; then
-        local pid
-        pid=$(cat "$LOG_MONITOR_PID_FILE")
-        if ps -p "$pid" > /dev/null; then
-            log_info "正在停止日志监控器 (PID: $pid)..."
-            kill "$pid"
-            sleep 1
-            if ! ps -p "$pid" > /dev/null; then
-                log_success "日志监控器已停止。"
-            else
-                log_warn "无法停止日志监控器，请手动操作: kill $pid"
-            fi
-        fi
-        rm -f "$LOG_MONITOR_PID_FILE"
-    else
+    if [ ! -f "$LOG_MONITOR_PID_FILE" ]; then
         log_info "日志监控器未在运行。"
+        return
     fi
+
+    local pid
+    pid=$(cat "$LOG_MONITOR_PID_FILE")
+    if ! ps -p "$pid" > /dev/null; then
+        log_info "日志监控器 (PID: $pid) 已不存在。"
+        rm -f "$LOG_MONITOR_PID_FILE"
+        return
+    fi
+    
+    log_info "正在停止日志监控器 (PID: $pid)..."
+    kill "$pid"
+    
+    # 等待最多3秒
+    for _ in {1..3}; do
+        if ! ps -p "$pid" > /dev/null; then
+            log_success "日志监控器已停止。"
+            rm -f "$LOG_MONITOR_PID_FILE"
+            return
+        fi
+        sleep 1
+    done
+
+    log_warn "日志监控器未能正常停止，正在强制终止..."
+    kill -9 "$pid"
+    sleep 1
+
+    if ! ps -p "$pid" > /dev/null; then
+        log_success "日志监控器已被强制停止。"
+    else
+        log_err "无法停止日志监控器，请手动操作: kill -9 $pid"
+    fi
+    rm -f "$LOG_MONITOR_PID_FILE"
 }
 
 _rebuild_watchtower() {
@@ -551,6 +571,97 @@ notification_menu() {
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
+}
+
+# --- 恢复 configure_watchtower 函数 ---
+configure_watchtower(){
+    local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
+    local WT_INTERVAL_TMP
+    WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"
+    log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"
+    sleep 1
+    
+    configure_exclusion_list # This function is defined below
+    
+    local extra_args_choice
+    extra_args_choice=$(_prompt_user_input "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " "")
+    local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
+    if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then 
+        local temp_extra_args_input
+        temp_extra_args_input=$(_prompt_user_input "请输入额外参数: " "$temp_extra_args")
+        temp_extra_args="${temp_extra_args_input}"
+    fi
+    
+    local debug_choice
+    debug_choice=$(_prompt_user_input "是否启用调试模式? (y/N, 当前: ${WATCHTOWER_DEBUG_ENABLED}): " "")
+    local temp_debug_enabled="false"
+    if echo "$debug_choice" | grep -qE '^[Yy]$'; then temp_debug_enabled="true"; fi
+    
+    local final_exclude_list_display="${WATCHTOWER_EXCLUDE_LIST:-无}"
+    local -a confirm_array=(
+        "检查间隔: $(_format_seconds_to_human "$WT_INTERVAL_TMP")" 
+        "排除列表: ${final_exclude_list_display//,/, }" 
+        "额外参数: ${temp_extra_args:-无}" 
+        "调试模式: $temp_debug_enabled"
+    )
+    _render_menu "配置确认" "${confirm_array[@]}"; read -r -p "确认应用此配置吗? ([y/回车]继续, [n]取消): " confirm_choice < /dev/tty
+    if echo "$confirm_choice" | grep -qE '^[Nn]$'; then log_info "操作已取消。"; return 10; fi
+    WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TMP"; WATCHTOWER_EXTRA_ARGS="$temp_extra_args"; WATCHTOWER_DEBUG_ENABLED="$temp_debug_enabled"; WATCHTOWER_ENABLED="true"; save_config
+    _rebuild_watchtower || return 1; return 0
+}
+
+configure_exclusion_list() {
+    declare -A excluded_map; local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
+    if [ -n "$initial_exclude_list" ]; then 
+        local IFS=,; 
+        for container_name in $initial_exclude_list; do 
+            container_name=$(echo "$container_name" | xargs); 
+            if [ -n "$container_name" ]; then 
+                excluded_map["$container_name"]=1; 
+            fi; 
+        done; 
+        unset IFS; 
+    fi
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        local -a all_containers_array=(); 
+        while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); 
+        local -a items_array=(); local i=0
+        while [ $i -lt ${#all_containers_array[@]} ]; do 
+            local container="${all_containers_array[$i]}"; 
+            local is_excluded=" "; 
+            if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; 
+            items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); 
+            i=$((i + 1)); 
+        done
+        items_array+=("")
+        local current_excluded_display="无"
+        if [ ${#excluded_map[@]} -gt 0 ]; then
+            local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; current_excluded_display="${keys[*]}"; IFS="$old_ifs"
+        fi
+        items_array+=("${CYAN}当前排除: ${current_excluded_display}${NC}")
+        _render_menu "配置排除列表" "${items_array[@]}"; read -r -p " └──> 输入数字(可用','分隔)切换, 'c'确认, [回车]清空: " choice < /dev/tty
+        case "$choice" in
+            c|C) break ;;
+            "") 
+                excluded_map=()
+                log_info "已清空排除列表。"
+                sleep 1
+                continue
+                ;;
+            *)
+                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
+                for index in "${selected_indices[@]}"; do
+                    if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le ${#all_containers_array[@]} ]; then
+                        local target_container="${all_containers_array[$((index - 1))]}"; if [ -n "${excluded_map[$target_container]+_}" ]; then unset excluded_map["$target_container"]; else excluded_map["$target_container"]=1; fi
+                    elif [ -n "$index" ]; then has_invalid_input=true; fi
+                done
+                if [ "$has_invalid_input" = "true" ]; then log_warn "输入 '${choice}' 中包含无效选项，已忽略。"; sleep 1.5; fi
+                ;;
+        esac
+    done
+    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; final_excluded_list="${keys[*]}"; IFS="$old_ifs"; fi
+    WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
 
 manage_tasks(){
