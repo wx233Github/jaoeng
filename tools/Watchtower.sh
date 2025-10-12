@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.45-最终证据修复)
-# - 修复: 根据用户系统输出的帮助文档，为“一次性扫描”模式使用了唯一正确的 `--notification-report` 标志。
+# 🚀 Watchtower 管理模块 (v4.9.46-最终逻辑修正)
+# - 修复: 纠正了 v4.9.45 中的逻辑矛盾，确保“一次性扫描”在使用 --notification-report 标志时，
+#         也同时加载自定义通知模板，这是最后的、最合理的原生解决方案。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.45"
+SCRIPT_VERSION="v4.9.46"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -434,7 +435,6 @@ _start_watchtower_container_logic(){
     if [ "$interactive_mode" = "true" ]; then
         docker_run_args+=(--rm --name watchtower-once)
         wt_args+=(--run-once)
-        # 修复: 根据用户系统输出的帮助文档，使用唯一正确的 --notification-report 标志
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             wt_args+=(--notification-report)
         fi
@@ -454,15 +454,13 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
-        # 后台服务模式使用环境变量，此方式已被证明有效
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ] && [ "$interactive_mode" = "false" ]; then
             docker_run_args+=(-e WATCHTOWER_REPORT_ON_NO_UPDATES=true)
             log_info "✅ 将启用 '无更新也通知' 模式 (后台服务)。"
         fi
         
-        # 仅在后台服务模式下加载自定义模板
-        if [ "$interactive_mode" = "false" ]; then
-            cat <<'EOF' > "$template_file"
+        # 修复: 确保在两种模式下都加载模板，以便 --notification-report 能正常工作
+        cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
 *服务器:* `{{.Host}}`
 {{if .Updated}}
@@ -477,10 +475,9 @@ _start_watchtower_container_logic(){
 {{end}}
 ⏰ *时间:* `{{.Time.Format "2006-01-02 15:04:05"}}`
 EOF
-            chmod 644 "$template_file"
-            docker_run_args+=(-v "${template_file}:/etc/watchtower/notification.gohtml:ro")
-            docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
-        fi
+        chmod 644 "$template_file"
+        docker_run_args+=(-v "${template_file}:/etc/watchtower/notification.gohtml:ro")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/etc/watchtower/notification.gohtml")
     fi
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
