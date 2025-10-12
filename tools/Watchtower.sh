@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v4.9.44-终极修复)
-# - 修复: 为“一次性扫描”模式添加 --wait-on-exit 标志，解决因容器过早退出导致通知发送失败的竞态条件问题。
+# 🚀 Watchtower 管理模块 (v4.9.45-最终证据修复)
+# - 修复: 根据用户系统输出的帮助文档，为“一次性扫描”模式使用了唯一正确的 `--notification-report` 标志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.9.44"
+SCRIPT_VERSION="v4.9.45"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -434,8 +434,10 @@ _start_watchtower_container_logic(){
     if [ "$interactive_mode" = "true" ]; then
         docker_run_args+=(--rm --name watchtower-once)
         wt_args+=(--run-once)
-        # 修复: 添加 --wait-on-exit 标志以确保通知有时间发送
-        wt_args+=(--wait-on-exit)
+        # 修复: 根据用户系统输出的帮助文档，使用唯一正确的 --notification-report 标志
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
+            wt_args+=(--notification-report)
+        fi
     else
         docker_run_args+=(-d --name watchtower --restart unless-stopped)
         wt_args+=(--interval "${wt_interval:-300}")
@@ -452,13 +454,13 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&ParseMode=Markdown")
         docker_run_args+=(-e WATCHTOWER_NO_STARTUP_MESSAGE=true)
 
-        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
+        # 后台服务模式使用环境变量，此方式已被证明有效
+        if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ] && [ "$interactive_mode" = "false" ]; then
             docker_run_args+=(-e WATCHTOWER_REPORT_ON_NO_UPDATES=true)
-            if [ "$interactive_mode" = "false" ]; then log_info "✅ 将启用 '无更新也通知' 模式。"; fi
-        else
-            if [ "$interactive_mode" = "false" ]; then log_info "ℹ️ 将启用 '仅有更新才通知' 模式。"; fi
+            log_info "✅ 将启用 '无更新也通知' 模式 (后台服务)。"
         fi
         
+        # 仅在后台服务模式下加载自定义模板
         if [ "$interactive_mode" = "false" ]; then
             cat <<'EOF' > "$template_file"
 🐳 *Docker 容器更新报告*
