@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.3-最终格式修复)
-# - 修复: 使用 `printf` 命令重构了通知消息的生成逻辑，解决了消息中 `\n` 被作为纯文本输出导致排版失败的问题。
+# 🚀 Watchtower 管理模块 (v6.1.4-最终架构修复)
+# - 修复: 重构了手动扫描逻辑，使其独立于后台监控器。现在手动扫描会自行捕获临时容器的日志、
+#         解析并发送通知，彻底解决了手动扫描无通知的重大设计缺陷。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.3"
+SCRIPT_VERSION="v6.1.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -303,11 +304,14 @@ _start_watchtower_container_logic(){
     local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
     local wt_args=("--cleanup")
 
+    # --- 确定容器名称 ---
+    local run_container_name="watchtower"
     if [ "$interactive_mode" = "true" ]; then
-        docker_run_args+=(--rm --name watchtower-once)
+        run_container_name="watchtower-once"
+        docker_run_args+=(--rm --name "$run_container_name")
         wt_args+=(--run-once)
     else
-        docker_run_args+=(-d --name watchtower --restart unless-stopped)
+        docker_run_args+=(-d --name "$run_container_name" --restart unless-stopped)
         wt_args+=(--interval "${wt_interval:-300}")
     fi
 
@@ -318,7 +322,6 @@ _start_watchtower_container_logic(){
     
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
     if [ -n "$final_exclude_list" ]; then
-        if [ "$interactive_mode" = "false" ]; then log_info "正在应用排除规则: ${final_exclude_list}"; fi
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
         mapfile -t container_names < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true)
         if [ -z "${container_names[*]}" ] && [ "$interactive_mode" = "false" ]; then
@@ -337,17 +340,34 @@ _start_watchtower_container_logic(){
     
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    if [ "$interactive_mode" = "false" ]; then
-        local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
-        echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
-    fi
-
-    set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
-    
+    # --- 核心逻辑分叉 ---
     if [ "$interactive_mode" = "true" ]; then
-        if [ $rc -eq 0 ]; then log_success "一次性扫描完成，等待监控器发送报告..."; else log_err "一次性扫描失败。"; fi
+        log_info "正在启动一次性扫描... (日志将实时显示)"
+        local scan_logs rc
+        set +e
+        scan_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}" 2>&1)
+        rc=$?
+        set -e
+        echo "$scan_logs"
+
+        if [ $rc -eq 0 ]; then
+            log_success "一次性扫描完成。"
+            if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+                log_info "正在解析扫描结果并生成报告..."
+                _process_log_chunk "$scan_logs"
+                log_info "报告已加入发送队列。"
+            fi
+        else
+            log_err "一次性扫描失败。"
+        fi
         return $rc
-    else
+    else # 后台模式
+        if [ "$interactive_mode" = "false" ]; then
+            local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
+            echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
+        fi
+        set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo "${final_command_to_run[@]}"; local rc=$?; set -e
+        
         sleep 1
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "$mode_description 启动成功。"
