@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.2-最终完整修复)
-# - 修复: 恢复了因合并失误而丢失的 `configure_watchtower` 函数，解决了 `command not found` 的致命错误。
-# - 优化: 强化了 `stop_log_monitor` 函数，使其能更可靠地终止后台进程，避免不必要的警告。
+# 🚀 Watchtower 管理模块 (v6.1.3-最终格式修复)
+# - 修复: 使用 `printf` 命令重构了通知消息的生成逻辑，解决了消息中 `\n` 被作为纯文本输出导致排版失败的问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.2"
+SCRIPT_VERSION="v6.1.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -411,12 +410,24 @@ _process_log_chunk() {
             old_id=$(echo "$found_line" | sed -n 's/.*ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
             new_id=$(echo "$found_line" | sed -n 's/.*new ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
 
-            updated_details+="\n- 🔄 *${container_name}*\n  🖼️ \`\`\`${image_name}\`\`\`\n  🆔 \`${old_id}\` -> \`${new_id}\`"
+            updated_details+=$(printf "\n- 🔄 *%s*\n  🖼️ \`\`\`%s\`\`\`\n  🆔 \`%s\` -> \`%s\`" \
+                "$container_name" "$image_name" "$old_id" "$new_id")
         done <<< "$creating_lines"
         
-        report_message="${title}\n\n✅ *扫描完成！共更新 ${updated} 个容器。*\n*服务器:* \`${hostname}\`${updated_details}\n\n⏰ *时间:* \`${time_now}\`"
+        printf -v report_message "%s\n\n%s\n*服务器:* \`%s\`%s\n\n⏰ *时间:* \`%s\`" \
+            "$title" \
+            "✅ *扫描完成！共更新 ${updated} 个容器。*" \
+            "$hostname" \
+            "$updated_details" \
+            "$time_now"
     else
-        report_message="${title}\n\n✅ *扫描完成！未发现可更新的容器。*\n- *服务器:* \`${hostname}\`\n- *扫描总数:* ${scanned} 个\n- *失败:* ${failed} 个\n\n⏰ *时间:* \`${time_now}\`"
+        printf -v report_message "%s\n\n%s\n- *服务器:* \`%s\`\n- *扫描总数:* %s 个\n- *失败:* %s 个\n\n⏰ *时间:* \`%s\`" \
+            "$title" \
+            "✅ *扫描完成！未发现可更新的容器。*" \
+            "$hostname" \
+            "$scanned" \
+            "$failed" \
+            "$time_now"
     fi
     
     send_notify "$report_message"
@@ -485,7 +496,6 @@ stop_log_monitor() {
     log_info "正在停止日志监控器 (PID: $pid)..."
     kill "$pid"
     
-    # 等待最多3秒
     for _ in {1..3}; do
         if ! ps -p "$pid" > /dev/null; then
             log_success "日志监控器已停止。"
@@ -573,15 +583,14 @@ notification_menu() {
     done
 }
 
-# --- 恢复 configure_watchtower 函数 ---
 configure_watchtower(){
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     local WT_INTERVAL_TMP
-    WT_INTERVAL_TMP="$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")"
+    WT_INTERVAL_TMP=$(_prompt_for_interval "$current_interval_for_prompt" "请输入检查间隔")
     log_info "检查间隔已设置为: $(_format_seconds_to_human "$WT_INTERVAL_TMP")。"
     sleep 1
     
-    configure_exclusion_list # This function is defined below
+    configure_exclusion_list
     
     local extra_args_choice
     extra_args_choice=$(_prompt_user_input "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " "")
