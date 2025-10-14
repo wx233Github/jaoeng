@@ -1,12 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.4-最终架构修复)
-# - 修复: 重构了手动扫描逻辑，使其独立于后台监控器。现在手动扫描会自行捕获临时容器的日志、
-#         解析并发送通知，彻底解决了手动扫描无通知的重大设计缺陷。
+# 🚀 Watchtower 管理模块 (v6.1.5-UI美化)
+# - 更新: 采纳方案 A 对 Telegram 通知消息的 UI 进行了美化，使其更现代化和紧凑。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.4"
+SCRIPT_VERSION="v6.1.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -304,7 +303,6 @@ _start_watchtower_container_logic(){
     local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
     local wt_args=("--cleanup")
 
-    # --- 确定容器名称 ---
     local run_container_name="watchtower"
     if [ "$interactive_mode" = "true" ]; then
         run_container_name="watchtower-once"
@@ -340,7 +338,6 @@ _start_watchtower_container_logic(){
     
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
-    # --- 核心逻辑分叉 ---
     if [ "$interactive_mode" = "true" ]; then
         log_info "正在启动一次性扫描... (日志将实时显示)"
         local scan_logs rc
@@ -361,7 +358,7 @@ _start_watchtower_container_logic(){
             log_err "一次性扫描失败。"
         fi
         return $rc
-    else # 后台模式
+    else
         if [ "$interactive_mode" = "false" ]; then
             local final_cmd_str=""; for arg in "${final_command_to_run[@]}"; do final_cmd_str+=" $(printf %q "$arg")"; done
             echo -e "${CYAN}执行命令: JB_SUDO_LOG_QUIET=true run_with_sudo ${final_cmd_str}${NC}"
@@ -408,11 +405,6 @@ _process_log_chunk() {
     local time_now
     time_now=$(date '+%Y-%m-%d %H:%M:%S')
     
-    local title="*自动扫描报告*"
-    if [ "$is_manual_scan" = true ]; then
-        title="*手动扫描报告*"
-    fi
-    
     local updated_details=""
     if [ "$updated" -gt 0 ]; then
         local creating_lines
@@ -434,16 +426,13 @@ _process_log_chunk() {
                 "$container_name" "$image_name" "$old_id" "$new_id")
         done <<< "$creating_lines"
         
-        printf -v report_message "%s\n\n%s\n*服务器:* \`%s\`%s\n\n⏰ *时间:* \`%s\`" \
-            "$title" \
-            "✅ *扫描完成！共更新 ${updated} 个容器。*" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n- - - - - - - - - - - - - - - - -\n\`%s\`" \
             "$hostname" \
+            "$updated" \
             "$updated_details" \
             "$time_now"
     else
-        printf -v report_message "%s\n\n%s\n- *服务器:* \`%s\`\n- *扫描总数:* %s 个\n- *失败:* %s 个\n\n⏰ *时间:* \`%s\`" \
-            "$title" \
-            "✅ *扫描完成！未发现可更新的容器。*" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n- - - - - - - - - - - - - - - - -\n\`%s\`" \
             "$hostname" \
             "$scanned" \
             "$failed" \
