@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.1.0-UI布局优化)
-# - UI: 根据用户建议，将 Docker 状态信息移动到主菜单右侧，形成更直观的两栏布局。
+# 🚀 Docker 管理模块 (v4.1.1-UI兼容性修复)
+# - 修复: 重写 main_menu 函数的UI渲染逻辑，以完全兼容 utils.sh v2.33 的 _render_menu 函数，
+#         移除了对不存在的 _print_box_header/_footer 函数的调用，解决了命令未找到的错误。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.1.0"
+SCRIPT_VERSION="v4.1.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -284,24 +285,26 @@ main_menu() {
             # --- 已安装Docker的双栏布局 ---
             local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
             
+            # 定义左侧和右侧的内容
             local left_options=(
-                "1. 重新安装 Docker"
-                "2. 卸载 Docker"
-                "3. 配置镜像/用户组"
-                "4. 服务管理"
-                "5. 系统清理 (Prune)"
+                "  1. 重新安装 Docker"
+                "  2. 卸载 Docker"
+                "  3. 配置镜像/用户组"
+                "  4. 服务管理"
+                "  5. 系统清理 (Prune)"
             )
             local right_status=(
-                "✅ ${GREEN}Docker 已安装${NC}"
-                "   服务状态: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
-                "   Docker 版本: ${DOCKER_VERSION}"
-                "   Compose 版本: ${COMPOSE_VERSION}"
+                "${CYAN}┌─ Docker 状态 ──────────────────┐${NC}"
+                "  ${CYAN}│${NC} ${GREEN}已安装${NC}"
+                "  ${CYAN}│${NC} 服务: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
+                "  ${CYAN}│${NC} 版本: ${DOCKER_VERSION}"
+                "  ${CYAN}│${NC} Compose: ${COMPOSE_VERSION}"
+                "${CYAN}└────────────────────────────────┘${NC}"
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
 
-            # 手动渲染双栏UI
-            _print_box_header "Docker & Docker Compose 管理"
-            
+            # 将左右两边的内容合并到 _render_menu 的参数数组中
+            local -a combined_menu_lines=()
             local num_left=${#left_options[@]}
             local num_right=${#right_status[@]}
             local max_lines=$(( num_left > num_right ? num_left : num_right ))
@@ -309,16 +312,16 @@ main_menu() {
             for (( i=0; i<max_lines; i++ )); do
                 local left="${left_options[i]:-}"
                 local right="${right_status[i]:-}"
-                # 使用 printf 进行格式化对齐，-35s 表示左对齐，宽度为35
-                printf "║ %-35s %-42s ║\n" "$left" "$right"
+                # 使用 printf 进行格式化对齐，-30s 表示左对齐，宽度为30
+                combined_menu_lines+=( "$(printf "%-30s %s" "$left" "$right")" )
             done
-            
-            _print_box_footer
+
+            _render_menu "Docker & Docker Compose 管理" "${combined_menu_lines[@]}"
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
 
         else
             # --- 未安装Docker的单栏布局 ---
-            local -a content_array=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "1. 安装 Docker 和 Compose")
+            local -a content_array=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "  1. 安装 Docker 和 Compose")
             local options_map=("install")
             _render_menu "Docker & Docker Compose 安装" "${content_array[@]}"
             read -r -p " └──> 请输入选项 [1] (或按 Enter 返回): " choice < /dev/tty
