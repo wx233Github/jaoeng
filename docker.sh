@@ -1,17 +1,16 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.1.1-UI兼容性修复)
-# - 修复: 重写 main_menu 函数的UI渲染逻辑，以完全兼容 utils.sh v2.33 的 _render_menu 函数，
-#         移除了对不存在的 _print_box_header/_footer 函数的调用，解决了命令未找到的错误。
+# 🚀 Docker 管理模块 (v4.1.2-终极UI与逻辑修复)
+# - 修复: 重写 `main_menu` 的双栏布局逻辑，通过精确计算视觉宽度和动态填充来解决UI混乱问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.1.1"
+SCRIPT_VERSION="v4.1.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
 export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF_8}
+export LC_ALL=${LC_ALL:-C_UTF_8}
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
@@ -124,7 +123,6 @@ check_distro() {
     fi
 }
 
-# --- 核心功能函数 ---
 uninstall_docker() {
     log_warn "你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
     read -r -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm < /dev/tty
@@ -285,7 +283,6 @@ main_menu() {
             # --- 已安装Docker的双栏布局 ---
             local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
             
-            # 定义左侧和右侧的内容
             local left_options=(
                 "  1. 重新安装 Docker"
                 "  2. 卸载 Docker"
@@ -303,8 +300,19 @@ main_menu() {
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
 
-            # 将左右两边的内容合并到 _render_menu 的参数数组中
+            # --- 核心UI修复：手动计算宽度和填充 ---
             local -a combined_menu_lines=()
+            
+            # 1. 计算左侧菜单项的最大视觉宽度
+            local max_left_width=0
+            for item in "${left_options[@]}"; do
+                local width=$(_get_visual_width "$item")
+                if [ "$width" -gt "$max_left_width" ]; then
+                    max_left_width=$width
+                fi
+            done
+
+            # 2. 组合左右两列，动态计算填充
             local num_left=${#left_options[@]}
             local num_right=${#right_status[@]}
             local max_lines=$(( num_left > num_right ? num_left : num_right ))
@@ -312,8 +320,13 @@ main_menu() {
             for (( i=0; i<max_lines; i++ )); do
                 local left="${left_options[i]:-}"
                 local right="${right_status[i]:-}"
-                # 使用 printf 进行格式化对齐，-30s 表示左对齐，宽度为30
-                combined_menu_lines+=( "$(printf "%-30s %s" "$left" "$right")" )
+                
+                local current_left_width=$(_get_visual_width "$left")
+                local padding_needed=$(( max_left_width - current_left_width + 4 )) # +4 for spacing
+                local padding_str
+                padding_str=$(printf '%*s' "$padding_needed")
+
+                combined_menu_lines+=( "${left}${padding_str}${right}" )
             done
 
             _render_menu "Docker & Docker Compose 管理" "${combined_menu_lines[@]}"
