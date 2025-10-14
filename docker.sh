@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.1.2-终极UI与逻辑修复)
+# 🚀 Docker 管理模块 (v4.2.0-终极UI与逻辑修复)
 # - 修复: 重写 `main_menu` 的双栏布局逻辑，通过精确计算视觉宽度和动态填充来解决UI混乱问题。
+# - 新增: 根据用户请求，在模块启动时添加欢迎信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.1.2"
+SCRIPT_VERSION="v4.2.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -280,7 +281,6 @@ main_menu() {
         clear; get_docker_status
         
         if [ "$DOCKER_INSTALLED" = "true" ]; then
-            # --- 已安装Docker的双栏布局 ---
             local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
             
             local left_options=(
@@ -300,32 +300,22 @@ main_menu() {
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
 
-            # --- 核心UI修复：手动计算宽度和填充 ---
+            # --- 核心UI修复：手动渲染，动态计算填充 ---
             local -a combined_menu_lines=()
-            
-            # 1. 计算左侧菜单项的最大视觉宽度
             local max_left_width=0
             for item in "${left_options[@]}"; do
                 local width=$(_get_visual_width "$item")
-                if [ "$width" -gt "$max_left_width" ]; then
-                    max_left_width=$width
-                fi
+                if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi
             done
 
-            # 2. 组合左右两列，动态计算填充
-            local num_left=${#left_options[@]}
-            local num_right=${#right_status[@]}
+            local num_left=${#left_options[@]}; local num_right=${#right_status[@]}
             local max_lines=$(( num_left > num_right ? num_left : num_right ))
 
             for (( i=0; i<max_lines; i++ )); do
-                local left="${left_options[i]:-}"
-                local right="${right_status[i]:-}"
-                
+                local left="${left_options[i]:-}"; local right="${right_status[i]:-}"
                 local current_left_width=$(_get_visual_width "$left")
-                local padding_needed=$(( max_left_width - current_left_width + 4 )) # +4 for spacing
-                local padding_str
-                padding_str=$(printf '%*s' "$padding_needed")
-
+                local padding_needed=$(( max_left_width - current_left_width + 4 ))
+                local padding_str; padding_str=$(printf '%*s' "$padding_needed")
                 combined_menu_lines+=( "${left}${padding_str}${right}" )
             done
 
@@ -333,7 +323,6 @@ main_menu() {
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
 
         else
-            # --- 未安装Docker的单栏布局 ---
             local -a content_array=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "  1. 安装 Docker 和 Compose")
             local options_map=("install")
             _render_menu "Docker & Docker Compose 安装" "${content_array[@]}"
@@ -361,6 +350,8 @@ main_menu() {
 # --- 脚本执行入口 ---
 main() {
     trap 'echo -e "\n操作被中断。"; exit 10' INT
+    log_info "您选择了 [Docker & Compose 管理]"
+    log_info "欢迎使用 Docker 模块 ${SCRIPT_VERSION}"
     pre_check_dependencies
     main_menu "$@"
 }
