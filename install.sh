@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.58-修复模块返回逻辑)
-# - 修复: 修正了 `run_module` 函数中对模块脚本的调用方式，从 `source` (隐式) 改为
-#         `bash`。这解决了模块返回 (exit 10) 时导致整个主脚本退出的致命错误。
+# 🚀 VPS 一键安装与管理脚本 (v77.58-终极返回逻辑修复)
+# - 修复: 在 `run_module` 中采用 `( ... ) || true` 结构来调用模块，
+#         这可以完美捕获任何退出码，同时防止 `set -e` 错误地终止主脚本。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -189,13 +189,11 @@ confirm_and_force_update() {
     if [ "$choice" = "yes" ]; then
         log_info "用户确认：开始强制更新所有组件..." >&2; 
         
-        # 在执行强制更新前，必须释放当前进程的锁
         flock -u 200 2>/dev/null || true
-        trap - EXIT # 禁用退出时的锁清理
+        trap - EXIT 
 
         FORCE_REFRESH=true bash -c "$(curl -fsSL ${BASE_URL}/install.sh?_=$(date +%s))"
         
-        # 如果上一步成功执行，脚本应该已经通过 exec 重启，不会执行到这里
         log_success "强制更新完成！脚本将自动重启以应用所有更新..." >&2; sleep 2
         exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     else log_info "用户取消了强制更新。" >&2; fi
@@ -210,31 +208,28 @@ run_module(){
     local module_key="${key_base,,}"
     
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
-        local module_config_json
-        module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
-        
-        # 优化: 使用更健壮的 `while read` 循环来处理可能包含特殊字符的键名
+        local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
         echo "$module_config_json" | jq -r 'keys_unsorted[]' | while IFS= read -r key; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
-            local value
-            value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
-            local upper_key="${key^^}"
-            export "WATCHTOWER_CONF_${upper_key}"="$value"
+            local value; value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
+            local upper_key="${key^^}"; export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
     fi
     
-    # --- 核心修复：使用 bash 在子 Shell 中执行模块，而不是在当前 Shell 中执行 ---
-    set +e; bash "$module_path"; local exit_code=$?; set -e
-    
+    # --- 核心修复：使用 ( ... ) || true 结构来健壮地执行子脚本 ---
+    # 1. ( bash "$module_path" ) 在一个独立的子 shell 中运行模块，隔离环境。
+    # 2. `exit_code=$?` 捕获子 shell 的真实退出码 (例如 0, 1, 或 10)。
+    # 3. `|| true` 确保整个命令行的最终结果总是成功(0)，防止 `set -e` 终止父脚本。
+    local exit_code=0
+    ( bash "$module_path" ); exit_code=$? || true
+
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。" >&2;
     elif [ "$exit_code" -eq 10 ]; then 
         log_info "已从 [${module_name}] 返回。" >&2;
     else 
         log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。" >&2;
-        # 只有出错时才暂停
     fi
-    # 返回模块的退出代码，供 display_and_process_menu 判断是否需要暂停
     return $exit_code
 }
 
@@ -256,87 +251,43 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
-        # 1. 解析菜单项，将带有状态的项和功能项分开
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
-            if [[ "$type" == "item" || "$type" == "submenu" ]]; then
-                primary_items+=("$item_data")
-            elif [[ "$type" == "func" ]]; then
-                func_items+=("$item_data")
-            fi
+            if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
         done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
-        local -a formatted_items_for_render=()
-        local -a first_cols_content=()
-        local -a second_cols_content=()
+        local -a formatted_items_for_render=() first_cols_content=() second_cols_content=()
         local max_first_col_width=0
+        local -A status_map=( ["docker"]="$(_get_docker_status)" ["nginx"]="$(_get_nginx_status)" ["watchtower"]="$(_get_watchtower_status)" )
+        local -A status_label_map=( ["docker"]="Docker:" ["nginx"]="Nginx:" ["watchtower"]="Watchtower:" )
 
-        # 定义状态映射，使用简化键名
-        local -A status_map=(
-            ["docker"]="$(_get_docker_status)"
-            ["nginx"]="$(_get_nginx_status)"
-            ["watchtower"]="$(_get_watchtower_status)"
-        )
-        local -A status_label_map=(
-            ["docker"]="Docker:"
-            ["nginx"]="Nginx:"
-            ["watchtower"]="Watchtower:"
-        )
-
-        # 2. 收集主菜单项的第一列和第二列内容，并计算第一列的最大宽度
         for item_data in "${primary_items[@]}"; do
             IFS='|' read -r icon name type action <<< "$item_data"
-            local status_text=""
-            local status_key="" # 用于映射 action 到简化的 status_map 键
-            
-            # 只有在主菜单 (MAIN_MENU) 时，才计算状态
+            local status_text="" status_key=""
             if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-                case "$action" in
-                    "docker.sh") status_key="docker" ;;
-                    "nginx.sh") status_key="nginx" ;;
-                    "TOOLS_MENU") status_key="watchtower" ;;
-                esac
+                case "$action" in "docker.sh") status_key="docker" ;; "nginx.sh") status_key="nginx" ;; "TOOLS_MENU") status_key="watchtower" ;; esac
             fi
-
-            if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then
-                status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"
-            fi
-            
+            if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"; fi
             local first_col_display_content="$(printf "%d. %s %s" "$(( ${#first_cols_content[@]} + 1 ))" "$icon" "$name")"
-            first_cols_content+=("$first_col_display_content")
-            second_cols_content+=("$status_text")
-            
-            # 只有当第二列有内容时，才计算第一列宽度用于对齐
+            first_cols_content+=("$first_col_display_content"); second_cols_content+=("$status_text")
             if [ -n "$status_text" ]; then
                 local current_visual_width=$(_get_visual_width "$first_col_display_content")
-                if [ "$current_visual_width" -gt "$max_first_col_width" ]; then
-                    max_first_col_width="$current_visual_width"
-                fi
+                if [ "$current_visual_width" -gt "$max_first_col_width" ]; then max_first_col_width="$current_visual_width"; fi
             fi
         done
 
-        # 3. 格式化主菜单项为两列（如果有状态）或单列（无状态），并添加到渲染数组
         for i in "${!first_cols_content[@]}"; do
-            local first_col="${first_cols_content[i]}"
-            local second_col="${second_cols_content[i]}"
-            
+            local first_col="${first_cols_content[i]}"; local second_col="${second_cols_content[i]}"
             if [ -n "$second_col" ]; then
-                # 如果有第二列内容，则进行两列对齐
                 local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
-                # 使用 - 替换 »
                 formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${CYAN}- ${NC}${second_col}")
             else
-                # 如果没有第二列内容，则作为单列项添加
                 formatted_items_for_render+=("${first_col}")
             fi
         done
 
-        # 4. 格式化功能项为单列，并添加到渲染数组
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do 
-            IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
-            formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); 
-        done
+        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
         
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
         
@@ -344,13 +295,7 @@ display_and_process_menu() {
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
         if [ -z "$choice" ]; then 
-            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then 
-                log_info "用户选择退出，脚本正常终止。" >&2
-                exit 0
-            else 
-                CURRENT_MENU_NAME="MAIN_MENU"; 
-                continue; 
-            fi
+            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。" >&2; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
         fi
         
         local item_json=""
@@ -359,20 +304,11 @@ display_and_process_menu() {
         if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi
         
         local type name action exit_code=0
-        type=$(jq -r .type <<< "$item_json")
-        name=$(jq -r .name <<< "$item_json")
-        action=$(jq -r .action <<< "$item_json")
+        type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
         
-        case "$type" in 
-            item) run_module "$action" "$name"; exit_code=$? ;; 
-            submenu) CURRENT_MENU_NAME="$action" ;; 
-            func) "$action" "$@"; exit_code=$? ;; 
-        esac
+        case "$type" in item) run_module "$action" "$name"; exit_code=$? ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@"; exit_code=$? ;; esac
         
-        # 只有当模块执行成功 (0) 或不是返回上级 (10) 时，才执行 press_enter_to_continue
-        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then 
-            press_enter_to_continue; 
-        fi
+        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then press_enter_to_continue; fi
     done
 }
 
@@ -380,7 +316,6 @@ main() {
     load_config "$CONFIG_PATH"
     check_and_install_dependencies
     
-    # 确保锁文件逻辑正确，并在启动时检查是否已经运行
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
     trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT
     
@@ -395,29 +330,19 @@ main() {
     fi
     
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
-    # 确保进度提示立即刷新且输出到 stderr
     printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
-    local updated_files_list
-    updated_files_list=$(run_comprehensive_auto_update "$@")
+    local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
     printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          \n" >&2
     
     if [ -n "$updated_files_list" ]; then
-        # 核心修复：检查主程序是否已更新，如果是，则在此处执行重启
         if [[ " ${updated_files_list} " == *" install.sh "* ]]; then
             log_success "主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
-            # 释放锁并禁用陷阱，以确保平稳交接
             flock -u 200 2>/dev/null || true
             trap - EXIT
             exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
         fi
-
-        for file in $updated_files_list; do
-            local filename; filename=$(basename "$file")
-            log_success "${GREEN}${filename}${NC} 已更新" >&2
-        done
-        if [[ "$updated_files_list" == *"config.json"* ]]; then
-            log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。" >&2
-        fi
+        for file in $updated_files_list; do local filename; filename=$(basename "$file"); log_success "${GREEN}${filename}${NC} 已更新" >&2; done
+        if [[ "$updated_files_list" == *"config.json"* ]]; then log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。" >&2; fi
     fi
     check_sudo_privileges; display_and_process_menu "$@"
 }
