@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.2.0-终极UI与逻辑修复)
-# - 修复: 重写 `main_menu` 的双栏布局逻辑，通过精确计算视觉宽度和动态填充来解决UI混乱问题。
-# - 新增: 根据用户请求，在模块启动时添加欢迎信息。
+# 🚀 Docker 管理模块 (v4.2.1-接入清屏配置)
+# - 优化: 脚本内的 `clear` 命令现在会遵循 `config.json` 中的 `auto_clear_screen` 设置，
+#         通过检查 `JB_ENABLE_AUTO_CLEAR` 环境变量实现。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.2.0"
+SCRIPT_VERSION="v4.2.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -227,6 +227,7 @@ install_docker() {
 docker_service_menu() {
     while true;
     do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         get_docker_status
         local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
         local -a content_array=(
@@ -278,7 +279,8 @@ docker_prune_system() {
 
 main_menu() {
     while true; do
-        clear; get_docker_status
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        get_docker_status
         
         if [ "$DOCKER_INSTALLED" = "true" ]; then
             local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
@@ -300,7 +302,6 @@ main_menu() {
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
 
-            # --- 核心UI修复：手动渲染，动态计算填充 ---
             local -a combined_menu_lines=()
             local max_left_width=0
             for item in "${left_options[@]}"; do
