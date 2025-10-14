@@ -1,19 +1,11 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.0.0-终极版)
-# - 新增: Docker 服务管理菜单 (启/停/重启/日志)。
-# - 新增: Docker 系统清理功能 (docker system prune)。
-# - 新增: 依赖预检，确保核心工具 (curl, jq) 存在。
-# - 优化: 卸载时智能处理 docker 用户组及成员。
-# - 优化: 将 Docker 状态检测逻辑封装为独立函数。
-# - 优化: 菜单实时显示 Docker 服务运行状态。
-# - 优化: 使用 jq 安全地修改 daemon.json，保留用户已有配置。
-# - 优化: 强化了将用户加入 docker 组的安全风险警告。
-# - 优化: 增强了网络检测和发行版代号验证的健壮性。
+# 🚀 Docker 管理模块 (v4.1.0-UI布局优化)
+# - UI: 根据用户建议，将 Docker 状态信息移动到主菜单右侧，形成更直观的两栏布局。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.0.0"
+SCRIPT_VERSION="v4.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -251,7 +243,7 @@ docker_service_menu() {
             1) execute_with_spinner "正在启动 Docker 服务..." run_with_sudo systemctl start docker.service ;;
             2) execute_with_spinner "正在停止 Docker 服务..." run_with_sudo systemctl stop docker.service ;;
             3) execute_with_spinner "正在重启 Docker 服务..." run_with_sudo systemctl restart docker.service ;;
-            4. | logs) 
+            4) 
                 log_info "实时日志 (按 Ctrl+C 停止)..."; sleep 1
                 run_with_sudo journalctl -u docker.service -f --no-pager || true
                 press_enter_to_continue
@@ -287,26 +279,47 @@ docker_prune_system() {
 main_menu() {
     while true; do
         clear; get_docker_status
-        local -a content_array=(); local -a options_map=()
+        
         if [ "$DOCKER_INSTALLED" = "true" ]; then
+            # --- 已安装Docker的双栏布局 ---
             local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
-            content_array+=(
-                "✅ ${GREEN}Docker 已安装${NC}"
-                "   服务状态: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
-                "   Docker 版本: ${DOCKER_VERSION}"
-                "   Compose 版本: ${COMPOSE_VERSION}"
-                ""
+            
+            local left_options=(
                 "1. 重新安装 Docker"
                 "2. 卸载 Docker"
                 "3. 配置镜像/用户组"
                 "4. 服务管理"
                 "5. 系统清理 (Prune)"
-            ); options_map=("reinstall" "uninstall" "config" "service" "prune")
-            _render_menu "Docker & Docker Compose 管理" "${content_array[@]}"
+            )
+            local right_status=(
+                "✅ ${GREEN}Docker 已安装${NC}"
+                "   服务状态: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
+                "   Docker 版本: ${DOCKER_VERSION}"
+                "   Compose 版本: ${COMPOSE_VERSION}"
+            )
+            local options_map=("reinstall" "uninstall" "config" "service" "prune")
+
+            # 手动渲染双栏UI
+            _print_box_header "Docker & Docker Compose 管理"
+            
+            local num_left=${#left_options[@]}
+            local num_right=${#right_status[@]}
+            local max_lines=$(( num_left > num_right ? num_left : num_right ))
+
+            for (( i=0; i<max_lines; i++ )); do
+                local left="${left_options[i]:-}"
+                local right="${right_status[i]:-}"
+                # 使用 printf 进行格式化对齐，-35s 表示左对齐，宽度为35
+                printf "║ %-35s %-42s ║\n" "$left" "$right"
+            done
+            
+            _print_box_footer
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
+
         else
-            content_array+=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "1. 安装 Docker 和 Compose")
-            options_map=("install")
+            # --- 未安装Docker的单栏布局 ---
+            local -a content_array=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "1. 安装 Docker 和 Compose")
+            local options_map=("install")
             _render_menu "Docker & Docker Compose 安装" "${content_array[@]}"
             read -r -p " └──> 请输入选项 [1] (或按 Enter 返回): " choice < /dev/tty
         fi
