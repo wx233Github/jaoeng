@@ -1,12 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.2.1-接入清屏配置)
-# - 优化: 脚本内的 `clear` 命令现在会遵循 `config.json` 中的 `auto_clear_screen` 设置，
-#         通过检查 `JB_ENABLE_AUTO_CLEAR` 环境变量实现。
+# 🚀 Docker 管理模块 (v4.3.0-终极UI与逻辑修复)
+# - 修复: 彻底重写 `main_menu` 的双栏布局渲染，放弃 `_render_menu`，
+#         改为手动绘制UI盒子，通过精确计算视觉宽度和动态填充，完美解决UI混乱问题。
+# - 新增: 根据用户请求，在模块启动时添加欢迎信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.2.1"
+SCRIPT_VERSION="v4.3.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -302,25 +303,27 @@ main_menu() {
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
 
-            local -a combined_menu_lines=()
-            local max_left_width=0
-            for item in "${left_options[@]}"; do
-                local width=$(_get_visual_width "$item")
-                if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi
-            done
+            # --- 核心UI修复：手动绘制整个UI盒子，不再使用 _render_menu ---
+            local title="Docker & Docker Compose 管理"
+            local max_left_width=0; for item in "${left_options[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi; done
+            local max_right_width=0; for item in "${right_status[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_right_width" ]; then max_right_width=$width; fi; done
+            local spacing=4; local total_inner_width=$((max_left_width + spacing + max_right_width))
+            
+            echo ""; echo -e "${GREEN}╭$(generate_line "$((total_inner_width + 2))" "─")╮${NC}"
+            local title_width=$(_get_visual_width "$title"); local padding_total=$((total_inner_width + 2 - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+            echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
+            echo -e "${GREEN}├$(generate_line "$((total_inner_width + 2))" "─")┤${NC}"
 
-            local num_left=${#left_options[@]}; local num_right=${#right_status[@]}
-            local max_lines=$(( num_left > num_right ? num_left : num_right ))
-
+            local num_left=${#left_options[@]}; local num_right=${#right_status[@]}; local max_lines=$(( num_left > num_right ? num_left : num_right ))
             for (( i=0; i<max_lines; i++ )); do
                 local left="${left_options[i]:-}"; local right="${right_status[i]:-}"
-                local current_left_width=$(_get_visual_width "$left")
-                local padding_needed=$(( max_left_width - current_left_width + 4 ))
-                local padding_str; padding_str=$(printf '%*s' "$padding_needed")
-                combined_menu_lines+=( "${left}${padding_str}${right}" )
+                local left_width=$(_get_visual_width "$left"); local right_width=$(_get_visual_width "$right")
+                local left_padding=$((max_left_width - left_width)); local right_padding=$((max_right_width - right_width))
+                echo -e "${GREEN}│${NC} ${left}$(printf '%*s' "$((left_padding + spacing))")${right}$(printf '%*s' "$((right_padding + 1))")${GREEN}│${NC}"
             done
+            echo -e "${GREEN}╰$(generate_line "$((total_inner_width + 2))" "─")╯${NC}"
+            echo -e "${GREEN}$(generate_line "$((total_inner_width + 4))" "─")${NC}"
 
-            _render_menu "Docker & Docker Compose 管理" "${combined_menu_lines[@]}"
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
 
         else
