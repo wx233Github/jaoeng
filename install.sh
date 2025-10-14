@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.58-终极返回逻辑修复)
-# - 修复: 在 `run_module` 中采用 `( ... ) || true` 结构来调用模块，
-#         这可以完美捕获任何退出码，同时防止 `set -e` 错误地终止主脚本。
+# 🚀 VPS 一键安装与管理脚本 (v77.59-终极返回逻辑修复)
+# - 修复: 在 `run_module` 中使用 `set +e` 块来调用模块，这可以完美捕获任何退出码，
+#         同时彻底防止 `set -e` 在模块返回非零值时错误地终止主脚本。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.58"
+SCRIPT_VERSION="v77.59"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -25,7 +25,7 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
+    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARter_NC} $1" >&2; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
@@ -128,38 +128,24 @@ check_and_install_dependencies() {
 
 run_comprehensive_auto_update() {
     local updated_files=()
-    # 检查核心文件和配置文件
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
-        
         if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。" >&2; continue; fi
-        
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
-        
         if [ "$local_hash" != "$remote_hash" ]; then
-            updated_files+=("$file")
-            sudo mv "$temp_file" "$local_path"
+            updated_files+=("$file"); sudo mv "$temp_file" "$local_path"
             if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
-        else
-            rm -f "$temp_file"
-        fi
+        else rm -f "$temp_file"; fi
     done
-    # 检查所有模块脚本
     local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
-    for script_name in $scripts_to_update; do
-        if download_module_to_cache "$script_name" "auto"; then
-            updated_files+=("$script_name")
-        fi
-    done
-    # 最终只输出文件名列表到 stdout
+    for script_name in $scripts_to_update; do if download_module_to_cache "$script_name" "auto"; then updated_files+=("$script_name"); fi; done
     echo "${updated_files[@]}"
 }
 
 download_module_to_cache() {
     local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
-    # 修复: 自动模式下不输出任何信息到 stdout
     if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}" >&2; fi
     sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
@@ -170,11 +156,8 @@ download_module_to_cache() {
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
     if [ "$local_hash" != "$remote_hash" ]; then
         if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi
-        sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"
-        return 0 # 返回0表示有更新
-    else
-        rm -f "$tmp_file"; return 1 # 返回1表示无更新
-    fi
+        sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"; return 0
+    else rm -f "$tmp_file"; return 1; fi
 }
 
 uninstall_script() {
@@ -188,25 +171,18 @@ confirm_and_force_update() {
     local choice; read -r -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
     if [ "$choice" = "yes" ]; then
         log_info "用户确认：开始强制更新所有组件..." >&2; 
-        
-        flock -u 200 2>/dev/null || true
-        trap - EXIT 
-
+        flock -u 200 2>/dev/null || true; trap - EXIT
         FORCE_REFRESH=true bash -c "$(curl -fsSL ${BASE_URL}/install.sh?_=$(date +%s))"
-        
         log_success "强制更新完成！脚本将自动重启以应用所有更新..." >&2; sleep 2
         exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
     else log_info "用户取消了强制更新。" >&2; fi
 }
 
 run_module(){
-    local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}"; log_info "您选择了 [${module_name}]" >&2
+    local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}";
     if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..." >&2; download_module_to_cache "$module_script"; fi
     
-    local filename_only="${module_script##*/}"
-    local key_base="${filename_only%.sh}"
-    local module_key="${key_base,,}"
-    
+    local filename_only="${module_script##*/}"; local key_base="${filename_only%.sh}"; local module_key="${key_base,,}"
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
         local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
         echo "$module_config_json" | jq -r 'keys_unsorted[]' | while IFS= read -r key; do
@@ -216,13 +192,18 @@ run_module(){
         done
     fi
     
-    # --- 核心修复：使用 ( ... ) || true 结构来健壮地执行子脚本 ---
-    # 1. ( bash "$module_path" ) 在一个独立的子 shell 中运行模块，隔离环境。
-    # 2. `exit_code=$?` 捕获子 shell 的真实退出码 (例如 0, 1, 或 10)。
-    # 3. `|| true` 确保整个命令行的最终结果总是成功(0)，防止 `set -e` 终止父脚本。
+    # --- 核心修复：使用 set +e ... set -e 块来健壮地执行子脚本 ---
+    # 1. `set +e` 临时禁用 "出错立即退出" 模式。
+    # 2. `bash "$module_path"` 在子 shell 中运行模块。
+    # 3. `exit_code=$?` 捕获模块的真实退出码 (例如 0, 1, 或 10)。
+    # 4. `set -e` 重新启用严格模式。
+    # 这个结构确保了无论模块返回什么代码，父脚本都能捕获它而不会被终止。
     local exit_code=0
-    ( bash "$module_path" ); exit_code=$? || true
-
+    set +e
+    bash "$module_path"
+    exit_code=$?
+    set -e
+    
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。" >&2;
     elif [ "$exit_code" -eq 10 ]; then 
@@ -250,7 +231,6 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。" >&2; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
-        
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
@@ -262,8 +242,7 @@ display_and_process_menu() {
         local -A status_label_map=( ["docker"]="Docker:" ["nginx"]="Nginx:" ["watchtower"]="Watchtower:" )
 
         for item_data in "${primary_items[@]}"; do
-            IFS='|' read -r icon name type action <<< "$item_data"
-            local status_text="" status_key=""
+            IFS='|' read -r icon name type action <<< "$item_data"; local status_text="" status_key=""
             if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
                 case "$action" in "docker.sh") status_key="docker" ;; "nginx.sh") status_key="nginx" ;; "TOOLS_MENU") status_key="watchtower" ;; esac
             fi
@@ -281,16 +260,13 @@ display_and_process_menu() {
             if [ -n "$second_col" ]; then
                 local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
                 formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${CYAN}- ${NC}${second_col}")
-            else
-                formatted_items_for_render+=("${first_col}")
-            fi
+            else formatted_items_for_render+=("${first_col}"); fi
         done
 
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
         for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
         
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
-        
         local num_choices=${#primary_items[@]}; local func_choices_str=""; for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
         read -r -p " └──> 请选择 [1-$num_choices], 或 [${func_choices_str%,}] 操作, [Enter] 返回: " choice < /dev/tty
 
@@ -313,9 +289,7 @@ display_and_process_menu() {
 }
 
 main() {
-    load_config "$CONFIG_PATH"
-    check_and_install_dependencies
-    
+    load_config "$CONFIG_PATH"; check_and_install_dependencies
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
     trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT
     
@@ -337,8 +311,7 @@ main() {
     if [ -n "$updated_files_list" ]; then
         if [[ " ${updated_files_list} " == *" install.sh "* ]]; then
             log_success "主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
-            flock -u 200 2>/dev/null || true
-            trap - EXIT
+            flock -u 200 2>/dev/null || true; trap - EXIT
             exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
         fi
         for file in $updated_files_list; do local filename; filename=$(basename "$file"); log_success "${GREEN}${filename}${NC} 已更新" >&2; done
