@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.59-终极返回逻辑修复)
-# - 修复: 在 `run_module` 中使用 `set +e` 块来调用模块，这可以完美捕获任何退出码，
-#         同时彻底防止 `set -e` 在模块返回非零值时错误地终止主脚本。
+# 🚀 VPS 一键安装与管理脚本 (v77.60-终极返回逻辑修复)
+# - 修复: 在 `display_and_process_menu` 中采用 `... || exit_code=$?` 结构来调用模块，
+#         这可以完美捕获任何退出码，同时彻底防止 `set -e` 错误地终止主脚本。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.59"
+SCRIPT_VERSION="v77.60"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -25,7 +25,7 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARter_NC} $1" >&2; }
+    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
@@ -185,24 +185,14 @@ run_module(){
     local filename_only="${module_script##*/}"; local key_base="${filename_only%.sh}"; local module_key="${key_base,,}"
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
         local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
-        echo "$module_config_json" | jq -r 'keys_unsorted[]' | while IFS= read -r key; do
+        echo "$module_config_json" | jq -r 'keys_sorted[]' | while IFS= read -r key; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value; value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
             local upper_key="${key^^}"; export "WATCHTOWER_CONF_${upper_key}"="$value"
         done
     fi
     
-    # --- 核心修复：使用 set +e ... set -e 块来健壮地执行子脚本 ---
-    # 1. `set +e` 临时禁用 "出错立即退出" 模式。
-    # 2. `bash "$module_path"` 在子 shell 中运行模块。
-    # 3. `exit_code=$?` 捕获模块的真实退出码 (例如 0, 1, 或 10)。
-    # 4. `set -e` 重新启用严格模式。
-    # 这个结构确保了无论模块返回什么代码，父脚本都能捕获它而不会被终止。
-    local exit_code=0
-    set +e
-    bash "$module_path"
-    exit_code=$?
-    set -e
+    set +e; bash "$module_path"; local exit_code=$?; set -e
     
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。" >&2;
@@ -282,7 +272,16 @@ display_and_process_menu() {
         local type name action exit_code=0
         type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
         
-        case "$type" in item) run_module "$action" "$name"; exit_code=$? ;; submenu) CURRENT_MENU_NAME="$action" ;; func) "$action" "$@"; exit_code=$? ;; esac
+        case "$type" in 
+            item) 
+                # --- 核心修复：使用 set -e 安全的 `||` 结构来调用 run_module ---
+                # 即使 run_module 返回非零值（如10），`||` 也会捕获它并赋值给 exit_code，
+                # 而不会触发 set -e 导致脚本退出。
+                run_module "$action" "$name" || exit_code=$? 
+                ;; 
+            submenu) CURRENT_MENU_NAME="$action" ;; 
+            func) "$action" "$@"; exit_code=$? ;; 
+        esac
         
         if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then press_enter_to_continue; fi
     done
