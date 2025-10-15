@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.5-UI美化)
-# - 更新: 采纳方案 A 对 Telegram 通知消息的 UI 进行了美化，使其更现代化和紧凑。
+# 🚀 Watchtower 管理模块 (v6.1.6-修复间隔输入与日志解析)
+# - 修复: 增加了缺失的 `_prompt_for_interval` 函数，支持多种间隔输入格式。
+# - 优化: 重构 `_process_log_chunk` 中更新详情的解析逻辑，提高效率和健壮性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.5"
+SCRIPT_VERSION="v6.1.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -160,6 +161,50 @@ send_notify() {
         timeout 15s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url" &
     fi
 }
+
+# 新增函数：处理间隔输入
+_prompt_for_interval() {
+    local default_interval_seconds="$1"
+    local prompt_message="$2"
+    local input_value
+    local current_display_value="$(_format_seconds_to_human "$default_interval_seconds")"
+
+    while true; do
+        input_value=$(_prompt_user_input "${prompt_message} (例如: 3600, 1h, 30m, 1d, 当前: ${current_display_value}): " "")
+        
+        if [ -z "$input_value" ]; then
+            log_warn "输入为空，将使用当前默认值: ${current_display_value} (${default_interval_seconds}秒)"
+            echo "$default_interval_seconds"
+            return 0
+        fi
+
+        local seconds=0
+        if [[ "$input_value" =~ ^[0-9]+$ ]]; then
+            seconds="$input_value"
+        elif [[ "$input_value" =~ ^([0-9]+)s$ ]]; then
+            seconds="${BASH_REMATCH[1]}"
+        elif [[ "$input_value" =~ ^([0-9]+)m$ ]]; then
+            seconds=$(( "${BASH_REMATCH[1]}" * 60 ))
+        elif [[ "$input_value" =~ ^([0-9]+)h$ ]]; then
+            seconds=$(( "${BASH_REMATCH[1]}" * 3600 ))
+        elif [[ "$input_value" =~ ^([0-9]+)d$ ]]; then
+            seconds=$(( "${BASH_REMATCH[1]}" * 86400 ))
+        else
+            log_warn "无效的间隔格式。请使用秒数 (如 3600) 或带单位 (如 1h, 30m, 1d)。"
+            sleep 1
+            continue
+        fi
+
+        if [ "$seconds" -gt 0 ]; then
+            echo "$seconds"
+            return 0
+        else
+            log_warn "间隔必须是正数。"
+            sleep 1
+        fi
+    done
+}
+
 
 _extract_interval_from_cmd(){
     local cmd_json="$1"
@@ -407,24 +452,39 @@ _process_log_chunk() {
     
     local updated_details=""
     if [ "$updated" -gt 0 ]; then
-        local creating_lines
-        creating_lines=$(echo "$chunk" | grep "Creating")
-        while IFS= read -r line; do
-            local container_name image_name old_id new_id
-            container_name=$(echo "$line" | sed -n 's/.*Creating \/\([^ ]*\).*/\1/p')
-            
-            local stopping_line
-            stopping_line=$(echo "$chunk" | grep "Stopping /${container_name} ")
-            image_name=$(echo "$stopping_line" | sed -n 's/.*with image \(.*\)/\1/p' | cut -d':' -f1-2)
-            
-            local found_line
-            found_line=$(echo "$chunk" | grep "Found new ${image_name}")
-            old_id=$(echo "$found_line" | sed -n 's/.*ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
-            new_id=$(echo "$found_line" | sed -n 's/.*new ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
+        # 优化后的更新详情解析逻辑
+        declare -A container_updates # Maps container_name -> {image, old_id, new_id}
+        local current_image_name=""
+        local current_old_id=""
+        local current_new_id=""
 
+        # 遍历日志块，收集更新信息
+        while IFS= read -r line; do
+            if [[ "$line" == *"Found new"* ]]; then
+                current_image_name=$(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p' | cut -d':' -f1-2)
+                current_old_id=$(echo "$line" | sed -n 's/.*ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
+                current_new_id=$(echo "$line" | sed -n 's/.*new ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
+            elif [[ "$line" == *"Stopping /"* ]]; then
+                # 当遇到 "Stopping" 行时，将其与之前收集的镜像信息关联起来
+                local container_name_from_stop=$(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p')
+                if [ -n "$container_name_from_stop" ] && [ -n "$current_image_name" ] && [ -n "$current_old_id" ] && [ -n "$current_new_id" ]; then
+                    container_updates["$container_name_from_stop"]="image=$current_image_name,old_id=$current_old_id,new_id=$current_new_id"
+                    # 重置，为下一个更新周期做准备
+                    current_image_name=""
+                    current_old_id=""
+                    current_new_id=""
+                fi
+            fi
+        done <<< "$chunk"
+
+        for container in "${!container_updates[@]}"; do
+            local update_info="${container_updates[$container]}"
+            local img; img=$(echo "$update_info" | sed -n 's/.*image=\([^,]*\).*/\1/p')
+            local old; old=$(echo "$update_info" | sed -n 's/.*old_id=\([^,]*\).*/\1/p')
+            local new; new=$(echo "$update_info" | sed -n 's/.*new_id=\([^,]*\).*/\1/p')
             updated_details+=$(printf "\n- 🔄 *%s*\n  🖼️ \`\`\`%s\`\`\`\n  🆔 \`%s\` -> \`%s\`" \
-                "$container_name" "$image_name" "$old_id" "$new_id")
-        done <<< "$creating_lines"
+                "$container" "$img" "$old" "$new")
+        done
         
         printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n- - - - - - - - - - - - - - - - -\n\`%s\`" \
             "$hostname" \
