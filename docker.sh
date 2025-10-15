@@ -1,13 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.0-终极UI与逻辑修复)
+# 🚀 Docker 管理模块 (v4.3.1-UI对齐与逻辑修复)
 # - 修复: 彻底重写 `main_menu` 的双栏布局渲染，放弃 `_render_menu`，
 #         改为手动绘制UI盒子，通过精确计算视觉宽度和动态填充，完美解决UI混乱问题。
 # - 新增: 根据用户请求，在模块启动时添加欢迎信息。
+# - 修复: 修正了UI盒子绘制中宽度计算和填充的逻辑，确保左右两列和主盒子边框的精确对齐。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.0"
+SCRIPT_VERSION="v4.3.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -307,22 +308,37 @@ main_menu() {
             local title="Docker & Docker Compose 管理"
             local max_left_width=0; for item in "${left_options[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi; done
             local max_right_width=0; for item in "${right_status[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_right_width" ]; then max_right_width=$width; fi; done
-            local spacing=4; local total_inner_width=$((max_left_width + spacing + max_right_width))
             
-            echo ""; echo -e "${GREEN}╭$(generate_line "$((total_inner_width + 2))" "─")╮${NC}"
-            local title_width=$(_get_visual_width "$title"); local padding_total=$((total_inner_width + 2 - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
+            local spacing=4 # 左右两列之间的间距
+            local inner_padding_space=2 # 左右边框内部各一个空格
+            
+            # 计算主盒子内容区域的总宽度 (不含左右边框字符)
+            local main_content_area_width=$((max_left_width + spacing + max_right_width + inner_padding_space))
+            
+            echo ""; echo -e "${GREEN}╭$(generate_line "$main_content_area_width" "─")╮${NC}"
+            local title_width=$(_get_visual_width "$title"); local padding_total=$((main_content_area_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
             echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
-            echo -e "${GREEN}├$(generate_line "$((total_inner_width + 2))" "─")┤${NC}"
+            echo -e "${GREEN}├$(generate_line "$main_content_area_width" "─")┤${NC}"
 
             local num_left=${#left_options[@]}; local num_right=${#right_status[@]}; local max_lines=$(( num_left > num_right ? num_left : num_right ))
             for (( i=0; i<max_lines; i++ )); do
-                local left="${left_options[i]:-}"; local right="${right_status[i]:-}"
-                local left_width=$(_get_visual_width "$left"); local right_width=$(_get_visual_width "$right")
-                local left_padding=$((max_left_width - left_width)); local right_padding=$((max_right_width - right_width))
-                echo -e "${GREEN}│${NC} ${left}$(printf '%*s' "$((left_padding + spacing))")${right}$(printf '%*s' "$((right_padding + 1))")${GREEN}│${NC}"
+                local left_item="${left_options[i]:-}"
+                local right_item="${right_status[i]:-}"
+
+                local current_left_item_width=$(_get_visual_width "$left_item")
+                local current_right_item_width=$(_get_visual_width "$right_item")
+
+                local left_item_padding=$((max_left_width - current_left_item_width))
+                local right_item_padding=$((max_right_width - current_right_item_width))
+
+                # 填充左右两列，并确保中间间距和两端内边距
+                printf -v padded_left_display "%s%*s" "$left_item" "$left_item_padding" ""
+                printf -v padded_right_display "%s%*s" "$right_item" "$right_item_padding" ""
+
+                echo -e "${GREEN}│${NC} ${padded_left_display}$(printf '%*s' "$spacing")${padded_right_display} ${GREEN}│${NC}"
             done
-            echo -e "${GREEN}╰$(generate_line "$((total_inner_width + 2))" "─")╯${NC}"
-            echo -e "${GREEN}$(generate_line "$((total_inner_width + 4))" "─")${NC}"
+            echo -e "${GREEN}╰$(generate_line "$main_content_area_width" "─")╯${NC}"
+            echo -e "${GREEN}$(generate_line "$((main_content_area_width + 2))" "─")${NC}" # 底部分隔线，总长度包含外边角字符
 
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
 
