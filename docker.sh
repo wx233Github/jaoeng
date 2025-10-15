@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.1-UI对齐与逻辑修复)
+# 🚀 Docker 管理模块 (v4.3.2-UI精确对齐修复)
 # - 修复: 彻底重写 `main_menu` 的双栏布局渲染，放弃 `_render_menu`，
 #         改为手动绘制UI盒子，通过精确计算视觉宽度和动态填充，完美解决UI混乱问题。
 # - 新增: 根据用户请求，在模块启动时添加欢迎信息。
-# - 修复: 修正了UI盒子绘制中宽度计算和填充的逻辑，确保左右两列和主盒子边框的精确对齐。
+# - 修复: 修正了UI盒子绘制中宽度计算和填充的逻辑，确保左右两列和主盒子边框的精确对齐，解决右侧边框偏移。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.1"
+SCRIPT_VERSION="v4.3.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -306,19 +306,41 @@ main_menu() {
 
             # --- 核心UI修复：手动绘制整个UI盒子，不再使用 _render_menu ---
             local title="Docker & Docker Compose 管理"
-            local max_left_width=0; for item in "${left_options[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi; done
-            local max_right_width=0; for item in "${right_status[@]}"; do local width=$(_get_visual_width "$item"); if [ "$width" -gt "$max_right_width" ]; then max_right_width=$width; fi; done
-            
-            local spacing=4 # 左右两列之间的间距
-            local inner_padding_space=2 # 左右边框内部各一个空格
-            
-            # 计算主盒子内容区域的总宽度 (不含左右边框字符)
-            local main_content_area_width=$((max_left_width + spacing + max_right_width + inner_padding_space))
-            
-            echo ""; echo -e "${GREEN}╭$(generate_line "$main_content_area_width" "─")╮${NC}"
-            local title_width=$(_get_visual_width "$title"); local padding_total=$((main_content_area_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left))
-            echo -e "${GREEN}│$(printf '%*s' "$padding_left")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right")│${NC}"
-            echo -e "${GREEN}├$(generate_line "$main_content_area_width" "─")┤${NC}"
+            local max_left_width=0
+            for item in "${left_options[@]}"; do
+                local width=$(_get_visual_width "$item")
+                if [ "$width" -gt "$max_left_width" ]; then max_left_width=$width; fi
+            done
+
+            local max_right_width=0
+            for item in "${right_status[@]}"; do
+                local width=$(_get_visual_width "$item")
+                if [ "$width" -gt "$max_right_width" ]; then max_right_width=$width; fi
+            done
+
+            local spacing=4 # 左右两列之间的固定间距
+
+            # 计算内容区域的理想宽度（不含外侧的 '│' 字符）
+            # 这个宽度需要容纳最宽的标题，或者最宽的左右两列内容 + 它们之间的间距 + 左右各一个内边距空格
+            local ideal_content_width_for_rows=$((1 + max_left_width + spacing + max_right_width + 1)) # 左右各1个内边距空格
+            local title_visual_width=$(_get_visual_width "$title")
+
+            local main_box_inner_width=$ideal_content_width_for_rows
+            if [ "$title_visual_width" -gt "$main_box_inner_width" ]; then
+                main_box_inner_width=$title_visual_width
+            fi
+
+            # 确保最小宽度，如果需要
+            if [ "$main_box_inner_width" -lt 40 ]; then main_box_inner_width=40; fi
+
+            echo ""; echo -e "${GREEN}╭$(generate_line "$main_box_inner_width" "─")╮${NC}"
+
+            local padding_total_title=$((main_box_inner_width - title_visual_width))
+            local padding_left_title=$((padding_total_title / 2))
+            local padding_right_title=$((padding_total_title - padding_left_title))
+            echo -e "${GREEN}│$(printf '%*s' "$padding_left_title")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right_title")│${NC}"
+
+            echo -e "${GREEN}├$(generate_line "$main_box_inner_width" "─")┤${NC}"
 
             local num_left=${#left_options[@]}; local num_right=${#right_status[@]}; local max_lines=$(( num_left > num_right ? num_left : num_right ))
             for (( i=0; i<max_lines; i++ )); do
@@ -331,14 +353,22 @@ main_menu() {
                 local left_item_padding=$((max_left_width - current_left_item_width))
                 local right_item_padding=$((max_right_width - current_right_item_width))
 
-                # 填充左右两列，并确保中间间距和两端内边距
                 printf -v padded_left_display "%s%*s" "$left_item" "$left_item_padding" ""
                 printf -v padded_right_display "%s%*s" "$right_item" "$right_item_padding" ""
 
-                echo -e "${GREEN}│${NC} ${padded_left_display}$(printf '%*s' "$spacing")${padded_right_display} ${GREEN}│${NC}"
+                # 构建一行内容 (包括左右内边距空格)
+                local row_content_to_print=" ${padded_left_display}$(printf '%*s' "$spacing")${padded_right_display} "
+                local row_content_visual_width=$(_get_visual_width "$row_content_to_print")
+
+                # 计算需要填充的额外空格，以使该行总宽度与 main_box_inner_width 匹配
+                local extra_padding_for_row=$((main_box_inner_width - row_content_visual_width))
+                if [ "$extra_padding_for_row" -lt 0 ]; then extra_padding_for_row=0; fi # 避免负数填充
+
+                echo -e "${GREEN}│${NC}${row_content_to_print}$(printf '%*s' "$extra_padding_for_row")${GREEN}│${NC}"
             done
-            echo -e "${GREEN}╰$(generate_line "$main_content_area_width" "─")╯${NC}"
-            echo -e "${GREEN}$(generate_line "$((main_content_area_width + 2))" "─")${NC}" # 底部分隔线，总长度包含外边角字符
+            echo -e "${GREEN}╰$(generate_line "$main_box_inner_width" "─")╯${NC}"
+            # 底部分隔线，总长度包含外边角字符 ('╭' 和 '╮')
+            echo -e "${GREEN}$(generate_line "$((main_box_inner_width + 2))" "─")${NC}" 
 
             read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
 
