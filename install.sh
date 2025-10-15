@@ -1,14 +1,16 @@
 #!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.62-UI兼容性更新)
+# 🚀 VPS 一键安装与管理脚本 (v77.64-更新日志与重启逻辑优化)
 # - 修复: 在 `display_and_process_menu` 中采用 `... || exit_code=$?` 结构来调用模块，
 #         这可以完美捕获任何退出码，同时彻底防止 `set -e` 错误地终止主脚本。
 # - 修复: 将 `jq -r 'keys_sorted[]'` 替换为 `jq -r 'keys[]'` 以提高 JQ 兼容性。
+# - 优化: 调整更新日志逻辑，确保在主程序重启前打印所有已更新的文件信息。
+# - 优化: 在主程序重启后，新的实例将跳过初始的全面更新检查。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.62"
+SCRIPT_VERSION="v77.64"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -306,19 +308,50 @@ main() {
     fi
     
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
-    printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正在全面智能更新 🕛 " >&2
-    local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-    printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全面智能更新检查完成 🔄          \n" >&2
-    
-    if [ -n "$updated_files_list" ]; then
-        if [[ " ${updated_files_list} " == *" install.sh "* ]]; then
-            log_success "主程序 (install.sh) 已更新，正在无缝重启... 🚀" >&2
-            flock -u 200 2>/dev/null || true; trap - EXIT
-            exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
+
+    # 只有在不是由自身重启触发时才执行全面更新检查
+    if [ "${JB_RESTARTED:-false}" != "true" ]; then
+        printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+        local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
+        # 移除表情符号，避免宽度计算问题
+        printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+
+        local restart_needed=false
+        local update_messages=""
+
+        if [ -n "$updated_files_list" ]; then
+            for file in $updated_files_list; do
+                local filename; filename=$(basename "$file")
+                if [[ "$filename" == "install.sh" ]]; then
+                    restart_needed=true
+                    update_messages+="主程序 (install.sh) 已更新\n"
+                else
+                    update_messages+="${GREEN}${filename}${NC} 已更新\n"
+                fi
+            done
+            if [[ " ${updated_files_list} " == *"config.json"* ]]; then
+                update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
+            fi
+
+            # 打印所有更新消息
+            if [ -n "$update_messages" ]; then
+                log_info "发现以下更新:" >&2
+                echo -e "$update_messages" | while IFS= read -r line; do
+                    log_success "$line" >&2
+                done
+            fi
+
+            if [ "$restart_needed" = true ]; then
+                log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
+                flock -u 200 2>/dev/null || true; trap - EXIT
+                # 传递 JB_RESTARTED="true" 环境变量给新的实例
+                exec sudo -E JB_RESTARTED="true" bash "$FINAL_SCRIPT_PATH" "$@"
+            fi
         fi
-        for file in $updated_files_list; do local filename; filename=$(basename "$file"); log_success "${GREEN}${filename}${NC} 已更新" >&2; done
-        if [[ "$updated_files_list" == *"config.json"* ]]; then log_warn "  > 配置文件 config.json 已更新，部分默认设置可能已改变。" >&2; fi
+    else
+        log_info "脚本已由自身重启，跳过初始更新检查。" >&2
     fi
+    
     check_sudo_privileges; display_and_process_menu "$@"
 }
 
