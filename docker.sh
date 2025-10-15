@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.4-UI最终修复)
+# 🚀 Docker 管理模块 (v4.3.5-UI简化为单列菜单)
 # - 修复: 彻底重写 `main_menu` 的双栏布局渲染，放弃 `_render_menu`，
 #         改为手动绘制UI盒子，通过精确计算视觉宽度和动态填充，完美解决UI混乱问题。
 # - 新增: 根据用户请求，在模块启动时添加欢迎信息。
-# - 修复: 通过引入 `_render_simple_box` 函数并精确计算两列与主盒子宽度，彻底解决了UI对齐问题。
+# - 修复: 采纳用户建议，将主菜单简化为单列布局，使用 `_render_menu` 函数进行渲染，以确保UI稳定性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.4"
+SCRIPT_VERSION="v4.3.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -284,103 +284,34 @@ main_menu() {
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         get_docker_status
         
+        local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
+        
+        local -a menu_items=()
         if [ "$DOCKER_INSTALLED" = "true" ]; then
-            local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
-            
-            local left_options=(
-                "  1. 重新安装 Docker"
-                "  2. 卸载 Docker"
-                "  3. 配置镜像/用户组"
-                "  4. 服务管理"
-                "  5. 系统清理 (Prune)"
+            menu_items+=(
+                "ℹ️ ${GREEN}Docker 已安装${NC}"
+                "服务状态: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
+                "Docker 版本: ${DOCKER_VERSION}"
+                "Compose 版本: ${COMPOSE_VERSION}"
+                ""
+                "1. 重新安装 Docker"
+                "2. 卸载 Docker"
+                "3. 配置镜像/用户组"
+                "4. 服务管理"
+                "5. 系统清理 (Prune)"
             )
             local options_map=("reinstall" "uninstall" "config" "service" "prune")
-
-            # --- 构建右侧 Docker 状态盒子内容 ---
-            local -a right_status_content_for_box=(
-                "${GREEN}已安装${NC}"
-                "服务: ${status_color}${DOCKER_SERVICE_STATUS}${NC}"
-                "版本: ${DOCKER_VERSION}"
-                "Compose: ${COMPOSE_VERSION}"
-            )
-            local right_box_title="Docker 状态"
-
-            # 使用 _render_simple_box 函数渲染右侧状态盒子，并捕获其输出
-            local -a rendered_right_box_lines=()
-            # 使用 while read -r line; do ...; done < <(command) 来捕获多行输出到数组
-            while IFS= read -r line; do
-                rendered_right_box_lines+=("$line")
-            done < <(_render_simple_box "$right_box_title" "${right_status_content_for_box[@]}")
-
-            # --- 计算主菜单的整体布局宽度 ---
-            local title="Docker & Docker Compose 管理"
-            local main_title_visual_width=$(_get_visual_width "$title")
-
-            local max_left_option_width=0
-            for item in "${left_options[@]}"; do
-                local width=$(_get_visual_width "$item")
-                if [ "$width" -gt "$max_left_option_width" ]; then max_left_option_width=$width; fi
-            done
-
-            # 获取已渲染好的右侧盒子的一行总视觉宽度 (包含其自身边框)
-            local right_box_actual_visual_width=$(_get_visual_width "${rendered_right_box_lines[0]}") 
-
-            local spacing_between_cols=4 # 左右两列之间的固定间距
-            local main_box_inner_left_padding=1 # 主盒子左边框后一个空格
-            local main_box_inner_right_padding=1 # 主盒子右边框前一个空格
-
-            # 计算主盒子内容区域的最小宽度（不含主盒子左右边框字符）
-            local combined_columns_min_width=$((main_box_inner_left_padding + max_left_option_width + spacing_between_cols + right_box_actual_visual_width + main_box_inner_right_padding))
-            
-            # 主盒子最终的内部绘制宽度，取标题和两列内容中的最大值
-            local main_box_inner_width=$combined_columns_min_width
-            if [ "$main_title_visual_width" -gt "$main_box_inner_width" ]; then
-                main_box_inner_width=$main_title_visual_width
-            fi
-            if [ "$main_box_inner_width" -lt 40 ]; then main_box_inner_width=40; fi # 强制最小宽度
-
-            echo ""; echo -e "${GREEN}╭$(generate_line "$main_box_inner_width" "─")╮${NC}"
-
-            local padding_total_main_title=$((main_box_inner_width - main_title_visual_width))
-            local padding_left_main_title=$((padding_total_main_title / 2))
-            local padding_right_main_title=$((padding_total_main_title - padding_left_main_title))
-            echo -e "${GREEN}│$(printf '%*s' "$padding_left_main_title")${BOLD}${title}${NC}${GREEN}$(printf '%*s' "$padding_right_main_title")│${NC}"
-
-            echo -e "${GREEN}├$(generate_line "$main_box_inner_width" "─")┤${NC}"
-
-            local num_left_options=${#left_options[@]}
-            local num_right_box_lines=${#rendered_right_box_lines[@]}
-            local total_rows_to_draw=$(( num_left_options > num_right_box_lines ? num_left_options : num_right_box_lines ))
-
-            for (( i=0; i<total_rows_to_draw; i++ )); do
-                local left_col_content="${left_options[i]:-}"
-                local right_col_content="${rendered_right_box_lines[i]:-}"
-
-                local left_col_visual_width=$(_get_visual_width "$left_col_content")
-                
-                # 计算左侧内容到右侧内容之间的填充，包括左侧自身的填充和列间距
-                local padding_between_cols=$((max_left_option_width - left_col_visual_width + spacing_between_cols))
-                
-                local current_row_combined_content="${left_col_content}$(printf '%*s' "$padding_between_cols")${right_col_content}"
-                local current_row_visual_width=$(_get_visual_width "$current_row_combined_content")
-
-                # 计算总填充，使整行内容（包括内边距空格）达到主盒子的内部宽度
-                local fill_padding=$((main_box_inner_width - (main_box_inner_left_padding + current_row_visual_width + main_box_inner_right_padding) ))
-                if [ "$fill_padding" -lt 0 ]; then fill_padding=0; fi # 安全检查
-
-                echo -e "${GREEN}│$(printf '%*s' "$main_box_inner_left_padding")${current_row_combined_content}$(printf '%*s' "$fill_padding")$(printf '%*s' "$main_box_inner_right_padding")${GREEN}│${NC}"
-            done
-            echo -e "${GREEN}╰$(generate_line "$main_box_inner_width" "─")╯${NC}"
-            echo -e "${GREEN}$(generate_line "$((main_box_inner_width + 2))" "─")${NC}" # 底部分隔线，总长度包含外边角字符
-
-            read -r -p " └──> 请输入选项 [1-5] (或按 Enter 返回): " choice < /dev/tty
-
         else
-            local -a content_array=("ℹ️ ${YELLOW}检测到 Docker 未安装${NC}" "" "  1. 安装 Docker 和 Compose")
+            menu_items+=(
+                "ℹ️ ${YELLOW}检测到 Docker 未安装${NC}"
+                ""
+                "1. 安装 Docker 和 Compose"
+            )
             local options_map=("install")
-            _render_menu "Docker & Docker Compose 安装" "${content_array[@]}"
-            read -r -p " └──> 请输入选项 [1] (或按 Enter 返回): " choice < /dev/tty
         fi
+
+        _render_menu "Docker & Docker Compose 管理" "${menu_items[@]}"
+        read -r -p " └──> 请输入选项 [1-${#options_map[@]}] (或按 Enter 返回): " choice < /dev/tty
 
         if [ -z "$choice" ]; then exit 10; fi
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#options_map[@]} ]; then
