@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================
-# 🚀 通用工具函数库 (v2.35-UI盒子渲染函数)
+# 🚀 通用工具函数库 (v2.36-UI盒子渲染函数回退)
+# - 回退: 移除了 `_render_simple_box` 函数。
 # - 修复: 重构 _render_menu 函数的宽度计算逻辑，确保标题框的顶/底部横线与标题内容宽度精确匹配，解决右侧边框偏移问题。
-# - 新增: `_render_simple_box` 函数，用于绘制独立的、内容对齐的UI盒子。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -125,48 +125,7 @@ _get_visual_width() {
     fi
 }
 
-# 绘制一个带标题的简单盒子
-_render_simple_box() {
-    local box_title="$1"; shift; local -a box_lines=("$@")
-    local max_line_width=$(_get_visual_width "$box_title")
-    for line in "${box_lines[@]}"; do
-        local width=$(_get_visual_width "$line")
-        if [ "$width" -gt "$max_line_width" ]; then max_line_width=$width; fi
-    done
-    
-    # 盒子内部绘制区域的宽度 (不含左右边框字符，但包含内容和左右各1个空格的内边距)
-    local box_inner_content_width=$max_line_width
-    if [ "$box_inner_content_width" -lt 10 ]; then box_inner_content_width=10; fi # 最小宽度
-    
-    local -a output_lines=()
-    # 顶部边框
-    output_lines+=("${CYAN}┌$(generate_line "$((box_inner_content_width + 2))" "─")┐${NC}") # +2 for ' ' and ' '
-
-    # 标题行
-    local title_pad_total=$((box_inner_content_width + 2 - $(_get_visual_width "$box_title")))
-    local title_pad_left=$((title_pad_total / 2))
-    local title_pad_right=$((title_pad_total - title_pad_left))
-    output_lines+=("${CYAN}│$(printf '%*s' "$title_pad_left")${BOLD}${box_title}${NC}${CYAN}$(printf '%*s' "$title_pad_right")│${NC}")
-    
-    # 内容分隔线 (如果内容不为空)
-    if [ ${#box_lines[@]} -gt 0 ]; then
-        output_lines+=("${CYAN}├$(generate_line "$((box_inner_content_width + 2))" "─")┤${NC}")
-    fi
-
-    # 内容行
-    for line in "${box_lines[@]}"; do
-        local line_pad=$((box_inner_content_width - $(_get_visual_width "$line")))
-        output_lines+=("${CYAN}│ ${line}$(printf '%*s' "$((line_pad + 1))")│${NC}") # 左右各1个空格
-    done
-    
-    # 底部边框
-    output_lines+=("${CYAN}└$(generate_line "$((box_inner_content_width + 2))" "─")┘${NC}")
-    
-    printf "%s\n" "${output_lines[@]}" # 每行输出，以换行符分隔
-}
-
-
-# 修复后的 _render_menu: 确保标题和底部横线对齐 (用于单列菜单)
+# 绘制一个带标题的简单盒子 (用于单列菜单)
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_content_width=0
