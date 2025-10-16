@@ -1,15 +1,15 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.1.8-Telegram通知格式修复)
+# 🚀 Watchtower 管理模块 (v6.1.9-Telegram通知分隔线与重复问题排查)
 # - 修复: 增加了缺失的 `_prompt_for_interval` 函数，支持多种间隔输入格式。
 # - 优化: 重构 `_process_log_chunk` 中更新详情的解析逻辑，提高效率和健壮性。
 # - 修复: 调整Telegram通知中更新容器详情的格式，确保容器名称等信息能正确显示。
-# - 修复: 将Telegram通知中的分隔线替换为标准的Markdown水平分隔符 `---`，以确保正确渲染。
+# - 修复: 将Telegram通知中的分隔线替换为更兼容的下划线 `___` 格式，并确保前后有空行，以提高渲染效果。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.1.8"
+SCRIPT_VERSION="v6.1.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -490,13 +490,13 @@ _process_log_chunk() {
                 "$container" "$img" "$old" "$new")
         done
         
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n---\n\`%s\`" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n___\n\`%s\`" \
             "$hostname" \
             "$updated" \
             "$updated_details" \
             "$time_now"
     else
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n---\n\`%s\`" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n___\n\`%s\`" \
             "$hostname" \
             "$scanned" \
             "$failed" \
