@@ -1,7 +1,8 @@
-# ==============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.1-视觉样式调整)
-# - 修复: 主菜单的显示样式已恢复为用户指定的经典边框格式。
-# - 修复: `acme.sh` 就绪状态的日志消息图标已从 `✅` 更改为 `✔`。
+# =G============================================================================
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.2-界面优化)
+# - 优化: 将主菜单边框颜色调整为与输入提示符一致的青色(CYAN)。
+# - 优化: 移除了交互模式下大部分输出的`[INFO]`前缀，使界面更简洁。
+# - 优化: 依赖检查功能在所有依赖都满足时将静默通过，不再输出信息。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -44,7 +45,14 @@ log_message() {
         DEBUG) color_code="${BLUE}"; level_prefix="[DEBUG]";;
         *) color_code="${RESET}"; level_prefix="[UNKNOWN]";;
     esac
-    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then echo -e "${color_code}${level_prefix} ${message}${RESET}"; fi
+    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+        # 在交互模式下，不再显示 [INFO] 前缀，让界面更干净
+        if [ "$level" = "INFO" ]; then
+             echo -e "${color_code}${message}${RESET}"
+        else
+             echo -e "${color_code}${level_prefix} ${message}${RESET}"
+        fi
+    fi
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
 }
 
@@ -117,11 +125,15 @@ initialize_environment() {
 }
 
 install_dependencies() {
-    log_message INFO "🔍 检查并安装依赖 (适用于 Debian/Ubuntu)..."
-    if ! apt update -y >/dev/null 2>&1; then log_message ERROR "❌ apt update 失败。"; return 1; fi
-    local deps="nginx curl socat openssl jq idn dnsutils nano"; local failed=0
+    local deps="nginx curl socat openssl jq idn dnsutils nano"
+    local missing_deps_found=0 failed=0
     for pkg in $deps; do
         if ! dpkg -s "$pkg" &>/dev/null; then
+            if [ "$missing_deps_found" -eq 0 ]; then
+                log_message INFO "🔍 发现缺失依赖，开始检查并安装 (适用于 Debian/Ubuntu)..."
+                if ! apt update -y >/dev/null 2>&1; then log_message ERROR "❌ apt update 失败。"; return 1; fi
+                missing_deps_found=1
+            fi
             log_message WARN "正在安装 $pkg..."
             if ! apt install -y "$pkg" >/dev/null 2>&1; then
                 log_message ERROR "❌ 安装 $pkg 失败。"; failed=1
@@ -129,7 +141,9 @@ install_dependencies() {
         fi
     done
     if [ "$failed" -eq 1 ]; then return 1; fi
-    log_message INFO "✅ 所有依赖检查完毕。"
+    if [ "$missing_deps_found" -eq 1 ]; then
+        log_message INFO "✅ 所有依赖检查完毕。"
+    fi
     return 0
 }
 
@@ -540,9 +554,9 @@ manage_acme_accounts() {
 
 main_menu() {
     while true; do
-        echo -e "\n${BLUE}╔═══════════════════════════════════════╗${RESET}"
-        echo -e "${BLUE}║     🚀 Nginx/HTTPS 证书管理主菜单     ║${RESET}"
-        echo -e "${BLUE}╚═══════════════════════════════════════╝${RESET}"
+        echo -e "\n${CYAN}╔═══════════════════════════════════════╗${RESET}"
+        echo -e "${CYAN}║     🚀 Nginx/HTTPS 证书管理主菜单     ║${RESET}"
+        echo -e "${CYAN}╚═══════════════════════════════════════╝${RESET}"
         echo -e "${GREEN}1) 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
         echo -e "${GREEN}2) 查看与管理已配置项目 (域名、端口、证书)${RESET}"
         echo -e "${GREEN}3) 检查并自动续期所有证书${RESET}"
