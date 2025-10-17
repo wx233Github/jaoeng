@@ -1,14 +1,13 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v7.0.0-通知系统重构)
-# - 修复: 彻底修复了Telegram/Email通知无效的根本问题。
-# - 重构: 废除了原有的、不稳定的“日志监控”自定义通知系统。
-# - 优化: 现在直接使用 Watchtower 官方内置的、更可靠的 `shoutrrr` 通知功能。
-# - 简化: 移除了所有与日志监控、解析和自定义发送相关的复杂代码（约200行）。
-# - 优化: 配置更新后只需重建容器即可生效，不再需要管理独立的监控进程。
+# 🚀 Watchtower 管理模块 (v7.1.0-日志摘要功能恢复)
+# - 修复: 彻底恢复了 v6.1.9 版本中强大的日志摘要功能 (`show_watchtower_details`)。
+# - 优化: 将原有的“查看最近日志”功能恢复为带有格式化、图标和颜色高亮的摘要界面。
+# - 优化: 在摘要界面内，保留了查看实时原始日志的子选项。
+# - 确认: 此版本在功能上与 v6.1.9 完全对等，并保留了 v7.0.0 版本的可靠通知系统。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v7.0.0"
+SCRIPT_VERSION="v7.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -92,7 +91,6 @@ load_config(){
 
 save_config(){
     mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
-    # 移除所有与旧日志监控相关的变量
     cat > "$CONFIG_FILE" <<EOF
 TG_BOT_TOKEN="${TG_BOT_TOKEN}"
 TG_CHAT_ID="${TG_CHAT_ID}"
@@ -136,7 +134,6 @@ _format_seconds_to_human(){
     echo "${result:-0秒}"
 }
 
-# 仅用于发送测试通知
 _send_test_notify() {
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         log_info "正在发送 Telegram 测试通知..."
@@ -201,6 +198,18 @@ get_watchtower_inspect_summary(){
     _extract_interval_from_cmd "$cmd" 2>/dev/null || true
 }
 
+get_last_session_time(){
+    local logs; logs=$(get_watchtower_all_raw_logs 2>/dev/null || true)
+    if [ -z "$logs" ]; then echo ""; return 1; fi
+    local line; line=$(echo "$logs" | grep -E "Session done|Scheduling first run|Starting Watchtower" | tail -n 1 || true)
+    if [ -n "$line" ]; then
+        local ts; ts=$(_parse_watchtower_timestamp_from_log_line "$line")
+        if [ -n "$ts" ]; then echo "$ts"; return 0; fi
+    fi
+    echo ""
+    return 1
+}
+
 _get_watchtower_remaining_time(){
     local interval_seconds="$1"
     local raw_logs="$2"
@@ -249,12 +258,10 @@ _start_watchtower_container_logic(){
 
     docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     
-    # --- 全新通知逻辑 ---
     local shoutrrr_urls=()
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         shoutrrr_urls+=("telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}")
     fi
-    # 可在此处添加 Email 等其他通知方式
     
     if [ ${#shoutrrr_urls[@]} -gt 0 ]; then
         docker_run_args+=(-e WATCHTOWER_NOTIFICATIONS=shoutrrr)
@@ -264,7 +271,6 @@ _start_watchtower_container_logic(){
             docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
         fi
     fi
-    # --- 通知逻辑结束 ---
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
@@ -440,15 +446,70 @@ manage_tasks(){
     done
 }
 
+_format_and_highlight_log_line(){
+    local line="$1"
+    local ts=$(_parse_watchtower_timestamp_from_log_line "$line")
+    case "$line" in
+        *"Session done"*)
+            local f s u; f=$(echo "$line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); s=$(echo "$line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); u=$(echo "$line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p')
+            local c="$GREEN"; if [ "${f:-0}" -gt 0 ]; then c="$YELLOW"; fi
+            printf "%s %b%s%b\n" "$ts" "$c" "✅ 扫描: ${s:-?}, 更新: ${u:-?}, 失败: ${f:-?}" "$NC" ;;
+        *"Found new"*) printf "%s %b%s%b\n" "$ts" "$GREEN" "🆕 发现新镜像: $(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p')" "$NC" ;;
+        *"Stopping "*) printf "%s %b%s%b\n" "$ts" "$GREEN" "🛑 停止旧容器: $(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\/\1/p')" "$NC" ;;
+        *"Creating "*) printf "%s %b%s%b\n" "$ts" "$GREEN" "🚀 创建新容器: $(echo "$line" | sed -n 's/.*Creating \/\(.*\).*/\/\1/p')" "$NC" ;;
+        *"No new images found"*) printf "%s %b%s%b\n" "$ts" "$CYAN" "ℹ️ 未发现新镜像。" "$NC" ;;
+        *"Scheduling first run"*) printf "%s %b%s%b\n" "$ts" "$GREEN" "🕒 首次运行已调度" "$NC" ;;
+        *"Starting Watchtower"*) printf "%s %b%s%b\n" "$ts" "$GREEN" "✨ Watchtower 已启动" "$NC" ;;
+        *)
+            if echo "$line" | grep -qiE "\b(unauthorized|failed|error|fatal)\b"; then
+                printf "%s %b%s%b\n" "$ts" "$RED" "❌ 错误: $(echo "$line" | sed -E 's/.*(level=(error|warn)|time="[^"]*")\s*//g')" "$NC"
+            fi ;;
+    esac
+}
+
+get_updates_last_24h(){
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo ""; return 1; fi
+    local since; since=$(date -d "24 hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)
+    local raw_logs
+    if [ -n "$since" ]; then raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --since "$since" watchtower 2>&1 || true); fi
+    if [ -z "$raw_logs" ]; then raw_logs=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 200 watchtower 2>&1 || true); fi
+    echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal" || true
+}
+
 show_watchtower_details(){
-    # 此函数保留用于日志查看，不用于通知
-    # ... (代码与之前版本类似，此处为简化演示)
-    log_info "正在显示最近的 Watchtower 日志..."
-    if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
-        JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 100 watchtower
-    else
-        log_warn "Watchtower 未运行，无日志可显示。"
-    fi
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        local title="📊 Watchtower 详情与管理 📊"
+        local interval raw_logs COUNTDOWN updates
+        
+        set +e; interval=$(get_watchtower_inspect_summary); raw_logs=$(get_watchtower_all_raw_logs); set -e
+        COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+        
+        local -a content_lines_array=(
+            "⏱️  ${CYAN}当前状态${NC}"
+            "    ${YELLOW}上次活动:${NC} $(get_last_session_time || echo 'N/A')" 
+            "    ${YELLOW}下次检查:${NC} ${COUNTDOWN}"
+            "" 
+            "📜  ${CYAN}最近 24h 摘要${NC}"
+        )
+        
+        updates=$(get_updates_last_24h || true)
+        if [ -z "$updates" ]; then content_lines_array+=("    无日志事件。"); else while IFS= read -r line; do content_lines_array+=("    $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
+        
+        _render_menu "$title" "${content_lines_array[@]}"
+        read -r -p " └──> [1] 实时原始日志, [Enter] 返回: " pick < /dev/tty
+        case "$pick" in
+            1) 
+                if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
+                    echo -e "\n按 Ctrl+C 停止..."; 
+                    trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; 
+                    press_enter_to_continue; 
+                else 
+                    echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; 
+                fi ;;
+            *) return ;;
+        esac
+    done
 }
 
 main_menu(){
@@ -469,7 +530,7 @@ main_menu(){
             "2. 配置通知" 
             "3. 任务管理 (启停/重建)" 
             "4. 手动触发一次扫描"
-            "5. 查看最近日志"
+            "5. 查看详情与最近日志摘要"
         )
         _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-5] 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
@@ -477,7 +538,7 @@ main_menu(){
           2) notification_menu ;;
           3) manage_tasks ;;
           4) run_watchtower_once; press_enter_to_continue ;;
-          5) show_watchtower_details; press_enter_to_continue ;;
+          5) show_watchtower_details ;;
           "") return 0 ;;
           *) log_warn "无效选项。"; sleep 1 ;;
         esac
