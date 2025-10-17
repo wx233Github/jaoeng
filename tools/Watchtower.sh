@@ -1,13 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v8.1.0-内嵌模板)
-# - 优化: 移除了对外部 `notification_template.tpl` 文件的依赖。
-# - 实现: 将通知模板内容直接内嵌到脚本中，并通过 `WATCHTOWER_NOTIFICATION_TEMPLATE`
-#         环境变量传递给容器，使脚本完全自包含。
-# - 修复: 恢复了所有菜单功能，确保与 v6.1.9 版本在功能上完全对等。
+# 🚀 Watchtower 管理模块 (v8.1.1-语法修复)
+# - 修复: 补全了 `configure_watchtower` 函数末尾缺失的右花括号 `}`，
+#         解决了导致脚本无法运行的 `unexpected EOF` 致命语法错误。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v8.1.0"
+SCRIPT_VERSION="v8.1.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -130,8 +128,6 @@ _format_seconds_to_human(){
 }
 
 _get_notification_template() {
-    # 使用 here document 安全地定义多行模板字符串
-    # 'EOF' 使用单引号可以防止 shell 扩展模板内的 {{...}} 语法
     cat <<'EOF'
 {{- if .Report -}}
 *🐳 Watchtower 扫描报告*
@@ -284,7 +280,6 @@ _start_watchtower_container_logic(){
 
     docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     
-    # --- 全新通知逻辑 ---
     local shoutrrr_urls=()
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         shoutrrr_urls+=("telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}")
@@ -295,7 +290,6 @@ _start_watchtower_container_logic(){
         local combined_urls; IFS=,; combined_urls="${shoutrrr_urls[*]}"; unset IFS
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=${combined_urls}")
         
-        # 使用内嵌模板
         local template_content; template_content=$(_get_notification_template)
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${template_content}")
 
@@ -303,7 +297,6 @@ _start_watchtower_container_logic(){
             docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
         fi
     fi
-    # --- 通知逻辑结束 ---
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
@@ -419,7 +412,8 @@ configure_watchtower(){
     if echo "$debug_choice" | grep -qE '^[Yy]$'; then WATCHTOWER_DEBUG_ENABLED="true"; else WATCHTOWER_DEBUG_ENABLED="false"; fi
     
     WATCHTOWER_ENABLED="true"; save_config
-    _rebuild_watchtower || return 1; return 0
+    _rebuild_watchtower || return 1
+    return 0
 }
 
 configure_exclusion_list() {
@@ -572,7 +566,7 @@ view_and_edit_config(){
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
-        local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
+        local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}";
         
         case "$type" in
             string|string_list) 
@@ -580,7 +574,7 @@ view_and_edit_config(){
             bool) 
                 local new_value_input; new_value_input=$(_prompt_user_input "是否启用 '$label'? (y/N, 当前: $current_value): " ""); if echo "$new_value_input" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;;
             interval) 
-                new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;;
+                local new_value; new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;;
             number_range)
                 local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2)
                 while true; do 
@@ -633,4 +627,4 @@ main(){
     exit 10
 }
 
-main "$@"```
+main "$@"
