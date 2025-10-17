@@ -1,13 +1,12 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.65-模块配置动态化)
-# - 修复: `run_module` 函数中硬编码的 `WATCHTOWER_CONF_` 环境变量前缀。
-# - 优化: 现在会根据模块的 `module_key` (如 'watchtower') 动态生成环境变量前缀
-#         (如 `WATCHTOWER_CONF_`)，使得模块配置传递完全通用化。
+# 🚀 VPS 一键安装与管理脚本 (v77.66-日志输出优化)
+# - 修复: 在打印更新文件列表的循环中，增加了一个非空检查，
+#         彻底解决了末尾可能出现的多余空“[成 功]”日志行的问题。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.65"
+SCRIPT_VERSION="v77.66"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -283,9 +282,6 @@ display_and_process_menu() {
         
         case "$type" in 
             item) 
-                # --- 核心修复：使用 set -e 安全的 `||` 结构来调用 run_module ---
-                # 即使 run_module 返回非零值（如10），`||` 也会捕获它并赋值给 exit_code，
-                # 而不会触发 set -e 导致脚本退出。
                 run_module "$action" "$name" || exit_code=$? 
                 ;; 
             submenu) CURRENT_MENU_NAME="$action" ;; 
@@ -313,11 +309,9 @@ main() {
     
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
 
-    # 只有在不是由自身重启触发时才执行全面更新检查
     if [ "${JB_RESTARTED:-false}" != "true" ]; then
         printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
         local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-        # 移除表情符号，避免宽度计算问题
         printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local restart_needed=false
@@ -337,18 +331,19 @@ main() {
                 update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
             fi
 
-            # 打印所有更新消息
             if [ -n "$update_messages" ]; then
                 log_info "发现以下更新:" >&2
                 echo -e "$update_messages" | while IFS= read -r line; do
-                    log_success "$line" >&2
+                    # 核心修复：增加非空判断，防止打印多余的空行日志
+                    if [ -n "$line" ]; then
+                        log_success "$line" >&2
+                    fi
                 done
             fi
 
             if [ "$restart_needed" = true ]; then
                 log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
                 flock -u 200 2>/dev/null || true; trap - EXIT
-                # 传递 JB_RESTARTED="true" 环境变量给新的实例
                 exec sudo -E JB_RESTARTED="true" bash "$FINAL_SCRIPT_PATH" "$@"
             fi
         fi
