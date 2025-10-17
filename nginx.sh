@@ -1,8 +1,6 @@
-# =G============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.2-界面优化)
-# - 优化: 将主菜单边框颜色调整为与输入提示符一致的青色(CYAN)。
-# - 优化: 移除了交互模式下大部分输出的`[INFO]`前缀，使界面更简洁。
-# - 优化: 依赖检查功能在所有依赖都满足时将静默通过，不再输出信息。
+# ==============================================================================
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.3-菜单样式调整)
+# - 优化: 根据用户要求，将所有菜单的选项格式从 "1)" 更改为 "1."。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -46,7 +44,6 @@ log_message() {
         *) color_code="${RESET}"; level_prefix="[UNKNOWN]";;
     esac
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        # 在交互模式下，不再显示 [INFO] 前缀，让界面更干净
         if [ "$level" = "INFO" ]; then
              echo -e "${color_code}${message}${RESET}"
         else
@@ -296,7 +293,6 @@ EOF
         if ! control_nginx reload; then return 1; fi
     elif [ "$method" = "dns-01" ]; then
         issue_cmd+=("--dns" "$dns_provider")
-        # DNS env check logic can be added here if needed
     fi
 
     local acme_log; acme_log=$(mktemp)
@@ -336,13 +332,13 @@ _gather_project_details() {
     fi
 
     local current_method_num=$([ "$(echo "$current_project_json" | jq -r '.acme_validation_method')" = "dns-01" ] && echo "2" || echo "1")
-    local method_choice=$(_prompt_user_input_with_validation "选择验证方式 (1: http-01, 2: dns-01)" "$current_method_num" "^[12]$" "" "false")
+    local method_choice=$(_prompt_user_input_with_validation "选择验证方式 (1. http-01, 2. dns-01)" "$current_method_num" "^[12]$" "" "false")
     local method=$([ "$method_choice" -eq 1 ] && echo "http-01" || echo "dns-01")
     
     local dns_provider="" wildcard="n"
     if [ "$method" = "dns-01" ]; then
         local current_provider_num=$([ "$(echo "$current_project_json" | jq -r '.dns_api_provider')" = "dns_ali" ] && echo "2" || echo "1")
-        local provider_choice=$(_prompt_user_input_with_validation "选择DNS提供商 (1: Cloudflare, 2: Aliyun)" "$current_provider_num" "^[12]$" "" "false")
+        local provider_choice=$(_prompt_user_input_with_validation "选择DNS提供商 (1. Cloudflare, 2. Aliyun)" "$current_provider_num" "^[12]$" "" "false")
         dns_provider=$([ "$provider_choice" -eq 1 ] && echo "dns_cf" || echo "dns_ali")
         
         local current_wildcard=$(echo "$current_project_json" | jq -r '.use_wildcard // "n"')
@@ -350,7 +346,7 @@ _gather_project_details() {
     fi
 
     local current_ca_num=$([ "$(echo "$current_project_json" | jq -r '.ca_server_name')" = "zerossl" ] && echo "2" || echo "1")
-    local ca_choice=$(_prompt_user_input_with_validation "选择CA (1: Let's Encrypt, 2: ZeroSSL)" "$current_ca_num" "^[12]$" "" "false")
+    local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "$current_ca_num" "^[12]$" "" "false")
     local ca_name=$([ "$ca_choice" -eq 1 ] && echo "letsencrypt" || echo "zerossl")
     local ca_url=$([ "$ca_choice" -eq 1 ] && echo "https://acme-v02.api.letsencrypt.org/directory" || echo "https://acme.zerossl.com/v2/DV90")
     
@@ -483,8 +479,8 @@ manage_configs() {
         
         echo "$projects" | jq -r '.[] | .domain' | cat -n | awk '{print "  " $1 ". " $2}'
         
-        echo -e "\n${GREEN}1) 编辑项目${RESET}  ${GREEN}2) 手动续期${RESET}  ${RED}3) 删除项目${RESET}"
-        echo -e "${GREEN}4) 管理自定义片段${RESET}  ${GREEN}5) 导入现有项目${RESET}"
+        echo -e "\n${GREEN}1. 编辑项目${RESET}  ${GREEN}2. 手动续期${RESET}  ${RED}3. 删除项目${RESET}"
+        echo -e "${GREEN}4. 管理自定义片段${RESET}  ${GREEN}5. 导入现有项目${RESET}"
 
         local choice; choice=$(_prompt_user_input_with_validation "请选择操作 [回车返回]" "" "^[1-5]$" "" "true")
         
@@ -529,15 +525,15 @@ check_and_auto_renew_certs() {
 manage_acme_accounts() {
     while true; do
         log_message INFO "--- 👤 acme.sh 账户管理 ---"
-        echo -e "${GREEN}1) 查看已注册账户${RESET}"
-        echo -e "${GREEN}2) 注册新账户${RESET}"
-        echo -e "${GREEN}3) 设置默认账户${RESET}"
+        echo -e "${GREEN}1. 查看已注册账户${RESET}"
+        echo -e "${GREEN}2. 注册新账户${RESET}"
+        echo -e "${GREEN}3. 设置默认账户${RESET}"
         local choice; choice=$(_prompt_user_input_with_validation "请选择操作 [回车返回]" "" "^[1-3]$" "" "true")
         case "$choice" in
             1) "$ACME_BIN" --list-account ;;
             2)
                 local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || continue
-                local ca_choice=$(_prompt_user_input_with_validation "选择CA (1: Let's Encrypt, 2: ZeroSSL)" "1" "^[12]$" "" "false")
+                local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "1" "^[12]$" "" "false")
                 local server_url=$([ "$ca_choice" -eq 1 ] && echo "letsencrypt" || echo "zerossl")
                 "$ACME_BIN" --register-account -m "$email" --server "$server_url"
                 ;;
@@ -557,10 +553,10 @@ main_menu() {
         echo -e "\n${CYAN}╔═══════════════════════════════════════╗${RESET}"
         echo -e "${CYAN}║     🚀 Nginx/HTTPS 证书管理主菜单     ║${RESET}"
         echo -e "${CYAN}╚═══════════════════════════════════════╝${RESET}"
-        echo -e "${GREEN}1) 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
-        echo -e "${GREEN}2) 查看与管理已配置项目 (域名、端口、证书)${RESET}"
-        echo -e "${GREEN}3) 检查并自动续期所有证书${RESET}"
-        echo -e "${GREEN}4) 管理 acme.sh 账户${RESET}"
+        echo -e "${GREEN}1. 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
+        echo -e "${GREEN}2. 查看与管理已配置项目 (域名、端口、证书)${RESET}"
+        echo -e "${GREEN}3. 检查并自动续期所有证书${RESET}"
+        echo -e "${GREEN}4. 管理 acme.sh 账户${RESET}"
         echo "-------------------------------------------"
         local choice; choice=$(_prompt_user_input_with_validation "请输入选项 [回车退出]" "" "^[1-4]$" "" "true")
         case "$choice" in
