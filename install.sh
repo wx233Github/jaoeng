@@ -1,16 +1,13 @@
-#!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.64-更新日志与重启逻辑优化)
-# - 修复: 在 `display_and_process_menu` 中采用 `... || exit_code=$?` 结构来调用模块，
-#         这可以完美捕获任何退出码，同时彻底防止 `set -e` 错误地终止主脚本。
-# - 修复: 将 `jq -r 'keys_sorted[]'` 替换为 `jq -r 'keys[]'` 以提高 JQ 兼容性。
-# - 优化: 调整更新日志逻辑，确保在主程序重启前打印所有已更新的文件信息。
-# - 优化: 在主程序重启后，新的实例将跳过初始的全面更新检查。
+# 🚀 VPS 一键安装与管理脚本 (v77.65-模块配置动态化)
+# - 修复: `run_module` 函数中硬编码的 `WATCHTOWER_CONF_` 环境变量前缀。
+# - 优化: 现在会根据模块的 `module_key` (如 'watchtower') 动态生成环境变量前缀
+#         (如 `WATCHTOWER_CONF_`)，使得模块配置传递完全通用化。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.64"
+SCRIPT_VERSION="v77.65"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -187,13 +184,20 @@ run_module(){
     if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..." >&2; download_module_to_cache "$module_script"; fi
     
     local filename_only="${module_script##*/}"; local key_base="${filename_only%.sh}"; local module_key="${key_base,,}"
+    
+    # --- 动态传递模块配置 ---
     if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
         local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
-        # 修复: 使用 keys[] 替代 keys_sorted[] 以提高兼容性
+        
+        # 动态生成环境变量前缀, e.g., "watchtower" -> "WATCHTOWER"
+        local prefix_base="${module_key^^}"
+
         echo "$module_config_json" | jq -r 'keys[]' | while IFS= read -r key; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value; value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
-            local upper_key="${key^^}"; export "WATCHTOWER_CONF_${upper_key}"="$value"
+            local upper_key="${key^^}"
+            # 动态导出环境变量, e.g., WATCHTOWER_CONF_DEFAULT_INTERVAL=21600
+            export "${prefix_base}_CONF_${upper_key}"="$value"
         done
     fi
     
