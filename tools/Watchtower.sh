@@ -1,13 +1,13 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v7.1.0-日志摘要功能恢复)
-# - 修复: 彻底恢复了 v6.1.9 版本中强大的日志摘要功能 (`show_watchtower_details`)。
-# - 优化: 将原有的“查看最近日志”功能恢复为带有格式化、图标和颜色高亮的摘要界面。
-# - 优化: 在摘要界面内，保留了查看实时原始日志的子选项。
-# - 确认: 此版本在功能上与 v6.1.9 完全对等，并保留了 v7.0.0 版本的可靠通知系统。
+# 🚀 Watchtower 管理模块 (v8.1.0-内嵌模板)
+# - 优化: 移除了对外部 `notification_template.tpl` 文件的依赖。
+# - 实现: 将通知模板内容直接内嵌到脚本中，并通过 `WATCHTOWER_NOTIFICATION_TEMPLATE`
+#         环境变量传递给容器，使脚本完全自包含。
+# - 修复: 恢复了所有菜单功能，确保与 v6.1.9 版本在功能上完全对等。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v7.1.0"
+SCRIPT_VERSION="v8.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -53,11 +53,6 @@ CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 TG_BOT_TOKEN=""
 TG_CHAT_ID=""
 EMAIL_TO=""
-EMAIL_FROM=""
-EMAIL_SERVER=""
-EMAIL_PORT=""
-EMAIL_USER=""
-EMAIL_PASS=""
 WATCHTOWER_EXCLUDE_LIST=""
 WATCHTOWER_EXTRA_ARGS=""
 WATCHTOWER_DEBUG_ENABLED=""
@@ -132,6 +127,37 @@ _format_seconds_to_human(){
     if [ "$minutes" -gt 0 ]; then result+="${minutes}分钟"; fi
     if [ "$seconds" -gt 0 ]; then result+="${seconds}秒"; fi
     echo "${result:-0秒}"
+}
+
+_get_notification_template() {
+    # 使用 here document 安全地定义多行模板字符串
+    # 'EOF' 使用单引号可以防止 shell 扩展模板内的 {{...}} 语法
+    cat <<'EOF'
+{{- if .Report -}}
+*🐳 Watchtower 扫描报告*
+
+*服务器:* `{{ .Hostname }}`
+
+{{- if (gt .Updated 0) }}
+✅ *扫描完成*
+*结果:* 共更新 {{ .Updated }} 个容器
+
+{{- range .Entries }}
+___
+- 🔄 *{{ .Name }}*
+  🖼️ {{ .ImageName }}
+  🆔 {{ .OldID | substr 0 12 }} -> {{ .NewID | substr 0 12 }}
+{{- end }}
+{{- else }}
+✅ *扫描完成*
+*结果:* 未发现可更新的容器
+*扫描:* {{ .Scanned }} 个 | *失败:* {{ .Failed }} 个
+{{- end }}
+
+___
+`{{ .Time.Format "2006-01-02 15:04:05" }}`
+{{- end -}}
+EOF
 }
 
 _send_test_notify() {
@@ -258,6 +284,7 @@ _start_watchtower_container_logic(){
 
     docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
     
+    # --- 全新通知逻辑 ---
     local shoutrrr_urls=()
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         shoutrrr_urls+=("telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}")
@@ -267,10 +294,16 @@ _start_watchtower_container_logic(){
         docker_run_args+=(-e WATCHTOWER_NOTIFICATIONS=shoutrrr)
         local combined_urls; IFS=,; combined_urls="${shoutrrr_urls[*]}"; unset IFS
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=${combined_urls}")
+        
+        # 使用内嵌模板
+        local template_content; template_content=$(_get_notification_template)
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${template_content}")
+
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
         fi
     fi
+    # --- 通知逻辑结束 ---
 
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
@@ -328,6 +361,19 @@ run_watchtower_once(){
     _start_watchtower_container_logic "" "" true
 }
 
+_configure_telegram() {
+    TG_BOT_TOKEN=$(_prompt_user_input "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " "$TG_BOT_TOKEN")
+    TG_CHAT_ID=$(_prompt_user_input "请输入 Chat ID (当前: ${TG_CHAT_ID}): " "$TG_CHAT_ID")
+    local notify_choice=$(_prompt_user_input "是否在没有容器更新时也发送通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
+    if echo "$notify_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
+    save_config; log_info "Telegram 配置已更新。"
+}
+
+_configure_email() {
+    log_warn "Email 通知当前未被此脚本直接支持，但您可以通过配置额外参数来使用它。"
+    log_info "请参考 Watchtower 文档设置 Email 通知所需的环境变量。"
+}
+
 notification_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -336,20 +382,16 @@ notification_menu() {
         
         local -a content_array=(
             "1. 配置 Telegram (状态: $tg_status, 无更新也通知: $notify_on_no_updates_status)"
-            "2. 发送测试通知"
-            "3. 清空所有通知配置"
+            "2. 配置 Email (当前未使用)"
+            "3. 发送测试通知"
+            "4. 清空所有通知配置"
         )
         _render_menu "⚙️ 通知配置 ⚙️" "${content_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
-            1) 
-                TG_BOT_TOKEN=$(_prompt_user_input "请输入 Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " "$TG_BOT_TOKEN")
-                TG_CHAT_ID=$(_prompt_user_input "请输入 Chat ID (当前: ${TG_CHAT_ID}): " "$TG_CHAT_ID")
-                local notify_choice=$(_prompt_user_input "是否在没有容器更新时也发送通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
-                if echo "$notify_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
-                save_config; log_info "Telegram 配置已更新。"; press_enter_to_continue
-                ;;
-            2) _send_test_notify; press_enter_to_continue ;;
-            3) 
+            1) _configure_telegram; press_enter_to_continue ;;
+            2) _configure_email; press_enter_to_continue ;;
+            3) _send_test_notify; press_enter_to_continue ;;
+            4) 
                 if confirm_action "确定要清空所有通知配置吗?"; then 
                     TG_BOT_TOKEN=""; TG_CHAT_ID=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; 
                     save_config; log_info "所有通知配置已清空。"; 
@@ -496,8 +538,7 @@ show_watchtower_details(){
         updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then content_lines_array+=("    无日志事件。"); else while IFS= read -r line; do content_lines_array+=("    $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
         
-        _render_menu "$title" "${content_lines_array[@]}"
-        read -r -p " └──> [1] 实时原始日志, [Enter] 返回: " pick < /dev/tty
+        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时原始日志, [Enter] 返回: " pick < /dev/tty
         case "$pick" in
             1) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
@@ -509,6 +550,46 @@ show_watchtower_details(){
                 fi ;;
             *) return ;;
         esac
+    done
+}
+
+view_and_edit_config(){
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "排除列表|WATCHTOWER_EXCLUDE_LIST|string_list" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检查间隔|WATCHTOWER_CONFIG_INTERVAL|interval" "Watchtower 启用状态|WATCHTOWER_ENABLED|bool" "Cron 执行小时|CRON_HOUR|number_range|0-23" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
+        local -a content_lines_array=(); local i
+        for i in "${!config_items[@]}"; do
+            local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local extra; extra=$(echo "$item" | cut -d'|' -f4); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"
+            case "$type" in
+                string) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;;
+                string_list) if [ -n "$current_value" ]; then color="${YELLOW}"; display_text="${current_value//,/, }"; else color="${CYAN}"; display_text="无"; fi ;;
+                bool) if [ "$current_value" = "true" ]; then color="${GREEN}"; display_text="是"; else color="${CYAN}"; display_text="否"; fi ;;
+                interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ] && [ -n "$current_value" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;;
+                number_range) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;;
+            esac
+            content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
+        done
+        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
+        if [ -z "$choice" ]; then return; fi
+        if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
+        local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
+        
+        case "$type" in
+            string|string_list) 
+                local new_value_input; new_value_input=$(_prompt_user_input "请输入新的 '$label' (当前: $current_value): " "$current_value"); declare "$var_name"="${new_value_input}" ;;
+            bool) 
+                local new_value_input; new_value_input=$(_prompt_user_input "是否启用 '$label'? (y/N, 当前: $current_value): " ""); if echo "$new_value_input" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi ;;
+            interval) 
+                new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔"); if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi ;;
+            number_range)
+                local min; min=$(echo "$extra" | cut -d'-' -f1); local max; max=$(echo "$extra" | cut -d'-' -f2)
+                while true; do 
+                    local new_value_input; new_value_input=$(_prompt_user_input "请输入新的 '$label' (${min}-${max}, 当前: $current_value): " "$current_value")
+                    if [ -z "$new_value_input" ]; then break; fi
+                    if echo "$new_value_input" | grep -qE '^[0-9]+$' && [ "$new_value_input" -ge "$min" ] && [ "$new_value_input" -le "$max" ]; then declare "$var_name"="$new_value_input"; break; else log_warn "无效输入, 请输入 ${min} 到 ${max} 之间的数字。"; fi
+                done ;;
+        esac
+        save_config; log_info "'$label' 已更新。"; sleep 1
     done
 }
 
@@ -528,16 +609,16 @@ main_menu(){
             "主菜单：" 
             "1. 启用并配置 Watchtower" 
             "2. 配置通知" 
-            "3. 任务管理 (启停/重建)" 
-            "4. 手动触发一次扫描"
-            "5. 查看详情与最近日志摘要"
+            "3. 任务管理 (启停/重建)"
+            "4. 查看/编辑配置 (底层)"
+            "5. 详情与日志摘要"
         )
         _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-5] 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
           1) configure_watchtower || true; press_enter_to_continue ;;
           2) notification_menu ;;
           3) manage_tasks ;;
-          4) run_watchtower_once; press_enter_to_continue ;;
+          4) view_and_edit_config; _prompt_and_rebuild_watchtower_if_needed ;;
           5) show_watchtower_details ;;
           "") return 0 ;;
           *) log_warn "无效选项。"; sleep 1 ;;
@@ -552,4 +633,4 @@ main(){
     exit 10
 }
 
-main "$@"
+main "$@"```
