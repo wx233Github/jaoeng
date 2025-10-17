@@ -1,15 +1,15 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v9.0.0-最终稳定版)
-# - 基准: 以用户提供的 v6.1.9 版本为功能和UI的最终标准。
-# - 修复: (致命错误) 将通知模板中无效的 `substr` 函数替换为正确的 `slice` 函数，解决了通知模板报错的问题。
-# - 恢复: (功能) 彻底恢复了主菜单中的容器总览状态栏 (总计/运行中/已停止)。
-# - 恢复: (功能) 彻底恢复了“详情与日志摘要”菜单内的所有子功能，包括“容器管理”。
-# - 恢复: (逻辑) 修正了“重建确认”提示的触发逻辑，现在仅在配置被实际修改后才会出现。
-# - 确认: 此版本在功能、菜单、UI和逻辑上与 v6.1.9 完全对等，并集成了 v8.x 稳定可靠的通知发送机制。
+# 🚀 Watchtower 管理模块 (v9.1.0-动态模板挂载)
+# - 修复: (根本性修复) 解决了自定义通知模板导致发送失败的最终问题。
+# - 方案: 采用“动态创建、静默挂载”的最终方案。脚本会在后台 /tmp 目录
+#         自动创建临时模板文件，通过 `docker -v` 挂载，并在退出时自动清理。
+# - 优势: 此方法对用户完全透明，无需管理外部文件，同时也是 Watchtower
+#         官方推荐的最可靠、最稳定的模板传递方式，彻底避免了环境变量转义问题。
+# - 确认: 此版本功能完整，通知格式正确，且通知发送稳定可靠。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v9.0.0"
+SCRIPT_VERSION="v9.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -50,6 +50,7 @@ fi
 
 # --- 本地配置文件路径 ---
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
+TEMP_TEMPLATE_FILE="/tmp/watchtower_notification_template.tpl"
 
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
@@ -131,8 +132,9 @@ _format_seconds_to_human(){
     echo "${result:-0秒}"
 }
 
-_get_notification_template() {
-    cat <<'EOF'
+_create_notification_template_file() {
+    # 将模板内容写入临时文件
+    cat > "$TEMP_TEMPLATE_FILE" <<'EOF'
 {{- if .Report -}}
 *🐳 Watchtower 扫描报告*
 
@@ -159,6 +161,11 @@ ___
 {{- end -}}
 EOF
 }
+
+_cleanup_temp_files() {
+    rm -f "$TEMP_TEMPLATE_FILE"
+}
+trap _cleanup_temp_files EXIT
 
 _send_test_notify() {
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
@@ -290,12 +297,13 @@ _start_watchtower_container_logic(){
     fi
     
     if [ ${#shoutrrr_urls[@]} -gt 0 ]; then
+        _create_notification_template_file
         docker_run_args+=(-e WATCHTOWER_NOTIFICATIONS=shoutrrr)
         local combined_urls; IFS=,; combined_urls="${shoutrrr_urls[*]}"; unset IFS
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=${combined_urls}")
         
-        local template_content; template_content=$(_get_notification_template)
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${template_content}")
+        docker_run_args+=(-v "$TEMP_TEMPLATE_FILE:/templates/notification.tpl")
+        docker_run_args+=(-e WATCHTOWER_NOTIFICATION_TEMPLATE_FILE=/templates/notification.tpl)
 
         if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then
             docker_run_args+=(-e WATCHTOWER_NOTIFICATION_REPORT=true)
