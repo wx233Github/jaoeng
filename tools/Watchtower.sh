@@ -1,11 +1,15 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v8.1.1-语法修复)
-# - 修复: 补全了 `configure_watchtower` 函数末尾缺失的右花括号 `}`，
-#         解决了导致脚本无法运行的 `unexpected EOF` 致命语法错误。
+# 🚀 Watchtower 管理模块 (v9.0.0-最终稳定版)
+# - 基准: 以用户提供的 v6.1.9 版本为功能和UI的最终标准。
+# - 修复: (致命错误) 将通知模板中无效的 `substr` 函数替换为正确的 `slice` 函数，解决了通知模板报错的问题。
+# - 恢复: (功能) 彻底恢复了主菜单中的容器总览状态栏 (总计/运行中/已停止)。
+# - 恢复: (功能) 彻底恢复了“详情与日志摘要”菜单内的所有子功能，包括“容器管理”。
+# - 恢复: (逻辑) 修正了“重建确认”提示的触发逻辑，现在仅在配置被实际修改后才会出现。
+# - 确认: 此版本在功能、菜单、UI和逻辑上与 v6.1.9 完全对等，并集成了 v8.x 稳定可靠的通知发送机制。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v8.1.1"
+SCRIPT_VERSION="v9.0.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -142,7 +146,7 @@ _get_notification_template() {
 ___
 - 🔄 *{{ .Name }}*
   🖼️ {{ .ImageName }}
-  🆔 {{ .OldID | substr 0 12 }} -> {{ .NewID | substr 0 12 }}
+  🆔 {{ slice .OldID 0 12 }} -> {{ slice .NewID 0 12 }}
 {{- end }}
 {{- else }}
 ✅ *扫描完成*
@@ -381,19 +385,20 @@ notification_menu() {
         )
         _render_menu "⚙️ 通知配置 ⚙️" "${content_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
-            1) _configure_telegram; press_enter_to_continue ;;
+            1) _configure_telegram; _prompt_and_rebuild_watchtower_if_needed; press_enter_to_continue ;;
             2) _configure_email; press_enter_to_continue ;;
             3) _send_test_notify; press_enter_to_continue ;;
             4) 
                 if confirm_action "确定要清空所有通知配置吗?"; then 
                     TG_BOT_TOKEN=""; TG_CHAT_ID=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; 
-                    save_config; log_info "所有通知配置已清空。"; 
+                    save_config; log_info "所有通知配置已清空。";
+                    _prompt_and_rebuild_watchtower_if_needed
                 else 
                     log_info "操作已取消。"; 
                 fi; 
                 press_enter_to_continue 
                 ;;
-            "") _prompt_and_rebuild_watchtower_if_needed; return ;; 
+            "") return ;; 
             *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
@@ -512,6 +517,47 @@ get_updates_last_24h(){
     echo "$raw_logs" | grep -E "Found new|Stopping|Creating|Session done|No new|Scheduling first run|Starting Watchtower|unauthorized|failed|error|fatal" || true
 }
 
+show_container_info() { 
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        local -a content_lines_array=()
+        content_lines_array+=("编号 名称           镜像                               状态") 
+        
+        local -a containers=()
+        local i=1
+        while IFS='|' read -r name image status; do 
+            containers+=("$name")
+            local status_colored="$status"
+            if echo "$status" | grep -qE '^Up'; then status_colored="${GREEN}运行中${NC}"; elif echo "$status" | grep -qE '^Exited|Created'; then status_colored="${RED}已退出${NC}"; else status_colored="${YELLOW}${status}${NC}"; fi
+            content_lines_array+=("$(printf "%2d   %-15s %-35s %s" "$i" "$name" "$image" "$status_colored")")
+            i=$((i + 1))
+        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
+        
+        content_lines_array+=("" "a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
+        _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"; read -r -p " └──> 输入编号管理, 'a'/'s' 批量操作, 或按 Enter 返回: " choice < /dev/tty
+        case "$choice" in 
+            "") return ;;
+            a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped; stopped=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running; running=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            *)
+                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
+                local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+                local -a action_items_array=( "1. 查看日志 (Logs)" "2. 重启 (Restart)" "3. 停止 (Stop)" "4. 删除 (Remove)" "5. 查看详情 (Inspect)" "6. 进入容器 (Exec)" )
+                _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"; read -r -p " └──> 请选择, 或按 Enter 返回: " action < /dev/tty
+                case "$action" in 
+                    1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;;
+                    2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    3) echo "停止中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;; 
+                    5) _print_header "容器详情: ${selected_container}"; (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;; 
+                    6) if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
+                    *) ;; 
+                esac
+            ;;
+        esac
+    done
+}
+
 show_watchtower_details(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -532,7 +578,7 @@ show_watchtower_details(){
         updates=$(get_updates_last_24h || true)
         if [ -z "$updates" ]; then content_lines_array+=("    无日志事件。"); else while IFS= read -r line; do content_lines_array+=("    $(_format_and_highlight_log_line "$line")"); done <<< "$updates"; fi
         
-        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时原始日志, [Enter] 返回: " pick < /dev/tty
+        _render_menu "$title" "${content_lines_array[@]}"; read -r -p " └──> [1] 实时日志, [2] 容器管理, [3] 触发扫描, [Enter] 返回: " pick < /dev/tty
         case "$pick" in
             1) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
@@ -542,6 +588,8 @@ show_watchtower_details(){
                 else 
                     echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; 
                 fi ;;
+            2) show_container_info ;;
+            3) run_watchtower_once; press_enter_to_continue ;;
             *) return ;;
         esac
     done
@@ -594,11 +642,14 @@ main_menu(){
         local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
         local interval=""; local raw_logs=""; if [ "$STATUS_RAW" = "已启动" ]; then interval=$(get_watchtower_inspect_summary || true); raw_logs=$(get_watchtower_all_raw_logs || true); fi
         local COUNTDOWN=$(_get_watchtower_remaining_time "${interval}" "${raw_logs}")
+        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
+        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0"); local STOPPED=$((TOTAL - RUNNING))
         
         local header_text="Watchtower 管理"
         local -a content_array=(
             "🕝 Watchtower 状态: ${STATUS_COLOR}" 
             "⏳ 下次检查: ${COUNTDOWN}" 
+            "📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
             ""
             "主菜单：" 
             "1. 启用并配置 Watchtower" 
