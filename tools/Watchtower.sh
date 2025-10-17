@@ -10,13 +10,14 @@
 # [AI Assistant 修复与优化日志]
 # - 核心修复: 针对 `_process_log_chunk` 函数，彻底重构日志解析逻辑，解决并发更新日志交错导致通知遗漏或信息错乱的问题。
 #   采用两阶段解析（先收集镜像更新，再与容器停止事件匹配）确保健壮性。
-# - 语法修正: 修复 `_process_log_chunk` 中 `if` 语句的语法错误（`}` 改为 `fi`）。 (建议 2)
-# - 健壮性增强: `send_notify` 函数在尝试发送通知前检查 `jq` 依赖。 (建议 1 的部分)
-# - 错误处理强化: `docker pull` 添加明确的错误检查，避免静默失败。 (建议 6)
-# - 依赖检查: `start_log_monitor` 添加 `stdbuf` 命令存在性检查。 (建议 7)
-# - 用户体验优化: 在 `show_container_info` 查看容器详情时，提供退出 `less` 的提示。 (建议 8)
-# - Cron 任务管理: 新增 Cron 任务配置和管理功能，可设置定时扫描。 (建议 5)
-# - 配置应用提示: `view_and_edit_config` 在修改配置后，若Watchtower运行中，会提示用户重建以应用新配置。 (建议 9)
+# - 语法修正 (v1): 修复 `_process_log_chunk` 中 `if` 语句的语法错误（`}` 改为 `fi`）。
+# - 语法修正 (v2): 修复 `view_and_edit_config` 中 `if` 语句的语法错误（`}` 改为 `fi`）。 (最新修正)
+# - 健壮性增强: `send_notify` 函数在尝试发送通知前检查 `jq` 依赖。
+# - 错误处理强化: `docker pull` 添加明确的错误检查，避免静默失败。
+# - 依赖检查: `start_log_monitor` 添加 `stdbuf` 命令存在性检查。
+# - 用户体验优化: 在 `show_container_info` 查看容器详情时，提供退出 `less` 的提示。
+# - Cron 任务管理: 新增 Cron 任务配置和管理功能，可设置定时扫描。
+# - 配置应用提示: `view_and_edit_config` 在修改配置后，若Watchtower运行中，会提示用户重建以应用新配置。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -169,7 +170,7 @@ _format_seconds_to_human(){
 
 send_notify() {
     local message="$1"
-    # 建议 1 的部分: 在尝试发送通知前检查 jq 依赖
+    # 在尝试发送通知前检查 jq 依赖
     if ! command -v jq &>/dev/null; then
         log_err "发送 Telegram 通知需要 'jq' 命令，但未安装。"
         log_warn "请尝试安装 'jq' (例如: sudo apt install jq 或 sudo yum install jq)。"
@@ -182,7 +183,6 @@ send_notify() {
         data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" \
             '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
         
-        # 精炼表达: 移除冗余的 -m 参数，timeout 已足够
         timeout 15s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url" &
     fi
 }
@@ -404,7 +404,7 @@ _start_watchtower_container_logic(){
     if [ "$interactive_mode" = "false" ]; then echo "⬇️ 正在拉取 Watchtower 镜像..."; fi
     set +e # 临时关闭严格模式，以便捕获 docker pull 的退出状态
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1
-    local pull_rc=$? # 建议 6: 强化 docker pull 的错误处理
+    local pull_rc=$? # 强化 docker pull 的错误处理
     set -e # 恢复严格模式
     if [ "$pull_rc" -ne 0 ]; then
         log_err "❌ Watchtower 镜像拉取失败 (错误码: $pull_rc)。请检查网络或Docker配置。"
@@ -473,7 +473,7 @@ _process_log_chunk() {
 
     local session_line
     session_line=$(echo "$chunk" | grep "Session done" | tail -n 1)
-    # 建议 2: 修复语法错误，将 '}' 改为 'fi'
+    # 修复语法错误，将 '}' 改为 'fi'
     if [ -z "$session_line" ]; then return; fi
 
     local scanned updated failed hostname report_message
@@ -587,7 +587,7 @@ start_log_monitor() {
         fi
     fi
 
-    # 建议 7: 添加 stdbuf 依赖检查
+    # 添加 stdbuf 依赖检查
     if ! command -v stdbuf &>/dev/null; then
         log_err "❌ 启动日志监控器需要 'stdbuf' 命令，但未安装。"
         log_warn "请尝试安装 'coreutils' 或 'stdbuf' (例如: sudo apt install coreutils)。"
@@ -647,7 +647,7 @@ stop_log_monitor() {
     rm -f "$LOG_MONITOR_PID_FILE"
 }
 
-# 建议 5: 新增 Cron 任务安装/卸载函数
+# 新增 Cron 任务安装/卸载函数
 _update_cron_job() {
     load_config # 确保加载最新配置
 
@@ -690,13 +690,6 @@ _rebuild_watchtower() {
     fi
     send_notify "🔄 Watchtower 服务已重建并启动。日志监控器将接管通知。"
 }
-
-# 建议 9: 移除此函数，其逻辑将整合到配置编辑流程中
-# _prompt_and_rebuild_watchtower_if_needed() {
-#     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then
-#         if confirm_action "配置已更新，是否立即重建 Watchtower 以应用新配置?"; then _rebuild_watchtower; else log_warn "操作已取消。新配置将在下次手动重建 Watchtower 后生效。"; fi
-#     fi
-# }
 
 run_watchtower_once(){
     if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return 1; fi
@@ -837,7 +830,7 @@ configure_exclusion_list() {
     WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
 
-# 建议 5: 新增 Cron 任务管理函数
+# 新增 Cron 任务管理函数
 manage_cron_tasks(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -1106,7 +1099,8 @@ view_and_edit_config(){
             content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"; read -r -p " └──> 输入编号编辑, 或按 Enter 返回: " choice < /dev/tty
-        if [ -z "$choice" ]; then return; }
+        # 修复语法错误，将 '}' 改为 'fi'
+        if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
         
@@ -1159,7 +1153,7 @@ view_and_edit_config(){
         esac
         save_config; log_info "'$label' 已更新。"; sleep 1
 
-        # 建议 9: 如果Watchtower运行中且配置有变，提示用户重建
+        # 如果Watchtower运行中且配置有变，提示用户重建
         if [ "$config_changed_requires_rebuild" = "true" ] && JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then
             if confirm_action "Watchtower 相关配置已更新。是否立即重建 Watchtower 以应用新配置?"; then
                 _rebuild_watchtower
@@ -1208,7 +1202,7 @@ show_container_info() {
                     2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;;
                     3) echo "停止中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;;
                     4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;;
-                    5) # 建议 8: 提供退出 less 的提示
+                    5) # 提供退出 less 的提示
                        _print_header "容器详情: ${selected_container}";
                        log_info "按 'q' 退出详情视图...";
                        (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;;
@@ -1250,7 +1244,7 @@ main_menu(){
             "🕝 Watchtower 状态: ${STATUS_COLOR}"
             "🔔 通知模式: ${GREEN}脚本日志监控 (${monitor_status})${NC}"
             "⏳ 下次检查: ${COUNTDOWN}"
-            "📅 Cron 任务: ${cron_status_display}" # 精炼表达
+            "📅 Cron 任务: ${cron_status_display}"
             "📦 容器概览: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
         )
         
@@ -1260,16 +1254,16 @@ main_menu(){
             "3. 任务管理"
             "4. 查看/编辑配置 (底层)"
             "5. 详情与管理"
-            "6. 管理 Cron 任务" # 建议 5: 添加 Cron 任务管理入口
+            "6. 管理 Cron 任务"
         )
-        _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty # 更新选项范围
+        _render_menu "$header_text" "${content_array[@]}"; read -r -p " └──> 输入选项 [1-6] 或按 Enter 返回: " choice < /dev/tty
         case "$choice" in
           1) configure_watchtower || true; press_enter_to_continue ;;
           2) notification_menu ;;
           3) manage_tasks ;;
           4) view_and_edit_config ;;
           5) show_watchtower_details ;;
-          6) manage_cron_tasks ;; # 建议 5: 绑定到新函数
+          6) manage_cron_tasks ;;
           "") return 0 ;;
           *) log_warn "无效选项。"; sleep 1 ;;
         esac
