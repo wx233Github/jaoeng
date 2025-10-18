@@ -1,6 +1,8 @@
+#!/bin/bash
 # ==============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.3-菜单样式调整)
-# - 优化: 根据用户要求，将所有菜单的选项格式从 "1)" 更改为 "1."。
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.5-集成统一菜单提示)
+# - 优化: 手动实现了新的统一菜单输入提示风格，以匹配 `utils.sh` 中的新函数。
+# - 更新: 脚本版本号。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -51,6 +53,34 @@ log_message() {
         fi
     fi
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
+}
+
+_prompt_for_menu_choice_local() {
+    local numeric_range="$1"
+    local func_options="$2"
+    local prompt_text="${CYAN}>${RESET} 选项 "
+
+    if [ -n "$numeric_range" ]; then
+        local start="${numeric_range%%-*}"
+        local end="${numeric_range##*-}"
+        prompt_text+="[${CYAN}${start}${RESET}-${end}] "
+    fi
+
+    if [ -n "$func_options" ]; then
+        local start="${func_options%%,*}"
+        local rest="${func_options#*,}"
+        if [ "$start" = "$rest" ]; then # Handles single character case
+             prompt_text+="[${CYAN}${start}${RESET}] "
+        else
+             prompt_text+="[${CYAN}${start}${RESET},${rest}] "
+        fi
+    fi
+    
+    prompt_text+="(↩ 返回): "
+    
+    local choice
+    read -r -p "$(echo -e "$prompt_text")" choice
+    echo "$choice"
 }
 
 cleanup_temp_files() {
@@ -482,7 +512,8 @@ manage_configs() {
         echo -e "\n${GREEN}1. 编辑项目${RESET}  ${GREEN}2. 手动续期${RESET}  ${RED}3. 删除项目${RESET}"
         echo -e "${GREEN}4. 管理自定义片段${RESET}  ${GREEN}5. 导入现有项目${RESET}"
 
-        local choice; choice=$(_prompt_user_input_with_validation "请选择操作 [回车返回]" "" "^[1-5]$" "" "true")
+        local choice
+        choice=$(_prompt_for_menu_choice_local "1-5")
         
         case "$choice" in
             1) _handle_edit_project ;;
@@ -528,7 +559,8 @@ manage_acme_accounts() {
         echo -e "${GREEN}1. 查看已注册账户${RESET}"
         echo -e "${GREEN}2. 注册新账户${RESET}"
         echo -e "${GREEN}3. 设置默认账户${RESET}"
-        local choice; choice=$(_prompt_user_input_with_validation "请选择操作 [回车返回]" "" "^[1-3]$" "" "true")
+        local choice
+        choice=$(_prompt_for_menu_choice_local "1-3")
         case "$choice" in
             1) "$ACME_BIN" --list-account ;;
             2)
@@ -558,7 +590,8 @@ main_menu() {
         echo -e "${GREEN}3. 检查并自动续期所有证书${RESET}"
         echo -e "${GREEN}4. 管理 acme.sh 账户${RESET}"
         echo "-------------------------------------------"
-        local choice; choice=$(_prompt_user_input_with_validation "请输入选项 [回车退出]" "" "^[1-4]$" "" "true")
+        local choice
+        choice=$(_prompt_for_menu_choice_local "1-4")
         case "$choice" in
             1) configure_nginx_projects ;;
             2) manage_configs ;;
