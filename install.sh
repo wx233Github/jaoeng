@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.69-集成新菜单提示)
-# - 优化: 调用 `utils.sh` 中增强的 `_prompt_for_menu_choice` 函数，统一菜单输入提示的风格。
+# 🚀 VPS 一键安装与管理脚本 (v77.70-UI颜色更新)
+# - 更新: 集成来自 `utils.sh` 的新UI颜色和日志颜色规范。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.69"
+SCRIPT_VERSION="v77.70"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -319,9 +319,9 @@ main() {
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
 
     if [ "${JB_RESTARTED:-false}" != "true" ]; then
-        printf "$(log_timestamp) ${BLUE}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+        printf "$(log_timestamp) ${GREEN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
         local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-        printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+        printf "\r$(log_timestamp) ${BRIGHT_GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local restart_needed=false
         local update_messages=""
@@ -333,7 +333,7 @@ main() {
                     restart_needed=true
                     update_messages+="主程序 (install.sh) 已更新\n"
                 else
-                    update_messages+="${GREEN}${filename}${NC} 已更新\n"
+                    update_messages+="${BRIGHT_GREEN}${filename}${NC} 已更新\n"
                 fi
             done
             if [[ " ${updated_files_list} " == *"config.json"* ]]; then
