@@ -1,6 +1,7 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.39-菜单提示符UI增强)
-# - 优化: 重写 `_prompt_for_menu_choice` 函数，实现新的高亮UI风格。
+# 🚀 通用工具函数库 (v2.40-菜单UI增强与错误修复)
+# - 优化: 将菜单提示符高亮色改为橙色 (#FA720A)。
+# - 修复: `_prompt_for_menu_choice` 函数增加对可选参数的健壮性处理，修复 `unbound variable` 错误。
 # - 优化: 将 [信 息] 日志颜色从蓝色调整为青色 (CYAN)。
 # - 更新: 脚本版本号。
 # =============================================================
@@ -37,8 +38,9 @@ trap cleanup_temp_files EXIT INT TERM
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
+  ORANGE='\033[38;5;208m'; # 橙色 #FA720A
 else
-  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD="";
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD=""; ORANGE="";
 fi
 
 # --- 日志系统 ---
@@ -71,26 +73,26 @@ _prompt_user_input() {
 
 _prompt_for_menu_choice() {
     local numeric_range="$1"
-    local func_options="$2"
-    local prompt_text="${CYAN}>${NC} 选项 "
+    local func_options="${2:-}" # 修复: 增加默认值防止 unbound variable
+    local prompt_text="${ORANGE}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
         local start="${numeric_range%%-*}"
         local end="${numeric_range##*-}"
-        if [ "$start" = "$end" ]; then # Handle single number like "1-1"
-            prompt_text+="[${CYAN}${start}${NC}] "
+        if [ "$start" = "$end" ]; then
+            prompt_text+="[${ORANGE}${start}${NC}] "
         else
-            prompt_text+="[${CYAN}${start}${NC}-${end}] "
+            prompt_text+="[${ORANGE}${start}${NC}-${end}] "
         fi
     fi
 
     if [ -n "$func_options" ]; then
         local start="${func_options%%,*}"
         local rest="${func_options#*,}"
-        if [ "$start" = "$rest" ]; then # Handles single character case
-             prompt_text+="[${CYAN}${start}${NC}] "
+        if [ "$start" = "$rest" ]; then
+             prompt_text+="[${ORANGE}${start}${NC}] "
         else
-             prompt_text+="[${CYAN}${start}${NC},${rest}] "
+             prompt_text+="[${ORANGE}${start}${NC},${rest}] "
         fi
     fi
     
