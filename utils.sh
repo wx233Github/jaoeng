@@ -1,6 +1,6 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.37-新增菜单输入函数)
-# - 新增: 添加 `_prompt_for_menu_choice` 函数，提供统一的、风格化的菜单输入提示符。
+# 🚀 通用工具函数库 (v2.38-增强菜单输入函数)
+# - 新增: 重写 `_prompt_for_menu_choice` 函数，以支持数字和字母选项的动态组合，并实现新的统一UI风格。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -53,19 +53,14 @@ log_debug()   {
 }
 
 # --- 交互函数 ---
-# 核心输入函数，确保提示符可见，并从 /dev/tty 读取以避免 stdin 重定向问题
 _prompt_user_input() {
     local prompt_text="$1"
     local default_value="$2"
     local result
     
-    # 确保提示符在终端上可见
     echo -ne "${YELLOW}${prompt_text}${NC}" > /dev/tty
-    
-    # 从 /dev/tty 读取输入，避免管道和重定向问题
     read -r result < /dev/tty
     
-    # 返回结果，如果为空则返回默认值
     if [ -z "$result" ]; then
         echo "$default_value"
     else
@@ -73,15 +68,29 @@ _prompt_user_input() {
     fi
 }
 
-# 新增: 统一风格的菜单选择提示函数
 _prompt_for_menu_choice() {
-    local prompt_core_text="$1"
-    local full_prompt
-    # 构建带有颜色和图标的完整提示符
-    full_prompt="> ${BLUE}${prompt_core_text}${NC} (↩ 返回): "
+    local numeric_range="$1"
+    local func_options="$2"
+    local prompt_text="> "
+
+    if [ -n "$numeric_range" ]; then
+        prompt_text+="${BLUE}选项 [$numeric_range]${NC}"
+    fi
+
+    if [ -n "$func_options" ]; then
+        [ -n "$numeric_range" ] && prompt_text+=" "
+        prompt_text+="${BLUE}[$func_options]${NC}"
+    fi
+    
+    # 如果没有任何选项，则只显示返回提示
+    if [ -z "$numeric_range" ] && [ -z "$func_options" ]; then
+        prompt_text+="按"
+    fi
+
+    prompt_text+=" (↩ 返回): "
     
     local choice
-    read -r -p "$(echo -e "$full_prompt")" choice < /dev/tty
+    read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
     echo "$choice"
 }
 
@@ -116,7 +125,6 @@ load_config() {
 generate_line() {
     local len=${1:-40}; local char=${2:-"─"}
     if [ "$len" -le 0 ]; then echo ""; return; fi
-    # 使用 printf 创建一个指定长度的字符串，然后用 sed 替换空格
     printf "%${len}s" "" | sed "s/ /$char/g"
 }
 
@@ -124,61 +132,39 @@ _get_visual_width() {
     local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
     if [ -z "$plain_text" ]; then echo 0; return; fi
     if command -v python3 &>/dev/null; then
-        # 使用 Python 3 处理 Unicode 宽度 (全角/半角)
         python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
     elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
-        # 尝试使用 wc -m (字符数)
         echo -n "$plain_text" | wc -m
     else
-        # 默认使用 bash 字符串长度
         echo "${#plain_text}"
     fi
 }
 
-# 绘制一个带标题的简单盒子 (用于单列菜单)
 _render_menu() {
     local title="$1"; shift; local -a lines=("$@")
     local max_content_width=0
-
-    # 1. 确定所有内容（包括标题和菜单项）的最大视觉宽度
     local title_width=$(_get_visual_width "$title")
     max_content_width=$title_width
-
     for line in "${lines[@]}"; do
         local current_line_visual_width=$(_get_visual_width "$line")
         if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
             max_content_width="$current_line_visual_width"
         fi
     done
-    
-    # 2. 定义盒子内部内容的统一宽度。此宽度用于填充标题和绘制横线。
     local box_inner_width=$max_content_width
-    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 强制最小宽度
-
-    # 3. 渲染标题盒子
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
     echo ""
-    # 顶部边框: 横线宽度与内部内容宽度一致
     echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
-    
     if [ -n "$title" ]; then
-        # 计算填充，使标题在 'box_inner_width' 内居中
         local padding_total=$((box_inner_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
-        # 标题行: │ + (居中后的标题内容) + │
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
-    
-    # 底部边框: 横线宽度与内部内容宽度一致
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
-
-    # 4. 渲染菜单项
     for line in "${lines[@]}"; do
         echo -e "${line}"
     done
-    
-    # 5. 渲染下方的分隔线，其总长度应匹配盒子的总视觉宽度
-    # 总视觉宽度 = 内部宽度 + 2个边框字符 (例如 '│' 和 '│')
     local box_total_physical_width=$(( box_inner_width + 2 ))
     echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
