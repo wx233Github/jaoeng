@@ -1,6 +1,6 @@
 # =============================================================
 # 🚀 通用工具函数库 (v2.38-增强菜单输入函数)
-# - 新增: 重写 `_prompt_for_menu_choice` 函数，以支持数字和字母选项的动态组合，并实现新的统一UI风格。
+# - 优化: 重写 `_prompt_for_menu_choice` 函数，以支持数字和字母选项的动态组合，并实现新的统一UI风格（高亮首选项）。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -71,23 +71,25 @@ _prompt_user_input() {
 _prompt_for_menu_choice() {
     local numeric_range="$1"
     local func_options="$2"
-    local prompt_text="> "
+    local prompt_text="${CYAN}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
-        prompt_text+="${BLUE}选项 [$numeric_range]${NC}"
+        local start="${numeric_range%%-*}"
+        local end="${numeric_range##*-}"
+        prompt_text+="[${CYAN}${start}${NC}-${end}] "
     fi
 
     if [ -n "$func_options" ]; then
-        [ -n "$numeric_range" ] && prompt_text+=" "
-        prompt_text+="${BLUE}[$func_options]${NC}"
+        local start="${func_options%%,*}"
+        local rest="${func_options#*,}"
+        if [ "$start" = "$rest" ]; then # Handles single character case
+             prompt_text+="[${CYAN}${start}${NC}] "
+        else
+             prompt_text+="[${CYAN}${start}${NC},${rest}] "
+        fi
     fi
     
-    # 如果没有任何选项，则只显示返回提示
-    if [ -z "$numeric_range" ] && [ -z "$func_options" ]; then
-        prompt_text+="按"
-    fi
-
-    prompt_text+=" (↩ 返回): "
+    prompt_text+="(↩ 返回): "
     
     local choice
     read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
