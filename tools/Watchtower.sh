@@ -1,11 +1,11 @@
-# =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.7-集成新统一菜单提示)
-# - 优化: 实现并应用了新的统一菜单输入提示风格，以匹配最新的UI设计规范。
+# = =============================================================
+# 🚀 Watchtower 管理模块 (v6.2.8-采用全局统一菜单提示)
+# - 修复: 移除了本地的菜单提示函数，改为直接调用 `utils.sh` 中的全局函数，以确保UI风格和颜色完全统一。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.7"
+SCRIPT_VERSION="v6.2.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -26,7 +26,7 @@ else
     _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
     press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
     confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
-    GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE="";
+    GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
     log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
     exit 1
 fi
@@ -36,35 +36,6 @@ if ! declare -f run_with_sudo &>/dev/null; then
   log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
   exit 1
 fi
-
-# --- 本地UI辅助函数 ---
-_prompt_for_menu_choice_local() {
-    local numeric_range="$1"
-    local func_options="$2"
-    local prompt_text="${CYAN}>${NC} 选项 "
-
-    if [ -n "$numeric_range" ]; then
-        local start="${numeric_range%%-*}"
-        local end="${numeric_range##*-}"
-        prompt_text+="[${CYAN}${start}${NC}-${end}] "
-    fi
-
-    if [ -n "$func_options" ]; then
-        local start="${func_options%%,*}"
-        local rest="${func_options#*,}"
-        if [ "$start" = "$rest" ]; then
-             prompt_text+="[${CYAN}${start}${NC}] "
-        else
-             prompt_text+="[${CYAN}${start}${NC},${rest}] "
-        fi
-    fi
-    
-    prompt_text+="(↩ 返回): "
-    
-    local choice
-    read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
-    echo "$choice"
-}
 
 # 本地配置文件路径
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -688,7 +659,7 @@ notification_menu() {
         )
         _render_menu "⚙️ 通知配置 ⚙️" "${content_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "1-4")
+        choice=$(_prompt_for_menu_choice "1-4")
         case "$choice" in
             1) _configure_telegram; save_config; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
@@ -731,7 +702,7 @@ configure_watchtower(){
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
-    confirm_choice=$(_prompt_for_menu_choice_local "")
+    confirm_choice=$(_prompt_for_menu_choice "")
     if echo "$confirm_choice" | grep -qE '^[Nn]$'; then log_info "操作已取消。"; return 10; fi
     WATCHTOWER_CONFIG_INTERVAL="$WT_INTERVAL_TMP"; WATCHTOWER_EXTRA_ARGS="$temp_extra_args"; WATCHTOWER_DEBUG_ENABLED="$temp_debug_enabled"; WATCHTOWER_ENABLED="true"; save_config
     _rebuild_watchtower || return 1; return 0
@@ -769,7 +740,7 @@ configure_exclusion_list() {
         items_array+=("${CYAN}当前排除: ${current_excluded_display}${NC}")
         _render_menu "配置排除列表" "${items_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "数字" "c,回车")
+        choice=$(_prompt_for_menu_choice "数字" "c,回车")
         case "$choice" in
             c|C) break ;;
             "") 
@@ -809,7 +780,7 @@ manage_tasks(){
         )
         _render_menu "⚙️ 任务管理 ⚙️" "${items_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "1-5")
+        choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
             1) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
@@ -957,7 +928,7 @@ show_watchtower_details(){
         
         _render_menu "$title" "${content_lines_array[@]}"
         
-        read -r -p "$(echo -e "> ${CYAN}[1]${NC}实时日志 ${CYAN}[2]${NC}容器管理 ${CYAN}[3]${NC}触发扫描 (↩ 返回): ")" pick < /dev/tty
+        read -r -p "$(echo -e "> ${ORANGE}[1]${NC}实时日志 ${ORANGE}[2]${NC}容器管理 ${ORANGE}[3]${NC}触发扫描 (↩ 返回): ")" pick < /dev/tty
         case "$pick" in
             1) if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then echo -e "\n按 Ctrl+C 停止..."; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 watchtower || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue; else echo -e "\n${RED}Watchtower 未运行。${NC}"; press_enter_to_continue; fi ;;
             2) show_container_info ;;
@@ -985,7 +956,7 @@ view_and_edit_config(){
         done
         _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "1-${#config_items[@]}")
+        choice=$(_prompt_for_menu_choice "1-${#config_items[@]}")
         if [ -z "$choice" ]; then return; fi
         if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
         local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local extra; extra=$(echo "$selected_item" | cut -d'|' -f4); local current_value="${!var_name}"; local new_value=""
@@ -1050,7 +1021,7 @@ show_container_info() {
         content_lines_array+=("" "a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
         _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "1-${#containers[@]}" "a,s")
+        choice=$(_prompt_for_menu_choice "1-${#containers[@]}" "a,s")
         case "$choice" in 
             "") return ;;
             a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
@@ -1061,7 +1032,7 @@ show_container_info() {
                 local -a action_items_array=( "1. 查看日志 (Logs)" "2. 重启 (Restart)" "3. 停止 (Stop)" "4. 删除 (Remove)" "5. 查看详情 (Inspect)" "6. 进入容器 (Exec)" )
                 _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"
                 local action
-                action=$(_prompt_for_menu_choice_local "1-6")
+                action=$(_prompt_for_menu_choice "1-6")
                 case "$action" in 
                     1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;;
                     2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
@@ -1109,7 +1080,7 @@ main_menu(){
         )
         _render_menu "$header_text" "${content_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice_local "1-5")
+        choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
           1) configure_watchtower || true; press_enter_to_continue ;;
           2) notification_menu ;;
