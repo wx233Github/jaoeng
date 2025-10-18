@@ -1,6 +1,7 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.38-增强菜单输入函数)
-# - 优化: 重写 `_prompt_for_menu_choice` 函数，以支持数字和字母选项的动态组合，并实现新的统一UI风格（高亮首选项）。
+# 🚀 通用工具函数库 (v2.39-UI与日志颜色更新)
+# - 优化: 将菜单提示符的高亮色从蓝色改为黄色，以匹配新UI规范。
+# - 优化: 调整日志颜色，[信 息] 改为绿色，[成 功] 改为高亮绿色。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -36,14 +37,15 @@ trap cleanup_temp_files EXIT INT TERM
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
+  BRIGHT_GREEN='\033[1;32m'; # 高亮绿色
 else
-  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD="";
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD=""; BRIGHT_GREEN="";
 fi
 
 # --- 日志系统 ---
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*"; }
-log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
+log_info()    { echo -e "$(log_timestamp) ${GREEN}[信 息]${NC} $*"; }
+log_success() { echo -e "$(log_timestamp) ${BRIGHT_GREEN}[成 功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
 log_debug()   {
@@ -71,21 +73,21 @@ _prompt_user_input() {
 _prompt_for_menu_choice() {
     local numeric_range="$1"
     local func_options="$2"
-    local prompt_text="${CYAN}>${NC} 选项 "
+    local prompt_text="${YELLOW}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
         local start="${numeric_range%%-*}"
         local end="${numeric_range##*-}"
-        prompt_text+="[${CYAN}${start}${NC}-${end}] "
+        prompt_text+="[${YELLOW}${start}${NC}-${end}] "
     fi
 
     if [ -n "$func_options" ]; then
         local start="${func_options%%,*}"
         local rest="${func_options#*,}"
         if [ "$start" = "$rest" ]; then # Handles single character case
-             prompt_text+="[${CYAN}${start}${NC}] "
+             prompt_text+="[${YELLOW}${start}${NC}] "
         else
-             prompt_text+="[${CYAN}${start}${NC},${rest}] "
+             prompt_text+="[${YELLOW}${start}${NC},${rest}] "
         fi
     fi
     
