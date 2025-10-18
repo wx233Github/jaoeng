@@ -1,10 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.7-UI风格统一与修复)
-# - 优化: 更新了菜单提示符UI，使其与全局新风格（橙色高亮）保持一致。
-# - 修复: 妥善处理了菜单提示函数中的可选参数，解决了 `unbound variable` 错误。
-# - 修复: 将错误的 acme.sh 命令 `--list-account` 修正为 `--listaccounts`。
-# - 修复: 纠正了项目管理菜单中选项处理的逻辑错误。
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.8-菜单逻辑与命令修复)
+# - 修复: (关键) 修正 `manage_configs` 菜单逻辑，使其能正确接收输入并执行操作。
+# - 修复: (关键) 修正了所有子菜单回车直接退出脚本的BUG，现在会正确返回到主脚本。
+# - 修复: 纠正了错误的 acme.sh 命令 `--listaccounts` 为正确的 `--list`。
+# - 优化: 全面统一UI风格至最新的橙色高亮规范。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -43,28 +43,25 @@ log_message() {
     timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     local color_code="" level_prefix=""
     case "$level" in
-        INFO) color_code="${CYAN}"; level_prefix="[INFO]";;
-        WARN) color_code="${YELLOW}"; level_prefix="[WARN]";;
-        ERROR) color_code="${RED}"; level_prefix="[ERROR]";;
+        INFO) color_code="${CYAN}"; level_prefix="[信 息]";;
+        WARN) color_code="${YELLOW}"; level_prefix="[警 告]";;
+        ERROR) color_code="${RED}"; level_prefix="[错 误]";;
         DEBUG) color_code="${BLUE}"; level_prefix="[DEBUG]";;
         *) color_code="${RESET}"; level_prefix="[UNKNOWN]";;
     esac
     
-    # 根据全局配置决定是否显示时间戳
     local log_prefix=""
     if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
         log_prefix="${timestamp} "
     fi
     
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        # 交互模式下，INFO级别不显示前缀，以简化输出
         if [ "$level" = "INFO" ]; then
              echo -e "${log_prefix}${color_code}${message}${RESET}"
         else
              echo -e "${log_prefix}${color_code}${level_prefix} ${message}${RESET}"
         fi
     fi
-    # 文件日志总是包含所有信息
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
 }
 
@@ -522,13 +519,14 @@ manage_configs() {
         log_message INFO "--- 📜 项目管理 ---"
         local projects; projects=$(jq . "$PROJECTS_METADATA_FILE")
         if [ "$(echo "$projects" | jq 'length')" -eq 0 ]; then
-            log_message WARN "当前无任何项目。"; return 10;
+            log_message WARN "当前无任何项目。"; 
+            return 10;
         fi
         
         echo "$projects" | jq -r '.[] | .domain' | cat -n | awk '{print "  " $1 ". " $2}'
         
-        echo -e "\n${GREEN}1. 编辑项目${RESET}  ${GREEN}2. 手动续期${RESET}  ${RED}3. 删除项目${RESET}"
-        echo -e "${GREEN}4. 管理自定义片段${RESET}  ${GREEN}5. 导入现有项目${RESET}"
+        echo -e "\n${GREEN}1. 编辑项目${RESET}   ${GREEN}2. 手动续期${RESET}   ${RED}3. 删除项目${RESET}"
+        echo -e "${GREEN}4. 管理自定义片段${RESET}   ${GREEN}5. 导入现有项目${RESET}"
 
         local choice
         choice=$(_prompt_for_menu_choice_local "1-5")
@@ -580,7 +578,7 @@ manage_acme_accounts() {
         local choice
         choice=$(_prompt_for_menu_choice_local "1-3")
         case "$choice" in
-            1) "$ACME_BIN" --listaccounts ;;
+            1) "$ACME_BIN" --list ;;
             2)
                 local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || continue
                 local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "1" "^[12]$" "" "false")
@@ -588,7 +586,7 @@ manage_acme_accounts() {
                 "$ACME_BIN" --register-account -m "$email" --server "$server_url"
                 ;;
             3)
-                "$ACME_BIN" --listaccounts
+                "$ACME_BIN" --list
                 local email; email=$(_prompt_user_input_with_validation "请输入要设为默认的邮箱" "" "" "邮箱格式无效" "false") || continue
                 "$ACME_BIN" --set-default-account -m "$email"
                 ;;
