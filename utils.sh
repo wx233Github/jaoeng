@@ -1,8 +1,6 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.40-菜单UI增强与错误修复)
-# - 优化: 将菜单提示符高亮色改为橙色 (#FA720A)。
-# - 修复: `_prompt_for_menu_choice` 函数增加对可选参数的健壮性处理，修复 `unbound variable` 错误。
-# - 优化: 将 [信 息] 日志颜色从蓝色调整为青色 (CYAN)。
+# 🚀 通用工具函数库 (v2.41-可配置的时间戳日志)
+# - 新增: 日志系统现在会根据 `config.json` 中的 `log_with_timestamp` 选项来决定是否显示时间戳。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -16,6 +14,7 @@ DEFAULT_BIN_DIR="/usr/local/bin"
 DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
 DEFAULT_TIMEZONE="Asia/Shanghai"
 DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
+DEFAULT_LOG_WITH_TIMESTAMP="false"
 
 # --- 临时文件管理 ---
 TEMP_FILES=()
@@ -44,14 +43,18 @@ else
 fi
 
 # --- 日志系统 ---
-log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${CYAN}[信 息]${NC} $*"; }
-log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
-log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
-log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
+_log_prefix() {
+    if [ "${JB_LOG_WITH_TIMESTAMP:-${DEFAULT_LOG_WITH_TIMESTAMP}}" = "true" ]; then
+        echo -n "$(date '+%Y-%m-%d %H:%M:%S') "
+    fi
+}
+log_info()    { echo -e "$(_log_prefix)${CYAN}[信 息]${NC} $*"; }
+log_success() { echo -e "$(_log_prefix)${GREEN}[成 功]${NC} $*"; }
+log_warn()    { echo -e "$(_log_prefix)${YELLOW}[警 告]${NC} $*" >&2; }
+log_err()     { echo -e "$(_log_prefix)${RED}[错 误]${NC} $*" >&2; }
 log_debug()   {
     if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
-        echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2
+        echo -e "$(_log_prefix)${YELLOW}[DEBUG]${NC} $*" >&2
     fi
 }
 
@@ -115,11 +118,16 @@ _get_json_value_fallback() {
 
 load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
-    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"; JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
     
     if command -v jq >/dev/null 2>&1; then
-        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL")
+        INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR")
+        BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR")
+        LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
+        JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+        JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$config_path" 2>/dev/null || echo "$JB_LOG_WITH_TIMESTAMP")
     else
         log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; 
         BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
@@ -127,6 +135,7 @@ load_config() {
         BIN_DIR=$(_get_json_value_fallback "$config_path" "bin_dir" "$BIN_DIR")
         LOCK_FILE=$(_get_json_value_fallback "$config_path" "lock_file" "$LOCK_FILE")
         JB_TIMEZONE=$(_get_json_value_fallback "$config_path" "timezone" "$JB_TIMEZONE")
+        JB_LOG_WITH_TIMESTAMP=$(_get_json_value_fallback "$config_path" "log_with_timestamp" "$JB_LOG_WITH_TIMESTAMP")
     fi
 }
 
