@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.1-手动扫描通知修复)
-# - 修复: (主要) 在 `_start_watchtower_container_logic` 函数开头添加 `load_config` 调用，解决了手动触发扫描时因配置未加载而无法发送通知的严重BUG。
-# - 增强: 在脚本启动时增加对 `jq` 命令的依赖检查，防止在缺少 `jq` 时导致Telegram通知功能静默失败。
+# 🚀 Watchtower 管理模块 (v6.2.2-同步通知修复)
+# - 修复: (主要) 重构 `send_notify` 函数以支持同步/异步模式。手动触发扫描现在会以“同步”模式发送通知，彻底解决了因竞态条件导致通知发送失败的顽固BUG。
+# - 优化: 后台日志监控器继续使用异步模式发送通知，确保不阻塞。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.1"
+SCRIPT_VERSION="v6.2.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -163,17 +163,24 @@ _format_seconds_to_human(){
 
 send_notify() {
     local message="$1"
+    local mode="${2:-async}" # 'async' or 'sync'
+
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
         local data
         data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" \
             '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
         
-        timeout 15s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url" &
+        local curl_cmd=(timeout 15s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url")
+
+        if [ "$mode" = "sync" ]; then
+            "${curl_cmd[@]}"
+        else
+            "${curl_cmd[@]}" &
+        fi
     fi
 }
 
-# 新增函数：处理间隔输入
 _prompt_for_interval() {
     local default_interval_seconds="$1"
     local prompt_message="$2"
@@ -351,7 +358,6 @@ _get_watchtower_remaining_time(){
 }
 
 _start_watchtower_container_logic(){
-    # 修复: 确保在函数开始时加载配置，以便后续逻辑能正确访问TG等变量
     load_config
 
     local wt_interval="$1"
@@ -410,8 +416,8 @@ _start_watchtower_container_logic(){
             log_success "一次性扫描完成。"
             if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
                 log_info "正在解析扫描结果并生成报告..."
-                _process_log_chunk "$scan_logs"
-                log_info "报告已加入发送队列。"
+                _process_log_chunk "$scan_logs" "sync" # 使用同步模式发送通知
+                log_info "报告已发送。"
             fi
         else
             log_err "一次性扫描失败。"
@@ -440,7 +446,7 @@ LOG_MONITOR_PID_FILE="/tmp/watchtower_monitor.pid"
 
 _process_log_chunk() {
     local chunk="$1"
-    # 此函数内也保留 load_config，以确保后台监控器能获取最新配置
+    local mode="${2:-async}" # 'async' or 'sync'
     load_config
     
     local is_manual_scan=false
@@ -467,24 +473,20 @@ _process_log_chunk() {
     
     local updated_details=""
     if [ "$updated" -gt 0 ]; then
-        # 优化后的更新详情解析逻辑
-        declare -A container_updates # Maps container_name -> {image, old_id, new_id}
+        declare -A container_updates
         local current_image_name=""
         local current_old_id=""
         local current_new_id=""
 
-        # 遍历日志块，收集更新信息
         while IFS= read -r line; do
             if [[ "$line" == *"Found new"* ]]; then
                 current_image_name=$(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p' | cut -d':' -f1-2)
                 current_old_id=$(echo "$line" | sed -n 's/.*ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
                 current_new_id=$(echo "$line" | sed -n 's/.*new ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
             elif [[ "$line" == *"Stopping /"* ]]; then
-                # 当遇到 "Stopping" 行时，将其与之前收集的镜像信息关联起来
                 local container_name_from_stop=$(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p')
                 if [ -n "$container_name_from_stop" ] && [ -n "$current_image_name" ] && [ -n "$current_old_id" ] && [ -n "$current_new_id" ]; then
                     container_updates["$container_name_from_stop"]="image=$current_image_name,old_id=$current_old_id,new_id=$current_new_id"
-                    # 重置，为下一个更新周期做准备
                     current_image_name=""
                     current_old_id=""
                     current_new_id=""
@@ -497,7 +499,6 @@ _process_log_chunk() {
             local img; img=$(echo "$update_info" | sed -n 's/.*image=\([^,]*\).*/\1/p')
             local old; old=$(echo "$update_info" | sed -n 's/.*old_id=\([^,]*\).*/\1/p')
             local new; new=$(echo "$update_info" | sed -n 's/.*new_id=\([^,]*\).*/\1/p')
-            # 修复: 调整格式以确保在Telegram中正确显示，并使用更简洁的输出
             updated_details+=$(printf "\n- 🔄 *%s*\n  🖼️ %s\n  🆔 %s -> %s" \
                 "$container" "$img" "$old" "$new")
         done
@@ -515,7 +516,7 @@ _process_log_chunk() {
             "$time_now"
     fi
     
-    send_notify "$report_message"
+    send_notify "$report_message" "$mode"
 }
 
 log_monitor_process() {
@@ -526,7 +527,7 @@ log_monitor_process() {
     stdbuf -oL docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
         if [[ "$line" == *"Starting Watchtower"* || "$line" == *"Running a one time update"* ]]; then
             if [ -n "$chunk" ]; then
-                _process_log_chunk "$chunk"
+                _process_log_chunk "$chunk" # 默认使用 async 模式
             fi
             chunk=""
         fi
@@ -534,7 +535,7 @@ log_monitor_process() {
         chunk+="$line"$'\n'
         
         if echo "$line" | grep -q "Session done"; then
-            _process_log_chunk "$chunk"
+            _process_log_chunk "$chunk" # 默认使用 async 模式
             chunk=""
         fi
     done
@@ -610,7 +611,7 @@ _rebuild_watchtower() {
     if ! _start_watchtower_container_logic "$interval" "Watchtower (监控模式)"; then
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
-    send_notify "🔄 Watchtower 服务已重建并启动。日志监控器将接管通知。"
+    send_notify "🔄 Watchtower 服务已重建并启动。日志监控器将接管通知。" "sync"
 }
 
 _prompt_and_rebuild_watchtower_if_needed() {
@@ -661,7 +662,7 @@ notification_menu() {
         case "$choice" in
             1) _configure_telegram; save_config; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
-            3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*测试消息*。"; log_info "测试通知已发送。"; fi; press_enter_to_continue ;;
+            3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*测试消息*。" "sync"; log_info "测试通知已发送。"; fi; press_enter_to_continue ;;
             4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; stop_log_monitor; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
@@ -780,7 +781,7 @@ manage_tasks(){
                         stop_log_monitor
                         set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null; set -e
                         WATCHTOWER_ENABLED="false"; save_config
-                        send_notify "🗑️ Watchtower 已从您的服务器移除。"
+                        send_notify "🗑️ Watchtower 已从您的服务器移除。" "sync"
                         echo -e "${GREEN}✅ 已移除。${NC}"
                     fi
                 else 
