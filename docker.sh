@@ -1,12 +1,11 @@
-#!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.6-集成统一菜单提示)
-# - 优化: 调用 `utils.sh` 中新增的 `_prompt_for_menu_choice` 函数，统一所有菜单的输入提示风格。
+# 🚀 Docker 管理模块 (v4.3.7-集成新统一菜单提示)
+# - 优化: 实现并应用了新的统一菜单输入提示风格，以匹配最新的UI设计规范。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.6"
+SCRIPT_VERSION="v4.3.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -19,8 +18,14 @@ if [ -f "$UTILS_PATH" ]; then
     # shellcheck source=/dev/null
     source "$UTILS_PATH"
 else
-    RED='\e[0;31m'; NC='\e[0m'
+    RED='\e[0;31m'; GREEN='\e[0;32m'; YELLOW='\e[0;33m'; CYAN='\e[0;36m'; NC='\e[0m'
     log_err() { echo -e "${RED}[错误] $*${NC}" >&2; }
+    log_warn() { echo -e "${YELLOW}[警告] $*${NC}" >&2; }
+    log_info() { echo -e "[信息] $*"; }
+    log_success() { echo -e "${GREEN}[成功] $*${NC}"; }
+    _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
+    press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
+    confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
     log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
     exit 1
 fi
@@ -30,6 +35,35 @@ if ! declare -f run_with_sudo &>/dev/null; then
   log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
   exit 1
 fi
+
+# --- 本地UI辅助函数 ---
+_prompt_for_menu_choice_local() {
+    local numeric_range="$1"
+    local func_options="$2"
+    local prompt_text="${CYAN}>${NC} 选项 "
+
+    if [ -n "$numeric_range" ]; then
+        local start="${numeric_range%%-*}"
+        local end="${numeric_range##*-}"
+        prompt_text+="[${CYAN}${start}${NC}-${end}] "
+    fi
+
+    if [ -n "$func_options" ]; then
+        local start="${func_options%%,*}"
+        local rest="${func_options#*,}"
+        if [ "$start" = "$rest" ]; then
+             prompt_text+="[${CYAN}${start}${NC}] "
+        else
+             prompt_text+="[${CYAN}${start}${NC},${rest}] "
+        fi
+    fi
+    
+    prompt_text+="(↩ 返回): "
+    
+    local choice
+    read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
+    echo "$choice"
+}
 
 # --- 全局状态变量 ---
 DOCKER_INSTALLED="false"
@@ -159,7 +193,7 @@ uninstall_docker() {
 
 configure_docker_mirror() {
     local choice_made=false
-    if [[ "$1" == "auto" ]]; then
+    if [[ "${1:-}" == "auto" ]]; then
         if [[ "$DOCKER_INSTALL_URL" != "$DOCKER_URL_MIRROR" ]]; then return 0; fi
         log_warn "检测到您使用了国内安装源，强烈推荐配置 Docker Hub 镜像加速器。"
         if confirm_action "   是否立即配置？"; then choice_made=true; fi
@@ -240,7 +274,7 @@ docker_service_menu() {
         )
         _render_menu "Docker 服务管理" "${content_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice "1-4")
+        choice=$(_prompt_for_menu_choice_local "1-4")
         case "$choice" in
             1) execute_with_spinner "正在启动 Docker 服务..." run_with_sudo systemctl start docker.service ;;
             2) execute_with_spinner "正在停止 Docker 服务..." run_with_sudo systemctl stop docker.service ;;
@@ -312,7 +346,7 @@ main_menu() {
 
         _render_menu "Docker & Docker Compose 管理" "${menu_items[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice "1-${#options_map[@]}")
+        choice=$(_prompt_for_menu_choice_local "1-${#options_map[@]}")
 
         if [ -z "$choice" ]; then exit 10; fi
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#options_map[@]} ]; then
