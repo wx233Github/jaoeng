@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.72-集成可配置时间戳)
-# - 优化: 集成 `utils.sh` 中更新的菜单提示符UI风格和可配置的时间戳日志。
+# 🚀 VPS 一键安装与管理脚本 (v77.73-修复启动器临时文件错误)
+# - 修复: (关键) 将临时文件管理逻辑移至本脚本，并延迟 `trap` 设置，以解决启动器在 `exec` 过程中因过早清理临时文件而导致的 `No such file or directory` 致命错误。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.72"
+SCRIPT_VERSION="v77.73"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -34,7 +34,6 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     echo_success() { echo -e "$(_starter_log_prefix)${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "$(_starter_log_prefix)${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
-    # 尝试预读时间戳配置
     if [ -f "$CONFIG_PATH" ] && command -v jq &>/dev/null; then
         JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$CONFIG_PATH" 2>/dev/null || echo "false")
     fi
@@ -61,7 +60,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         for name in "${!core_files[@]}"; do
             file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
-            temp_file="$(mktemp)" || temp_file="/tmp/$(basename "${file_path}").$$"
+            temp_file="$(mktemp "/tmp/jb_starter_XXXXXX")" || temp_file="/tmp/$(basename "${file_path}").$$"
             if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
@@ -86,6 +85,23 @@ if [ -f "$UTILS_PATH" ]; then
 else
     echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2; exit 1
 fi
+
+# --- 临时文件管理 (移至主脚本) ---
+TEMP_FILES=()
+create_temp_file() {
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
+        log_err "无法创建临时文件"
+        return 1
+    }
+    TEMP_FILES+=("$tmpfile")
+    echo "$tmpfile"
+}
+cleanup_temp_files() {
+    log_debug "正在清理临时文件: ${TEMP_FILES[*]}"
+    for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
+    TEMP_FILES=()
+}
 
 # --- 变量与函数定义 ---
 CURRENT_MENU_NAME="MAIN_MENU"
@@ -162,7 +178,7 @@ download_module_to_cache() {
         if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。" >&2; fi
         return 1
     fi
-    local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
+    local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
     if [ "$local_hash" != "$remote_hash" ]; then
         if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi
@@ -314,8 +330,11 @@ display_and_process_menu() {
 
 main() {
     load_config "$CONFIG_PATH"; check_and_install_dependencies
+    
+    # 显式设置 trap，在主程序逻辑开始时
+    trap 'exit_code=$?; cleanup_temp_files; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT INT TERM
+    
     exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
-    trap 'exit_code=$?; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT
     
     if [ $# -gt 0 ]; then
         local command="$1"; shift
