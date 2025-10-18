@@ -1,7 +1,7 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.39-UI与日志颜色更新)
-# - 优化: 将菜单提示符的高亮色从蓝色改为黄色，以匹配新UI规范。
-# - 优化: 调整日志颜色，[信 息] 改为绿色，[成 功] 改为高亮绿色。
+# 🚀 通用工具函数库 (v2.39-菜单提示符UI增强)
+# - 优化: 重写 `_prompt_for_menu_choice` 函数，实现新的高亮UI风格。
+# - 优化: 将 [信 息] 日志颜色从蓝色调整为青色 (CYAN)。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -37,15 +37,14 @@ trap cleanup_temp_files EXIT INT TERM
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
   BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
-  BRIGHT_GREEN='\033[1;32m'; # 高亮绿色
 else
-  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD=""; BRIGHT_GREEN="";
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD="";
 fi
 
 # --- 日志系统 ---
 log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
-log_info()    { echo -e "$(log_timestamp) ${GREEN}[信 息]${NC} $*"; }
-log_success() { echo -e "$(log_timestamp) ${BRIGHT_GREEN}[成 功]${NC} $*"; }
+log_info()    { echo -e "$(log_timestamp) ${CYAN}[信 息]${NC} $*"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
 log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
 log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
 log_debug()   {
@@ -73,21 +72,25 @@ _prompt_user_input() {
 _prompt_for_menu_choice() {
     local numeric_range="$1"
     local func_options="$2"
-    local prompt_text="${YELLOW}>${NC} 选项 "
+    local prompt_text="${CYAN}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
         local start="${numeric_range%%-*}"
         local end="${numeric_range##*-}"
-        prompt_text+="[${YELLOW}${start}${NC}-${end}] "
+        if [ "$start" = "$end" ]; then # Handle single number like "1-1"
+            prompt_text+="[${CYAN}${start}${NC}] "
+        else
+            prompt_text+="[${CYAN}${start}${NC}-${end}] "
+        fi
     fi
 
     if [ -n "$func_options" ]; then
         local start="${func_options%%,*}"
         local rest="${func_options#*,}"
         if [ "$start" = "$rest" ]; then # Handles single character case
-             prompt_text+="[${YELLOW}${start}${NC}] "
+             prompt_text+="[${CYAN}${start}${NC}] "
         else
-             prompt_text+="[${YELLOW}${start}${NC},${rest}] "
+             prompt_text+="[${CYAN}${start}${NC},${rest}] "
         fi
     fi
     
