@@ -1,125 +1,184 @@
 # =============================================================
-# 🚀 通用工具函数库 (v3.1.0-交互优化)
-# - 新增: 添加了 `_render_menu_prompt` 函数，用于生成全新的、
-#         带有颜色和符号的标准化菜单输入提示符，以增强用户体验。
+# 🚀 通用工具函数库 (v2.37-新增菜单输入函数)
+# - 新增: 添加 `_prompt_for_menu_choice` 函数，提供统一的、风格化的菜单输入提示符。
 # - 更新: 脚本版本号。
 # =============================================================
 
-# --- 脚本元数据 ---
-SCRIPT_VERSION="v3.1.0"
-
-# --- 严格模式与环境设定 ---
+# --- 严格模式 ---
 set -eo pipefail
-export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C_UTF_8}
 
-# --- 全局变量与颜色定义 ---
-GREEN="\033[0;32m"; YELLOW="\033[0;33m"; RED="\033[0;31m"; BLUE="\033[0;34m";
-MAGENTA="\033[0;35m"; CYAN="\033[0;36m"; WHITE="\033[0;37m"; BOLD="\033[1m"; NC="\033[0m";
+# --- 默认配置（集中一处） ---
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+DEFAULT_INSTALL_DIR="/opt/vps_install_modules"
+DEFAULT_BIN_DIR="/usr/local/bin"
+DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
+DEFAULT_TIMEZONE="Asia/Shanghai"
+DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
 
-# --- 基础函数 ---
-log_timestamp() {
-    echo -n "$(date +"%Y-%m-%d %H:%M:%S")"
+# --- 临时文件管理 ---
+TEMP_FILES=()
+create_temp_file() {
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
+        echo "[$(date '+%F %T')] [错误] 无法创建临时文件" >&2
+        return 1
+    }
+    TEMP_FILES+=("$tmpfile")
+    echo "$tmpfile"
 }
-
-log_err() {
-    echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2
+cleanup_temp_files() {
+    for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
+    TEMP_FILES=()
 }
+trap cleanup_temp_files EXIT INT TERM
 
-log_info() {
-    echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*" >&2
-}
+# --- 颜色定义 ---
+if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
+  BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
+else
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD="";
+fi
 
-log_warn() {
-    echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2
-}
-
-log_success() {
-    echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*" >&2
-}
-
-log_debug() {
-    if [ "${JB_ENABLE_DEBUG:-false}" = "true" ]; then
-        echo -e "$(log_timestamp) ${MAGENTA}[调 试]${NC} $*" >&2
+# --- 日志系统 ---
+log_timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+log_info()    { echo -e "$(log_timestamp) ${BLUE}[信 息]${NC} $*"; }
+log_success() { echo -e "$(log_timestamp) ${GREEN}[成 功]${NC} $*"; }
+log_warn()    { echo -e "$(log_timestamp) ${YELLOW}[警 告]${NC} $*" >&2; }
+log_err()     { echo -e "$(log_timestamp) ${RED}[错 误]${NC} $*" >&2; }
+log_debug()   {
+    if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then
+        echo -e "$(log_timestamp) ${YELLOW}[DEBUG]${NC} $*" >&2
     fi
 }
 
-_get_visual_width() {
-    local text="$1"
-    local visual_len
-    visual_len=$(echo -n "$text" | sed 's/\x1b\[[0-9;]*m//g' | wc -m)
-    echo "$visual_len"
-}
-
-_render_menu() {
-    local title="$1"; shift
-    local max_width=40
-    local title_visual_len=$(_get_visual_width "$title")
-    local title_padding=$(( (max_width - title_visual_len) / 2 ))
-
-    echo -e "╭$(printf '─%.0s' $(seq 1 "$max_width"))╮"
-    echo -e "│$(printf ' %.0s' $(seq 1 "$title_padding"))${BOLD}${title}${NC}$(printf ' %.0s' $(seq 1 "$((max_width - title_padding - title_visual_len))"))│"
-    echo -e "╰$(printf '─%.0s' $(seq 1 "$max_width"))╯"
-    
-    for item in "$@"; do
-        echo -e "$item"
-    done
-    echo -e "──────────────────────────────────────────"
-}
-
-_render_menu_prompt() {
-    local num_choices="$1"
-    local func_choices_str="$2"
-
-    local prompt="${BLUE}>${NC} "
-    prompt+="选项 [1-${num_choices}]"
-
-    if [ -n "$func_choices_str" ]; then
-        prompt+=" (${func_choices_str} 操作)"
-    fi
-
-    prompt+=" (↩ 返回): "
-    echo -e "$prompt"
-}
-
+# --- 交互函数 ---
+# 核心输入函数，确保提示符可见，并从 /dev/tty 读取以避免 stdin 重定向问题
 _prompt_user_input() {
-    local prompt_message="$1"
-    local default_value="${2:-}"
-    local user_input
-    read -r -p "$(echo -e "${CYAN}${prompt_message}${NC} [默认: ${GREEN}${default_value:-无}${NC}]: ")" user_input < /dev/tty
-    echo "${user_input:-$default_value}"
+    local prompt_text="$1"
+    local default_value="$2"
+    local result
+    
+    # 确保提示符在终端上可见
+    echo -ne "${YELLOW}${prompt_text}${NC}" > /dev/tty
+    
+    # 从 /dev/tty 读取输入，避免管道和重定向问题
+    read -r result < /dev/tty
+    
+    # 返回结果，如果为空则返回默认值
+    if [ -z "$result" ]; then
+        echo "$default_value"
+    else
+        echo "$result"
+    fi
 }
 
-press_enter_to_continue() {
-    read -r -p "$(echo -e "按 Enter 键继续...")" < /dev/tty
-}
-
-confirm_action() {
-    local prompt_message="$1"
+# 新增: 统一风格的菜单选择提示函数
+_prompt_for_menu_choice() {
+    local prompt_core_text="$1"
+    local full_prompt
+    # 构建带有颜色和图标的完整提示符
+    full_prompt="> ${BLUE}${prompt_core_text}${NC} (↩ 返回): "
+    
     local choice
-    read -r -p "$(echo -e "${YELLOW}${prompt_message}${NC} ([y]/n): ")" choice < /dev/tty
-    case "$choice" in
-        [nN]) return 1 ;;
-        *) return 0 ;;
-    esac
+    read -r -p "$(echo -e "$full_prompt")" choice < /dev/tty
+    echo "$choice"
+}
+
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
+confirm_action() { read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty; case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac; }
+
+# --- 配置加载（集中与容错） ---
+_get_json_value_fallback() {
+    local file="$1"; local key="$2"; local default_val="$3"
+    local result; result=$(sed -n 's/.*"'"$key"'": *"\([^"]*\)".*/\1/p' "$file")
+    echo "${result:-$default_val}"
 }
 
 load_config() {
-    local config_file="$1"
-    if [ ! -f "$config_file" ]; then
-        log_err "配置文件 '$config_file' 未找到。"
-        return 1
+    local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="${config_path}"
+    if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
+    
+    if command -v jq >/dev/null 2>&1; then
+        BASE_URL=$(jq -r '.base_url // empty' "$config_path" 2>/dev/null || echo "$BASE_URL"); INSTALL_DIR=$(jq -r '.install_dir // empty' "$config_path" 2>/dev/null || echo "$INSTALL_DIR"); BIN_DIR=$(jq -r '.bin_dir // empty' "$config_path" 2>/dev/null || echo "$BIN_DIR"); LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE"); JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
+    else
+        log_warn "未检测到 jq，使用轻量文本解析。建议安装 jq。"; 
+        BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
+        INSTALL_DIR=$(_get_json_value_fallback "$config_path" "install_dir" "$INSTALL_DIR")
+        BIN_DIR=$(_get_json_value_fallback "$config_path" "bin_dir" "$BIN_DIR")
+        LOCK_FILE=$(_get_json_value_fallback "$config_path" "lock_file" "$LOCK_FILE")
+        JB_TIMEZONE=$(_get_json_value_fallback "$config_path" "timezone" "$JB_TIMEZONE")
     fi
-    
-    export BASE_URL; BASE_URL=$(jq -r '.repository.base_url' "$config_file")
-    export LOCK_FILE; LOCK_FILE=$(jq -r '.system.lock_file' "$config_file")
-    export JB_TIMEZONE; JB_TIMEZONE=$(jq -r '.system.timezone' "$config_file")
-    export JB_ENABLE_DEBUG; JB_ENABLE_DEBUG=$(jq -r '.system.enable_debug' "$config_file")
-    export JB_ENABLE_AUTO_CLEAR; JB_ENABLE_AUTO_CLEAR=$(jq -r '.system.enable_auto_clear' "$config_file")
-    
-    log_debug "配置已加载: BASE_URL=${BASE_URL}, LOCK_FILE=${LOCK_FILE}, TIMEZONE=${JB_TIMEZONE}"
 }
 
-create_temp_file() {
-    mktemp 2>/dev/null || mktemp -t jb_temp.XXXXXX
+# --- UI 渲染 & 字符串处理 ---
+generate_line() {
+    local len=${1:-40}; local char=${2:-"─"}
+    if [ "$len" -le 0 ]; then echo ""; return; fi
+    # 使用 printf 创建一个指定长度的字符串，然后用 sed 替换空格
+    printf "%${len}s" "" | sed "s/ /$char/g"
+}
+
+_get_visual_width() {
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -z "$plain_text" ]; then echo 0; return; fi
+    if command -v python3 &>/dev/null; then
+        # 使用 Python 3 处理 Unicode 宽度 (全角/半角)
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
+    elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        # 尝试使用 wc -m (字符数)
+        echo -n "$plain_text" | wc -m
+    else
+        # 默认使用 bash 字符串长度
+        echo "${#plain_text}"
+    fi
+}
+
+# 绘制一个带标题的简单盒子 (用于单列菜单)
+_render_menu() {
+    local title="$1"; shift; local -a lines=("$@")
+    local max_content_width=0
+
+    # 1. 确定所有内容（包括标题和菜单项）的最大视觉宽度
+    local title_width=$(_get_visual_width "$title")
+    max_content_width=$title_width
+
+    for line in "${lines[@]}"; do
+        local current_line_visual_width=$(_get_visual_width "$line")
+        if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
+            max_content_width="$current_line_visual_width"
+        fi
+    done
+    
+    # 2. 定义盒子内部内容的统一宽度。此宽度用于填充标题和绘制横线。
+    local box_inner_width=$max_content_width
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi # 强制最小宽度
+
+    # 3. 渲染标题盒子
+    echo ""
+    # 顶部边框: 横线宽度与内部内容宽度一致
+    echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    
+    if [ -n "$title" ]; then
+        # 计算填充，使标题在 'box_inner_width' 内居中
+        local padding_total=$((box_inner_width - title_width))
+        local padding_left=$((padding_total / 2))
+        local padding_right=$((padding_total - padding_left))
+        # 标题行: │ + (居中后的标题内容) + │
+        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+    fi
+    
+    # 底部边框: 横线宽度与内部内容宽度一致
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
+
+    # 4. 渲染菜单项
+    for line in "${lines[@]}"; do
+        echo -e "${line}"
+    done
+    
+    # 5. 渲染下方的分隔线，其总长度应匹配盒子的总视觉宽度
+    # 总视觉宽度 = 内部宽度 + 2个边框字符 (例如 '│' 和 '│')
+    local box_total_physical_width=$(( box_inner_width + 2 ))
+    echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
