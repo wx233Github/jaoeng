@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.67-菜单提示优化)
-# - 修复: 优化了菜单提示符的生成逻辑，当没有功能性选项
-#         （如 a, b, c）时，不再显示多余的“或 [] 操作”文本。
+# 🚀 VPS 一键安装与管理脚本 (v77.68-集成新菜单提示)
+# - 优化: 调用 `utils.sh` 中新增的 `_prompt_for_menu_choice` 函数，统一菜单输入提示的风格。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.67"
+SCRIPT_VERSION="v77.68"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -263,15 +262,17 @@ display_and_process_menu() {
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
         local num_choices=${#primary_items[@]}; local func_choices_str=""
         
-        # --- 核心修复：动态构建提示符 ---
-        local prompt_str=" └──> 请选择 [1-$num_choices]"
+        # --- 交互优化：调用新的菜单提示函数 ---
+        local prompt_core_text="选项 [1-$num_choices]"
         if [ ${#func_items[@]} -gt 0 ]; then
             for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
-            prompt_str+=", 或 [${func_choices_str%,}] 操作"
+            prompt_core_text+=", 或 [${func_choices_str%,}] 操作"
         fi
-        prompt_str+=", [Enter] 返回: "
-        read -r -p "$prompt_str" choice < /dev/tty
-        # --- 修复结束 ---
+        
+        # 调用 utils.sh 中的新函数来显示提示符并获取输入
+        local choice
+        choice=$(_prompt_for_menu_choice "$prompt_core_text")
+        # --- 优化结束 ---
 
         if [ -z "$choice" ]; then 
             if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。" >&2; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
