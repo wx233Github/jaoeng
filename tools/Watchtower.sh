@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.0-代码审查修复)
-# - 修复: (主要) 纠正 `log_monitor_process` 函数中用于分割日志块的字符串匹配错误 (`Starting/watchtower` -> `Starting Watchtower`)，解决了因容器重启可能导致的通知处理异常问题。
-# - 优化: (次要) 在 `_start_watchtower_container_logic` 函数中，使用 `${#container_names[@]}` 代替 `${container_names[*]}` 来检查数组是否为空，提高了处理带空格容器名称时的健壮性。
+# 🚀 Watchtower 管理模块 (v6.2.1-手动扫描通知修复)
+# - 修复: (主要) 在 `_start_watchtower_container_logic` 函数开头添加 `load_config` 调用，解决了手动触发扫描时因配置未加载而无法发送通知的严重BUG。
+# - 增强: 在脚本启动时增加对 `jq` 命令的依赖检查，防止在缺少 `jq` 时导致Telegram通知功能静默失败。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.0"
+SCRIPT_VERSION="v6.2.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -36,23 +36,6 @@ fi
 if ! declare -f run_with_sudo &>/dev/null; then
   log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
   exit 1
-fi
-
-# --- 依赖检查 ---
-if ! command -v docker &> /dev/null; then
-    log_err "Docker 未安装。此模块需要 Docker 才能运行。"
-    log_err "请返回主菜单，先使用 Docker 模块进行安装。"
-    exit 10
-fi
-
-# --- Docker 服务 (daemon) 状态检查 ---
-if ! docker info >/dev/null 2>&1; then
-    log_err "无法连接到 Docker 服务 (daemon)。"
-    log_err "请确保 Docker 正在运行，您可以使用以下命令尝试启动它："
-    log_info "  sudo systemctl start docker"
-    log_info "  或者"
-    log_info "  sudo service docker start"
-    exit 10
 fi
 
 # 本地配置文件路径
@@ -96,6 +79,34 @@ load_config(){
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${WATCHTOWER_CONF_TASK_ENABLED:-false}}"
     WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-$default_notify_on_no_updates}}"
 }
+
+# 预加载一次配置以进行早期检查
+load_config
+
+# --- 依赖检查 ---
+if ! command -v docker &> /dev/null; then
+    log_err "Docker 未安装。此模块需要 Docker 才能运行。"
+    log_err "请返回主菜单，先使用 Docker 模块进行安装。"
+    exit 10
+fi
+
+if [ -n "$TG_BOT_TOKEN" ] && ! command -v jq &> /dev/null; then
+    log_err "检测到 Telegram 已配置，但系统缺少 'jq' 命令。"
+    log_err "jq 是发送格式化通知所必需的。请先安装它。"
+    log_info "  Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y jq"
+    log_info "  CentOS/RHEL:   sudo yum install -y epel-release && sudo yum install -y jq"
+    exit 10
+fi
+
+# --- Docker 服务 (daemon) 状态检查 ---
+if ! docker info >/dev/null 2>&1; then
+    log_err "无法连接到 Docker 服务 (daemon)。"
+    log_err "请确保 Docker 正在运行，您可以使用以下命令尝试启动它："
+    log_info "  sudo systemctl start docker"
+    log_info "  或者"
+    log_info "  sudo service docker start"
+    exit 10
+fi
 
 save_config(){
     mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
@@ -340,6 +351,9 @@ _get_watchtower_remaining_time(){
 }
 
 _start_watchtower_container_logic(){
+    # 修复: 确保在函数开始时加载配置，以便后续逻辑能正确访问TG等变量
+    load_config
+
     local wt_interval="$1"
     local mode_description="$2"
     local interactive_mode="${3:-false}"
@@ -426,6 +440,7 @@ LOG_MONITOR_PID_FILE="/tmp/watchtower_monitor.pid"
 
 _process_log_chunk() {
     local chunk="$1"
+    # 此函数内也保留 load_config，以确保后台监控器能获取最新配置
     load_config
     
     local is_manual_scan=false
