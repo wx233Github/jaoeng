@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.68-集成新菜单提示)
-# - 优化: 调用 `utils.sh` 中新增的 `_prompt_for_menu_choice` 函数，统一菜单输入提示的风格。
+# 🚀 VPS 一键安装与管理脚本 (v77.69-集成新菜单提示)
+# - 优化: 调用 `utils.sh` 中增强的 `_prompt_for_menu_choice` 函数，统一菜单输入提示的风格。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.68"
+SCRIPT_VERSION="v77.69"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -262,17 +262,19 @@ display_and_process_menu() {
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
         local num_choices=${#primary_items[@]}; local func_choices_str=""
         
-        # --- 交互优化：调用新的菜单提示函数 ---
-        local prompt_core_text="选项 [1-$num_choices]"
-        if [ ${#func_items[@]} -gt 0 ]; then
-            for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
-            prompt_core_text+=", 或 [${func_choices_str%,}] 操作"
+        local numeric_range_str=""
+        if [ "$num_choices" -gt 0 ]; then
+            numeric_range_str="1-$num_choices"
         fi
         
-        # 调用 utils.sh 中的新函数来显示提示符并获取输入
+        local func_options_str=""
+        if [ ${#func_items[@]} -gt 0 ]; then
+            for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
+            func_options_str="${func_choices_str%,}"
+        fi
+        
         local choice
-        choice=$(_prompt_for_menu_choice "$prompt_core_text")
-        # --- 优化结束 ---
+        choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_options_str")
 
         if [ -z "$choice" ]; then 
             if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。" >&2; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
