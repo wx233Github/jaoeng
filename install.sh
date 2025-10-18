@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.71-UI与日志颜色更新)
-# - 优化: 集成 `utils.sh` 中更新的菜单提示符UI风格和日志颜色。
+# 🚀 VPS 一键安装与管理脚本 (v77.72-集成可配置时间戳)
+# - 优化: 集成 `utils.sh` 中更新的菜单提示符UI风格和可配置的时间戳日志。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.71"
+SCRIPT_VERSION="v77.72"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -24,9 +24,20 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
     STARTER_CYAN='\033[0;36m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_CYAN}[启动器]${STARTER_NC} $1" >&2; }
-    echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
-    echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+    
+    _starter_log_prefix() {
+        if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
+            echo -n "$(date '+%Y-%m-%d %H:%M:%S') "
+        fi
+    }
+    echo_info() { echo -e "$(_starter_log_prefix)${STARTER_CYAN}[启动器]${STARTER_NC} $1" >&2; }
+    echo_success() { echo -e "$(_starter_log_prefix)${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
+    echo_error() { echo -e "$(_starter_log_prefix)${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+
+    # 尝试预读时间戳配置
+    if [ -f "$CONFIG_PATH" ] && command -v jq &>/dev/null; then
+        JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$CONFIG_PATH" 2>/dev/null || echo "false")
+    fi
 
     if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
@@ -151,7 +162,7 @@ download_module_to_cache() {
         if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。" >&2; fi
         return 1
     fi
-    local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
+    local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
     if [ "$local_hash" != "$remote_hash" ]; then
         if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi
@@ -319,9 +330,9 @@ main() {
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
 
     if [ "${JB_RESTARTED:-false}" != "true" ]; then
-        printf "$(log_timestamp) ${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+        printf "$(_log_prefix)${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
         local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-        printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+        printf "\r$(_log_prefix)${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local restart_needed=false
         local update_messages=""
