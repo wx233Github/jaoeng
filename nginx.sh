@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.5-集成统一菜单提示)
-# - 优化: 手动实现了新的统一菜单输入提示风格，以匹配 `utils.sh` 中的新函数。
-# - 更新: 脚本版本号。
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.6-UI风格统一与修复)
+# - 优化: 更新了菜单提示符UI，使其与全局新风格（橙色高亮）保持一致。
+# - 修复: 妥善处理了菜单提示函数中的可选参数，解决了 `unbound variable` 错误。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -10,6 +10,7 @@ set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退
 # --- 全局变量和颜色定义 ---
 GREEN="\033[32m"; YELLOW="\033[33m"; RED="\033[31m"; BLUE="\033[34m";
 MAGENTA="\033[35m"; CYAN="\033[36m"; WHITE="\033[37m"; RESET="\033[0m";
+ORANGE='\033[38;5;208m'; # 橙色 #FA720A
 
 LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
@@ -57,22 +58,26 @@ log_message() {
 
 _prompt_for_menu_choice_local() {
     local numeric_range="$1"
-    local func_options="$2"
-    local prompt_text="${CYAN}>${RESET} 选项 "
+    local func_options="${2:-}" # 修复: 增加默认值防止 unbound variable
+    local prompt_text="${ORANGE}>${RESET} 选项 "
 
     if [ -n "$numeric_range" ]; then
         local start="${numeric_range%%-*}"
         local end="${numeric_range##*-}"
-        prompt_text+="[${CYAN}${start}${RESET}-${end}] "
+        if [ "$start" = "$end" ]; then
+            prompt_text+="[${ORANGE}${start}${RESET}] "
+        else
+            prompt_text+="[${ORANGE}${start}${RESET}-${end}] "
+        fi
     fi
 
     if [ -n "$func_options" ]; then
         local start="${func_options%%,*}"
         local rest="${func_options#*,}"
-        if [ "$start" = "$rest" ]; then # Handles single character case
-             prompt_text+="[${CYAN}${start}${RESET}] "
+        if [ "$start" = "$rest" ]; then
+             prompt_text+="[${ORANGE}${start}${RESET}] "
         else
-             prompt_text+="[${CYAN}${start}${RESET},${rest}] "
+             prompt_text+="[${ORANGE}${start}${RESET},${rest}] "
         fi
     fi
     
