@@ -1,9 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.9-UI风格统一与命令修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.3.0-UI重构与流程修复)
 # =============================================================
-# - 修复: (关键) 将 acme.sh 的 `--list-account` 和 `--set-default-account` 命令分别修正为现代版本 `--list` 和 `--set-account`，以解决 "Unknown parameter" 错误。
-# - 优化: (UI) 全面审查并统一 UI 风格，使其与主脚本 install.sh 保持一致，包括菜单边框、日志前缀和颜色。
-# - 优化: (UI) 重构所有菜单以使用新的 `_render_menu` 函数，提供更美观和一致的显示效果。
+# - 重构: (UI) 彻底重新设计“项目管理”列表，采用更清晰、美观的卡片式布局，解决了所有对齐问题。
+# - 修复: (流程) 为子菜单中的操作增加了“按 Enter 键继续”的暂停机制，防止在查看输出后立即刷新菜单。
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
 
@@ -54,10 +53,11 @@ log_message() {
         *)       echo -e "$(_log_prefix)${NC}[UNKNOWN] ${message}";;
     esac
     
-    # 始终写入日志文件
     local timestamp; timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-    echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
+    echo "[${timestamp}] [${level^^}] ${message}" >> "$LOG_FILE"
 }
+
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
 
 _prompt_for_menu_choice_local() {
     local numeric_range="$1"
@@ -87,7 +87,7 @@ _prompt_for_menu_choice_local() {
     prompt_text+="(↩ 返回): "
     
     local choice
-    read -r -p "$(echo -e "$prompt_text")" choice
+    read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
     echo "$choice"
 }
 
@@ -168,7 +168,7 @@ _confirm_action_or_exit_non_interactive() {
     local prompt_message="$1"
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
         local choice
-        read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice
+        read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice < /dev/tty
         [[ "$choice" =~ ^([Yy]|)$ ]] && return 0 || return 1
     fi
     log_message ERROR "在非交互模式下，需要用户确认才能继续 '$prompt_message'。操作已取消。"
@@ -437,17 +437,14 @@ _gather_project_details() {
 # SECTION: 用户交互与主流程 (菜单, 创建, 管理)
 # ==============================================================================
 
-_display_projects_table() {
+_display_projects_list() {
     local PROJECTS_ARRAY_RAW="$1"
     local INDEX=0
-
-    printf "${BLUE}%-4s │ %-25s │ %-12s │ %-20s │ %-10s │ %-5s │ %3s天 │ %s${NC}\n" \
-        "ID" "域名" "类型" "目标 (端口)" "证书状态" "泛域" "剩余" "到期时间"
-    printf "${BLUE}─────┼───────────────────────────┼──────────────┼──────────────────────┼────────────┼───────┼───────┼────────────────────${NC}\n"
+    local total_width=60
 
     echo "$PROJECTS_ARRAY_RAW" | jq -c '.[]' | while read -r project_json; do
         INDEX=$((INDEX + 1))
-        local DOMAIN=$(echo "$project_json" | jq -r '.domain // "未知域名"')
+        local DOMAIN=$(echo "$project_json" | jq -r '.domain // "未知"')
         local CERT_FILE=$(echo "$project_json" | jq -r '.cert_file')
         local KEY_FILE=$(echo "$project_json" | jq -r '.key_file')
         local PROJECT_TYPE=$(echo "$project_json" | jq -r '.type // "未知"')
@@ -457,17 +454,16 @@ _display_projects_table() {
 
         local PROJECT_DETAIL_DISPLAY=""
         if [ "$PROJECT_TYPE" = "docker" ]; then
-            PROJECT_DETAIL_DISPLAY="$PROJECT_NAME ($RESOLVED_PORT)"
+            PROJECT_DETAIL_DISPLAY="docker | ${PROJECT_NAME} (${RESOLVED_PORT})"
         else
-            PROJECT_DETAIL_DISPLAY="本地端口 ($RESOLVED_PORT)"
+            PROJECT_DETAIL_DISPLAY="local_port | ${RESOLVED_PORT}"
         fi
         
         local WILDCARD_DISPLAY="$([ "$USE_WILDCARD" = "y" ] && echo "是" || echo "否")"
 
         local STATUS_COLOR="$RED"
         local STATUS_TEXT="缺失"
-        local LEFT_DAYS="N/A"
-        local FORMATTED_END_DATE="N/A"
+        local CERT_INFO_STR=""
 
         if [[ -f "$CERT_FILE" && -f "$KEY_FILE" ]]; then
             local END_DATE; END_DATE=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2 || echo "未知日期")
@@ -475,8 +471,8 @@ _display_projects_table() {
             local NOW_TS; NOW_TS=$(date +%s)
             
             if [[ "$END_TS" -ne 0 ]]; then
-                LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))
-                FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y-%m-%d")
+                local LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))
+                local FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y-%m-%d")
                 if (( LEFT_DAYS < 0 )); then
                     STATUS_COLOR="$RED"; STATUS_TEXT="已过期"
                 elif (( LEFT_DAYS <= RENEW_THRESHOLD_DAYS )); then
@@ -484,15 +480,21 @@ _display_projects_table() {
                 else
                     STATUS_COLOR="$GREEN"; STATUS_TEXT="有效"
                 fi
+                CERT_INFO_STR="(剩余 ${LEFT_DAYS} 天, ${FORMATTED_END_DATE} 到期)"
             else
                 STATUS_COLOR="$YELLOW"; STATUS_TEXT="日期未知"
             fi
         fi
-
-        printf "%-4s │ %-25s │ %-12s │ %-20s │ ${STATUS_COLOR}%-10s${NC} │ %-5s │ %3s天 │ %s\n" \
-            "$INDEX" "$DOMAIN" "$PROJECT_TYPE" "$PROJECT_DETAIL_DISPLAY" "$STATUS_TEXT" "$WILDCARD_DISPLAY" "$LEFT_DAYS" "$FORMATTED_END_DATE"
+        
+        echo -e "${BOLD}[ ${INDEX} ] ${CYAN}${DOMAIN}${NC}"
+        echo -e "  ├─ ${YELLOW}目标:${NC} ${PROJECT_DETAIL_DISPLAY}"
+        echo -e "  └─ ${YELLOW}证书:${NC} ${STATUS_COLOR}${STATUS_TEXT}${NC} ${CERT_INFO_STR} | ${YELLOW}泛域:${NC} ${WILDCARD_DISPLAY}"
+        if [ "$(echo "$PROJECTS_ARRAY_RAW" | jq 'length')" -gt "$INDEX" ]; then
+             echo -e "${GREEN}$(generate_line "$total_width" "·")${NC}"
+        fi
     done
 }
+
 
 configure_nginx_projects() {
     log_message INFO "--- 🚀 配置新项目 ---"
@@ -610,7 +612,7 @@ manage_configs() {
         fi
         
         _render_menu "项 目 管 理"
-        _display_projects_table "$projects"
+        _display_projects_list "$projects"
         
         local -a menu_items=(
             "1. ✏️ 编辑项目"
@@ -620,10 +622,10 @@ manage_configs() {
             "5. 📥 导入现有项目"
         )
         for item in "${menu_items[@]}"; do echo -e "$item"; done
-        echo -e "${GREEN}$(generate_line 58 "─")${NC}"
+        echo -e "${GREEN}$(generate_line 60 "─")${NC}"
 
-        local choice
-        choice=$(_prompt_for_menu_choice_local "1-5")
+        local choice; choice=$(_prompt_for_menu_choice_local "1-5")
+        local should_pause=true
         
         case "$choice" in
             1) _handle_edit_project ;;
@@ -632,8 +634,12 @@ manage_configs() {
             4) _handle_manage_snippets ;;
             5) _handle_import_project ;;
             "") return 10 ;;
-            *) log_message ERROR "无效选择。" ;;
+            *) log_message ERROR "无效选择。"; should_pause=false ;;
         esac
+        
+        if [ "$should_pause" = true ]; then
+            press_enter_to_continue
+        fi
     done
 }
 
@@ -672,24 +678,29 @@ manage_acme_accounts() {
         )
         _render_menu "acme.sh 账户管理" "${menu_items[@]}"
         
-        local choice
-        choice=$(_prompt_for_menu_choice_local "1-3")
+        local choice; choice=$(_prompt_for_menu_choice_local "1-3")
+        local should_pause=true
+        
         case "$choice" in
             1) "$ACME_BIN" --list ;;
             2)
-                local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || continue
+                local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || { should_pause=false; continue; }
                 local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "1" "^[12]$" "" "false")
                 local server_url=$([ "$ca_choice" -eq 1 ] && echo "letsencrypt" || echo "zerossl")
                 "$ACME_BIN" --register-account -m "$email" --server "$server_url"
                 ;;
             3)
                 "$ACME_BIN" --list
-                local email; email=$(_prompt_user_input_with_validation "请输入要设为默认的邮箱" "" "" "邮箱格式无效" "false") || continue
+                local email; email=$(_prompt_user_input_with_validation "请输入要设为默认的邮箱" "" "" "邮箱格式无效" "false") || { should_pause=false; continue; }
                 "$ACME_BIN" --set-account -m "$email"
                 ;;
             "") return 10 ;;
-            *) log_message ERROR "无效选择。" ;;
+            *) log_message ERROR "无效选择。"; should_pause=false ;;
         esac
+        
+        if [ "$should_pause" = true ]; then
+            press_enter_to_continue
+        fi
     done
 }
 
@@ -703,12 +714,11 @@ main_menu() {
         )
         _render_menu "Nginx / HTTPS 证书管理主菜单" "${menu_items[@]}"
 
-        local choice
-        choice=$(_prompt_for_menu_choice_local "1-4")
+        local choice; choice=$(_prompt_for_menu_choice_local "1-4")
         case "$choice" in
-            1) configure_nginx_projects ;;
+            1) configure_nginx_projects; press_enter_to_continue ;;
             2) manage_configs ;;
-            3) check_and_auto_renew_certs ;;
+            3) check_and_auto_renew_certs; press_enter_to_continue ;;
             4) manage_acme_accounts ;;
             "") log_message INFO "👋 已退出。"; return 10 ;;
             *) log_message ERROR "无效选择。" ;;
