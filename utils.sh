@@ -1,6 +1,6 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.41-可配置的时间戳日志)
-# - 新增: 日志系统现在会根据 `config.json` 中的 `log_with_timestamp` 选项来决定是否显示时间戳。
+# 🚀 通用工具函数库 (v2.42-修复启动器临时文件错误)
+# - 修复: (关键) 移除了全局的 `trap cleanup_temp_files EXIT`，以解决启动器在 `exec` 过程中因过早清理临时文件而导致的 `No such file or directory` 致命错误。临时文件管理现在由主脚本 `install.sh` 负责。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -15,23 +15,6 @@ DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
 DEFAULT_TIMEZONE="Asia/Shanghai"
 DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
 DEFAULT_LOG_WITH_TIMESTAMP="false"
-
-# --- 临时文件管理 ---
-TEMP_FILES=()
-create_temp_file() {
-    local tmpfile
-    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
-        echo "[$(date '+%F %T')] [错误] 无法创建临时文件" >&2
-        return 1
-    }
-    TEMP_FILES+=("$tmpfile")
-    echo "$tmpfile"
-}
-cleanup_temp_files() {
-    for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
-    TEMP_FILES=()
-}
-trap cleanup_temp_files EXIT INT TERM
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -76,7 +59,7 @@ _prompt_user_input() {
 
 _prompt_for_menu_choice() {
     local numeric_range="$1"
-    local func_options="${2:-}" # 修复: 增加默认值防止 unbound variable
+    local func_options="${2:-}"
     local prompt_text="${ORANGE}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
