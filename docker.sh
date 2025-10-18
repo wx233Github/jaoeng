@@ -1,14 +1,12 @@
 #!/bin/bash
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.5-UI简化为单列菜单)
-# - 修复: 彻底重写 `main_menu` 的双栏布局渲染，放弃 `_render_menu`，
-#         改为手动绘制UI盒子，通过精确计算视觉宽度和动态填充，完美解决UI混乱问题。
-# - 新增: 根据用户请求，在模块启动时添加欢迎信息。
-# - 修复: 采纳用户建议，将主菜单简化为单列布局，使用 `_render_menu` 函数进行渲染，以确保UI稳定性。
+# 🚀 Docker 管理模块 (v4.3.6-集成统一菜单提示)
+# - 优化: 调用 `utils.sh` 中新增的 `_prompt_for_menu_choice` 函数，统一所有菜单的输入提示风格。
+# - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.5"
+SCRIPT_VERSION="v4.3.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -241,7 +239,8 @@ docker_service_menu() {
             "4. 查看服务日志 (实时)"
         )
         _render_menu "Docker 服务管理" "${content_array[@]}"
-        read -r -p " └──> 请输入选项 [1-4] (或按 Enter 返回): " choice < /dev/tty
+        local choice
+        choice=$(_prompt_for_menu_choice "1-4")
         case "$choice" in
             1) execute_with_spinner "正在启动 Docker 服务..." run_with_sudo systemctl start docker.service ;;
             2) execute_with_spinner "正在停止 Docker 服务..." run_with_sudo systemctl stop docker.service ;;
@@ -254,7 +253,7 @@ docker_service_menu() {
             "") return ;;
             *) log_warn "无效选项 '${choice}'。"; sleep 1 ;;
         esac
-        if [[ "$choice" =~ ^[1-3]$ ]]; then press_enter_to_continue; fi
+        if [[ "$choice" =~ ^[1-4]$ ]]; then press_enter_to_continue; fi
     done
 }
 
@@ -287,6 +286,7 @@ main_menu() {
         local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
         
         local -a menu_items=()
+        local options_map=()
         if [ "$DOCKER_INSTALLED" = "true" ]; then
             menu_items+=(
                 "ℹ️ ${GREEN}Docker 已安装${NC}"
@@ -300,18 +300,19 @@ main_menu() {
                 "4. 服务管理"
                 "5. 系统清理 (Prune)"
             )
-            local options_map=("reinstall" "uninstall" "config" "service" "prune")
+            options_map=("reinstall" "uninstall" "config" "service" "prune")
         else
             menu_items+=(
                 "ℹ️ ${YELLOW}检测到 Docker 未安装${NC}"
                 ""
                 "1. 安装 Docker 和 Compose"
             )
-            local options_map=("install")
+            options_map=("install")
         fi
 
         _render_menu "Docker & Docker Compose 管理" "${menu_items[@]}"
-        read -r -p " └──> 请输入选项 [1-${#options_map[@]}] (或按 Enter 返回): " choice < /dev/tty
+        local choice
+        choice=$(_prompt_for_menu_choice "1-${#options_map[@]}")
 
         if [ -z "$choice" ]; then exit 10; fi
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#options_map[@]} ]; then
