@@ -1,6 +1,6 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.70-UI颜色更新)
-# - 更新: 集成来自 `utils.sh` 的新UI颜色和日志颜色规范。
+# 🚀 VPS 一键安装与管理脚本 (v77.70-UI与日志颜色更新)
+# - 优化: 集成 `utils.sh` 中更新的菜单提示符UI风格和日志颜色。
 # - 更新: 脚本版本号。
 # =============================================================
 
@@ -23,8 +23,8 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     # --- 启动器环境 (最小化依赖) ---
-    STARTER_BLUE='\033[0;34m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    echo_info() { echo -e "${STARTER_BLUE}[启动器]${STARTER_NC} $1" >&2; }
+    STARTER_CYAN='\033[0;36m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
+    echo_info() { echo -e "${STARTER_CYAN}[启动器]${STARTER_NC} $1" >&2; }
     echo_success() { echo -e "${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
     echo_error() { echo -e "${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
 
@@ -64,7 +64,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         echo_success "安装/更新完成。"
     fi
     
-    echo -e "${STARTER_BLUE}────────────────────────────────────────────────────────────${STARTER_NC}" >&2
+    echo -e "${STARTER_CYAN}────────────────────────────────────────────────────────────${STARTER_NC}" >&2
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
 fi
 
@@ -319,9 +319,9 @@ main() {
     log_info "脚本启动 (${SCRIPT_VERSION})" >&2
 
     if [ "${JB_RESTARTED:-false}" != "true" ]; then
-        printf "$(log_timestamp) ${GREEN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+        printf "$(log_timestamp) ${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
         local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-        printf "\r$(log_timestamp) ${BRIGHT_GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+        printf "\r$(log_timestamp) ${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local restart_needed=false
         local update_messages=""
@@ -333,7 +333,7 @@ main() {
                     restart_needed=true
                     update_messages+="主程序 (install.sh) 已更新\n"
                 else
-                    update_messages+="${BRIGHT_GREEN}${filename}${NC} 已更新\n"
+                    update_messages+="${GREEN}${filename}${NC} 已更新\n"
                 fi
             done
             if [[ " ${updated_files_list} " == *"config.json"* ]]; then
