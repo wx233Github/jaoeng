@@ -1,16 +1,16 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.8-菜单修复与增强)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.9-UI风格统一与命令修复)
 # =============================================================
-# - 增强: 项目管理列表现在显示详细信息（类型、目标、证书状态等），类似旧版表格。
-# - 修复: 恢复使用 acme.sh 的 `--list-account` 命令，以兼容旧版本环境。
-# - 修复: 在“项目管理”和“账户管理”子菜单中按回车键不再返回主菜单，而是刷新当前菜单。
+# - 修复: (关键) 将 acme.sh 的 `--list-account` 和 `--set-default-account` 命令分别修正为现代版本 `--list` 和 `--set-account`，以解决 "Unknown parameter" 错误。
+# - 优化: (UI) 全面审查并统一 UI 风格，使其与主脚本 install.sh 保持一致，包括菜单边框、日志前缀和颜色。
+# - 优化: (UI) 重构所有菜单以使用新的 `_render_menu` 函数，提供更美观和一致的显示效果。
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
 
 # --- 全局变量和颜色定义 ---
-GREEN="\033[32m"; YELLOW="\033[33m"; RED="\033[31m"; BLUE="\033[34m";
-MAGENTA="\033[35m"; CYAN="\033[36m"; WHITE="\033[37m"; RESET="\033[0m";
-ORANGE='\033[38;5;208m'; # 橙色 #FA720A
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
+ORANGE='\033[38;5;208m';
 
 LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
@@ -36,48 +36,41 @@ VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 # SECTION: 核心工具函数 (日志, 清理, 权限, IP, 输入)
 # ==============================================================================
 
+_log_prefix() {
+    if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
+        echo -n "$(date '+%Y-%m-%d %H:%M:%S') "
+    fi
+}
+
 log_message() {
-    local level="$1" message="$2" timestamp
-    timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    local level="$1" message="$2"
     local color_code="" level_prefix=""
     case "$level" in
-        INFO) color_code="${CYAN}"; level_prefix="[INFO]";;
-        WARN) color_code="${YELLOW}"; level_prefix="[WARN]";;
-        ERROR) color_code="${RED}"; level_prefix="[ERROR]";;
-        DEBUG) color_code="${BLUE}"; level_prefix="[DEBUG]";;
-        *) color_code="${RESET}"; level_prefix="[UNKNOWN]";;
+        INFO)    echo -e "$(_log_prefix)${CYAN}[信 息]${NC} ${message}";;
+        SUCCESS) echo -e "$(_log_prefix)${GREEN}[成 功]${NC} ${message}";;
+        WARN)    echo -e "$(_log_prefix)${YELLOW}[警 告]${NC} ${message}" >&2;;
+        ERROR)   echo -e "$(_log_prefix)${RED}[错 误]${NC} ${message}" >&2;;
+        DEBUG)   if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then echo -e "$(_log_prefix)${YELLOW}[DEBUG]${NC} ${message}" >&2; fi;;
+        *)       echo -e "$(_log_prefix)${NC}[UNKNOWN] ${message}";;
     esac
     
-    # 根据全局配置决定是否显示时间戳
-    local log_prefix=""
-    if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
-        log_prefix="${timestamp} "
-    fi
-    
-    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        # 交互模式下，INFO级别不显示前缀，以简化输出
-        if [ "$level" = "INFO" ]; then
-             echo -e "${log_prefix}${color_code}${message}${RESET}"
-        else
-             echo -e "${log_prefix}${color_code}${level_prefix} ${message}${RESET}"
-        fi
-    fi
-    # 文件日志总是包含所有信息
+    # 始终写入日志文件
+    local timestamp; timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
 }
 
 _prompt_for_menu_choice_local() {
     local numeric_range="$1"
     local func_options="${2:-}"
-    local prompt_text="${ORANGE}>${RESET} 选项 "
+    local prompt_text="${ORANGE}>${NC} 选项 "
 
     if [ -n "$numeric_range" ]; then
         local start="${numeric_range%%-*}"
         local end="${numeric_range##*-}"
         if [ "$start" = "$end" ]; then
-            prompt_text+="[${ORANGE}${start}${RESET}] "
+            prompt_text+="[${ORANGE}${start}${NC}] "
         else
-            prompt_text+="[${ORANGE}${start}${RESET}-${end}] "
+            prompt_text+="[${ORANGE}${start}${NC}-${end}] "
         fi
     fi
 
@@ -85,9 +78,9 @@ _prompt_for_menu_choice_local() {
         local start="${func_options%%,*}"
         local rest="${func_options#*,}"
         if [ "$start" = "$rest" ]; then
-             prompt_text+="[${ORANGE}${start}${RESET}] "
+             prompt_text+="[${ORANGE}${start}${NC}] "
         else
-             prompt_text+="[${ORANGE}${start}${RESET},${rest}] "
+             prompt_text+="[${ORANGE}${start}${NC},${rest}] "
         fi
     fi
     
@@ -98,21 +91,52 @@ _prompt_for_menu_choice_local() {
     echo "$choice"
 }
 
+generate_line() {
+    local len=${1:-40}; local char=${2:-"─"}
+    if [ "$len" -le 0 ]; then echo ""; return; fi
+    printf "%${len}s" "" | sed "s/ /$char/g"
+}
+
+_get_visual_width() {
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -z "$plain_text" ]; then echo 0; return; fi
+    if command -v python3 &>/dev/null; then
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
+    elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        echo -n "$plain_text" | wc -m
+    else
+        echo "${#plain_text}"
+    fi
+}
+
+_render_menu() {
+    local title="$1"; shift; local -a lines=("$@")
+    local max_content_width=0
+    local title_width=$(_get_visual_width "$title")
+    max_content_width=$title_width
+    for line in "${lines[@]}"; do local current_line_visual_width=$(_get_visual_width "$line"); if [ "$current_line_visual_width" -gt "$max_content_width" ]; then max_content_width="$current_line_visual_width"; fi; done
+    local box_inner_width=$max_content_width; if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
+    echo ""; echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    if [ -n "$title" ]; then local padding_total=$((box_inner_width - title_width)); local padding_left=$((padding_total / 2)); local padding_right=$((padding_total - padding_left)); echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"; fi
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"; for line in "${lines[@]}"; do echo -e "${line}"; done
+    local box_total_physical_width=$(( box_inner_width + 2 )); echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
+}
+
 cleanup_temp_files() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
 }
 trap cleanup_temp_files EXIT
 
 check_root() {
-    if [ "$(id -u)" -ne 0 ]; then log_message ERROR "❌ 请使用 root 用户运行此操作。"; return 1; fi
+    if [ "$(id -u)" -ne 0 ]; then log_message ERROR "请使用 root 用户运行此操作。"; return 1; fi
     return 0
 }
 
 get_vps_ip() {
     VPS_IP=$(curl -s https://api.ipify.org)
-    log_message INFO "🌐 VPS 公网 IP (IPv4): $VPS_IP"
+    log_message INFO "VPS 公网 IP (IPv4): $VPS_IP"
     VPS_IPV6=$(curl -s -6 https://api64.ipify.org 2>/dev/null || echo "")
-    if [[ -n "$VPS_IPV6" ]]; then log_message INFO "🌐 VPS 公网 IP (IPv6): $VPS_IPV6"; fi
+    if [[ -n "$VPS_IPV6" ]]; then log_message INFO "VPS 公网 IP (IPv6): $VPS_IPV6"; fi
 }
 
 _prompt_user_input_with_validation() {
@@ -121,19 +145,19 @@ _prompt_user_input_with_validation() {
     while true; do
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local display_default="${default_value:-$( [ "$allow_empty_input" = "true" ] && echo "空" || echo "无" )}"
-            echo -e "${YELLOW}${prompt_message} [默认: ${display_default}]: ${RESET}" >&2
+            echo -e "${YELLOW}${prompt_message} [默认: ${display_default}]: ${NC}" >&2
             read -rp "> " input_value; input_value=${input_value:-$default_value}
         else
             input_value="$default_value"
             if [[ -z "$input_value" && "$allow_empty_input" = "false" ]]; then
-                log_message ERROR "❌ 在非交互模式下，无法获取输入 '$prompt_message' 且无默认值。"
+                log_message ERROR "在非交互模式下，无法获取输入 '$prompt_message' 且无默认值。"
                 return 1
             fi
         fi
         if [[ -z "$input_value" && "$allow_empty_input" = "true" ]]; then echo ""; return 0; fi
-        if [[ -z "$input_value" ]]; then log_message ERROR "❌ 输入不能为空。"; if [ "$IS_INTERACTIVE_MODE" = "false" ]; then return 1; fi; continue; fi
+        if [[ -z "$input_value" ]]; then log_message ERROR "输入不能为空。"; if [ "$IS_INTERACTIVE_MODE" = "false" ]; then return 1; fi; continue; fi
         if [[ -n "$validation_regex" && ! "$input_value" =~ $validation_regex ]]; then
-            log_message ERROR "❌ ${validation_error_message:-输入格式不正确。}"
+            log_message ERROR "${validation_error_message:-输入格式不正确。}"
             if [ "$IS_INTERACTIVE_MODE" = "false" ]; then return 1; fi; continue
         fi
         echo "$input_value"; return 0
@@ -144,10 +168,10 @@ _confirm_action_or_exit_non_interactive() {
     local prompt_message="$1"
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
         local choice
-        read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${RESET}")" choice
-        [[ "$choice" =~ ^[Yy]$ ]] && return 0 || return 1
+        read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${NC}")" choice
+        [[ "$choice" =~ ^([Yy]|)$ ]] && return 0 || return 1
     fi
-    log_message ERROR "❌ 在非交互模式下，需要用户确认才能继续 '$prompt_message'。操作已取消。"
+    log_message ERROR "在非交互模式下，需要用户确认才能继续 '$prompt_message'。操作已取消。"
     return 1
 }
 
@@ -156,7 +180,7 @@ _confirm_action_or_exit_non_interactive() {
 # ==============================================================================
 
 initialize_environment() {
-    log_message INFO "--- 脚本开始执行: $(date +"%Y-%m-%d %H:%M:%S") ---"
+    log_message INFO "脚本开始执行: $(date +"%Y-%m-%d %H:%M:%S")"
     ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
@@ -173,44 +197,44 @@ install_dependencies() {
     for pkg in $deps; do
         if ! dpkg -s "$pkg" &>/dev/null; then
             if [ "$missing_deps_found" -eq 0 ]; then
-                log_message INFO "🔍 发现缺失依赖，开始检查并安装 (适用于 Debian/Ubuntu)..."
-                if ! apt update -y >/dev/null 2>&1; then log_message ERROR "❌ apt update 失败。"; return 1; fi
+                log_message INFO "发现缺失依赖，开始检查并安装 (适用于 Debian/Ubuntu)..."
+                if ! apt update -y >/dev/null 2>&1; then log_message ERROR "apt update 失败。"; return 1; fi
                 missing_deps_found=1
             fi
             log_message WARN "正在安装 $pkg..."
             if ! apt install -y "$pkg" >/dev/null 2>&1; then
-                log_message ERROR "❌ 安装 $pkg 失败。"; failed=1
+                log_message ERROR "安装 $pkg 失败。"; failed=1
             fi
         fi
     done
     if [ "$failed" -eq 1 ]; then return 1; fi
     if [ "$missing_deps_found" -eq 1 ]; then
-        log_message INFO "✅ 所有依赖检查完毕。"
+        log_message SUCCESS "所有依赖检查完毕。"
     fi
     return 0
 }
 
 install_acme_sh() {
-    if [ -f "$ACME_BIN" ]; then log_message INFO "✔ acme.sh 已就绪 ($ACME_BIN)。"; return 0; fi
-    log_message WARN "⚠️ acme.sh 未安装，正在安装..."
+    if [ -f "$ACME_BIN" ]; then log_message SUCCESS "acme.sh 已就绪 ($ACME_BIN)。"; return 0; fi
+    log_message WARN "acme.sh 未安装，正在安装..."
     local email; email=$(_prompt_user_input_with_validation "请输入用于ACME的邮箱(可留空)" "" "" "" "true")
     local cmd="curl https://get.acme.sh | sh"
     if [ -n "$email" ]; then cmd+=" -s email=$email"; fi
-    if ! eval "$cmd"; then log_message ERROR "❌ acme.sh 安装失败！"; return 1; fi
+    if ! eval "$cmd"; then log_message ERROR "acme.sh 安装失败！"; return 1; fi
     initialize_environment # Re-initialize to find the new acme.sh path
-    log_message INFO "✔ acme.sh 安装成功并已就绪。"
+    log_message SUCCESS "acme.sh 安装成功并已就绪。"
     return 0
 }
 
 control_nginx() {
     local action="$1"
     if ! nginx -t >/dev/null 2>&1; then
-        log_message ERROR "❌ Nginx 配置语法错误！"; nginx -t; return 1;
+        log_message ERROR "Nginx 配置语法错误！"; nginx -t; return 1;
     fi
     if ! systemctl "$action" nginx; then
-        log_message ERROR "❌ Nginx ${action} 失败！请检查服务状态。"; return 1;
+        log_message ERROR "Nginx ${action} 失败！请检查服务状态。"; return 1;
     fi
-    log_message INFO "✅ Nginx 服务已成功 ${action}。"
+    log_message SUCCESS "Nginx 服务已成功 ${action}。"
     return 0
 }
 
@@ -237,7 +261,7 @@ _save_project_json() {
         log_message DEBUG "元数据已为 $domain_to_save 保存。"
         return 0
     else
-        log_message ERROR "❌ 保存元数据 $domain_to_save 失败！"; rm -f "$temp_file"; return 1
+        log_message ERROR "保存元数据 $domain_to_save 失败！"; rm -f "$temp_file"; return 1
     fi
 }
 
@@ -247,10 +271,10 @@ _delete_project_json() {
     jq "del(.[] | select(.domain == \"$domain_to_delete\"))" "$PROJECTS_METADATA_FILE" > "$temp_file"
     if [ $? -eq 0 ]; then
         mv "$temp_file" "$PROJECTS_METADATA_FILE"
-        log_message INFO "✅ 已从元数据中移除项目 $domain_to_delete。"
+        log_message SUCCESS "已从元数据中移除项目 $domain_to_delete。"
         return 0
     else
-        log_message ERROR "❌ 从元数据中移除项目 $domain_to_delete 失败！"; rm -f "$temp_file"; return 1
+        log_message ERROR "从元数据中移除项目 $domain_to_delete 失败！"; rm -f "$temp_file"; return 1
     fi
 }
 
@@ -302,14 +326,14 @@ ${snippet_content}
 }
 EOF
     ln -sf "$conf_path" "$NGINX_SITES_ENABLED_DIR/"
-    log_message INFO "✅ Nginx 配置文件已为 $domain 生成并启用。"
+    log_message SUCCESS "Nginx 配置文件已为 $domain 生成并启用。"
 }
 
 _remove_and_disable_nginx_config() {
     local domain="$1"
     rm -f "$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     rm -f "$NGINX_SITES_ENABLED_DIR/$domain.conf"
-    log_message INFO "✅ Nginx 配置文件已为 $domain 移除并禁用。"
+    log_message SUCCESS "Nginx 配置文件已为 $domain 移除并禁用。"
 }
 
 # ==============================================================================
@@ -343,17 +367,17 @@ EOF
 
     local acme_log; acme_log=$(mktemp)
     if ! "${issue_cmd[@]}" > "$acme_log" 2>&1; then
-        log_message ERROR "❌ 证书申请失败 for $domain!"; cat "$acme_log"; rm -f "$acme_log"
+        log_message ERROR "证书申请失败 for $domain!"; cat "$acme_log"; rm -f "$acme_log"
         if [ "$method" = "http-01" ]; then _remove_and_disable_nginx_config "acme_challenge"; control_nginx reload >/dev/null 2>&1; fi
         return 1
     fi
     rm -f "$acme_log"
     if [ "$method" = "http-01" ]; then _remove_and_disable_nginx_config "acme_challenge"; fi
 
-    log_message INFO "✅ 证书签发成功, 正在安装..."
+    log_message INFO "证书签发成功, 正在安装..."
     local install_cmd=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key_file" --fullchain-file "$cert_file" --reloadcmd "true")
     if [ "$wildcard" = "y" ]; then install_cmd+=("-d" "*.$domain"); fi
-    if ! "${install_cmd[@]}"; then log_message ERROR "❌ 证书安装失败 for $domain!"; return 1; fi
+    if ! "${install_cmd[@]}"; then log_message ERROR "证书安装失败 for $domain!"; return 1; fi
     
     return 0
 }
@@ -417,9 +441,9 @@ _display_projects_table() {
     local PROJECTS_ARRAY_RAW="$1"
     local INDEX=0
 
-    printf "${BLUE}%-4s │ %-25s │ %-12s │ %-20s │ %-10s │ %-5s │ %3s天 │ %s${RESET}\n" \
+    printf "${BLUE}%-4s │ %-25s │ %-12s │ %-20s │ %-10s │ %-5s │ %3s天 │ %s${NC}\n" \
         "ID" "域名" "类型" "目标 (端口)" "证书状态" "泛域" "剩余" "到期时间"
-    printf "${BLUE}─────┼───────────────────────────┼──────────────┼──────────────────────┼────────────┼───────┼───────┼────────────────────${RESET}\n"
+    printf "${BLUE}─────┼───────────────────────────┼──────────────┼──────────────────────┼────────────┼───────┼───────┼────────────────────${NC}\n"
 
     echo "$PROJECTS_ARRAY_RAW" | jq -c '.[]' | while read -r project_json; do
         INDEX=$((INDEX + 1))
@@ -465,7 +489,7 @@ _display_projects_table() {
             fi
         fi
 
-        printf "${MAGENTA}%-4s${RESET} │ %-25s │ %-12s │ %-20s │ ${STATUS_COLOR}%-10s${RESET} │ %-5s │ %3s天 │ %s\n" \
+        printf "%-4s │ %-25s │ %-12s │ %-20s │ ${STATUS_COLOR}%-10s${NC} │ %-5s │ %3s天 │ %s\n" \
             "$INDEX" "$DOMAIN" "$PROJECT_TYPE" "$PROJECT_DETAIL_DISPLAY" "$STATUS_TEXT" "$WILDCARD_DISPLAY" "$LEFT_DAYS" "$FORMATTED_END_DATE"
     done
 }
@@ -482,17 +506,17 @@ configure_nginx_projects() {
     fi
 
     if ! _issue_and_install_certificate "$new_project_json"; then
-        log_message ERROR "❌ 证书流程失败，配置未应用。"; return 1;
+        log_message ERROR "证书流程失败，配置未应用。"; return 1;
     fi
     
     _write_and_enable_nginx_config "$domain" "$new_project_json"
     if ! control_nginx reload; then
         _remove_and_disable_nginx_config "$domain"
-        log_message ERROR "❌ Nginx重载失败，配置已回滚。"; return 1;
+        log_message ERROR "Nginx重载失败，配置已回滚。"; return 1;
     fi
 
     if ! _save_project_json "$new_project_json"; then return 1; fi
-    log_message INFO "✅ 项目 $domain 配置成功！"
+    log_message SUCCESS "项目 $domain 配置成功！"
     return 0
 }
 
@@ -523,16 +547,16 @@ _handle_edit_project() {
     local updated_project_json; updated_project_json=$(_gather_project_details "$current_project_json") || return 1
     
     if ! _issue_and_install_certificate "$updated_project_json"; then
-        log_message ERROR "❌ 证书流程失败，配置未更新。"; return 1;
+        log_message ERROR "证书流程失败，配置未更新。"; return 1;
     fi
     
     _write_and_enable_nginx_config "$domain" "$updated_project_json"
     if ! control_nginx reload; then
-        log_message ERROR "❌ Nginx重载失败，请手动检查。"; return 1;
+        log_message ERROR "Nginx重载失败，请手动检查。"; return 1;
     fi
 
     if ! _save_project_json "$updated_project_json"; then return 1; fi
-    log_message INFO "✅ 项目 $domain 更新成功！"
+    log_message SUCCESS "项目 $domain 更新成功！"
 }
 
 _handle_manage_snippets() {
@@ -553,7 +577,7 @@ _handle_manage_snippets() {
     fi
     
     _save_project_json "$updated_project_json"
-    log_message INFO "✅ 片段配置已更新 for $domain."
+    log_message SUCCESS "片段配置已更新 for $domain."
 }
 
 _handle_import_project() {
@@ -569,28 +593,34 @@ _handle_import_project() {
     local imported_project_json; imported_project_json=$(_gather_project_details "{\"domain\":\"$domain\"}") || return 1
     
     _save_project_json "$imported_project_json"
-    log_message INFO "✅ 项目 $domain 已导入。建议立即使用'编辑'功能检查并重新申请证书以确保续期正常。"
+    log_message SUCCESS "项目 $domain 已导入。建议立即使用'编辑'功能检查并重新申请证书以确保续期正常。"
 }
 
 manage_configs() {
     while true; do
-        log_message INFO "--- 📜 项目管理 ---"
         local projects; projects=$(jq . "$PROJECTS_METADATA_FILE")
         if [ "$(echo "$projects" | jq 'length')" -eq 0 ]; then
             log_message WARN "当前无任何项目。";
-            # 提供导入选项
             if _confirm_action_or_exit_non_interactive "是否导入一个现有项目？"; then
                 _handle_import_project
-                continue # 导入后重新循环
+                continue 
             else
-                return 10; # 返回主菜单
+                return 10;
             fi
         fi
         
+        _render_menu "项 目 管 理"
         _display_projects_table "$projects"
         
-        echo -e "\n${GREEN}1. 编辑项目${RESET}  ${GREEN}2. 手动续期${RESET}  ${RED}3. 删除项目${RESET}"
-        echo -e "${GREEN}4. 管理自定义片段${RESET}  ${GREEN}5. 导入现有项目${RESET}"
+        local -a menu_items=(
+            "1. ✏️ 编辑项目"
+            "2. 🔄 手动续期"
+            "3. 🗑️ 删除项目"
+            "4. ⚙️ 管理自定义片段"
+            "5. 📥 导入现有项目"
+        )
+        for item in "${menu_items[@]}"; do echo -e "$item"; done
+        echo -e "${GREEN}$(generate_line 58 "─")${NC}"
 
         local choice
         choice=$(_prompt_for_menu_choice_local "1-5")
@@ -635,14 +665,17 @@ check_and_auto_renew_certs() {
 
 manage_acme_accounts() {
     while true; do
-        log_message INFO "--- 👤 acme.sh 账户管理 ---"
-        echo -e "${GREEN}1. 查看已注册账户${RESET}"
-        echo -e "${GREEN}2. 注册新账户${RESET}"
-        echo -e "${GREEN}3. 设置默认账户${RESET}"
+        local -a menu_items=(
+            "1. 📜 查看已注册账户"
+            "2. ➕ 注册新账户"
+            "3. ⭐ 设置默认账户"
+        )
+        _render_menu "acme.sh 账户管理" "${menu_items[@]}"
+        
         local choice
         choice=$(_prompt_for_menu_choice_local "1-3")
         case "$choice" in
-            1) "$ACME_BIN" --list-account ;;
+            1) "$ACME_BIN" --list ;;
             2)
                 local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || continue
                 local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "1" "^[12]$" "" "false")
@@ -650,9 +683,9 @@ manage_acme_accounts() {
                 "$ACME_BIN" --register-account -m "$email" --server "$server_url"
                 ;;
             3)
-                "$ACME_BIN" --list-account
+                "$ACME_BIN" --list
                 local email; email=$(_prompt_user_input_with_validation "请输入要设为默认的邮箱" "" "" "邮箱格式无效" "false") || continue
-                "$ACME_BIN" --set-default-account -m "$email"
+                "$ACME_BIN" --set-account -m "$email"
                 ;;
             "") return 10 ;;
             *) log_message ERROR "无效选择。" ;;
@@ -662,14 +695,14 @@ manage_acme_accounts() {
 
 main_menu() {
     while true; do
-        echo -e "\n${CYAN}╔═══════════════════════════════════════╗${RESET}"
-        echo -e "${CYAN}║     🚀 Nginx/HTTPS 证书管理主菜单     ║${RESET}"
-        echo -e "${CYAN}╚═══════════════════════════════════════╝${RESET}"
-        echo -e "${GREEN}1. 配置新的 Nginx 反向代理和 HTTPS 证书${RESET}"
-        echo -e "${GREEN}2. 查看与管理已配置项目 (域名、端口、证书)${RESET}"
-        echo -e "${GREEN}3. 检查并自动续期所有证书${RESET}"
-        echo -e "${GREEN}4. 管理 acme.sh 账户${RESET}"
-        echo "-------------------------------------------"
+        local -a menu_items=(
+            "1. 🚀 配置新的 Nginx 反向代理和 HTTPS 证书"
+            "2. 📂 查看与管理已配置项目"
+            "3. 🔄 检查并自动续期所有证书"
+            "4. 👤 管理 acme.sh 账户"
+        )
+        _render_menu "Nginx / HTTPS 证书管理主菜单" "${menu_items[@]}"
+
         local choice
         choice=$(_prompt_for_menu_choice_local "1-4")
         case "$choice" in
