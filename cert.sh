@@ -1,375 +1,313 @@
-#!/bin/bash
-# 🚀 SSL 证书管理助手（acme.sh）
-# 功能：
-# - 申请证书（ZeroSSL / Let’s Encrypt）
-# - 彩色高亮查看已申请证书状态
-# - 自动续期 / 删除证书
-# - 服务 reload 检测
-# - 80端口检查 + socat安装
-# - 泛域名证书
-# - 自定义证书路径
+# =============================================================
+# 🚀 SSL 证书管理助手 (acme.sh) (v2.0.0-重构与UI统一)
+# - 重构: 脚本完全重写，以集成 utils.sh 并实现模块化功能。
+# - 优化: 全面统一UI风格，包括菜单、日志和输入提示。
+# - 修复: 移除了冗余的退出选项，并采用标准返回逻辑。
+# - 增强: 标准化了权限处理，所有特权操作均使用 run_with_sudo。
+# =============================================================
 
-set -e
+# --- 脚本元数据 ---
+SCRIPT_VERSION="v2.0.0"
 
-# --- 全局变量和颜色定义 ---
+# --- 严格模式与环境设定 ---
+set -eo pipefail
+export LANG=${LANG:-en_US.UTF_8}
+export LC_ALL=${LC_ALL:-C.UTF_8}
+
+# --- 加载通用工具函数库 ---
+UTILS_PATH="/opt/vps_install_modules/utils.sh"
+if [ -f "$UTILS_PATH" ]; then
+    # shellcheck source=/dev/null
+    source "$UTILS_PATH"
+else
+    # 在没有 utils.sh 的情况下提供基础的日志功能
+    log_err() { echo "[错误] $*" >&2; }
+    log_info() { echo "[信息] $*"; }
+    log_warn() { echo "[警告] $*"; }
+    log_success() { echo "[成功] $*"; }
+    _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
+    press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
+    confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
+    GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
+    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
+    exit 1
+fi
+
+# --- 确保 run_with_sudo 函数可用 ---
+if ! declare -f run_with_sudo &>/dev/null; then
+  log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
+  exit 1
+fi
+
+# --- 全局变量 ---
 ACME_BIN="$HOME/.acme.sh/acme.sh"
-export PATH="$HOME/.acme.sh:$PATH"
 
-GREEN="\033[32m"
-YELLOW="\033[33m"
-RED="\033[31m"
-RESET="\033[0m"
+# =============================================================
+# SECTION: 核心功能函数
+# =============================================================
 
-# --- 主菜单 ---
-menu() {
-    echo "=============================="
-    echo "🔐 SSL 证书管理脚本"
-    echo "=============================="
-    echo "1. 申请新证书"
-    echo "2. 查看已申请证书（彩色高亮 + 真实状态）"
-    echo "3. 手动续期证书"
-    echo "4. 删除证书"
-    echo "0. 退出"
-    echo "=============================="
+_check_dependencies() {
+    if ! command -v socat &>/dev/null; then
+        log_warn "未检测到 socat，它是 HTTP 验证所必需的。"
+        if confirm_action "是否尝试自动安装 socat?"; then
+            if command -v apt-get &>/dev/null; then
+                run_with_sudo apt-get update && run_with_sudo apt-get install -y socat
+            elif command -v yum &>/dev/null; then
+                run_with_sudo yum install -y socat
+            else
+                log_err "无法自动安装 socat，请手动安装后重试。"
+                return 1
+            fi
+            log_success "socat 安装成功。"
+        else
+            log_warn "用户取消安装 socat。HTTP 验证模式可能无法使用。"
+        fi
+    fi
+
+    if [[ ! -f "$ACME_BIN" ]]; then
+        log_warn "首次运行，正在安装 acme.sh ..."
+        local email
+        email=$(_prompt_user_input "请输入一个邮箱用于 acme.sh 注册 (推荐): " "")
+        local cmd="curl https://get.acme.sh | sh"
+        if [ -n "$email" ]; then
+            cmd+=" -s email=$email"
+        fi
+        if ! eval "$cmd"; then
+            log_err "acme.sh 安装失败！"
+            return 1
+        fi
+        log_success "acme.sh 安装成功。"
+    fi
+    # 确保 PATH 更新
+    export PATH="$HOME/.acme.sh:$PATH"
 }
 
-# --- 主循环 ---
-while true; do
-    menu
-    read -rp "请输入选项: " CHOICE
-    case "$CHOICE" in
-        1)
-            # ---------- 1. 申请新证书 ----------
+_apply_for_certificate() {
+    log_info "--- 申请新证书 ---"
+    
+    local DOMAIN SERVER_IP DOMAIN_IP
+    while true; do
+        DOMAIN=$(_prompt_user_input "请输入你的主域名 (例如 example.com): ")
+        if [ -z "$DOMAIN" ]; then log_warn "域名不能为空。"; continue; fi
 
-            # 域名输入与验证
-            while true; do
-                read -rp "请输入你的主域名 (例如 example.com): " DOMAIN
-                [[ -z "$DOMAIN" ]] && { echo -e "${RED}❌ 域名不能为空！${RESET}"; continue; }
+        log_info "正在验证域名解析..."
+        SERVER_IP=$(curl -s https://api.ipify.org)
+        DOMAIN_IP=$(dig +short "$DOMAIN" A | head -n1)
 
-                SERVER_IP=$(curl -s https://api.ipify.org)
-                DOMAIN_IP=$(dig +short "$DOMAIN" | head -n1)
+        if [ -z "$DOMAIN_IP" ]; then
+            log_err "无法获取域名解析IP，请检查域名是否正确或DNS是否已生效。"
+            if ! confirm_action "是否要忽略此错误并继续？"; then return; fi
+            break
+        elif [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
+            log_warn "域名解析与本机IP不符！"
+            log_info "  服务器公网IP: $SERVER_IP"
+            log_info "  域名解析到的IP: $DOMAIN_IP"
+            if ! confirm_action "这可能导致证书申请失败。是否强制继续？"; then continue; fi
+            log_warn "已选择强制继续申请。"
+            break
+        else
+            log_success "域名解析正确。"
+            break
+        fi
+    done
 
-                if [[ -z "$DOMAIN_IP" ]]; then
-                    echo -e "${RED}❌ 无法获取域名解析IP，请检查域名是否正确或DNS是否已生效。${RESET}"
-                    continue
-                fi
+    local USE_WILDCARD=""
+    if confirm_action "是否申请泛域名证书 (*.$DOMAIN)？"; then
+        USE_WILDCARD="*.$DOMAIN"
+    fi
 
-                if [[ "$DOMAIN_IP" != "$SERVER_IP" ]]; then
-                    echo -e "${RED}❌ 域名解析错误！${RESET}"
-                    echo "   服务器公网IP: $SERVER_IP"
-                    echo "   域名解析到的IP: $SERVER_IP"
-                    echo "   请确保域名A记录指向本服务器。"
-                    read -rp "域名解析与本机IP不符，可能导致证书申请失败。是否继续？[y/N]: " PROCEED_ANYWAY
-                    if [[ "$PROCEED_ANYWAY" =~ ^[Yy]$ || -z "$PROCEED_ANYWAY" ]]; then
-                        echo -e "${YELLOW}⚠️ 已选择继续申请。请务必确认此操作的风险。${RESET}"
-                        break # 继续下一步
-                    else
-                        continue # 返回重新输入域名
-                    fi
-                else
-                    echo -e "${GREEN}✅ 域名解析正确。${RESET}"
-                    break # 继续下一步
-                fi
-            done
+    local INSTALL_PATH
+    INSTALL_PATH=$(_prompt_user_input "请输入证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
+    local RELOAD_CMD
+    RELOAD_CMD=$(_prompt_user_input "证书更新后执行的服务重载命令 [默认: systemctl reload nginx]: " "systemctl reload nginx")
 
-            # 泛域名选项
-            read -rp "是否申请泛域名证书 (*.$DOMAIN)？[y/N]: " USE_WILDCARD
-            WILDCARD=""
-            [[ "$USE_WILDCARD" =~ ^[Yy]$ ]] && WILDCARD="*.$DOMAIN"
-
-            # 证书路径和服务 reload 命令
-            read -rp "证书保存路径 [默认 /etc/ssl/$DOMAIN]: " INSTALL_PATH
-            INSTALL_PATH=${INSTALL_PATH:-/etc/ssl/$DOMAIN}
-            read -rp "证书更新后执行服务 reload [默认 systemctl reload nginx]: " RELOAD_CMD
-            RELOAD_CMD=${RELOAD_CMD:-"systemctl reload nginx"}
-
-
-            # CA选择
-            echo "请选择证书颁发机构 (CA):"
-            echo "1) ZeroSSL (默认)"
-            echo "2) Let’s Encrypt"
-            while true; do
-                read -rp "请输入序号 [1]: " CA_CHOICE
-                CA_CHOICE=${CA_CHOICE:-1}
-                case $CA_CHOICE in
-                    1) CA="zerossl"; break ;;
-                    2) CA="letsencrypt"; break ;;
-                    *) echo -e "${RED}❌ 输入错误，请输入 1 或 2。${RESET}" ;;
-                esac
-            done
-
-            # 验证方式选择
-            echo "请选择验证方式:"
-            echo "1) standalone (HTTP验证, 需开放80端口，推荐)"
-            echo "2) dns_cf (Cloudflare DNS API)"
-            echo "3) dns_ali (阿里云 DNS API)"
-            while true; do
-                read -rp "请输入序号 [1]: " VERIFY_METHOD
-                VERIFY_METHOD=${VERIFY_METHOD:-1}
-                case $VERIFY_METHOD in
-                    1) METHOD="standalone"; break ;;
-                    2) METHOD="dns_cf"; break ;;
-                    3) METHOD="dns_ali"; break ;;
-                    *) echo -e "${RED}❌ 输入错误，请输入 1、2 或 3。${RESET}" ;;
-                esac
-            done
-
-            # 安装 acme.sh (如果需要)
-            if [[ ! -f "$ACME_BIN" ]]; then
-                echo "首次运行，正在安装 acme.sh ..."
-                curl https://get.acme.sh | sh -s email=my@example.com
-                ACME_BIN="$HOME/.acme.sh/acme.sh" # 重新定义路径
-            fi
-            
-            # 环境准备
-            if [[ "$METHOD" == "standalone" ]]; then
-                # 检查80端口
-                echo "🔍 检查 80 端口 ..."
-                if ss -tuln | grep -q ":80\s"; then
-                    echo -e "${RED}❌ 80端口已被占用，standalone 模式需要空闲的80端口。${RESET}"
-                    ss -tuln | grep ":80\s"
-                    exit 1
-                fi
-                echo -e "${GREEN}✅ 80端口空闲。${RESET}"
-
-                # 检查并安装 socat
-                if ! command -v socat &>/dev/null; then
-                    echo "⚠️ 未检测到 socat，正在尝试安装..."
-                    if command -v apt-get &>/dev/null; then
-                        apt-get update && apt-get install -y socat
-                    elif command -v yum &>/dev/null; then
-                        yum install -y socat
-                    elif command -v dnf &>/dev/null; then
-                        dnf install -y socat
-                    else
-                        echo -e "${RED}❌ 无法自动安装 socat，请手动安装后重试。${RESET}"
-                        exit 1
-                    fi
-                fi
-
-                # 注册 ZeroSSL 邮箱 (如果需要)
-                if [[ "$CA" == "zerossl" ]]; then
-                    # 检查是否已经注册过 zerossl 账户
-                    if ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-                         read -rp "请输入用于注册 ZeroSSL 的邮箱: " ACCOUNT_EMAIL
-                         [[ -z "$ACCOUNT_EMAIL" ]] && { echo -e "${RED}❌ 邮箱不能为空！${RESET}"; exit 1; }
-                         "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL" --server "$CA"
-                    else
-                         echo -e "${GREEN}✅ ZeroSSL 账户已注册。${RESET}"
-                    fi
-                fi
-            fi
-
-            # DNS API 环境变量提示
-            if [[ "$METHOD" == "dns_cf" ]]; then
-                echo -e "${YELLOW}⚠️ 请确保已设置环境变量 CF_Token 和 CF_Account_ID。${RESET}"
-            elif [[ "$METHOD" == "dns_ali" ]]; then
-                echo -e "${YELLOW}⚠️ 请确保已设置环境变量 Ali_Key 和 Ali_Secret。${RESET}"
-            fi
-
-            # --- 核心修改：申请与安装证书 ---
-            echo "🚀 正在申请证书，请稍候..."
-            ISSUE_CMD="$ACME_BIN --issue -d '$DOMAIN' --server '$CA' --'$METHOD'"
-            if [[ -n "$WILDCARD" ]]; then
-                ISSUE_CMD="$ACME_BIN --issue -d '$DOMAIN' -d '$WILDCARD' --server '$CA' --'$METHOD'"
-            fi
-            
-            # 执行申请命令
-            eval "$ISSUE_CMD"
-
-            # 判断证书文件是否成功生成 (优先检查 ECC 目录，再检查普通目录)
-            CRT_FILE_ACME_ECC="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-            KEY_FILE_ACME_ECC="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
-            CRT_FILE_ACME_NORMAL="$HOME/.acme.sh/$DOMAIN/fullchain.cer"
-            KEY_FILE_ACME_NORMAL="$HOME/.acme.sh/$DOMAIN/$DOMAIN.key"
-
-            CERT_GENERATED=false
-            if [[ -f "$CRT_FILE_ACME_ECC" && -f "$KEY_FILE_ACME_ECC" ]]; then
-                CERT_GENERATED=true
-            elif [[ -f "$CRT_FILE_ACME_NORMAL" && -f "$KEY_FILE_ACME_NORMAL" ]]; then
-                CERT_GENERATED=true
-            fi
-            
-            if [[ "$CERT_GENERATED" == true ]]; then
-                echo -e "${GREEN}✅ 证书生成成功，正在安装...${RESET}"
-                
-                # 创建证书保存路径（如果不存在）
-                mkdir -p "$INSTALL_PATH"
-
-                # 安装证书到指定路径
-                "$ACME_BIN" --install-cert -d "$DOMAIN" --ecc \
-                    --key-file       "$INSTALL_PATH/$DOMAIN.key" \
-                    --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
-                    --reloadcmd      "$RELOAD_CMD"
-
-                # 保存第一次成功申请的时间
-                APPLY_TIME_FILE="$INSTALL_PATH/.apply_time"
-                if [[ ! -f "$APPLY_TIME_FILE" ]]; then
-                    date +"%Y-%m-%d %H:%M:%S" > "$APPLY_TIME_FILE"
-                fi
-
-                echo -e "${GREEN}✅ 证书申请并安装成功！${RESET}"
-                echo "   证书路径: $INSTALL_PATH"
-            else
-                echo -e "${RED}❌ 证书申请失败！请检查端口、域名解析或API密钥，并查看上方的错误日志。${RESET}"
-                exit 1
-            fi
-            ;;
-        2)
-            # ---------- 2. 查看已申请证书 ----------
-            echo "=============================================="
-            echo "📜 已安装证书列表 (支持 /etc/ssl/ + ~/.acme.sh/)"
-            echo "=============================================="
-
-            SCAN_DIRS=("/etc/ssl" "$HOME/.acme.sh")
-            FOUND_CERT=false
-            declare -A listed_domains # 用于记录已经显示过的域名
-
-            for BASE_DIR in "${SCAN_DIRS[@]}"; do
-                [[ -d "$BASE_DIR" ]] || continue
-
-                # 遍历目录，寻找可能的证书路径
-                # 注意：acme.sh 的目录结构可能是 ~/.acme.sh/your.domain_ecc/ 或 ~/.acme.sh/your.domain/
-                for CERT_DIR in "$BASE_DIR"/*; do
-                    [[ -d "$CERT_DIR" ]] || continue # 跳过非目录文件
-                    
-                    # 尝试从目录名获取域名，并处理 _ecc 后缀
-                    CURRENT_DOMAIN=$(basename "$CERT_DIR")
-                    if [[ "$CURRENT_DOMAIN" =~ ^(.*)_ecc$ ]]; then
-                        CURRENT_DOMAIN="${BASH_REMATCH[1]}"
-                    fi
-
-                    # 如果域名已经处理过（来自 /etc/ssl），则跳过本次 acme.sh 目录的检查
-                    if [[ "$BASE_DIR" == "$HOME/.acme.sh" && -n "${listed_domains[$CURRENT_DOMAIN]}" ]]; then
-                        continue
-                    fi
-
-                    CRT_FILE=""
-                    KEY_FILE=""
-                    APPLY_TIME_FILE=""
-
-                    # --- 根据目录类型确定证书和密钥文件路径 ---
-                    if [[ "$BASE_DIR" == "/etc/ssl" ]]; then
-                        if [[ -f "$CERT_DIR/$CURRENT_DOMAIN.crt" && -f "$CERT_DIR/$CURRENT_DOMAIN.key" ]]; then
-                            CRT_FILE="$CERT_DIR/$CURRENT_DOMAIN.crt"
-                            KEY_FILE="$CERT_DIR/$CURRENT_DOMAIN.key"
-                            APPLY_TIME_FILE="$CERT_DIR/.apply_time"
-                        fi
-                    elif [[ "$BASE_DIR" == "$HOME/.acme.sh" ]]; then
-                        # acme.sh 存储证书在如 ~/.acme.sh/domain_ecc/ 或 ~/.acme.sh/domain/ 的目录中。
-                        # CERT_DIR 已经是这些目录之一。
-                        # 我们需要在当前 CERT_DIR 中查找 fullchain.cer 和 key 文件 (通常以基础域名命名)。
-                        if [[ -f "$CERT_DIR/fullchain.cer" && -f "$CERT_DIR/$CURRENT_DOMAIN.key" ]]; then
-                            CRT_FILE="$CERT_DIR/fullchain.cer"
-                            KEY_FILE="$CERT_DIR/$CURRENT_DOMAIN.key"
-                        fi
-                        # 不需要再尝试跳转到其他 _ecc 或非 _ecc 目录，外层循环会处理所有目录。
-                    fi
-
-
-                    if [[ -f "$CRT_FILE" && -f "$KEY_FILE" ]]; then
-                        FOUND_CERT=true
-                        listed_domains["$CURRENT_DOMAIN"]=1 # 标记此域名已处理
-
-                        APPLY_TIME=""
-                        if [[ -f "$APPLY_TIME_FILE" ]]; then # 优先从自定义文件获取
-                            APPLY_TIME=$(cat "$APPLY_TIME_FILE" 2>/dev/null)
-                        fi
-
-                        if [[ -z "$APPLY_TIME" ]]; then
-                            # 如果自定义文件不存在，则从证书的 Not Before 字段获取
-                            CERT_START_DATE_RAW=$(openssl x509 -in "$CRT_FILE" -noout -startdate 2>/dev/null | cut -d= -f2)
-                            if [[ -n "$CERT_START_DATE_RAW" ]]; then
-                                if date --version >/dev/null 2>&1; then # GNU date
-                                    APPLY_TIME=$(date -d "$CERT_START_DATE_RAW" +"%Y-%m-%d %H:%M:%S")
-                                else # BSD date (macOS)
-                                    APPLY_TIME=$(date -j -f "%b %d %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
-                                    if [[ -z "$APPLY_TIME" ]]; then
-                                        APPLY_TIME=$(date -j -f "%b %e %T %Y %Z" "$CERT_START_DATE_RAW" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
-                                    fi
-                                fi
-                                APPLY_TIME="${APPLY_TIME:-未知} (从证书)"
-                            else
-                                APPLY_TIME="未知"
-                            fi
-                        fi
-
-                        END_DATE=$(openssl x509 -enddate -noout -in "$CRT_FILE" 2>/dev/null | cut -d= -f2)
-                        
-                        # 兼容不同系统的date命令，并格式化到期时间为 YYYY年MM月DD日
-                        if date --version >/dev/null 2>&1; then # GNU date
-                            END_TS=$(date -d "$END_DATE" +%s)
-                            FORMATTED_END_DATE=$(date -d "$END_DATE" +"%Y年%m月%d日")
-                        else # BSD date (macOS)
-                            END_TS=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%s")
-                            FORMATTED_END_DATE=$(date -j -f "%b %d %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
-                            if [[ -z "$FORMATTED_END_DATE" ]]; then
-                                FORMATTED_END_DATE=$(date -j -f "%b %e %T %Y %Z" "$END_DATE" "+%Y年%m月%d日" 2>/dev/null)
-                            fi
-                            FORMATTED_END_DATE="${FORMATTED_END_DATE:-未知日期}"
-                        fi
-                        
-                        NOW_TS=$(date +%s)
-                        LEFT_DAYS=$(( (END_TS - NOW_TS) / 86400 ))
-
-                        if (( LEFT_DAYS < 0 )); then
-                            STATUS_COLOR="$RED"
-                            STATUS_TEXT="已过期"
-                        elif (( LEFT_DAYS <= 30 )); then
-                            STATUS_COLOR="$YELLOW"
-                            STATUS_TEXT="即将到期"
-                        else
-                            STATUS_COLOR="$GREEN"
-                            STATUS_TEXT="有效"
-                        fi
-
-                        # 确保显示正确的域名（不带 _ecc 后缀）
-                        printf "${STATUS_COLOR}[来源:%-15s] 域名: %-25s | 状态: %-5s | 剩余: %3d天 | 到期时间: %s | 首次申请: %s${RESET}\n" \
-                            "$(basename "$BASE_DIR")" "$CURRENT_DOMAIN" "$STATUS_TEXT" "$LEFT_DAYS" "$FORMATTED_END_DATE" "$APPLY_TIME"
-                    fi
-                done
-            done
-
-            if [[ "$FOUND_CERT" == false ]]; then
-                echo "❌ 没有找到任何证书。"
-            fi
-            echo "=============================================="
-            ;;
-        3)
-            # ---------- 3. 手动续期证书 ----------
-            read -rp "请输入要续期的域名: " DOMAIN
-            [[ -z "$DOMAIN" ]] && { echo -e "${RED}❌ 域名不能为空！${RESET}"; continue; }
-            echo "🚀 正在为 $DOMAIN 续期证书..."
-            # 强制续期时使用 --ecc 参数确保使用 ECC 证书（如果已申请）
-            "$ACME_BIN" --renew -d "$DOMAIN" --force --ecc
-            # 续期成功后更新 .apply_time 为当前时间 (表示最新更新时间)
-            APPLY_TIME_FILE="/etc/ssl/$DOMAIN/.apply_time"
-            if [[ -d "/etc/ssl/$DOMAIN" ]]; then
-                date +"%Y-%m-%d %H:%M:%S" > "$APPLY_TIME_FILE"
-            fi
-            echo -e "${GREEN}✅ 续期完成：$DOMAIN ${RESET}"
-            ;;
-        4)
-            # ---------- 4. 删除证书 ----------
-            read -rp "请输入要删除的域名: " DOMAIN
-            [[ -z "$DOMAIN" ]] && { echo -e "${RED}❌ 域名不能为空！${RESET}"; continue; }
-            read -rp "⚠️ 确认删除证书及目录 /etc/ssl/$DOMAIN ？此操作不可恢复！[y/N]: " CONFIRM
-            if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-                # 从 acme.sh 中移除
-                "$ACME_BIN" --remove -d "$DOMAIN" --ecc
-                # 删除物理文件
-                rm -rf "/etc/ssl/$DOMAIN"
-                echo -e "${GREEN}✅ 已删除证书及目录 /etc/ssl/$DOMAIN ${RESET}"
-            else
-                echo "已取消删除操作。"
-            fi
-            ;;
-        0)
-            echo "👋 感谢使用，已退出。"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}❌ 无效选项，请输入 0-4 ${RESET}"
-            ;;
+    log_info "请选择证书颁发机构 (CA):"
+    local ca_options=("ZeroSSL (默认)" "Let’s Encrypt")
+    _render_menu "CA 选择" "${ca_options[@]}"
+    local CA_CHOICE
+    CA_CHOICE=$(_prompt_for_menu_choice "1-2")
+    local CA
+    case "$CA_CHOICE" in
+        2) CA="letsencrypt" ;;
+        *) CA="zerossl" ;;
     esac
-done
+
+    log_info "请选择验证方式:"
+    local method_options=("standalone (HTTP验证, 需开放80端口，推荐)" "dns_cf (Cloudflare DNS API)" "dns_ali (阿里云 DNS API)")
+    _render_menu "验证方式" "${method_options[@]}"
+    local VERIFY_CHOICE
+    VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
+    local METHOD
+    case "$VERIFY_CHOICE" in
+        2) METHOD="dns_cf" ;;
+        3) METHOD="dns_ali" ;;
+        *) METHOD="standalone" ;;
+    esac
+    
+    if [ "$METHOD" = "standalone" ]; then
+        log_info "检查80端口占用情况..."
+        if run_with_sudo ss -tuln | grep -q ":80\s"; then
+            log_err "80端口已被占用，standalone 模式需要空闲的80端口。"
+            run_with_sudo ss -tuln | grep ":80\s"
+            return 1
+        fi
+        log_success "80端口空闲。"
+
+        if [ "$CA" = "zerossl" ] && ! "$ACME_BIN" --list-account | grep -q "ZeroSSL.com"; then
+             local ACCOUNT_EMAIL
+             ACCOUNT_EMAIL=$(_prompt_user_input "检测到未注册ZeroSSL账户，请输入注册邮箱: ")
+             if [ -z "$ACCOUNT_EMAIL" ]; then log_err "邮箱不能为空！"; return 1; fi
+             "$ACME_BIN" --register-account -m "$ACCOUNT_EMAIL" --server "$CA"
+        fi
+    fi
+    
+    if [[ "$METHOD" == "dns_cf" ]]; then
+        log_warn "请确保已按 acme.sh 文档正确设置环境变量 CF_Token 和 CF_Account_ID。"
+    elif [[ "$METHOD" == "dns_ali" ]]; then
+        log_warn "请确保已按 acme.sh 文档正确设置环境变量 Ali_Key 和 Ali_Secret。"
+    fi
+
+    log_info "🚀 正在申请证书，请稍候..."
+    local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN" --server "$CA" --"$METHOD")
+    if [ -n "$USE_WILDCARD" ]; then
+        ISSUE_CMD+=(-d "$USE_WILDCARD")
+    fi
+    
+    if ! "${ISSUE_CMD[@]}"; then
+        log_err "证书申请失败！请检查端口、域名解析或API密钥，并查看上方的错误日志。"
+        return 1
+    fi
+    
+    log_success "证书生成成功，正在安装..."
+    run_with_sudo mkdir -p "$INSTALL_PATH"
+
+    if ! "$ACME_BIN" --install-cert -d "$DOMAIN" --ecc \
+        --key-file       "$INSTALL_PATH/$DOMAIN.key" \
+        --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
+        --reloadcmd      "$RELOAD_CMD"; then
+        log_err "证书安装失败！"
+        return 1
+    fi
+    
+    run_with_sudo bash -c "date +'%Y-%m-%d %H:%M:%S' > '$INSTALL_PATH/.apply_time'"
+    
+    log_success "证书申请并安装成功！"
+    log_info "  证书路径: $INSTALL_PATH"
+}
+
+_list_certificates() {
+    log_info "--- 查看已申请证书 ---"
+    if ! [ -f "$ACME_BIN" ]; then log_err "acme.sh 未安装，无法查询。"; return; fi
+    
+    local cert_list
+    cert_list=$("$ACME_BIN" --list)
+    if [ -z "$cert_list" ]; then
+        log_warn "未找到任何由 acme.sh 管理的证书。"
+        return
+    fi
+    
+    echo "$cert_list" | tail -n +2 | while IFS=' ' read -r main_domain keylength san_domains ca created renew; do
+        local cert_file="$HOME/.acme.sh/${main_domain}_ecc/fullchain.cer"
+        if ! [ -f "$cert_file" ]; then
+            cert_file="$HOME/.acme.sh/${main_domain}/fullchain.cer"
+        fi
+        if ! [ -f "$cert_file" ]; then
+            printf "${RED}%-30s | 状态未知 (找不到证书文件)${NC}\n" "$main_domain"
+            continue
+        fi
+
+        local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+        local end_ts; end_ts=$(date -d "$end_date" +%s)
+        local now_ts; now_ts=$(date +%s)
+        local left_days=$(( (end_ts - now_ts) / 86400 ))
+
+        local status_color status_text
+        if (( left_days < 0 )); then
+            status_color="$RED"
+            status_text="已过期"
+        elif (( left_days <= 30 )); then
+            status_color="$YELLOW"
+            status_text="即将到期"
+        else
+            status_color="$GREEN"
+            status_text="有效"
+        fi
+
+        printf "${status_color}%-30s | 状态: %-8s | 剩余: %3d天${NC}\n" "$main_domain" "$status_text" "$left_days"
+    done
+}
+
+_renew_certificate() {
+    log_info "--- 手动续期证书 ---"
+    local DOMAIN
+    DOMAIN=$(_prompt_user_input "请输入要续期的域名: ")
+    if [ -z "$DOMAIN" ]; then log_err "域名不能为空！"; return; fi
+
+    log_info "🚀 正在为 $DOMAIN 续期证书..."
+    if "$ACME_BIN" --renew -d "$DOMAIN" --force --ecc; then
+        log_success "续期命令执行成功: $DOMAIN"
+    else
+        log_err "续期命令执行失败: $DOMAIN"
+    fi
+}
+
+_delete_certificate() {
+    log_info "--- 删除证书 ---"
+    local DOMAIN
+    DOMAIN=$(_prompt_user_input "请输入要删除的域名: ")
+    if [ -z "$DOMAIN" ]; then log_err "域名不能为空！"; return; fi
+
+    if confirm_action "⚠️ 确认删除证书及已安装目录 /etc/ssl/$DOMAIN ？此操作不可恢复！"; then
+        log_info "正在从 acme.sh 移除 $DOMAIN..."
+        "$ACME_BIN" --remove -d "$DOMAIN" --ecc || log_warn "acme.sh 移除证书时可能出错，但将继续删除文件。"
+        
+        log_info "正在删除已安装的证书文件 /etc/ssl/$DOMAIN..."
+        if [ -d "/etc/ssl/$DOMAIN" ]; then
+            run_with_sudo rm -rf "/etc/ssl/$DOMAIN"
+            log_success "已删除目录 /etc/ssl/$DOMAIN"
+        else
+            log_warn "目录 /etc/ssl/$DOMAIN 不存在，跳过删除。"
+        fi
+    else
+        log_info "已取消删除操作。"
+    fi
+}
+
+main_menu() {
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        local -a menu_items=(
+            "1. 申请新证书"
+            "2. 查看已申请证书"
+            "3. 手动续期证书"
+            "4. 删除证书"
+        )
+        _render_menu "🔐 SSL 证书管理 (acme.sh)" "${menu_items[@]}"
+        
+        local choice
+        choice=$(_prompt_for_menu_choice "1-4")
+
+        case "$choice" in
+            1) _apply_for_certificate ;;
+            2) _list_certificates ;;
+            3) _renew_certificate ;;
+            4) _delete_certificate ;;
+            "") return 10 ;; # 标准返回逻辑
+            *) log_warn "无效选项。" ;;
+        esac
+        press_enter_to_continue
+    done
+}
+
+main() {
+    trap 'echo -e "\n操作被中断。"; exit 10' INT
+    if [ "$(id -u)" -ne 0 ]; then
+        log_err "此脚本需要以 root 权限运行，因为它需要管理系统级证书和端口。"
+        exit 1
+    fi
+    log_info "欢迎使用 SSL 证书管理模块 v${SCRIPT_VERSION}"
+    _check_dependencies || return 1
+    main_menu
+}
+
+main "$@"
