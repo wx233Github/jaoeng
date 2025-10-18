@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.3-最终通知逻辑修复)
-# - 修复: (根本性) 修正 `_process_log_chunk` 函数中的逻辑错误。该错误导致在无更新时，函数会静默退出，但调用方仍会错误地报告“消息已发送”。
-# - 优化: `_process_log_chunk` 现在会返回状态码，调用方根据此状态码提供准确的用户反馈（“已发送”或“根据配置无需发送”）。
+# 🚀 Watchtower 管理模块 (v6.2.4-回溯修复)
+# - 修复: (根本性) 回溯至 v6.1.8 的通知逻辑。发现 v6.1.9 中对分隔线的修改 (`___`) 引入了`printf`静默失败的BUG，导致通知消息为空。现已恢复为有效的 `---` 分隔符。
+# - 保留: 集成了 v6.2.x 中有益的改进，如同步发送手动通知、正确的日志监控匹配和更健壮的数组检查。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.3"
+SCRIPT_VERSION="v6.2.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -452,22 +452,17 @@ _process_log_chunk() {
     local mode="${2:-async}" # 'async' or 'sync'
     load_config
     
-    local is_manual_scan=false
-    if echo "$chunk" | grep -q "Running a one time update"; then
-        is_manual_scan=true
-    fi
-
     local session_line
     session_line=$(echo "$chunk" | grep "Session done" | tail -n 1)
-    if [ -z "$session_line" ]; then return 1; fi # 没有会话信息，视为失败
+    if [ -z "$session_line" ]; then return 1; fi
 
     local scanned updated failed hostname report_message
     scanned=$(echo "$session_line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); scanned=${scanned:-0}
     updated=$(echo "$session_line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); updated=${updated:-0}
     failed=$(echo "$session_line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); failed=${failed:-0}
     
-    if [ "$updated" -eq 0 ] && [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" != "true" ]; then
-        return 1 # 根据配置，无需通知
+    if [ "$mode" != "sync" ] && [ "$updated" -eq 0 ] && [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" != "true" ]; then
+        return 1
     fi
 
     hostname=$(hostname)
@@ -506,13 +501,13 @@ _process_log_chunk() {
                 "$container" "$img" "$old" "$new")
         done
         
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n___\n\`%s\`" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n---\n\`%s\`" \
             "$hostname" \
             "$updated" \
             "$updated_details" \
             "$time_now"
     else
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n___\n\`%s\`" \
+        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n---\n\`%s\`" \
             "$hostname" \
             "$scanned" \
             "$failed" \
@@ -520,7 +515,7 @@ _process_log_chunk() {
     fi
     
     send_notify "$report_message" "$mode"
-    return 0 # 成功发送
+    return 0
 }
 
 log_monitor_process() {
@@ -531,7 +526,7 @@ log_monitor_process() {
     stdbuf -oL docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
         if [[ "$line" == *"Starting Watchtower"* || "$line" == *"Running a one time update"* ]]; then
             if [ -n "$chunk" ]; then
-                _process_log_chunk "$chunk" # 默认使用 async 模式
+                _process_log_chunk "$chunk"
             fi
             chunk=""
         fi
@@ -539,7 +534,7 @@ log_monitor_process() {
         chunk+="$line"$'\n'
         
         if echo "$line" | grep -q "Session done"; then
-            _process_log_chunk "$chunk" # 默认使用 async 模式
+            _process_log_chunk "$chunk"
             chunk=""
         fi
     done
