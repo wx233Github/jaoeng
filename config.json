@@ -15,6 +15,8 @@
   "enable_auto_clear": false,
   "comment_timezone": "服务器时区设置",
   "timezone": "Asia/Shanghai",
+  "comment_log_with_timestamp": "是否在所有日志输出中包含时间戳 (true/false)",
+  "log_with_timestamp": false,
 
   "comment_menus": "主菜单配置",
   "menus": {
