@@ -260,21 +260,22 @@ display_and_process_menu() {
         for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
         
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
-        local num_choices=${#primary_items[@]}; local func_choices_str=""
         
+        local num_choices=${#primary_items[@]}
         local numeric_range_str=""
         if [ "$num_choices" -gt 0 ]; then
             numeric_range_str="1-$num_choices"
         fi
         
-        local func_options_str=""
+        local func_choices_str=""
         if [ ${#func_items[@]} -gt 0 ]; then
-            for ((i=0; i<${#func_items[@]}; i++)); do func_choices_str+="${func_letters[i]},"; done
-            func_options_str="${func_choices_str%,}"
+            local temp_func_str=""
+            for ((i=0; i<${#func_items[@]}; i++)); do temp_func_str+="${func_letters[i]},"; done
+            func_choices_str="${temp_func_str%,}"
         fi
         
         local choice
-        choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_options_str")
+        choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
 
         if [ -z "$choice" ]; then 
             if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。" >&2; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
