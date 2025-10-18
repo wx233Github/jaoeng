@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.2-同步通知修复)
-# - 修复: (主要) 重构 `send_notify` 函数以支持同步/异步模式。手动触发扫描现在会以“同步”模式发送通知，彻底解决了因竞态条件导致通知发送失败的顽固BUG。
-# - 优化: 后台日志监控器继续使用异步模式发送通知，确保不阻塞。
+# 🚀 Watchtower 管理模块 (v6.2.3-最终通知逻辑修复)
+# - 修复: (根本性) 修正 `_process_log_chunk` 函数中的逻辑错误。该错误导致在无更新时，函数会静默退出，但调用方仍会错误地报告“消息已发送”。
+# - 优化: `_process_log_chunk` 现在会返回状态码，调用方根据此状态码提供准确的用户反馈（“已发送”或“根据配置无需发送”）。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.2"
+SCRIPT_VERSION="v6.2.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -416,8 +416,11 @@ _start_watchtower_container_logic(){
             log_success "一次性扫描完成。"
             if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
                 log_info "正在解析扫描结果并生成报告..."
-                _process_log_chunk "$scan_logs" "sync" # 使用同步模式发送通知
-                log_info "报告已发送。"
+                if _process_log_chunk "$scan_logs" "sync"; then
+                    log_success "报告已发送。"
+                else
+                    log_info "根据配置，无更新时无需发送通知。"
+                fi
             fi
         else
             log_err "一次性扫描失败。"
@@ -456,7 +459,7 @@ _process_log_chunk() {
 
     local session_line
     session_line=$(echo "$chunk" | grep "Session done" | tail -n 1)
-    if [ -z "$session_line" ]; then return; fi
+    if [ -z "$session_line" ]; then return 1; fi # 没有会话信息，视为失败
 
     local scanned updated failed hostname report_message
     scanned=$(echo "$session_line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); scanned=${scanned:-0}
@@ -464,7 +467,7 @@ _process_log_chunk() {
     failed=$(echo "$session_line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); failed=${failed:-0}
     
     if [ "$updated" -eq 0 ] && [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" != "true" ]; then
-        return
+        return 1 # 根据配置，无需通知
     fi
 
     hostname=$(hostname)
@@ -517,6 +520,7 @@ _process_log_chunk() {
     fi
     
     send_notify "$report_message" "$mode"
+    return 0 # 成功发送
 }
 
 log_monitor_process() {
@@ -662,7 +666,7 @@ notification_menu() {
         case "$choice" in
             1) _configure_telegram; save_config; press_enter_to_continue ;;
             2) _configure_email; save_config; press_enter_to_continue ;;
-            3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*测试消息*。" "sync"; log_info "测试通知已发送。"; fi; press_enter_to_continue ;;
+            3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*测试消息*。" "sync"; log_success "测试通知已发送。"; fi; press_enter_to_continue ;;
             4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; stop_log_monitor; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
