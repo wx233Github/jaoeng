@@ -1,8 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.6-UI风格统一与修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.2.7-UI风格统一与修复)
 # - 优化: 更新了菜单提示符UI，使其与全局新风格（橙色高亮）保持一致。
 # - 修复: 妥善处理了菜单提示函数中的可选参数，解决了 `unbound variable` 错误。
+# - 修复: 将错误的 acme.sh 命令 `--list-account` 修正为 `--listaccounts`。
+# - 修复: 纠正了项目管理菜单中选项处理的逻辑错误。
 # ==============================================================================
 
 set -euo pipefail # 启用：遇到未定义的变量即退出，遇到非零退出码即退出，管道中任何命令失败即退出
@@ -37,28 +39,38 @@ VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 # ==============================================================================
 
 log_message() {
-    local level="$1" message="$2" timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    local level="$1" message="$2" timestamp
+    timestamp=$(date +"%Y-%m-%d %H:%M:%S")
     local color_code="" level_prefix=""
     case "$level" in
-        INFO) color_code="${GREEN}"; level_prefix="[INFO]";;
+        INFO) color_code="${CYAN}"; level_prefix="[INFO]";;
         WARN) color_code="${YELLOW}"; level_prefix="[WARN]";;
         ERROR) color_code="${RED}"; level_prefix="[ERROR]";;
         DEBUG) color_code="${BLUE}"; level_prefix="[DEBUG]";;
         *) color_code="${RESET}"; level_prefix="[UNKNOWN]";;
     esac
+    
+    # 根据全局配置决定是否显示时间戳
+    local log_prefix=""
+    if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
+        log_prefix="${timestamp} "
+    fi
+    
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+        # 交互模式下，INFO级别不显示前缀，以简化输出
         if [ "$level" = "INFO" ]; then
-             echo -e "${color_code}${message}${RESET}"
+             echo -e "${log_prefix}${color_code}${message}${RESET}"
         else
-             echo -e "${color_code}${level_prefix} ${message}${RESET}"
+             echo -e "${log_prefix}${color_code}${level_prefix} ${message}${RESET}"
         fi
     fi
+    # 文件日志总是包含所有信息
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
 }
 
 _prompt_for_menu_choice_local() {
     local numeric_range="$1"
-    local func_options="${2:-}" # 修复: 增加默认值防止 unbound variable
+    local func_options="${2:-}"
     local prompt_text="${ORANGE}>${RESET} 选项 "
 
     if [ -n "$numeric_range" ]; then
@@ -111,7 +123,7 @@ _prompt_user_input_with_validation() {
     while true; do
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local display_default="${default_value:-$( [ "$allow_empty_input" = "true" ] && echo "空" || echo "无" )}"
-            echo -e "${CYAN}${prompt_message} [默认: ${display_default}]: ${RESET}" >&2
+            echo -e "${YELLOW}${prompt_message} [默认: ${display_default}]: ${RESET}" >&2
             read -rp "> " input_value; input_value=${input_value:-$default_value}
         else
             input_value="$default_value"
@@ -133,7 +145,8 @@ _prompt_user_input_with_validation() {
 _confirm_action_or_exit_non_interactive() {
     local prompt_message="$1"
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        local choice; choice=$(_prompt_user_input_with_validation "$prompt_message" "n" "^[yYnN]$" "" "false")
+        local choice
+        read -r -p "$(echo -e "${YELLOW}$1 ([y]/n): ${RESET}")" choice
         [[ "$choice" =~ ^[Yy]$ ]] && return 0 || return 1
     fi
     log_message ERROR "❌ 在非交互模式下，需要用户确认才能继续 '$prompt_message'。操作已取消。"
@@ -567,7 +580,7 @@ manage_acme_accounts() {
         local choice
         choice=$(_prompt_for_menu_choice_local "1-3")
         case "$choice" in
-            1) "$ACME_BIN" --list-account ;;
+            1) "$ACME_BIN" --listaccounts ;;
             2)
                 local email; email=$(_prompt_user_input_with_validation "请输入新账户邮箱" "" "" "邮箱格式无效" "false") || continue
                 local ca_choice=$(_prompt_user_input_with_validation "选择CA (1. Let's Encrypt, 2. ZeroSSL)" "1" "^[12]$" "" "false")
@@ -575,7 +588,7 @@ manage_acme_accounts() {
                 "$ACME_BIN" --register-account -m "$email" --server "$server_url"
                 ;;
             3)
-                "$ACME_BIN" --list-account
+                "$ACME_BIN" --listaccounts
                 local email; email=$(_prompt_user_input_with_validation "请输入要设为默认的邮箱" "" "" "邮箱格式无效" "false") || continue
                 "$ACME_BIN" --set-default-account -m "$email"
                 ;;
