@@ -1,11 +1,12 @@
-# = =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.8-采用全局统一菜单提示)
-# - 修复: 移除了本地的菜单提示函数，改为直接调用 `utils.sh` 中的全局函数，以确保UI风格和颜色完全统一。
-# - 更新: 脚本版本号。
+# =============================================================
+# 🚀 Watchtower 管理模块 (v6.2.9-修复并重构通知)
+# - 修复: 彻底修复了更新通知中不显示容器名称的 BUG。
+# - 重构: 采用更可靠的日志解析逻辑 (`comm` 对比 `Stopping` 和 `Creating` 事件)，确保准确捕获被更新的容器。
+# - UI/UX: 重新设计了 Telegram 通知模板，使其在有更新和无更新时都更清晰、更具可读性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.8"
+SCRIPT_VERSION="v6.2.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -469,45 +470,33 @@ _process_log_chunk() {
     local time_now
     time_now=$(date '+%Y-%m-%d %H:%M:%S')
     
-    local updated_details=""
     if [ "$updated" -gt 0 ]; then
-        declare -A container_updates
-        local current_image_name=""
-        local current_old_id=""
-        local current_new_id=""
+        local updated_details=""
+        # 稳健地查找那些被停止然后又被重新创建的容器名称
+        local recreated_containers
+        recreated_containers=$(comm -12 \
+            <(echo "$chunk" | grep "Stopping /" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p' | sort -u) \
+            <(echo "$chunk" | grep "Creating /" | sed -n 's/.*Creating \/\([^ ]*\).*/\1/p' | sort -u)
+        )
 
-        while IFS= read -r line; do
-            if [[ "$line" == *"Found new"* ]]; then
-                current_image_name=$(echo "$line" | sed -n 's/.*Found new \(.*\) image .*/\1/p' | cut -d':' -f1-2)
-                current_old_id=$(echo "$line" | sed -n 's/.*ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
-                current_new_id=$(echo "$line" | sed -n 's/.*new ID \([a-zA-Z0-9]*\).*/\1/p' | cut -c 1-12)
-            elif [[ "$line" == *"Stopping /"* ]]; then
-                local container_name_from_stop=$(echo "$line" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p')
-                if [ -n "$container_name_from_stop" ] && [ -n "$current_image_name" ] && [ -n "$current_old_id" ] && [ -n "$current_new_id" ]; then
-                    container_updates["$container_name_from_stop"]="image=$current_image_name,old_id=$current_old_id,new_id=$current_new_id"
-                    current_image_name=""
-                    current_old_id=""
-                    current_new_id=""
-                fi
-            fi
-        done <<< "$chunk"
-
-        for container in "${!container_updates[@]}"; do
-            local update_info="${container_updates[$container]}"
-            local img; img=$(echo "$update_info" | sed -n 's/.*image=\([^,]*\).*/\1/p')
-            local old; old=$(echo "$update_info" | sed -n 's/.*old_id=\([^,]*\).*/\1/p')
-            local new; new=$(echo "$update_info" | sed -n 's/.*new_id=\([^,]*\).*/\1/p')
-            updated_details+=$(printf "\n- 🔄 *%s*\n  🖼️ %s\n  🆔 %s -> %s" \
-                "$container" "$img" "$old" "$new")
-        done
+        if [ -n "$recreated_containers" ]; then
+            while IFS= read -r container; do
+                updated_details+=$(printf "\n- 🔄 \`%s\`" "$container")
+            done <<< "$recreated_containers"
+        else
+            # 如果解析失败，但日志显示有更新，则提供回退信息
+            updated_details="\n- _(无法解析具体的容器名称)_"
+        fi
         
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 共更新 %s 个容器%s\n\n--------------------------\n\`%s\`" \
+        printf -v report_message "*🐳 Watchtower 更新报告*\n\n*🖥️ 服务器:* \`%s\`\n\n*✅ 成功更新 %s 个容器:*\n%s\n\n*📊 扫描摘要:*\n- *总扫描:* %s 个\n- *失败:* %s 个\n\n--------------------\n\`%s\`" \
             "$hostname" \
             "$updated" \
             "$updated_details" \
+            "$scanned" \
+            "$failed" \
             "$time_now"
     else
-        printf -v report_message "*🐳 Watchtower 扫描报告*\n\n*服务器:* \`%s\`\n\n✅ *扫描完成*\n*结果:* 未发现可更新的容器\n*扫描:* %s 个 | *失败:* %s 个\n\n--------------------------\n\`%s\`" \
+        printf -v report_message "*📝 Watchtower 扫描报告*\n\n*🖥️ 服务器:* \`%s\`\n\n*👍 所有容器均是最新版本。*\n\n*📊 扫描摘要:*\n- *总扫描:* %s 个\n- *失败:* %s 个\n\n--------------------\n\`%s\`" \
             "$hostname" \
             "$scanned" \
             "$failed" \
