@@ -1,11 +1,13 @@
 # =============================================================
-# 🚀 Docker 管理模块 (v4.3.8-采用全局统一菜单提示)
-# - 修复: 移除了本地的菜单提示函数，改为直接调用 `utils.sh` 中的全局函数，以确保UI风格和颜色完全统一。
+# 🚀 Docker 管理模块 (v4.3.9-菜单逻辑与交互优化)
+# - 优化: 将“安装”与“卸载/重装”合并为统一的“安装管理”菜单，简化主界面。
+# - 新增: 为安装、重装和卸载操作增加了 [y/n] 确认步骤，防止误操作。
+# - 修复: 修正了从子菜单返回主菜单时需要按两次回车的交互问题。
 # - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.3.8"
+SCRIPT_VERSION="v4.3.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -26,6 +28,7 @@ else
     _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
     press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
     confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
+    _prompt_for_menu_choice() { read -r -p "> 选项: " choice; echo "$choice"; }
     log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
     exit 1
 fi
@@ -130,36 +133,38 @@ check_distro() {
 }
 
 uninstall_docker() {
-    log_warn "你确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包、镜像、容器和卷！"
-    read -r -p "   请输入 'yes' 确认卸载，输入其他任何内容取消: " confirm < /dev/tty
-    if [[ "$confirm" == "yes" ]]; then
-        log_info "🧹 开始卸载..."
-        execute_with_spinner "停止 Docker 服务..." run_with_sudo systemctl stop docker.service docker.socket
-        execute_with_spinner "卸载 Docker 和 Compose 软件包..." run_with_sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        execute_with_spinner "清理残留软件包配置..." run_with_sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-        execute_with_spinner "自动移除不再需要的依赖..." run_with_sudo apt-get autoremove -y --purge
-        execute_with_spinner "删除 Docker 数据和配置目录..." run_with_sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
+    if ! confirm_action "⚠️  确定要卸载 Docker 和 Compose 吗？这将删除所有相关软件包！"; then
+        log_warn "🚫 操作已取消。"; return 1;
+    fi
+    
+    log_info "🧹 开始卸载..."
+    execute_with_spinner "停止 Docker 服务..." run_with_sudo systemctl stop docker.service docker.socket
+    execute_with_spinner "卸载 Docker 和 Compose 软件包..." run_with_sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    execute_with_spinner "清理残留软件包配置..." run_with_sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    execute_with_spinner "自动移除不再需要的依赖..." run_with_sudo apt-get autoremove -y --purge
+    
+    if confirm_action "是否同时删除 Docker 数据目录 (镜像, 容器, 数据卷)? 这是一个【不可逆】操作！"; then
+        execute_with_spinner "删除 Docker 数据和配置目录..." run_with_sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker
+    fi
+    execute_with_spinner "清理 APT 源..." run_with_sudo rm -rf /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
 
-        log_info "检查 docker 用户组残留..."
-        if getent group docker >/dev/null; then
-            local users_in_docker_group; users_in_docker_group=$(getent group docker | cut -d: -f4 | sed 's/,/ /g')
-            if [ -n "$users_in_docker_group" ]; then
-                log_warn "以下用户仍在 'docker' 组中: ${users_in_docker_group}"
-                if confirm_action "是否将他们从 'docker' 组中移除?"; then
-                    for user in $users_in_docker_group; do
-                        execute_with_spinner "从 'docker' 组中移除用户 '$user'..." run_with_sudo gpasswd -d "$user" docker
-                    done
-                fi
-            fi
-            if [ -z "$(getent group docker | cut -d: -f4)" ]; then
-                execute_with_spinner "删除空的 'docker' 用户组..." run_with_sudo groupdel docker
+    log_info "检查 docker 用户组残留..."
+    if getent group docker >/dev/null; then
+        local users_in_docker_group; users_in_docker_group=$(getent group docker | cut -d: -f4 | sed 's/,/ /g')
+        if [ -n "$users_in_docker_group" ]; then
+            log_warn "以下用户仍在 'docker' 组中: ${users_in_docker_group}"
+            if confirm_action "是否将他们从 'docker' 组中移除?"; then
+                for user in $users_in_docker_group; do
+                    execute_with_spinner "从 'docker' 组中移除用户 '$user'..." run_with_sudo gpasswd -d "$user" docker
+                done
             fi
         fi
-        log_success "✅ Docker 和 Compose 已成功卸载。"
-        return 0
-    else
-        log_warn "🚫 操作已取消。"; return 1
+        if [ -z "$(getent group docker | cut -d: -f4)" ]; then
+            execute_with_spinner "删除空的 'docker' 用户组..." run_with_sudo groupdel docker
+        fi
     fi
+    log_success "✅ Docker 和 Compose 已成功卸载。"
+    return 0
 }
 
 configure_docker_mirror() {
@@ -208,6 +213,7 @@ add_user_to_docker_group() {
 }
 
 install_docker() {
+    if ! confirm_action "是否确定开始安装 Docker?"; then log_warn "操作已取消。"; return 1; fi
     log_info "🚀 开始安装 Docker & Docker Compose..."
     determine_install_source; check_distro
     log_success "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
@@ -258,7 +264,6 @@ docker_service_menu() {
             "") return ;;
             *) log_warn "无效选项 '${choice}'。"; sleep 1 ;;
         esac
-        if [[ "$choice" =~ ^[1-4]$ ]]; then press_enter_to_continue; fi
     done
 }
 
@@ -269,18 +274,45 @@ docker_prune_system() {
     log_warn "  - 所有未被任何容器使用的网络"
     log_warn "  - 所有悬空镜像 (dangling images)"
     log_warn "  - 所有构建缓存"
-    log_warn "${RED}  - 所有未被任何容器使用的数据卷 (Volumes)！${NC}"
-    log_warn "这意味着存储在数据卷中的数据库、配置文件等都可能被永久删除！"
     
-    local confirm_string="yes-i-am-sure"
-    read -r -p "为确认您理解风险，请输入 '${confirm_string}': " confirm < /dev/tty
-    if [[ "$confirm" == "$confirm_string" ]]; then
-        log_info "正在执行系统清理..."
+    if confirm_action "是否同时清理【所有未被使用的数据卷】? 这是最危险的步骤!"; then
+        log_info "正在执行系统清理 (包含未使用的卷)..."
         run_with_sudo docker system prune -a -f --volumes
-        log_success "✅ 系统清理完成。"
     else
-        log_warn "🚫 输入不匹配，操作已取消。"
+        log_info "正在执行系统清理 (不包含数据卷)..."
+        run_with_sudo docker system prune -a -f
     fi
+    log_success "✅ 系统清理完成。"
+}
+
+_manage_installation() {
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        local -a menu_items=(
+            "1. 重新安装 Docker"
+            "2. 卸载 Docker"
+        )
+        _render_menu "安装管理" "${menu_items[@]}"
+        local choice
+        choice=$(_prompt_for_menu_choice "1-2")
+
+        case "$choice" in
+            1)
+                if confirm_action "确定要重新安装 Docker 吗? 这将先执行卸载流程。"; then
+                    if uninstall_docker; then
+                        install_docker
+                    fi
+                fi
+                break # Return to main menu after action
+                ;;
+            2)
+                uninstall_docker
+                break # Return to main menu after action
+                ;;
+            "") return ;; # Return to main menu
+            *) log_warn "无效选项 '${choice}'。"; sleep 1 ;;
+        esac
+    done
 }
 
 main_menu() {
@@ -292,6 +324,8 @@ main_menu() {
         
         local -a menu_items=()
         local options_map=()
+        local action_taken_in_submenu=false
+        
         if [ "$DOCKER_INSTALLED" = "true" ]; then
             menu_items+=(
                 "ℹ️ ${GREEN}Docker 已安装${NC}"
@@ -299,13 +333,12 @@ main_menu() {
                 "Docker 版本: ${DOCKER_VERSION}"
                 "Compose 版本: ${COMPOSE_VERSION}"
                 ""
-                "1. 重新安装 Docker"
-                "2. 卸载 Docker"
-                "3. 配置镜像/用户组"
-                "4. 服务管理"
-                "5. 系统清理 (Prune)"
+                "1. 安装管理 (重装/卸载)"
+                "2. 配置镜像/用户组"
+                "3. 服务管理"
+                "4. 系统清理 (Prune)"
             )
-            options_map=("reinstall" "uninstall" "config" "service" "prune")
+            options_map=("manage_install" "config" "service" "prune")
         else
             menu_items+=(
                 "ℹ️ ${YELLOW}检测到 Docker 未安装${NC}"
@@ -326,14 +359,16 @@ main_menu() {
         
         local action="${options_map[$((choice-1))]}"
         case "$action" in
-            reinstall) if uninstall_docker; then install_docker; fi ;;
-            uninstall) uninstall_docker ;;
-            config) configure_docker_mirror && add_user_to_docker_group ;;
-            service) docker_service_menu ;;
-            prune) docker_prune_system ;;
+            manage_install) _manage_installation; action_taken_in_submenu=true ;;
             install) install_docker ;;
+            config) configure_docker_mirror && add_user_to_docker_group ;;
+            service) docker_service_menu; action_taken_in_submenu=true ;;
+            prune) docker_prune_system ;;
         esac
-        press_enter_to_continue
+        
+        if [[ "$action_taken_in_submenu" == false ]]; then
+            press_enter_to_continue
+        fi
     done
 }
 
