@@ -1,13 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v2.0.0-重构与UI统一)
-# - 重构: 脚本完全重写，以集成 utils.sh 并实现模块化功能。
-# - 优化: 全面统一UI风格，包括菜单、日志和输入提示。
-# - 修复: 移除了冗余的退出选项，并采用标准返回逻辑。
-# - 增强: 标准化了权限处理，所有特权操作均使用 run_with_sudo。
+# 🚀 SSL 证书管理助手 (acme.sh) (v2.0.1-修复版本号打印错误)
+# - 修复: 纠正了欢迎信息中打印两个 "v" 的小错误。
+# - 更新: 脚本版本号。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v2.0.0"
+SCRIPT_VERSION="v2.0.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -122,7 +120,7 @@ _apply_for_certificate() {
     RELOAD_CMD=$(_prompt_user_input "证书更新后执行的服务重载命令 [默认: systemctl reload nginx]: " "systemctl reload nginx")
 
     log_info "请选择证书颁发机构 (CA):"
-    local ca_options=("ZeroSSL (默认)" "Let’s Encrypt")
+    local ca_options=("1. ZeroSSL (默认)" "2. Let’s Encrypt")
     _render_menu "CA 选择" "${ca_options[@]}"
     local CA_CHOICE
     CA_CHOICE=$(_prompt_for_menu_choice "1-2")
@@ -133,7 +131,7 @@ _apply_for_certificate() {
     esac
 
     log_info "请选择验证方式:"
-    local method_options=("standalone (HTTP验证, 需开放80端口，推荐)" "dns_cf (Cloudflare DNS API)" "dns_ali (阿里云 DNS API)")
+    local method_options=("1. standalone (HTTP验证, 需开放80端口，推荐)" "2. dns_cf (Cloudflare DNS API)" "3. dns_ali (阿里云 DNS API)")
     _render_menu "验证方式" "${method_options[@]}"
     local VERIFY_CHOICE
     VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
@@ -153,7 +151,7 @@ _apply_for_certificate() {
         fi
         log_success "80端口空闲。"
 
-        if [ "$CA" = "zerossl" ] && ! "$ACME_BIN" --list-account | grep -q "ZeroSSL.com"; then
+        if [ "$CA" = "zerossl" ] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
              local ACCOUNT_EMAIL
              ACCOUNT_EMAIL=$(_prompt_user_input "检测到未注册ZeroSSL账户，请输入注册邮箱: ")
              if [ -z "$ACCOUNT_EMAIL" ]; then log_err "邮箱不能为空！"; return 1; fi
@@ -305,7 +303,7 @@ main() {
         log_err "此脚本需要以 root 权限运行，因为它需要管理系统级证书和端口。"
         exit 1
     fi
-    log_info "欢迎使用 SSL 证书管理模块 v${SCRIPT_VERSION}"
+    log_info "欢迎使用 SSL 证书管理模块 ${SCRIPT_VERSION}"
     _check_dependencies || return 1
     main_menu
 }
