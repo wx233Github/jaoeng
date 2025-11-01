@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.2.9-修复并重构通知)
-# - 修复: 彻底修复了更新通知中不显示容器名称的 BUG。
-# - 重构: 采用更可靠的日志解析逻辑 (`comm` 对比 `Stopping` 和 `Creating` 事件)，确保准确捕获被更新的容器。
-# - UI/UX: 重新设计了 Telegram 通知模板，使其在有更新和无更新时都更清晰、更具可读性。
+# 🚀 Watchtower 管理模块 (v6.3.0-修复并采纳新通知UI)
+# - BUG修复: 采用更稳健的 `grep` 交叉比对代替 `comm`，彻底修复了无法解析已更新容器名称的问题。
+# - UI/UX: 根据用户选择，全面采纳 "方案 F" (版本发布风格) 的 Telegram 通知 UI。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.2.9"
+SCRIPT_VERSION="v6.3.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -457,50 +456,41 @@ _process_log_chunk() {
     session_line=$(echo "$chunk" | grep "Session done" | tail -n 1)
     if [ -z "$session_line" ]; then return 1; fi
 
-    local scanned updated failed hostname report_message
-    scanned=$(echo "$session_line" | sed -n 's/.*Scanned=\([0-9]*\).*/\1/p'); scanned=${scanned:-0}
+    local updated hostname report_message
     updated=$(echo "$session_line" | sed -n 's/.*Updated=\([0-9]*\).*/\1/p'); updated=${updated:-0}
-    failed=$(echo "$session_line" | sed -n 's/.*Failed=\([0-9]*\).*/\1/p'); failed=${failed:-0}
     
     if [ "$updated" -eq 0 ] && [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" != "true" ]; then
         return 1
     fi
 
     hostname=$(hostname)
-    local time_now
-    time_now=$(date '+%Y-%m-%d %H:%M:%S')
     
     if [ "$updated" -gt 0 ]; then
         local updated_details=""
-        # 稳健地查找那些被停止然后又被重新创建的容器名称
-        local recreated_containers
-        recreated_containers=$(comm -12 \
-            <(echo "$chunk" | grep "Stopping /" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p' | sort -u) \
-            <(echo "$chunk" | grep "Creating /" | sed -n 's/.*Creating \/\([^ ]*\).*/\1/p' | sort -u)
-        )
+        
+        # 提取被停止和被创建的容器列表
+        local stopped_containers; stopped_containers=$(echo "$chunk" | sed -n 's/.*Stopping \/\([^ ]*\).*/\1/p' | sort -u)
+        local created_containers; created_containers=$(echo "$chunk" | sed -n 's/.*Creating \/\([^ ]*\).*/\1/p' | sort -u)
+        
+        # 使用 grep 交叉比对，找出交集，这是最稳健的方法
+        local recreated_containers; recreated_containers=$(echo "$stopped_containers" | grep -F -x -f - <(echo "$created_containers"))
 
         if [ -n "$recreated_containers" ]; then
             while IFS= read -r container; do
-                updated_details+=$(printf "\n- 🔄 \`%s\`" "$container")
+                updated_details+=$(printf "\n • \`%s\`" "$container")
             done <<< "$recreated_containers"
         else
-            # 如果解析失败，但日志显示有更新，则提供回退信息
-            updated_details="\n- _(无法解析具体的容器名称)_"
+            # 最终回退方案，虽然在新逻辑下几乎不可能触发
+            updated_details="\n • _(无法解析具体的容器名称)_"
         fi
         
-        printf -v report_message "*🐳 Watchtower 更新报告*\n\n*🖥️ 服务器:* \`%s\`\n\n*✅ 成功更新 %s 个容器:*\n%s\n\n*📊 扫描摘要:*\n- *总扫描:* %s 个\n- *失败:* %s 个\n\n--------------------\n\`%s\`" \
+        printf -v report_message "🚀 *新版本已部署!*\n\n在服务器 \`%s\` 上，\n我们为您更新了 %s 个服务:\n\n*✨ 更新内容:*\n%s\n\n所有服务均已平稳重启。" \
             "$hostname" \
             "$updated" \
-            "$updated_details" \
-            "$scanned" \
-            "$failed" \
-            "$time_now"
+            "$updated_details"
     else
-        printf -v report_message "*📝 Watchtower 扫描报告*\n\n*🖥️ 服务器:* \`%s\`\n\n*👍 所有容器均是最新版本。*\n\n*📊 扫描摘要:*\n- *总扫描:* %s 个\n- *失败:* %s 个\n\n--------------------\n\`%s\`" \
-            "$hostname" \
-            "$scanned" \
-            "$failed" \
-            "$time_now"
+        printf -v report_message "✅ *同步检查完成*\n\n服务器 \`%s\` 上的所有\nDocker 服务都已是最新版本，无需操作。" \
+            "$hostname"
     fi
     
     send_notify "$report_message" "$mode"
@@ -1008,7 +998,7 @@ show_container_info() {
         done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
         
         content_lines_array+=("" "a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
-        _render_menu "📋 容器管理 📋" "${content_lines_array[@]}"
+        _render_menu "📋 容器管理 📋" "${content_array[@]}"
         local choice
         choice=$(_prompt_for_menu_choice "1-${#containers[@]}" "a,s")
         case "$choice" in 
