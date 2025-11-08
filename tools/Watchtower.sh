@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.3.3-根治监控器启动失败)
-# - BUG修复: 彻底修复了后台监控器因无法找到脚本路径及依赖函数而启动失败的根本问题。
-# - 改进: 启动监控器时，获取脚本自身的绝对路径并与依赖函数定义一起注入到新的 Shell 环境，确保其在任何情况下都能独立、可靠地运行。
+# 🚀 Watchtower 管理模块 (v6.3.4-根治监控器启动失败)
+# - BUG修复: 彻底废弃了错误的 `bash -c` 后台启动方式，改为使用 `( subshell )`。
+# - 改进: 新的后台启动方式能完整继承父脚本的所有函数和变量，从根本上解决了因环境隔离导致的监控器启动失败问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.3.3"
+SCRIPT_VERSION="v6.3.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -530,15 +530,10 @@ start_log_monitor() {
     fi
     
     log_info "正在后台启动日志监控器..."
-    
-    local func_def
-    func_def=$(declare -f run_with_sudo)
-    local script_path
-    script_path=$(readlink -f "$0")
-    local script_path_q
-    script_path_q=$(printf '%q' "$script_path")
 
-    nohup bash -c "$func_def; $script_path_q --monitor" >/dev/null 2>&1 &
+    # 使用子 Shell `( ... )` 来创建一个继承当前所有函数和变量的独立环境
+    # nohup 会将这个子 Shell 与终端分离，从而实现后台守护
+    nohup ( log_monitor_process ) >/dev/null 2>&1 &
     local monitor_pid=$!
     echo "$monitor_pid" > "$LOG_MONITOR_PID_FILE"
     
@@ -941,7 +936,7 @@ view_and_edit_config(){
             esac
             content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
         done
-        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"
+        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_array[@]}"
         local choice
         choice=$(_prompt_for_menu_choice "1-${#config_items[@]}")
         if [ -z "$choice" ]; then return; fi
@@ -1083,6 +1078,7 @@ main_menu(){
 main(){ 
     case "${1:-}" in
         --monitor)
+            # This entry point is now only for internal use by the subshell.
             log_monitor_process
             exit 0
             ;;
