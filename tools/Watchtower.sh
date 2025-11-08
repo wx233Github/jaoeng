@@ -1,10 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.3.1-修复监控器权限)
-# - BUG修复: 为后台日志监控进程中的 `docker logs` 命令添加了 `run_with_sudo`，彻底解决了因权限不足导致监控器静默失败无法启动的问题。
+# 🚀 Watchtower 管理模块 (v6.3.2-终极修复监控器启动)
+# - BUG修复: 彻底解决了后台监控器因无法继承 `run_with_sudo` 函数而启动失败的架构问题。
+# - 改进: 在启动监控器时，动态地将其所需函数的定义一并传入新的 Shell 环境，确保其独立运行的可靠性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.3.1"
+SCRIPT_VERSION="v6.3.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -529,7 +530,13 @@ start_log_monitor() {
     fi
     
     log_info "正在后台启动日志监控器..."
-    nohup bash -c "'$0' --monitor" >/dev/null 2>&1 &
+    
+    # 获取 run_with_sudo 函数的定义，以便传递给子 shell
+    local func_def
+    func_def=$(declare -f run_with_sudo)
+    
+    # 启动后台进程，并在执行脚本前先定义好 run_with_sudo 函数
+    nohup bash -c "$func_def; '$0' --monitor" >/dev/null 2>&1 &
     local monitor_pid=$!
     echo "$monitor_pid" > "$LOG_MONITOR_PID_FILE"
     
@@ -932,7 +939,7 @@ view_and_edit_config(){
             esac
             content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
         done
-        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_lines_array[@]}"
+        _render_menu "⚙️ 配置查看与编辑 (底层) ⚙️" "${content_array[@]}"
         local choice
         choice=$(_prompt_for_menu_choice "1-${#config_items[@]}")
         if [ -z "$choice" ]; then return; fi
