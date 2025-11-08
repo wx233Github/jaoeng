@@ -1,11 +1,10 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.3.0-修复并采纳新通知UI)
-# - BUG修复: 采用更稳健的 `grep` 交叉比对代替 `comm`，彻底修复了无法解析已更新容器名称的问题。
-# - UI/UX: 根据用户选择，全面采纳 "方案 F" (版本发布风格) 的 Telegram 通知 UI。
+# 🚀 Watchtower 管理模块 (v6.3.1-修复监控器权限)
+# - BUG修复: 为后台日志监控进程中的 `docker logs` 命令添加了 `run_with_sudo`，彻底解决了因权限不足导致监控器静默失败无法启动的问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.3.0"
+SCRIPT_VERSION="v6.3.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -502,7 +501,7 @@ log_monitor_process() {
     local since
     since=$(date '+%Y-%m-%dT%H:%M:%S')
 
-    stdbuf -oL docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
+    stdbuf -oL run_with_sudo docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
         if [[ "$line" == *"Starting Watchtower"* || "$line" == *"Running a one time update"* ]]; then
             if [ -n "$chunk" ]; then
                 _process_log_chunk "$chunk"
