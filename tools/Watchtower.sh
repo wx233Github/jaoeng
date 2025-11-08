@@ -1,10 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.3.3-根治监控器启动失败)
-# - BUG修复: 废弃脆弱的 `export -f` 方案。改为在启动后台进程时，直接通过 `sudo` 提权整个脚本，确保后台环境权限正确且函数完整，从根源上解决监控器无法启动的问题。
+# 🚀 Watchtower 管理模块 (v6.3.0-修复并采纳新通知UI)
+# - BUG修复: 采用更稳健的 `grep` 交叉比对代替 `comm`，彻底修复了无法解析已更新容器名称的问题。
+# - UI/UX: 根据用户选择，全面采纳 "方案 F" (版本发布风格) 的 Telegram 通知 UI。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.3.3"
+SCRIPT_VERSION="v6.3.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -501,7 +502,7 @@ log_monitor_process() {
     local since
     since=$(date '+%Y-%m-%dT%H:%M:%S')
 
-    stdbuf -oL run_with_sudo docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
+    stdbuf -oL docker logs --since "$since" -f watchtower 2>&1 | while IFS= read -r line; do
         if [[ "$line" == *"Starting Watchtower"* || "$line" == *"Running a one time update"* ]]; then
             if [ -n "$chunk" ]; then
                 _process_log_chunk "$chunk"
@@ -529,16 +530,7 @@ start_log_monitor() {
     fi
     
     log_info "正在后台启动日志监控器..."
-    
-    # 准备要在后台执行的命令
-    # 使用 'sudo bash -c' 来确保整个后台脚本在需要时以 root 权限运行
-    # 这确保了脚本内部的 run_with_sudo 函数可以被正确加载和执行
-    local cmd_to_run="bash -c $(printf '%q' "'$0' --monitor")"
-    if [ "$(id -u)" -ne 0 ]; then
-        cmd_to_run="sudo $cmd_to_run"
-    fi
-
-    nohup $cmd_to_run >/dev/null 2>&1 &
+    nohup bash -c "'$0' --monitor" >/dev/null 2>&1 &
     local monitor_pid=$!
     echo "$monitor_pid" > "$LOG_MONITOR_PID_FILE"
     
@@ -1083,14 +1075,6 @@ main_menu(){
 main(){ 
     case "${1:-}" in
         --monitor)
-            # 在 --monitor 模式下，我们首先需要确保工具库被加载
-            if [ -f "$UTILS_PATH" ]; then
-                # shellcheck source=/dev/null
-                source "$UTILS_PATH"
-            else
-                # 如果没有，我们无法继续，因为 run_with_sudo 未定义
-                exit 1
-            fi
             log_monitor_process
             exit 0
             ;;
