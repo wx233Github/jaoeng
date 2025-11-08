@@ -1,10 +1,10 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.3.1-修复监控器权限)
-# - BUG修复: 为后台日志监控进程中的 `docker logs` 命令添加了 `run_with_sudo`，彻底解决了因权限不足导致监控器静默失败无法启动的问题。
+# 🚀 Watchtower 管理模块 (v6.3.2-修复后台进程函数继承)
+# - BUG修复: 通过 `export -f run_with_sudo` 将函数导出到子Shell，彻底解决了后台监控器因找不到函数定义而启动即崩溃的致命问题。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.3.1"
+SCRIPT_VERSION="v6.3.2"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -519,6 +519,9 @@ log_monitor_process() {
 }
 
 start_log_monitor() {
+    # 导出函数，使其在 nohup 的子 Shell 中可用
+    export -f run_with_sudo
+
     if [ -f "$LOG_MONITOR_PID_FILE" ]; then
         local old_pid
         old_pid=$(cat "$LOG_MONITOR_PID_FILE")
