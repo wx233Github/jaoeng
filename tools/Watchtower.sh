@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.2-稳定修复版)
-# - BUG修复: 修正 Go Template 变量引用错误，解决通知报错导致的进程退出问题。
-# - UI优化: 全面优化交互文案，移除冗余的模板描述，界面更专业。
+# 🚀 Watchtower 自动更新管理器 (v6.4.3-修复Read退出码)
+# - BUG修复: 修复 heredoc 读取变量时因 EOF 返回码导致脚本中断的问题 (代码: 1)。
+# - 稳定性: 确保在 set -e 模式下模板变量能正确赋值。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.2"
+SCRIPT_VERSION="v6.4.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -201,17 +201,11 @@ _start_watchtower_container_logic(){
     # 1. 配置原生通知环境变量
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         
-        # --- 关键修复：Go Template 模板 ---
-        # 不再使用 .Updated (导致崩溃的原因)，改用最稳健的 range .Entries
-        # 根据 entries 是否存在来改变标题
         local template_content
         local show_no_updates="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 
-        # 这是一个兼容性极强的模板，直接嵌入字符串，避免文件挂载问题
-        # 逻辑：
-        # 1. 遍历 .Entries，如果有条目，则显示"新版本已部署"和日志列表。
-        # 2. 如果没有条目 (else)，且用户开启了无更新通知，则显示"同步检查完成"。
-        read -r -d '' template_content <<EOF
+        # 关键修正：添加 || true 以防止 set -e 在 read 读到 EOF 时退出
+        read -r -d '' template_content <<EOF || true
 {{- if .Entries -}}
 🚀 *新版本已部署!*
 节点: \`{{ .Title }}\`
@@ -230,7 +224,6 @@ EOF
         
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        # 添加 title 参数以填充模板中的 .Title
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=$(hostname)")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
