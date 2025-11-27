@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.3-修复Read退出码)
-# - BUG修复: 修复 heredoc 读取变量时因 EOF 返回码导致脚本中断的问题 (代码: 1)。
-# - 稳定性: 确保在 set -e 模式下模板变量能正确赋值。
+# 🚀 Watchtower 自动更新管理器 (v6.4.4-UI终极优化)
+# - UI优化: 弃用 Watchtower 内部 Title 变量，改为直接注入 Hostname，解决通知标题冗长重复的问题。
+# - 修复: 修复 heredoc 读取时的逻辑，确保通知模板纯净。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.3"
+SCRIPT_VERSION="v6.4.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -203,12 +203,16 @@ _start_watchtower_container_logic(){
         
         local template_content
         local show_no_updates="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
+        local current_host
+        current_host=$(hostname)
 
-        # 关键修正：添加 || true 以防止 set -e 在 read 读到 EOF 时退出
+        # UI 终极优化：
+        # 1. 移除 {{ .Title }}，改用 ${current_host} 直接硬编码，避免显示 "Watchtower updates on..."
+        # 2. 保持 || true 防止脚本意外退出
         read -r -d '' template_content <<EOF || true
 {{- if .Entries -}}
 🚀 *新版本已部署!*
-节点: \`{{ .Title }}\`
+节点: \`${current_host}\`
 
 📝 *变更日志:*
 {{- range .Entries }}
@@ -217,14 +221,15 @@ _start_watchtower_container_logic(){
 
 {{- else if eq "${show_no_updates}" "true" -}}
 ✅ *同步检查完成*
-节点: \`{{ .Title }}\`
+节点: \`${current_host}\`
 所有服务均为最新。
 {{- end -}}
 EOF
         
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=$(hostname)")
+        # URL title 参数仍然保留，但因为我们模板里不再调用 {{ .Title }}，即使 Watchtower 覆盖了它也不会显示在正文中
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
         # 启用 Report 模式 (每次检查完生成一份报告)
