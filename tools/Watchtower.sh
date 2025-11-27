@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 管理模块 (v6.4.0-原生通知版)
-# - 架构升级: 废弃后台日志监控脚本，改用 Watchtower 原生 Shoutrrr 通知系统。
-# - 稳定性: 彻底解决因日志流断开导致通知失效的问题。
-# - UI/UX: 通过 Go Template 完美复刻 "方案 F" (版本发布风格) 的通知格式。
+# 🚀 Watchtower 管理模块 (v6.4.1-修复模板传参)
+# - BUG修复: 修复 Telegram 通知显示为文件路径的问题。
+# - 原理变更: 将模板内容读取为字符串直接传递给 Docker 环境变量，而非挂载文件。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.0"
+SCRIPT_VERSION="v6.4.1"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -40,7 +39,7 @@ fi
 
 # 本地配置文件路径
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
-# 模板文件路径 (用于映射进容器)
+# 模板文件路径 (仅用于本地生成临时文件读取)
 TEMPLATE_FILE="$HOME/.watchtower_notification.tpl"
 
 # --- 模块变量 ---
@@ -91,7 +90,7 @@ if ! command -v docker &> /dev/null; then
     exit 10
 fi
 
-# jq 仍需保留用于“发送测试通知”功能，虽然 Watchtower 本身不再需要它
+# jq 仍需保留用于“发送测试通知”功能
 if [ -n "$TG_BOT_TOKEN" ] && ! command -v jq &> /dev/null; then
     log_warn "建议安装 'jq' 以便使用脚本内的'发送测试通知'功能 (Watchtower 核心功能不受影响)。"
 fi
@@ -154,15 +153,12 @@ send_test_notify() {
 _generate_template_file() {
     local show_no_updates="$1" # "true" or "false"
     
-    # 这里的模板逻辑对应 Watchtower 的 Report 模式
-    # 如果 .Updated 列表长度 > 0，则渲染更新信息
-    # 否则，如果 show_no_updates 为 true，则渲染“无更新”信息
-    
+    # 注意：Go Template 中的 .Title 在 Shoutrrr 中可能不生效，主要靠内容渲染
     cat > "$TEMPLATE_FILE" <<EOF
 {{- if .Updated -}}
 🚀 *新版本已部署!*
 
-在服务器 \`{{ .Host }}\` 上，
+在服务器 \`{{ .Title }}\` 上，
 我们为您更新了 {{ len .Updated }} 个服务:
 
 *✨ 更新内容:*
@@ -174,11 +170,11 @@ _generate_template_file() {
 {{- else if eq "${show_no_updates}" "true" -}}
 ✅ *同步检查完成*
 
-服务器 \`{{ .Host }}\` 上的所有
+服务器 \`{{ .Title }}\` 上的所有
 Docker 服务都已是最新版本，无需操作。
 {{- end -}}
 EOF
-    chmod 644 "$TEMPLATE_FILE"
+    # 这里的 .Title 通常是主机名，Watchtower 会自动填充
 }
 
 _prompt_for_interval() {
@@ -237,15 +233,21 @@ _start_watchtower_container_logic(){
         # 生成模板文件
         _generate_template_file "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
         
-        # 挂载模板文件
-        docker_run_args+=(-v "${TEMPLATE_FILE}:/etc/watchtower/notification.tpl")
+        # 读取模板内容到变量
+        local template_content
+        if [ -f "$TEMPLATE_FILE" ]; then
+            template_content=$(cat "$TEMPLATE_FILE")
+        else
+            log_warn "模板文件生成失败，通知可能显示不正常。"
+            template_content="Watchtower Update Report: {{ . }}"
+        fi
         
-        # 设置通知相关环境变量
+        # 关键修正：不再挂载文件，而是将内容作为字符串传递
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=/etc/watchtower/notification.tpl")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=$(hostname)")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
-        # 启用 Report 模式 (每次检查完生成一份报告，便于模板统一处理)
+        # 启用 Report 模式 (每次检查完生成一份报告)
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ 已配置 Telegram 原生通知 (模板: 方案 F)。"
