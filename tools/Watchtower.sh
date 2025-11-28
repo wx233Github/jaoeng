@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.15-交互逻辑优化版)
-# - 交互优化: 主菜单进入“重新配置”前增加确认提示。
-# - 逻辑优化: 忽略名单清空操作增加二次确认，避免误操作。
-# - 流程调整: 修改配置后不再自动询问重建，改为红色醒目提示，由用户手动决定。
+# 🚀 Watchtower 自动更新管理器 (v6.4.16-交互流程终极修复版)
+# - 修复: 主菜单 1 "重新配置" 拒绝确认后，不再错误触发后续的 "按 Enter 继续"。
+# - 修复: 忽略名单输入回车清空时，提示更准确，且操作完成后自动返回列表。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.15"
+SCRIPT_VERSION="v6.4.16"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -400,7 +399,7 @@ configure_watchtower(){
     # 交互优化: 进入重新配置前确认
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         if ! confirm_action "Watchtower 正在运行。进入配置可能会覆盖当前设置，是否继续?"; then
-            return 0
+            return 10 # 明确返回非0状态码，避免外部调用方误以为成功
         fi
     fi
 
@@ -479,17 +478,20 @@ configure_exclusion_list() {
             "") 
                 # 交互优化: 清空确认
                 if [ ${#excluded_map[@]} -eq 0 ]; then
-                    log_info "当前列表已为空。"
+                    log_info "当前列表已为空，无需清空。"
                     sleep 1
                     continue
                 fi
                 if confirm_action "确定要清空忽略名单吗？(清空后将自动监控所有新容器)"; then
                     excluded_map=()
                     log_info "已清空忽略名单。"
+                    sleep 1
+                    # 关键修改：清空成功后自动跳出循环，回到上级菜单
+                    break
                 else
-                    log_info "取消清空。"
+                    log_info "操作已取消。"
+                    sleep 1
                 fi
-                sleep 1
                 continue
                 ;;
             *)
@@ -807,7 +809,10 @@ main_menu(){
         local choice
         choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
-          1) configure_watchtower || true; press_enter_to_continue ;;
+          1) configure_watchtower || true; 
+             # 关键修复: 只有当函数返回 0 (成功/继续) 时才暂停，否则(取消)直接重绘菜单
+             if [ $? -eq 0 ]; then press_enter_to_continue; fi 
+             ;;
           2) notification_menu ;;
           3) manage_tasks ;;
           4) view_and_edit_config ;;
