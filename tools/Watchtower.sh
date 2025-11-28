@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.4-完美复刻版)
-# - 完整性: 补全"高级参数编辑器"中缺失的"服务器别名"选项，与 v6.4.9 功能完全对齐。
-# - 架构: 保持 v6.5 系列的单行环境变量注入架构 (无文件残留，高稳定性)。
-# - 功能: 包含通知降噪、自定义别名、无更新通知开关、日志看板等所有特性。
+# 🚀 Watchtower 自动更新管理器 (v6.5.0-挂载修复版)
+# - 核心修复: 改用文件挂载方式注入通知模板，彻底解决环境变量传参导致模板失效的问题。
+# - 交互升级: 修改配置后会自动检测运行状态并提示重建容器。
+# - 视觉降噪: 模板文件内置关键词过滤，屏蔽无关的配置日志。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.5.4"
+SCRIPT_VERSION="v6.5.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -36,8 +36,9 @@ if ! declare -f run_with_sudo &>/dev/null; then
   exit 1
 fi
 
-# 配置文件路径
+# 配置文件与模板路径
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
+HOST_TEMPLATE_FILE="$HOME/.watchtower_notification.tpl" # 宿主机上的模板文件路径
 
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
@@ -115,7 +116,39 @@ _format_seconds_to_human(){
     echo "${r:-0秒}"
 }
 
+# --- 核心：生成并写入模板文件 ---
+_write_template_file() {
+    local show_no_updates="$1"
+    
+    # 使用 cat EOF 将模板写入宿主机文件
+    # 逻辑：只显示包含 "Found", "Stopping", "Creating", "Updated" 等关键词的行
+    # 从而屏蔽 "Using notifications", "Checking" 等干扰信息
+    cat > "$HOST_TEMPLATE_FILE" <<EOF
+{{- \$events := .Entries -}}
+{{- \$realUpdates := false -}}
+{{- range \$events -}}
+  {{- if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated") -}}
+    {{- \$realUpdates = true -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if \$realUpdates -}}
+🚀 *执行日志:*
+{{- range \$events }}
+  {{- if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated") }}
+> {{ .Message }}
+  {{- end }}
+{{- end }}
+
+{{- else if eq "${show_no_updates}" "true" -}}
+✅ *检查完成*
+所有服务均为最新。
+{{- end -}}
+EOF
+}
+
 _check_and_prompt_rebuild() {
+    # 检查 Watchtower 是否正在运行
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         echo ""
         if confirm_action "检测到 Watchtower 正在运行。配置已变更，是否立即重建以生效？"; then
@@ -140,26 +173,26 @@ _start_watchtower_container_logic(){
 
     # 1. 处理通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+        # 生成模板文件到宿主机
+        _write_template_file "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
         
-        # 单行扁平化模板: 包含日志降噪逻辑
-        local tpl_part_1='{{$e:=.Entries}}{{$RealUp:=false}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{$RealUp=true}}{{end}}{{end}}'
-        local tpl_part_2='{{if $RealUp}}🚀 *执行日志:*{{println}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{print "> " .Message}}{{println}}{{end}}{{end}}'
-        local tpl_part_3
-        if [ "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}" = "true" ]; then
-            tpl_part_3='{{else}}✅ *检查完成*{{println}}所有服务均为最新。{{end}}'
-        else
-            tpl_part_3='{{else}}{{end}}' 
-        fi
+        # 挂载模板文件到容器内部 /etc/watchtower/notification.tpl
+        docker_run_args+=(-v "${HOST_TEMPLATE_FILE}:/etc/watchtower/notification.tpl")
         
-        local final_template="${tpl_part_1}${tpl_part_2}${tpl_part_3}"
-
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
+        # 移除 title 参数，避免 Shoutrrr 解析错误
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
+        
+        # 修改标题前缀
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${final_template}")
+        
+        # 关键：指定模板文件路径，而不是传递内容字符串
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=/etc/watchtower/notification.tpl")
+        
+        # 启用报告模式
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
-        log_info "✅ Telegram 通知已启用"
+        log_info "✅ Telegram 通知已启用 (挂载模式)"
     else
         log_info "ℹ️ 未配置 Telegram，将不发送通知"
     fi
@@ -179,6 +212,7 @@ _start_watchtower_container_logic(){
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
     
+    # 排除列表逻辑
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
     if [ -n "$final_exclude_list" ]; then
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
@@ -394,54 +428,12 @@ show_watchtower_details(){
 }
 
 show_container_info() {
+    # 简化版容器列表展示，仅展示核心信息
     if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
     echo "--- 容器看板 ---"
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
     echo ""
     press_enter_to_continue
-}
-
-view_and_edit_config(){
-    # 补全了 "服务器别名"
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
-        local -a content_lines_array=(); local i
-        for i in "${!config_items[@]}"; do
-            local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"
-            case "$type" in
-                string) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;;
-                string_list) if [ -n "$current_value" ]; then color="${YELLOW}"; display_text="${current_value//,/, }"; else color="${CYAN}"; display_text="无"; fi ;;
-                bool) if [ "$current_value" = "true" ]; then color="${GREEN}"; display_text="是"; else color="${CYAN}"; display_text="否"; fi ;;
-                interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ] && [ -n "$current_value" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;;
-            esac
-            content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
-        done
-        _render_menu "⚙️ 高级参数编辑器 ⚙️" "${content_lines_array[@]}"
-        local choice
-        choice=$(_prompt_for_menu_choice "1-${#config_items[@]}")
-        if [ -z "$choice" ]; then return; fi
-        if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
-        local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local current_value="${!var_name}"; local new_value=""
-        
-        case "$type" in
-            string|string_list) 
-                local new_value_input
-                new_value_input=$(_prompt_user_input "请输入新的 '$label' (当前: $current_value): " "$current_value")
-                declare "$var_name"="${new_value_input}" 
-                ;;
-            bool) 
-                local new_value_input
-                new_value_input=$(_prompt_user_input "是否启用 '$label'? (y/N, 当前: $current_value): " "")
-                if echo "$new_value_input" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi 
-                ;;
-            interval) 
-                new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔")
-                if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi 
-                ;;
-        esac
-        save_config; log_info "'$label' 已更新。"; sleep 1
-    done
 }
 
 main_menu(){
@@ -450,15 +442,14 @@ main_menu(){
         local status_color="${RED}停止${NC}"; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then status_color="${GREEN}运行中${NC}"; fi
         local notify_mode="${CYAN}关${NC}"; if [ -n "$TG_BOT_TOKEN" ]; then notify_mode="${GREEN}Telegram${NC}"; fi
         local total; total=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a -q | wc -l)
-        local -a content=("状态: ${status_color}" "通知: ${notify_mode}" "容器: $total 个" "" "1. 部署/配置 (核心)" "2. 通知设置" "3. 运维 (停止/重建)" "4. 高级参数编辑器" "5. 实时日志与容器看板")
+        local -a content=("状态: ${status_color}" "通知: ${notify_mode}" "容器: $total 个" "" "1. 部署/配置 (核心)" "2. 通知设置" "3. 运维 (停止/重建)" "4. 详情/日志")
         _render_menu "Watchtower 管理" "${content[@]}"
-        local choice; choice=$(_prompt_for_menu_choice "1-5")
+        local choice; choice=$(_prompt_for_menu_choice "1-4")
         case "$choice" in
           1) configure_watchtower ;;
           2) notification_menu ;;
           3) manage_tasks ;;
-          4) view_and_edit_config ;;
-          5) show_watchtower_details ;;
+          4) show_watchtower_details ;;
           "") return 0 ;;
           *) sleep 1 ;;
         esac
