@@ -1,11 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.6-修复URL崩溃)
-# - 紧急修复: 移除 Telegram 通知 URL 中的空格，解决 Shoutrrr 将其误判为多个服务导致崩溃的问题 (代码: 1)。
-# - 稳定性: 采用 URL 安全的字符作为标题参数。
+# 🚀 Watchtower 自动更新管理器 (v6.4.7-UI终极修复)
+# - 策略调整: 鉴于 URL title 参数无效，改用环境变量 `WATCHTOWER_NOTIFICATION_TITLE_TAG` 缩短标题前缀。
+# - UI去重: 从模板中移除“节点”行，避免与标题中的主机名重复显示。
+# - 稳定性: 移除所有可能导致解析崩溃的 URL 附加参数。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.6"
+SCRIPT_VERSION="v6.4.7"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -203,14 +204,11 @@ _start_watchtower_container_logic(){
         
         local template_content
         local show_no_updates="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
-        local current_host
-        current_host=$(hostname)
 
-        # 模板定义
+        # 模板定义 (去除节点行，去除复杂格式，只保留正文)
         read -r -d '' template_content <<EOF || true
 {{- if .Entries -}}
 🚀 *新版本已部署!*
-节点: \`${current_host}\`
 
 📝 *变更日志:*
 {{- range .Entries }}
@@ -219,7 +217,6 @@ _start_watchtower_container_logic(){
 
 {{- else if eq "${show_no_updates}" "true" -}}
 ✅ *同步检查完成*
-节点: \`${current_host}\`
 所有服务均为最新。
 {{- end -}}
 EOF
@@ -227,13 +224,17 @@ EOF
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 关键修正：移除 title 中的空格，改为下划线。Shoutrrr 会按空格分割多个 URL。
-        # 之前 "🤖 Watchtower" 中的空格导致 "Watchtower" 被解析为第二个无效 URL。
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=Watchtower_Updates")
+        # URL 中完全移除 title 参数，避免 Shoutrrr 解析错误
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
+        
+        # 使用 Watchtower 专用变量来控制标题前缀
+        # 将默认的 "Watchtower updates on" 替换为更简短的 "🤖 Watchtower"
+        # 这样标题行会变成: "🤖 Watchtower [主机名]"
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=🤖 Watchtower")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
-        # 启用 Report 模式 (每次检查完生成一份报告)
+        # 启用 Report 模式
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ Telegram 通知通道已激活"
