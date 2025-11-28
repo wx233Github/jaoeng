@@ -1,7 +1,5 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.16-交互流程终极修复版)
-# - 修复: 主菜单 1 "重新配置" 拒绝确认后，不再错误触发后续的 "按 Enter 继续"。
-# - 修复: 忽略名单输入回车清空时，提示更准确，且操作完成后自动返回列表。
+# 🚀 Watchtower 自动更新管理器 (v6.4.16-逻辑修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -26,15 +24,15 @@ else
     _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
     press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
     confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
+    _prompt_user_input() { read -r -p "$1" val; echo "${val:-$2}"; }
+    _prompt_for_menu_choice() { read -r -p "请选择 [${1}]: " val; echo "$val"; }
     GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
-    exit 1
 fi
 
 # --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
-  log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
-  exit 1
+    # 如果作为独立脚本运行，定义简单的 sudo 包装器
+    run_with_sudo() { sudo "$@"; }
 fi
 
 # 本地配置文件路径
@@ -399,7 +397,8 @@ configure_watchtower(){
     # 交互优化: 进入重新配置前确认
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         if ! confirm_action "Watchtower 正在运行。进入配置可能会覆盖当前设置，是否继续?"; then
-            return 10 # 明确返回非0状态码，避免外部调用方误以为成功
+            # 返回 10 表示用户取消，主菜单捕获后将跳过 press_enter_to_continue
+            return 10
         fi
     fi
 
@@ -478,20 +477,17 @@ configure_exclusion_list() {
             "") 
                 # 交互优化: 清空确认
                 if [ ${#excluded_map[@]} -eq 0 ]; then
-                    log_info "当前列表已为空，无需清空。"
+                    log_info "当前列表已为空。"
                     sleep 1
                     continue
                 fi
                 if confirm_action "确定要清空忽略名单吗？(清空后将自动监控所有新容器)"; then
                     excluded_map=()
                     log_info "已清空忽略名单。"
-                    sleep 1
-                    # 关键修改：清空成功后自动跳出循环，回到上级菜单
-                    break
                 else
-                    log_info "操作已取消。"
-                    sleep 1
+                    log_info "取消清空。"
                 fi
+                sleep 1
                 continue
                 ;;
             *)
@@ -809,16 +805,19 @@ main_menu(){
         local choice
         choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
-          1) configure_watchtower || true; 
-             # 关键修复: 只有当函数返回 0 (成功/继续) 时才暂停，否则(取消)直接重绘菜单
-             if [ $? -eq 0 ]; then press_enter_to_continue; fi 
-             ;;
-          2) notification_menu ;;
-          3) manage_tasks ;;
-          4) view_and_edit_config ;;
-          5) show_watchtower_details ;;
-          "") return 0 ;;
-          *) log_warn "无效选项。"; sleep 1 ;;
+            # 修改：仅当 configure_watchtower 成功或报错时才暂停（返回 10 代表用户取消）
+            1) 
+                configure_watchtower
+                if [ $? -ne 10 ]; then 
+                    press_enter_to_continue
+                fi 
+                ;;
+            2) notification_menu ;;
+            3) manage_tasks ;;
+            4) view_and_edit_config ;;
+            5) show_watchtower_details ;;
+            "") return 0 ;;
+            *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
 }
