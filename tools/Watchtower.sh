@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.12-模板修复与原生降噪版)
-# - 致命修复: 移除模板中不支持的 'contains' 函数，解决模板崩溃导致回退默认的问题。
-# - 原生降噪: 启用 WATCHTOWER_NO_STARTUP_MESSAGE，从源头屏蔽启动废话。
-# - 标题修正: 恢复 TITLE_TAG 环境变量，确保通知标题正确显示别名。
+# 🚀 Watchtower 自动更新管理器 (v6.4.13-模板修复终结版)
+# - 核心修复: 撤销模板过度转义，修复 "unexpected \\" 错误，确保自定义模板生效。
+# - 体验优化: 重写“服务已重建”的测试通知文案，包含更多状态信息。
+# - 逻辑精简: 优化 Docker 参数传递逻辑，防止 Shell 解析干扰。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.12"
+SCRIPT_VERSION="v6.4.13"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -190,11 +190,8 @@ _prompt_for_interval() {
 }
 
 # --- 模板生成函数 (原始文本) ---
-# 修复核心：移除不支持的 contains 函数，改用简单的遍历。
-# 降噪逻辑：依赖 WATCHTOWER_NO_STARTUP_MESSAGE 环境变量。
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
-    
     cat <<EOF
 {{- if .Entries -}}
 {{- range .Entries -}}
@@ -226,24 +223,27 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # 模板转义：将双引号替换为转义双引号，并将换行符压缩为空格（依赖模板内的 {{- -}} 去除多余空格）
-        local template_escaped
-        template_escaped=$(echo "$template_raw" | sed 's/"/\\"/g' | tr '\n' ' ')
+        # ⚠️ 关键修复 ⚠️
+        # 1. 不再使用 sed 转义双引号，因为 Bash 数组会自动处理参数内的引号。
+        # 2. 仅将换行符替换为空格，以保证作为单行环境变量传递。
+        local template_flat
+        template_flat=$(echo "$template_raw" | tr '\n' ' ')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 修复标题：通过 Title Tag 控制标题前缀，配合 -h 参数显示别名
+        # 修复标题
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
         
-        # 核心降噪：禁止 Watchtower 发送启动时的废话消息（Using notifications... 等）
+        # 核心降噪：禁止 Watchtower 发送启动时的废话消息
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # URL 传递参数
+        # URL 传递参数 (Title)
         local title_encoded
         title_encoded=$(echo "Watchtower $run_hostname" | sed 's/ /%20/g')
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}")
         
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_escaped")
+        # 直接传递压扁后的模板，Bash 会处理好外层的双引号
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_flat")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
@@ -316,7 +316,15 @@ _rebuild_watchtower() {
     if ! _start_watchtower_container_logic "$interval" "Watchtower (监控模式)"; then
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
-    send_test_notify "🔄 服务已重建。这是一条来自脚本的测试通知，实际更新通知将由 Watchtower 直接发送。"
+    
+    # 优化后的测试通知文案
+    local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
+    local msg="✅ *配置更新已生效*
+
+⚙️ *服务状态*: 重建完成
+🏷 *节点别名*: ${alias_name}
+📡 *通知渠道*: Telegram"
+    send_test_notify "$msg"
 }
 
 # --- 智能重建提示 ---
