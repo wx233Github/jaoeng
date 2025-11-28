@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.1-无文件纯净版)
-# - 架构回归: 移除文件挂载，改用"单行扁平化"模板注入环境变量。
-# - 优势: 不会在宿主机生成任何垃圾文件，配置完全封装在容器内部。
-# - 逻辑: 模板已压缩为单行字符串，依靠 Go Template 的 {{println}} 语法控制换行。
+# 🚀 Watchtower 自动更新管理器 (v6.5.3-终极修复版)
+# - 修复: 补全主菜单缺失的 "实时日志与容器看板" 选项。
+# - 功能: 包含所有核心特性 (环境变量模板、别名支持、日志过滤)。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.5.1"
+SCRIPT_VERSION="v6.5.3"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -141,44 +140,25 @@ _start_watchtower_container_logic(){
     # 1. 处理通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         
-        # ==============================================================================
-        # 核心修改：使用单行扁平化模板 (Single-line Flattened Template)
-        # ==============================================================================
-        # 说明：
-        # 1. 不使用换行符，全部挤在一行，避免Shell传递变量时的转义问题。
-        # 2. 使用 Go Template 的 {{println}} 来生成消息中的换行。
-        # 3. 逻辑：先遍历一遍日志，判断是否有 Update/Stop/Create/Found 关键词，标记 $RealUp=true。
-        # 4. 如果 $RealUp 为 true，则输出 "🚀 执行日志:" 并列出过滤后的日志。
-        # 5. 如果 $RealUp 为 false，且用户允许无更新通知，则输出 "✅ 检查完成"。
-        # ==============================================================================
-        
+        # 核心：单行扁平化模板
         local tpl_part_1='{{$e:=.Entries}}{{$RealUp:=false}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{$RealUp=true}}{{end}}{{end}}'
-        
         local tpl_part_2='{{if $RealUp}}🚀 *执行日志:*{{println}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{print "> " .Message}}{{println}}{{end}}{{end}}'
-        
         local tpl_part_3
         if [ "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}" = "true" ]; then
-            # 用户想要无更新通知
             tpl_part_3='{{else}}✅ *检查完成*{{println}}所有服务均为最新。{{end}}'
         else
-            # 用户不想看无更新通知，则留空 (Watchtower Report 模式下，如果模板输出为空，Shoutrrr 可能仍会发空消息，我们尽量给个极简提示或直接留空)
-            # 注意：Shoutrrr 可能会报错如果 body 为空，所以最稳妥是输出一行简单的状态
             tpl_part_3='{{else}}{{end}}' 
         fi
         
-        # 拼接成最终的单行模板字符串
         local final_template="${tpl_part_1}${tpl_part_2}${tpl_part_3}"
 
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
-        
-        # 直接传递字符串变量，因为是单行且被双引号包裹，Docker能正确识别
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=${final_template}")
-        
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
-        log_info "✅ Telegram 通知已启用 (环境变量模式)"
+        log_info "✅ Telegram 通知已启用"
     else
         log_info "ℹ️ 未配置 Telegram，将不发送通知"
     fi
@@ -413,12 +393,53 @@ show_watchtower_details(){
 }
 
 show_container_info() {
-    # 简化版容器列表展示，仅展示核心信息
     if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
     echo "--- 容器看板 ---"
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
     echo ""
     press_enter_to_continue
+}
+
+view_and_edit_config(){
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
+        local -a content_lines_array=(); local i
+        for i in "${!config_items[@]}"; do
+            local item="${config_items[$i]}"; local label; label=$(echo "$item" | cut -d'|' -f1); local var_name; var_name=$(echo "$item" | cut -d'|' -f2); local type; type=$(echo "$item" | cut -d'|' -f3); local current_value="${!var_name}"; local display_text=""; local color="${CYAN}"
+            case "$type" in
+                string) if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"; else color="${RED}"; display_text="未设置"; fi ;;
+                string_list) if [ -n "$current_value" ]; then color="${YELLOW}"; display_text="${current_value//,/, }"; else color="${CYAN}"; display_text="无"; fi ;;
+                bool) if [ "$current_value" = "true" ]; then color="${GREEN}"; display_text="是"; else color="${CYAN}"; display_text="否"; fi ;;
+                interval) display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ] && [ -n "$current_value" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi ;;
+            esac
+            content_lines_array+=("$(printf "%2d. %s: %s%s%s" "$((i + 1))" "$label" "$color" "$display_text" "$NC")")
+        done
+        _render_menu "⚙️ 高级参数编辑器 ⚙️" "${content_lines_array[@]}"
+        local choice
+        choice=$(_prompt_for_menu_choice "1-${#config_items[@]}")
+        if [ -z "$choice" ]; then return; fi
+        if ! echo "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#config_items[@]}" ]; then log_warn "无效选项。"; sleep 1; continue; fi
+        local selected_index=$((choice - 1)); local selected_item="${config_items[$selected_index]}"; local label; label=$(echo "$selected_item" | cut -d'|' -f1); local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2); local type; type=$(echo "$selected_item" | cut -d'|' -f3); local current_value="${!var_name}"; local new_value=""
+        
+        case "$type" in
+            string|string_list) 
+                local new_value_input
+                new_value_input=$(_prompt_user_input "请输入新的 '$label' (当前: $current_value): " "$current_value")
+                declare "$var_name"="${new_value_input}" 
+                ;;
+            bool) 
+                local new_value_input
+                new_value_input=$(_prompt_user_input "是否启用 '$label'? (y/N, 当前: $current_value): " "")
+                if echo "$new_value_input" | grep -qE '^[Yy]$'; then declare "$var_name"="true"; else declare "$var_name"="false"; fi 
+                ;;
+            interval) 
+                new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔")
+                if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi 
+                ;;
+        esac
+        save_config; log_info "'$label' 已更新。"; sleep 1
+    done
 }
 
 main_menu(){
@@ -427,14 +448,15 @@ main_menu(){
         local status_color="${RED}停止${NC}"; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then status_color="${GREEN}运行中${NC}"; fi
         local notify_mode="${CYAN}关${NC}"; if [ -n "$TG_BOT_TOKEN" ]; then notify_mode="${GREEN}Telegram${NC}"; fi
         local total; total=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a -q | wc -l)
-        local -a content=("状态: ${status_color}" "通知: ${notify_mode}" "容器: $total 个" "" "1. 部署/配置 (核心)" "2. 通知设置" "3. 运维 (停止/重建)" "4. 详情/日志")
+        local -a content=("状态: ${status_color}" "通知: ${notify_mode}" "容器: $total 个" "" "1. 部署/配置 (核心)" "2. 通知设置" "3. 运维 (停止/重建)" "4. 高级参数编辑器" "5. 实时日志与容器看板")
         _render_menu "Watchtower 管理" "${content[@]}"
-        local choice; choice=$(_prompt_for_menu_choice "1-4")
+        local choice; choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
           1) configure_watchtower ;;
           2) notification_menu ;;
           3) manage_tasks ;;
-          4) show_watchtower_details ;;
+          4) view_and_edit_config ;;
+          5) show_watchtower_details ;;
           "") return 0 ;;
           *) sleep 1 ;;
         esac
