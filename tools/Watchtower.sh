@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.16-逻辑修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.17-逻辑修正版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.16"
+SCRIPT_VERSION="v6.4.17"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -31,7 +31,6 @@ fi
 
 # --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
-    # 如果作为独立脚本运行，定义简单的 sudo 包装器
     run_with_sudo() { sudo "$@"; }
 fi
 
@@ -470,12 +469,14 @@ configure_exclusion_list() {
         fi
         items_array+=("${CYAN}当前忽略: ${current_excluded_display}${NC}")
         _render_menu "配置忽略更新的容器" "${items_array[@]}"
+        
+        # 修正：使用 read 直接读取，确保能捕捉到回车（空输入）
         local choice
-        choice=$(_prompt_for_menu_choice "数字" "c,回车")
+        read -r -p "请选择 (数字切换, c 结束, 回车清空): " choice
+        
         case "$choice" in
             c|C) break ;;
             "") 
-                # 交互优化: 清空确认
                 if [ ${#excluded_map[@]} -eq 0 ]; then
                     log_info "当前列表已为空。"
                     sleep 1
@@ -805,10 +806,13 @@ main_menu(){
         local choice
         choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
-            # 修改：仅当 configure_watchtower 成功或报错时才暂停（返回 10 代表用户取消）
+            # 修正：捕获返回码，避免因 set -e 导致非0返回码直接退出脚本
             1) 
+                set +e
                 configure_watchtower
-                if [ $? -ne 10 ]; then 
+                local rc=$?
+                set -e
+                if [ "$rc" -ne 10 ]; then 
                     press_enter_to_continue
                 fi 
                 ;;
