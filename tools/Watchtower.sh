@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.7-UI终极修复)
-# - 策略调整: 鉴于 URL title 参数无效，改用环境变量 `WATCHTOWER_NOTIFICATION_TITLE_TAG` 缩短标题前缀。
-# - UI去重: 从模板中移除“节点”行，避免与标题中的主机名重复显示。
-# - 稳定性: 移除所有可能导致解析崩溃的 URL 附加参数。
+# 🚀 Watchtower 自动更新管理器 (v6.4.8-UI逻辑修正)
+# - UI修复: 移除自定义 Title Tag，解决标题重复问题。
+# - 逻辑修正: 将通知标题改为中性的 "任务执行日志"，避免将普通运行日志误报为"新版本部署"。
+# - 排版优化: 优化日志列表显示格式。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.7"
+SCRIPT_VERSION="v6.4.8"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -204,19 +204,19 @@ _start_watchtower_container_logic(){
         
         local template_content
         local show_no_updates="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
-
-        # 模板定义 (去除节点行，去除复杂格式，只保留正文)
+        
+        # 修复后的中性模板
+        # 将 "新版本已部署" 改为 "任务执行日志"，避免误导
+        # 使用 > 符号做引用样式，比 bullet point 更整洁
         read -r -d '' template_content <<EOF || true
 {{- if .Entries -}}
-🚀 *新版本已部署!*
-
-📝 *变更日志:*
+📋 *任务执行日志:*
 {{- range .Entries }}
-• {{ .Message }}
+> {{ .Message }}
 {{- end }}
 
 {{- else if eq "${show_no_updates}" "true" -}}
-✅ *同步检查完成*
+✅ *检查完成*
 所有服务均为最新。
 {{- end -}}
 EOF
@@ -224,13 +224,9 @@ EOF
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # URL 中完全移除 title 参数，避免 Shoutrrr 解析错误
+        # 移除 title 参数，移除 TITLE_TAG 变量，完全使用 Watchtower 默认行为
+        # 这样标题就是标准的 "Watchtower updates on [HostName]"
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
-        
-        # 使用 Watchtower 专用变量来控制标题前缀
-        # 将默认的 "Watchtower updates on" 替换为更简短的 "🤖 Watchtower"
-        # 这样标题行会变成: "🤖 Watchtower [主机名]"
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=🤖 Watchtower")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
