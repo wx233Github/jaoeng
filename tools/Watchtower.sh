@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.14-模板修复终结版)
-# - 核心修复: 移除导致模板解析失败的转义符，确保 "✅ 所有服务均为最新" 生效。
-# - 体验优化: 全新设计的“服务已重建”通知，包含节点、时间与状态详情。
-# - 逻辑精简: 优化 Docker 参数传递，防止 Shell 解析干扰。
+# 🚀 Watchtower 自动更新管理器 (v6.4.15-交互逻辑优化版)
+# - 交互优化: 主菜单进入“重新配置”前增加确认提示。
+# - 逻辑优化: 忽略名单清空操作增加二次确认，避免误操作。
+# - 流程调整: 修改配置后不再自动询问重建，改为红色醒目提示，由用户手动决定。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.14"
+SCRIPT_VERSION="v6.4.15"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -223,21 +223,18 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # ⚠️ 修复：不再使用 sed 转义双引号，仅压缩换行符。让 Bash 数组处理引号。
+        # 仅压缩换行符
         local template_flat
         template_flat=$(echo "$template_raw" | tr '\n' ' ')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        
-        # 核心降噪：禁止 Watchtower 发送启动时的废话消息
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # URL 传递参数 (Title)
         local title_encoded
         title_encoded=$(echo "Watchtower $run_hostname" | sed 's/ /%20/g')
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}")
         
-        # 直接传递压扁后的模板，Bash 会处理好外层的双引号
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_flat")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
@@ -312,7 +309,6 @@ _rebuild_watchtower() {
         log_err "Watchtower 重建失败！"; WATCHTOWER_ENABLED="false"; save_config; return 1
     fi
     
-    # 优化后的测试通知文案
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="🔔 *Watchtower 配置更新*
@@ -324,17 +320,13 @@ _rebuild_watchtower() {
     send_test_notify "$msg"
 }
 
-# --- 智能重建提示 ---
+# --- 智能重建提示 (去交互版) ---
 _prompt_rebuild_if_needed() {
     # 如果 Watchtower 正在运行，且检测到刚保存配置
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         echo ""
-        echo -e "${YELLOW}⚠️ 检测到 Watchtower 正在运行，且配置已变更。${NC}"
-        if confirm_action "是否立即重建服务以应用新配置?"; then
-            _rebuild_watchtower
-        else
-            log_warn "配置已保存，但将在下次手动重建后生效。"
-        fi
+        # 红色字体警告，不再询问重建
+        echo -e "${RED}⚠️ 检测到 Watchtower 正在运行，且配置已变更。请前往'服务运维'重建服务以生效。${NC}"
     fi
 }
 
@@ -405,6 +397,13 @@ notification_menu() {
 }
 
 configure_watchtower(){
+    # 交互优化: 进入重新配置前确认
+    if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
+        if ! confirm_action "Watchtower 正在运行。进入配置可能会覆盖当前设置，是否继续?"; then
+            return 0
+        fi
+    fi
+
     local current_interval_for_prompt="${WATCHTOWER_CONFIG_INTERVAL}"
     local WT_INTERVAL_TMP
     WT_INTERVAL_TMP=$(_prompt_for_interval "$current_interval_for_prompt" "请输入检测频率")
@@ -478,8 +477,18 @@ configure_exclusion_list() {
         case "$choice" in
             c|C) break ;;
             "") 
-                excluded_map=()
-                log_info "已清空忽略名单。"
+                # 交互优化: 清空确认
+                if [ ${#excluded_map[@]} -eq 0 ]; then
+                    log_info "当前列表已为空。"
+                    sleep 1
+                    continue
+                fi
+                if confirm_action "确定要清空忽略名单吗？(清空后将自动监控所有新容器)"; then
+                    excluded_map=()
+                    log_info "已清空忽略名单。"
+                else
+                    log_info "取消清空。"
+                fi
                 sleep 1
                 continue
                 ;;
