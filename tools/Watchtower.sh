@@ -1,11 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.3-终极修复版)
-# - 修复: 补全主菜单缺失的 "实时日志与容器看板" 选项。
-# - 功能: 包含所有核心特性 (环境变量模板、别名支持、日志过滤)。
+# 🚀 Watchtower 自动更新管理器 (v6.5.4-完美复刻版)
+# - 完整性: 补全"高级参数编辑器"中缺失的"服务器别名"选项，与 v6.4.9 功能完全对齐。
+# - 架构: 保持 v6.5 系列的单行环境变量注入架构 (无文件残留，高稳定性)。
+# - 功能: 包含通知降噪、自定义别名、无更新通知开关、日志看板等所有特性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.5.3"
+SCRIPT_VERSION="v6.5.4"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -140,7 +141,7 @@ _start_watchtower_container_logic(){
     # 1. 处理通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         
-        # 核心：单行扁平化模板
+        # 单行扁平化模板: 包含日志降噪逻辑
         local tpl_part_1='{{$e:=.Entries}}{{$RealUp:=false}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{$RealUp=true}}{{end}}{{end}}'
         local tpl_part_2='{{if $RealUp}}🚀 *执行日志:*{{println}}{{range $e}}{{if or (contains .Message "Found new") (contains .Message "Stopping") (contains .Message "Creating") (contains .Message "Updated")}}{{print "> " .Message}}{{println}}{{end}}{{end}}'
         local tpl_part_3
@@ -401,7 +402,8 @@ show_container_info() {
 }
 
 view_and_edit_config(){
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
+    # 补全了 "服务器别名"
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
