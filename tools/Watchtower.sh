@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.10-交互优化版)
-# - 交互优化: 修改配置后自动检测运行状态，主动提示重建服务。
-# - 状态中心: 主菜单增加“⚠️ 配置未生效”的可视化提示。
-# - 代码重构: 将复杂的通知模板逻辑抽取为独立函数，增强可读性。
+# 🚀 Watchtower 自动更新管理器 (v6.4.11-模板转义修复版)
+# - 核心修复: 修复通知模板因双引号未转义导致失效的问题（解决通知内容不缩略的问题）。
+# - 标题修复: 改用 URL 参数传递 Title，确保 Telegram 标题能正确显示别名。
+# - 格式优化: 将模板压缩为单行，确保 Shell 传递稳定性。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.10"
+SCRIPT_VERSION="v6.4.11"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -189,33 +189,32 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 ---
-_get_shoutrrr_template() {
+# --- 模板生成函数 (原始文本) ---
+# 注意：这里只负责生成原始文本，转义逻辑在 _start_watchtower_container_logic 中处理
+_get_shoutrrr_template_raw() {
     local show_no_updates="$1"
-    # 这里使用 cat 和 EOF 能够保持模板的格式，避免转义噩梦。
-    # 逻辑说明：Watchtower 默认日志很啰嗦，这个模板通过 filtering 逻辑
-    # 去除 "Using notifications" 等无用信息，只显示 "Found new image" 等关键事件。
-    # 注意：Go 模板变量（如 $events）需要转义 \$，而 Shell 变量（如 ${show_no_updates}）保留原样。
+    
+    # 模板逻辑：
+    # 1. 遍历 .Entries 日志条目
+    # 2. 忽略包含 "Using", "Only", "Scheduling", "Note" 等关键词的废话
+    # 3. 如果有真正的事件，显示它们
+    # 4. 如果没有事件但 show_no_updates 为 true，显示“所有服务均为最新”
     cat <<EOF
 {{- \$events := .Entries -}}
 {{- \$hasRealEvents := false -}}
 {{- range \$events -}}
-  {{- if and (not (contains "Using notifications" .Message)) (not (contains "Only checking" .Message)) (not (contains "Scheduling first run" .Message)) (not (contains "Note that" .Message)) -}}
+  {{- if and (not (contains "Using" .Message)) (not (contains "Only" .Message)) (not (contains "Scheduling" .Message)) (not (contains "Note" .Message)) -}}
     {{- \$hasRealEvents = true -}}
   {{- end -}}
 {{- end -}}
-
 {{- if \$hasRealEvents -}}
-📋 *执行报告:*
-{{- range \$events }}
-  {{- if and (not (contains "Using notifications" .Message)) (not (contains "Only checking" .Message)) (not (contains "Scheduling first run" .Message)) (not (contains "Note that" .Message)) }}
-> {{ .Message }}
-  {{- end }}
-{{- end }}
-
+{{- range \$events -}}
+  {{- if and (not (contains "Using" .Message)) (not (contains "Only" .Message)) (not (contains "Scheduling" .Message)) (not (contains "Note" .Message)) -}}
+{{ .Message }}
+{{ end -}}
+{{- end -}}
 {{- else if eq "${show_no_updates}" "true" -}}
-✅ *检查完成*
-所有服务均为最新。
+✅ 所有服务均为最新
 {{- end -}}
 EOF
 }
@@ -237,13 +236,27 @@ _start_watchtower_container_logic(){
 
     # 配置原生通知环境变量
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        local template_content
-        template_content=$(_get_shoutrrr_template "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
+        local template_raw
+        template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
+        
+        # --- 关键修复：模板转义与压缩 ---
+        # 1. 替换所有双引号 " 为转义双引号 \"
+        # 2. 将换行符替换为特殊的占位符或直接依赖 Go Template 的 {{- -}} 语法，这里选择压缩为单行
+        # 这里使用 sed 将 " 替换为 \"，并使用 tr -d '\n' 删除换行符，依靠模板中的 {{- -}} 处理格式
+        local template_escaped
+        template_escaped=$(echo "$template_raw" | sed 's/"/\\"/g' | tr '\n' ' ')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
+        
+        # --- 关键修复：通过 URL 参数传递 Title ---
+        # 简单的 URL 编码处理：将空格替换为 %20
+        local title_encoded
+        title_encoded=$(echo "Watchtower $run_hostname" | sed 's/ /%20/g')
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}")
+        
+        # 传递转义后的模板，外层必须用双引号包裹，以支持变量展开，
+        # 同时因为内部已经转义了双引号，所以 Shell 能够正确解析。
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_escaped")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
