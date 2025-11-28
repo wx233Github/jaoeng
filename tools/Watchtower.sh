@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.4-UI终极优化)
-# - UI优化: 弃用 Watchtower 内部 Title 变量，改为直接注入 Hostname，解决通知标题冗长重复的问题。
-# - 修复: 修复 heredoc 读取时的逻辑，确保通知模板纯净。
+# 🚀 Watchtower 自动更新管理器 (v6.4.5-UI微调)
+# - UI优化: 强制指定 Telegram 通知标题，覆盖默认的冗长标题。
+# - 文案: 优化服务启动时的日志输出。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.4"
+SCRIPT_VERSION="v6.4.5"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -206,9 +206,7 @@ _start_watchtower_container_logic(){
         local current_host
         current_host=$(hostname)
 
-        # UI 终极优化：
-        # 1. 移除 {{ .Title }}，改用 ${current_host} 直接硬编码，避免显示 "Watchtower updates on..."
-        # 2. 保持 || true 防止脚本意外退出
+        # 模板定义
         read -r -d '' template_content <<EOF || true
 {{- if .Entries -}}
 🚀 *新版本已部署!*
@@ -228,8 +226,10 @@ EOF
         
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        # URL title 参数仍然保留，但因为我们模板里不再调用 {{ .Title }}，即使 Watchtower 覆盖了它也不会显示在正文中
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
+        
+        # 关键修正：显式添加 title=🤖 Watchtower，防止 Shoutrrr 自动生成 "Watchtower updates on..." 这种长标题
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=🤖 Watchtower")
+        
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
         # 启用 Report 模式 (每次检查完生成一份报告)
@@ -291,7 +291,7 @@ EOF
         
         sleep 1
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
-            log_success "$mode_description 启动成功"
+            log_success "核心服务已就绪 [$mode_description]"
         else
             log_err "$mode_description 启动失败"
         fi
