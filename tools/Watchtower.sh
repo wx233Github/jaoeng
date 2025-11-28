@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.5-UI微调)
-# - UI优化: 强制指定 Telegram 通知标题，覆盖默认的冗长标题。
-# - 文案: 优化服务启动时的日志输出。
+# 🚀 Watchtower 自动更新管理器 (v6.4.6-修复URL崩溃)
+# - 紧急修复: 移除 Telegram 通知 URL 中的空格，解决 Shoutrrr 将其误判为多个服务导致崩溃的问题 (代码: 1)。
+# - 稳定性: 采用 URL 安全的字符作为标题参数。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.5"
+SCRIPT_VERSION="v6.4.6"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -227,8 +227,9 @@ EOF
         # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 关键修正：显式添加 title=🤖 Watchtower，防止 Shoutrrr 自动生成 "Watchtower updates on..." 这种长标题
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=🤖 Watchtower")
+        # 关键修正：移除 title 中的空格，改为下划线。Shoutrrr 会按空格分割多个 URL。
+        # 之前 "🤖 Watchtower" 中的空格导致 "Watchtower" 被解析为第二个无效 URL。
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=Watchtower_Updates")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         
