@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.8-UI逻辑修正)
-# - UI修复: 移除自定义 Title Tag，解决标题重复问题。
-# - 逻辑修正: 将通知标题改为中性的 "任务执行日志"，避免将普通运行日志误报为"新版本部署"。
-# - 排版优化: 优化日志列表显示格式。
+# 🚀 Watchtower 自动更新管理器 (v6.4.9-降噪与别名版)
+# - UI重构: 增加"服务器别名"设置，彻底替换冗长的 UUID 主机名。
+# - 标题修复: 修改 Title Tag，将标题从 "Watchtower updates on..." 缩短为 "Watchtower [别名]"。
+# - 智能过滤: 模板增加逻辑判断，自动屏蔽配置类日志，只显示关键信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.8"
+SCRIPT_VERSION="v6.4.9"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -54,6 +54,7 @@ DOCKER_COMPOSE_PROJECT_DIR_CRON=""
 CRON_HOUR=""
 CRON_TASK_ENABLED=""
 WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
+WATCHTOWER_HOST_ALIAS="" # 新增：服务器别名
 
 # --- 配置加载与保存 ---
 load_config(){
@@ -65,6 +66,9 @@ load_config(){
     local default_cron_hour="4"
     local default_exclude_list="portainer,portainer_agent"
     local default_notify_on_no_updates="true"
+    # 默认别名为当前主机名，如果主机名太长则设为 "DockerNode"
+    local default_alias
+    if [ ${#HOSTNAME} -gt 15 ]; then default_alias="DockerNode"; else default_alias="$(hostname)"; fi
 
     TG_BOT_TOKEN="${TG_BOT_TOKEN:-${WATCHTOWER_CONF_BOT_TOKEN:-}}"
     TG_CHAT_ID="${TG_CHAT_ID:-${WATCHTOWER_CONF_CHAT_ID:-}}"
@@ -78,6 +82,7 @@ load_config(){
     CRON_HOUR="${CRON_HOUR:-${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-$default_cron_hour}}"
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${WATCHTOWER_CONF_TASK_ENABLED:-false}}"
     WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES:-${WATCHTOWER_CONF_NOTIFY_ON_NO_UPDATES:-$default_notify_on_no_updates}}"
+    WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS:-${WATCHTOWER_CONF_HOST_ALIAS:-$default_alias}}"
 }
 
 # 预加载一次配置
@@ -89,12 +94,10 @@ if ! command -v docker &> /dev/null; then
     exit 10
 fi
 
-# jq 仍需保留用于“发送测试通知”功能
 if [ -n "$TG_BOT_TOKEN" ] && ! command -v jq &> /dev/null; then
     log_warn "建议安装 'jq' 以便使用脚本内的'发送测试通知'功能。"
 fi
 
-# --- Docker 服务状态检查 ---
 if ! docker info >/dev/null 2>&1; then
     log_err "无法连接到 Docker 服务 (daemon)。请确保 Docker 正在运行。"
     exit 10
@@ -115,6 +118,7 @@ DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON}"
 CRON_HOUR="${CRON_HOUR}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
 WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
+WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
@@ -135,7 +139,6 @@ _format_seconds_to_human(){
     echo "${result:-0秒}"
 }
 
-# 仅用于手动测试按钮
 send_test_notify() {
     local message="$1"
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
@@ -196,7 +199,12 @@ _start_watchtower_container_logic(){
     local interactive_mode="${3:-false}"
     local wt_image="containrrr/watchtower"
     local container_names=()
-    local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "$(hostname)")
+    
+    # 关键修改：使用用户定义的别名作为容器的 hostname
+    # 这会直接改变通知标题中的 "Watchtower updates on [这里]"
+    local run_hostname="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
+    local docker_run_args=(-e "TZ=${JB_TIMEZONE:-Asia/Shanghai}" -h "${run_hostname}")
+    
     local wt_args=("--cleanup")
 
     # 1. 配置原生通知环境变量
@@ -204,15 +212,25 @@ _start_watchtower_container_logic(){
         
         local template_content
         local show_no_updates="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
-        
-        # 修复后的中性模板
-        # 将 "新版本已部署" 改为 "任务执行日志"，避免误导
-        # 使用 > 符号做引用样式，比 bullet point 更整洁
+
+        # 智能过滤模板 (v6.4.9 核心)
+        # 逻辑：遍历日志，排除掉 "Using notifications", "Checking", "Scheduling" 等废话
+        # 只保留真正的操作日志。
         read -r -d '' template_content <<EOF || true
-{{- if .Entries -}}
-📋 *任务执行日志:*
-{{- range .Entries }}
+{{- \$events := .Entries -}}
+{{- \$hasRealEvents := false -}}
+{{- range \$events -}}
+  {{- if and (not (contains "Using notifications" .Message)) (not (contains "Only checking" .Message)) (not (contains "Scheduling first run" .Message)) (not (contains "Note that" .Message)) -}}
+    {{- \$hasRealEvents = true -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if \$hasRealEvents -}}
+📋 *执行报告:*
+{{- range \$events }}
+  {{- if and (not (contains "Using notifications" .Message)) (not (contains "Only checking" .Message)) (not (contains "Scheduling first run" .Message)) (not (contains "Note that" .Message)) }}
 > {{ .Message }}
+  {{- end }}
 {{- end }}
 
 {{- else if eq "${show_no_updates}" "true" -}}
@@ -221,19 +239,17 @@ _start_watchtower_container_logic(){
 {{- end -}}
 EOF
         
-        # 传递环境变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        
-        # 移除 title 参数，移除 TITLE_TAG 变量，完全使用 Watchtower 默认行为
-        # 这样标题就是标准的 "Watchtower updates on [HostName]"
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false")
         
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
+        # 关键修改：将标题前缀设置为 "Watchtower" (去掉 "updates on")
+        # 结合 -h 参数，最终标题将变成： "Watchtower [您的别名]"
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
         
-        # 启用 Report 模式
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_content")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
-        log_info "✅ Telegram 通知通道已激活"
+        log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
     else
         log_info "ℹ️ 未配置 Telegram，将不发送通知"
     fi
@@ -253,7 +269,6 @@ EOF
     if [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ]; then wt_args+=("--debug"); fi
     if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi
     
-    # 处理排除列表
     local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
     if [ -n "$final_exclude_list" ]; then
         local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g')
@@ -325,6 +340,15 @@ _configure_telegram() {
     log_info "Telegram 通知参数已保存，需重建服务生效。"
 }
 
+_configure_alias() {
+    local current_alias="${WATCHTOWER_HOST_ALIAS}"
+    local new_alias
+    new_alias=$(_prompt_user_input "设置服务器别名 (用于通知标题, 避免显示长UUID): " "$current_alias")
+    if [ -z "$new_alias" ]; then new_alias="DockerNode"; fi
+    WATCHTOWER_HOST_ALIAS="$new_alias"
+    log_info "服务器别名已设置为: $WATCHTOWER_HOST_ALIAS"
+}
+
 _configure_email() {
     local EMAIL_TO_INPUT
     EMAIL_TO_INPUT=$(_prompt_user_input "请输入接收邮箱 (当前: ${EMAIL_TO}): " "$EMAIL_TO")
@@ -336,23 +360,24 @@ notification_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local tg_status="${RED}未配置${NC}"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then tg_status="${GREEN}已配置${NC}"; fi
-        local email_status="${RED}未配置${NC}"; if [ -n "$EMAIL_TO" ]; then email_status="${GREEN}已配置${NC}"; fi
-        local notify_on_no_updates_status="${CYAN}否${NC}"; if [ "$WATCHTOWER_NOTIFY_ON_NO_UPDATES" = "true" ]; then notify_on_no_updates_status="${GREEN}是${NC}"; fi
+        local alias_status="${CYAN}${WATCHTOWER_HOST_ALIAS:-默认}${NC}"
         
         local -a content_array=(
-            "1. 配置 Telegram (状态: $tg_status, 无更新也通知: $notify_on_no_updates_status)"
-            "2. 配置 Email (状态: $email_status) (当前未使用)"
-            "3. 发送手动测试通知 (使用 curl)"
-            "4. 清空所有通知配置"
+            "1. 配置 Telegram (状态: $tg_status)"
+            "2. 设置服务器别名 (当前: $alias_status)"
+            "3. 配置 Email (当前未使用)"
+            "4. 发送手动测试通知 (使用 curl)"
+            "5. 清空所有通知配置"
         )
         _render_menu "⚙️ 通知配置 ⚙️" "${content_array[@]}"
         local choice
-        choice=$(_prompt_for_menu_choice "1-4")
+        choice=$(_prompt_for_menu_choice "1-5")
         case "$choice" in
             1) _configure_telegram; save_config; log_warn "💡 修改配置后，请前往'服务运维'菜单重建 Watchtower。"; press_enter_to_continue ;;
-            2) _configure_email; save_config; press_enter_to_continue ;;
-            3) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_test_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*手动测试消息*。"; log_success "测试请求已发送。"; fi; press_enter_to_continue ;;
-            4) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
+            2) _configure_alias; save_config; press_enter_to_continue ;;
+            3) _configure_email; save_config; press_enter_to_continue ;;
+            4) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_test_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の*手动测试消息*。"; log_success "测试请求已发送。"; fi; press_enter_to_continue ;;
+            5) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
@@ -611,7 +636,7 @@ show_watchtower_details(){
 }
 
 view_and_edit_config(){
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -729,7 +754,7 @@ main_menu(){
         
         content_array+=("" "主菜单：" 
             "1. 部署/重新配置服务 (核心设置)" 
-            "2. 通知参数设置 (Token/ID)" 
+            "2. 通知参数设置 (Token/ID/别名)" 
             "3. 服务运维 (停止/重建/卸载)" 
             "4. 高级参数编辑器" 
             "5. 实时日志与容器看板"
