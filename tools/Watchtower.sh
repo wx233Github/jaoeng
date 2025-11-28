@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.13-模板修复终结版)
-# - 核心修复: 撤销模板过度转义，修复 "unexpected \\" 错误，确保自定义模板生效。
-# - 体验优化: 重写“服务已重建”的测试通知文案，包含更多状态信息。
-# - 逻辑精简: 优化 Docker 参数传递逻辑，防止 Shell 解析干扰。
+# 🚀 Watchtower 自动更新管理器 (v6.4.14-模板修复终结版)
+# - 核心修复: 移除导致模板解析失败的转义符，确保 "✅ 所有服务均为最新" 生效。
+# - 体验优化: 全新设计的“服务已重建”通知，包含节点、时间与状态详情。
+# - 逻辑精简: 优化 Docker 参数传递，防止 Shell 解析干扰。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.13"
+SCRIPT_VERSION="v6.4.14"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -223,16 +223,11 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # ⚠️ 关键修复 ⚠️
-        # 1. 不再使用 sed 转义双引号，因为 Bash 数组会自动处理参数内的引号。
-        # 2. 仅将换行符替换为空格，以保证作为单行环境变量传递。
+        # ⚠️ 修复：不再使用 sed 转义双引号，仅压缩换行符。让 Bash 数组处理引号。
         local template_flat
         template_flat=$(echo "$template_raw" | tr '\n' ' ')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        
-        # 修复标题
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
         
         # 核心降噪：禁止 Watchtower 发送启动时的废话消息
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
@@ -319,11 +314,13 @@ _rebuild_watchtower() {
     
     # 优化后的测试通知文案
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
-    local msg="✅ *配置更新已生效*
-
-⚙️ *服务状态*: 重建完成
-🏷 *节点别名*: ${alias_name}
-📡 *通知渠道*: Telegram"
+    local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
+    local msg="🔔 *Watchtower 配置更新*
+━━━━━━━━━━━━━━
+🏷 *节点*: ${alias_name}
+⚙️ *状态*: 服务已重建并重启
+⏱ *时间*: ${time_now}
+📝 *详情*: 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
 
