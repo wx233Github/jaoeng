@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.30-完美通知形态版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.31-HTML渲染修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.30"
+SCRIPT_VERSION="v6.4.31"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -139,10 +139,10 @@ send_test_notify() {
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         if ! command -v jq &>/dev/null; then log_err "缺少 jq，无法发送测试通知。"; return; fi
         local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+        # 测试消息也改用 HTML 模式以保持一致性
         local data
-        # 强制使用 Markdown 模式
         data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" \
-            '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+            '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
         timeout 10s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url"
     fi
 }
@@ -186,26 +186,29 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (完整控制版) ---
+# --- 模板生成函数 (HTML版) ---
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # 关键点：将标题直接写在模板里，不依赖 Watchtower 的 Title Tag
+    # 关键修改：将 Markdown 语法替换为 HTML 语法
+    # *Bold* -> <b>Bold</b>
+    # `Code` -> <code>Code</code>
+    # HTML 模式对普通字符（如 . -）更宽容，不会因为未转义而导致渲染失败
     cat <<EOF
-🔔 *自动更新报告* | \`${alias_name}\`
-━━━━━━━━━━━━━━
-⏱ *时间*: \`${current_time}\`
+🔔 <b>Watchtower 自动更新</b>
+🏷 <b>节点</b>: <code>${alias_name}</code>
+⏱ <b>时间</b>: <code>${current_time}</code>
 
 {{ if .Entries -}}
-📦 *更新详情*:
+📦 <b>更新详情</b>:
 {{- range .Entries }}
 • {{ .Message }}
 {{ end -}}
 {{ else -}}
-✅ *状态*: 所有服务均为最新，暂无更新。
+✅ <b>状态</b>: 所有服务均为最新，暂无更新。
 {{- end -}}
 EOF
 }
@@ -231,18 +234,12 @@ _start_watchtower_container_logic(){
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        
-        # 修正：将 Title Tag 设置为空，尝试消除 [Watchtower] 前缀
-        # 如果 Watchtower 仍强制显示，这至少能让它不显示重复文字
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=")
-        
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # 修正：移除 URL 中的 title 参数，避免双重标题
-        # 修正：强制添加 parsemode=Markdown，确保粗体和代码块生效
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=Markdown")
+        # 修正：将 parsemode 改为 HTML
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
         
-        # 直接使用包含换行符的原始变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
@@ -319,13 +316,12 @@ _rebuild_watchtower() {
     
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
-    
-    # 修正：手动通知的格式与自动通知保持一致
-    local msg="🔔 *Watchtower 配置更新* | \`${alias_name}\`
+    local msg="🔔 <b>Watchtower 配置更新</b>
 ━━━━━━━━━━━━━━
-⏱ *时间*: \`${time_now}\`
-
-✅ *状态*: 服务已重建并重启，新配置已加载。"
+🏷 <b>节点</b>: <code>${alias_name}</code>
+⚙️ <b>状态</b>: 服务已重建并重启
+⏱ <b>时间</b>: <code>${time_now}</code>
+📝 <b>详情</b>: 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
 
@@ -422,7 +418,7 @@ notification_menu() {
             1) _configure_telegram; press_enter_to_continue ;;
             2) _configure_alias; press_enter_to_continue ;;
             3) _configure_email; press_enter_to_continue ;;
-            4) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_test_notify "🔔 *Watchtower 手动测试* | \`${WATCHTOWER_HOST_ALIAS:-DockerNode}\`\n✅ 通信正常"; log_success "测试请求已发送。"; fi; press_enter_to_continue ;;
+            4) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_test_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の<b>手动测试消息</b>。"; log_success "测试请求已发送。"; fi; press_enter_to_continue ;;
             5) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; _prompt_rebuild_if_needed; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
@@ -551,7 +547,7 @@ configure_exclusion_list() {
 
 manage_tasks(){
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local -a items_array=(
             "1. 停止/移除服务" 
             "2. 重建服务 (应用新配置)"
