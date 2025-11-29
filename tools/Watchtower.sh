@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.19-配置持久化修复)
+# 🚀 Watchtower 自动更新管理器 (v6.4.23-文案精简版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.19"
+SCRIPT_VERSION="v6.4.23"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -65,17 +65,21 @@ load_config(){
     local default_alias
     if [ ${#HOSTNAME} -gt 15 ]; then default_alias="DockerNode"; else default_alias="$(hostname)"; fi
 
-    TG_BOT_TOKEN="${TG_BOT_TOKEN:-${WATCHTOWER_CONF_BOT_TOKEN:-}}"
-    TG_CHAT_ID="${TG_CHAT_ID:-${WATCHTOWER_CONF_CHAT_ID:-}}"
-    EMAIL_TO="${EMAIL_TO:-${WATCHTOWER_CONF_EMAIL_TO:-}}"
+    # 使用 '-' 替代 ':-'，允许用户清空参数而不被环境变量强制覆盖
+    TG_BOT_TOKEN="${TG_BOT_TOKEN-${WATCHTOWER_CONF_BOT_TOKEN-}}"
+    TG_CHAT_ID="${TG_CHAT_ID-${WATCHTOWER_CONF_CHAT_ID-}}"
+    EMAIL_TO="${EMAIL_TO-${WATCHTOWER_CONF_EMAIL_TO-}}"
     
-    # 修复：使用 '-' 而不是 ':-'，允许空字符串（即清空后的状态）作为有效值，不回退到默认值
+    # 允许空字符串（即清空后的状态）作为有效值
     WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST-${WATCHTOWER_CONF_EXCLUDE_CONTAINERS-$default_exclude_list}}"
     
-    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_CONF_EXTRA_ARGS:-}}"
+    WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS-${WATCHTOWER_CONF_EXTRA_ARGS-}}"
+    
+    # 布尔值和数字通常不需要置空，保持原样或使用默认
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_CONF_DEBUG_ENABLED:-false}}"
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONF_DEFAULT_INTERVAL:-$default_interval}}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_CONF_ENABLED:-false}}"
+    
     DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}}"
     CRON_HOUR="${CRON_HOUR:-${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-$default_cron_hour}}"
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${WATCHTOWER_CONF_TASK_ENABLED:-false}}"
@@ -96,8 +100,9 @@ if [ -n "$TG_BOT_TOKEN" ] && ! command -v jq &> /dev/null; then
     log_warn "建议安装 'jq' 以便使用脚本内的'发送测试通知'功能。"
 fi
 
-if ! docker info >/dev/null 2>&1; then
-    log_err "无法连接到 Docker 服务 (daemon)。请确保 Docker 正在运行。"
+# 修复：使用 run_with_sudo 检查 docker info，防止因当前用户无权限导致的误判
+if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker info >/dev/null 2>&1; then
+    log_err "无法连接到 Docker 服务 (daemon)。请确保 Docker 正在运行且当前用户有权访问。"
     exit 10
 fi
 
@@ -335,10 +340,24 @@ run_watchtower_once(){
 }
 
 _configure_telegram() {
-    local TG_BOT_TOKEN_INPUT; TG_BOT_TOKEN_INPUT=$(_prompt_user_input "请输入 Telegram Bot Token (当前: ...${TG_BOT_TOKEN: -5}): " "$TG_BOT_TOKEN")
-    TG_BOT_TOKEN="${TG_BOT_TOKEN_INPUT}"
-    local TG_CHAT_ID_INPUT; TG_CHAT_ID_INPUT=$(_prompt_user_input "请输入 Chat ID (当前: ${TG_CHAT_ID}): " "$TG_CHAT_ID")
-    TG_CHAT_ID="${TG_CHAT_ID_INPUT}"
+    echo -e "当前 Token: ${GREEN}${TG_BOT_TOKEN:-[未设置]}${NC}"
+    local val
+    read -r -p "请输入 Telegram Bot Token (回车保持, 空格清空): " val
+    if [[ "$val" =~ ^\ +$ ]]; then
+        TG_BOT_TOKEN=""
+        log_info "Token 已清空。"
+    elif [ -n "$val" ]; then
+        TG_BOT_TOKEN="$val"
+    fi
+
+    echo -e "当前 Chat ID: ${GREEN}${TG_CHAT_ID:-[未设置]}${NC}"
+    read -r -p "请输入 Chat ID (回车保持, 空格清空): " val
+    if [[ "$val" =~ ^\ +$ ]]; then
+        TG_CHAT_ID=""
+        log_info "Chat ID 已清空。"
+    elif [ -n "$val" ]; then
+        TG_CHAT_ID="$val"
+    fi
     
     local notify_on_no_updates_choice
     notify_on_no_updates_choice=$(_prompt_user_input "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
@@ -350,20 +369,30 @@ _configure_telegram() {
 }
 
 _configure_alias() {
-    local current_alias="${WATCHTOWER_HOST_ALIAS}"
-    local new_alias
-    new_alias=$(_prompt_user_input "设置服务器别名 (用于通知标题): " "$current_alias")
-    if [ -z "$new_alias" ]; then new_alias="DockerNode"; fi
-    WATCHTOWER_HOST_ALIAS="$new_alias"
+    echo -e "当前别名: ${GREEN}${WATCHTOWER_HOST_ALIAS:-DockerNode}${NC}"
+    local val
+    read -r -p "设置服务器别名 (回车保持, 空格恢复默认): " val
+    if [[ "$val" =~ ^\ +$ ]]; then
+        WATCHTOWER_HOST_ALIAS="DockerNode"
+        log_info "已恢复默认别名。"
+    elif [ -n "$val" ]; then
+        WATCHTOWER_HOST_ALIAS="$val"
+    fi
     save_config
     log_info "服务器别名已设置为: $WATCHTOWER_HOST_ALIAS"
     _prompt_rebuild_if_needed
 }
 
 _configure_email() {
-    local EMAIL_TO_INPUT
-    EMAIL_TO_INPUT=$(_prompt_user_input "请输入接收邮箱 (当前: ${EMAIL_TO}): " "$EMAIL_TO")
-    EMAIL_TO="${EMAIL_TO_INPUT}"
+    echo -e "当前 Email: ${GREEN}${EMAIL_TO:-[未设置]}${NC}"
+    local val
+    read -r -p "请输入接收邮箱 (回车保持, 空格清空): " val
+    if [[ "$val" =~ ^\ +$ ]]; then
+        EMAIL_TO=""
+        log_info "Email 已清空。"
+    elif [ -n "$val" ]; then
+        EMAIL_TO="$val"
+    fi
     save_config
     log_info "Email 配置已更新。"
 }
@@ -416,9 +445,16 @@ configure_watchtower(){
     extra_args_choice=$(_prompt_user_input "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " "")
     local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
     if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then 
-        local temp_extra_args_input
-        temp_extra_args_input=$(_prompt_user_input "请输入额外参数: " "$temp_extra_args")
-        temp_extra_args="${temp_extra_args_input}"
+        # 修复：此处不再使用 _prompt_user_input，而是改用统一的 read 逻辑，支持空格清空
+        echo -e "当前额外参数: ${GREEN}${temp_extra_args:-[无]}${NC}"
+        local val
+        read -r -p "请输入额外参数 (回车保持, 空格清空): " val
+        if [[ "$val" =~ ^\ +$ ]]; then
+            temp_extra_args=""
+            log_info "额外参数已清空。"
+        elif [ -n "$val" ]; then
+            temp_extra_args="$val"
+        fi
     fi
     
     local debug_choice
@@ -668,7 +704,8 @@ show_watchtower_details(){
 }
 
 view_and_edit_config(){
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "服务启用状态|WATCHTOWER_ENABLED|bool" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
+    # 已移除 WATCHTOWER_ENABLED 选项
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "无更新时通知|WATCHTOWER_NOTIFY_ON_NO_UPDATES|bool")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -697,7 +734,7 @@ view_and_edit_config(){
                 else
                     # 通用字符串处理：允许输入空格来清空
                     echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
-                    read -r -p "请输入新值 (回车保持不变，输入空格并回车可清空): " val
+                    read -r -p "请输入新值 (回车保持, 空格清空): " val
                     if [[ "$val" =~ ^\ +$ ]]; then
                         declare "$var_name"=""
                         log_info "'$label' 已清空。"
