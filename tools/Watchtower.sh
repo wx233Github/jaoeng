@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.23-文案精简版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.24-通知美化版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.23"
+SCRIPT_VERSION="v6.4.24"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -65,21 +65,14 @@ load_config(){
     local default_alias
     if [ ${#HOSTNAME} -gt 15 ]; then default_alias="DockerNode"; else default_alias="$(hostname)"; fi
 
-    # 使用 '-' 替代 ':-'，允许用户清空参数而不被环境变量强制覆盖
     TG_BOT_TOKEN="${TG_BOT_TOKEN-${WATCHTOWER_CONF_BOT_TOKEN-}}"
     TG_CHAT_ID="${TG_CHAT_ID-${WATCHTOWER_CONF_CHAT_ID-}}"
     EMAIL_TO="${EMAIL_TO-${WATCHTOWER_CONF_EMAIL_TO-}}"
-    
-    # 允许空字符串（即清空后的状态）作为有效值
     WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST-${WATCHTOWER_CONF_EXCLUDE_CONTAINERS-$default_exclude_list}}"
-    
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS-${WATCHTOWER_CONF_EXTRA_ARGS-}}"
-    
-    # 布尔值和数字通常不需要置空，保持原样或使用默认
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_CONF_DEBUG_ENABLED:-false}}"
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONF_DEFAULT_INTERVAL:-$default_interval}}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-${WATCHTOWER_CONF_ENABLED:-false}}"
-    
     DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-${WATCHTOWER_CONF_COMPOSE_PROJECT_DIR_CRON:-}}"
     CRON_HOUR="${CRON_HOUR:-${WATCHTOWER_CONF_DEFAULT_CRON_HOUR:-$default_cron_hour}}"
     CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-${WATCHTOWER_CONF_TASK_ENABLED:-false}}"
@@ -100,7 +93,6 @@ if [ -n "$TG_BOT_TOKEN" ] && ! command -v jq &> /dev/null; then
     log_warn "建议安装 'jq' 以便使用脚本内的'发送测试通知'功能。"
 fi
 
-# 修复：使用 run_with_sudo 检查 docker info，防止因当前用户无权限导致的误判
 if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker info >/dev/null 2>&1; then
     log_err "无法连接到 Docker 服务 (daemon)。请确保 Docker 正在运行且当前用户有权访问。"
     exit 10
@@ -193,16 +185,26 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (原始文本) ---
+# --- 模板生成函数 (美化版) ---
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
+    local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
+    local current_time
+    current_time=$(date "+%Y-%m-%d %H:%M:%S")
+
     cat <<EOF
+🔔 *自动更新报告*
+━━━━━━━━━━━━━━
+🏷 *节点*: \`${alias_name}\`
+⏱ *时间*: \`${current_time}\`
+
 {{- if .Entries -}}
+📦 *更新详情*:
 {{- range .Entries -}}
-{{ .Message }}
+• {{ .Message }}
 {{ end -}}
 {{- else if eq "${show_no_updates}" "true" -}}
-✅ 所有服务均为最新
+✅ *状态*: 所有服务均为最新，暂无更新。
 {{- end -}}
 EOF
 }
@@ -227,9 +229,10 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # 仅压缩换行符
+        # 修正：使用 sed 将换行符转换为字面量 \n，以便 Shoutrrr/Telegram 能够识别换行
+        # 并在消息中转义双引号，防止 Docker 命令解析错误
         local template_flat
-        template_flat=$(echo "$template_raw" | tr '\n' ' ')
+        template_flat=$(echo "$template_raw" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' | sed 's/"/\\"/g')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
@@ -445,7 +448,6 @@ configure_watchtower(){
     extra_args_choice=$(_prompt_user_input "是否配置额外参数？(y/N, 当前: ${WATCHTOWER_EXTRA_ARGS:-无}): " "")
     local temp_extra_args="${WATCHTOWER_EXTRA_ARGS:-}"
     if echo "$extra_args_choice" | grep -qE '^[Yy]$'; then 
-        # 修复：此处不再使用 _prompt_user_input，而是改用统一的 read 逻辑，支持空格清空
         echo -e "当前额外参数: ${GREEN}${temp_extra_args:-[无]}${NC}"
         local val
         read -r -p "请输入额外参数 (回车保持, 空格清空): " val
