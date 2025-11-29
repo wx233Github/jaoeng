@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.25-修复模板转义错误)
+# 🚀 Watchtower 自动更新管理器 (v6.4.26-修复通知换行与格式)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.25"
+SCRIPT_VERSION="v6.4.26"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -229,10 +229,8 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # 修正：仅将换行符转义为 \n，移除双引号转义 sed 's/"/\\"/g'，
-        # 避免 Go 模板引擎解析时出现 'unexpected backslash' 错误。
-        local template_flat
-        template_flat=$(echo "$template_raw" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')
+        # 修正：完全移除 sed 处理，让真实的换行符通过 Bash 数组传递给 Docker
+        # Bash 数组可以完美处理多行字符串参数
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
@@ -242,7 +240,8 @@ _start_watchtower_container_logic(){
         title_encoded=$(echo "Watchtower $run_hostname" | sed 's/ /%20/g')
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}")
         
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_flat")
+        # 直接使用包含换行符的原始变量
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
