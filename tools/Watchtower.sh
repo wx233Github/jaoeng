@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.24-通知美化版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.25-修复模板转义错误)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.24"
+SCRIPT_VERSION="v6.4.25"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -229,10 +229,10 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # 修正：使用 sed 将换行符转换为字面量 \n，以便 Shoutrrr/Telegram 能够识别换行
-        # 并在消息中转义双引号，防止 Docker 命令解析错误
+        # 修正：仅将换行符转义为 \n，移除双引号转义 sed 's/"/\\"/g'，
+        # 避免 Go 模板引擎解析时出现 'unexpected backslash' 错误。
         local template_flat
-        template_flat=$(echo "$template_raw" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' | sed 's/"/\\"/g')
+        template_flat=$(echo "$template_raw" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
