@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.18-修复参数清空问题)
+# 🚀 Watchtower 自动更新管理器 (v6.4.19-配置持久化修复)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.18"
+SCRIPT_VERSION="v6.4.19"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -68,7 +68,10 @@ load_config(){
     TG_BOT_TOKEN="${TG_BOT_TOKEN:-${WATCHTOWER_CONF_BOT_TOKEN:-}}"
     TG_CHAT_ID="${TG_CHAT_ID:-${WATCHTOWER_CONF_CHAT_ID:-}}"
     EMAIL_TO="${EMAIL_TO:-${WATCHTOWER_CONF_EMAIL_TO:-}}"
-    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-${WATCHTOWER_CONF_EXCLUDE_CONTAINERS:-$default_exclude_list}}"
+    
+    # 修复：使用 '-' 而不是 ':-'，允许空字符串（即清空后的状态）作为有效值，不回退到默认值
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST-${WATCHTOWER_CONF_EXCLUDE_CONTAINERS-$default_exclude_list}}"
+    
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-${WATCHTOWER_CONF_EXTRA_ARGS:-}}"
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-${WATCHTOWER_CONF_DEBUG_ENABLED:-false}}"
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-${WATCHTOWER_CONF_DEFAULT_INTERVAL:-$default_interval}}"
