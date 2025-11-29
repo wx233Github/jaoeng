@@ -1,5 +1,5 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.18-修复列表清空逻辑)
+# 🚀 Watchtower 自动更新管理器 (v6.4.18-修复参数清空问题)
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -470,15 +470,13 @@ configure_exclusion_list() {
         items_array+=("${CYAN}当前忽略: ${current_excluded_display}${NC}")
         _render_menu "配置忽略更新的容器" "${items_array[@]}"
         
-        # 修正：逻辑更新
-        # 0: 清空列表
-        # 回车/c: 保存并结束
+        # 修正：使用 read 直接读取，确保能捕捉到回车（空输入）
         local choice
-        read -r -p "请选择 (数字切换, 0 清空, 回车/c 结束): " choice
+        read -r -p "请选择 (数字切换, c 结束, 回车清空): " choice
         
         case "$choice" in
-            c|C|"") break ;;
-            0) 
+            c|C) break ;;
+            "") 
                 if [ ${#excluded_map[@]} -eq 0 ]; then
                     log_info "当前列表已为空。"
                     sleep 1
@@ -690,9 +688,20 @@ view_and_edit_config(){
         
         case "$type" in
             string|string_list) 
-                local new_value_input
-                new_value_input=$(_prompt_user_input "请输入新的 '$label' (当前: $current_value): " "$current_value")
-                declare "$var_name"="${new_value_input}" 
+                # 针对忽略名单，直接调用可视化的选择器，体验更好且支持清空
+                if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then
+                    configure_exclusion_list
+                else
+                    # 通用字符串处理：允许输入空格来清空
+                    echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
+                    read -r -p "请输入新值 (回车保持不变，输入空格并回车可清空): " val
+                    if [[ "$val" =~ ^\ +$ ]]; then
+                        declare "$var_name"=""
+                        log_info "'$label' 已清空。"
+                    elif [ -n "$val" ]; then
+                        declare "$var_name"="$val"
+                    fi
+                fi
                 ;;
             bool) 
                 local new_value_input
