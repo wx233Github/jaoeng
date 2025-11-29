@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.31-HTML渲染修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.32-通知标题修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.31"
+SCRIPT_VERSION="v6.4.32"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -193,12 +193,8 @@ _get_shoutrrr_template_raw() {
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # 关键修改：将 Markdown 语法替换为 HTML 语法
-    # *Bold* -> <b>Bold</b>
-    # `Code` -> <code>Code</code>
-    # HTML 模式对普通字符（如 . -）更宽容，不会因为未转义而导致渲染失败
+    # 修改说明：移除首行标题，避免与 WATCHTOWER_NOTIFICATION_TITLE 环境变量产生的标题重复
     cat <<EOF
-🔔 <b>Watchtower 自动更新</b>
 🏷 <b>节点</b>: <code>${alias_name}</code>
 ⏱ <b>时间</b>: <code>${current_time}</code>
 
@@ -234,10 +230,13 @@ _start_watchtower_container_logic(){
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=")
+        
+        # 修正：设置自定义标题以覆盖默认的英文 "Watchtower updates on..."
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新")
+        
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # 修正：将 parsemode 改为 HTML
+        # 保持 parsemode=HTML
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
