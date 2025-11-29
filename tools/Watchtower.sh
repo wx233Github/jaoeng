@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.27-修复通知排版粘连)
+# 🚀 Watchtower 自动更新管理器 (v6.4.29-修复Telegram渲染模式)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.27"
+SCRIPT_VERSION="v6.4.29"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -185,20 +185,15 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (排版修复版) ---
+# --- 模板生成函数 (极简版) ---
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
-    local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # 关键修改：
-    # 1. 移除了 {{ if }} 和 {{ else }} 前面的 '-' 符号，防止其吞噬上方的换行符。
-    # 2. 确保在 "时间" 下方有明确的空行。
+    # 这里的模板不再包含标题和节点名，因为它们将通过 Title Tag 和 URL Title 显示
+    # 第一行直接显示时间
     cat <<EOF
-🔔 *自动更新报告*
-━━━━━━━━━━━━━━
-🏷 *节点*: \`${alias_name}\`
 ⏱ *时间*: \`${current_time}\`
 
 {{ if .Entries -}}
@@ -232,17 +227,16 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # Bash 数组可以完美处理多行字符串参数，无需 sed 处理
-        
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=自动更新")
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
         local title_encoded
-        title_encoded=$(echo "Watchtower $run_hostname" | sed 's/ /%20/g')
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}")
+        title_encoded=$(echo "节点: $run_hostname" | sed 's/ /%20/g')
         
-        # 直接使用包含换行符的原始变量
+        # 关键修复：添加 &parsemode=Markdown，强制 Telegram 渲染 Markdown 语法（粗体、代码块等）
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&title=${title_encoded}&parsemode=Markdown")
+        
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
