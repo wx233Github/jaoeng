@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.26-修复通知换行与格式)
+# 🚀 Watchtower 自动更新管理器 (v6.4.27-修复通知排版粘连)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.26"
+SCRIPT_VERSION="v6.4.27"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -185,25 +185,28 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (美化版) ---
+# --- 模板生成函数 (排版修复版) ---
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
+    # 关键修改：
+    # 1. 移除了 {{ if }} 和 {{ else }} 前面的 '-' 符号，防止其吞噬上方的换行符。
+    # 2. 确保在 "时间" 下方有明确的空行。
     cat <<EOF
 🔔 *自动更新报告*
 ━━━━━━━━━━━━━━
 🏷 *节点*: \`${alias_name}\`
 ⏱ *时间*: \`${current_time}\`
 
-{{- if .Entries -}}
+{{ if .Entries -}}
 📦 *更新详情*:
-{{- range .Entries -}}
+{{- range .Entries }}
 • {{ .Message }}
 {{ end -}}
-{{- else if eq "${show_no_updates}" "true" -}}
+{{ else -}}
 ✅ *状态*: 所有服务均为最新，暂无更新。
 {{- end -}}
 EOF
@@ -229,8 +232,7 @@ _start_watchtower_container_logic(){
         local template_raw
         template_raw=$(_get_shoutrrr_template_raw "${WATCHTOWER_NOTIFY_ON_NO_UPDATES}")
         
-        # 修正：完全移除 sed 处理，让真实的换行符通过 Bash 数组传递给 Docker
-        # Bash 数组可以完美处理多行字符串参数
+        # Bash 数组可以完美处理多行字符串参数，无需 sed 处理
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE_TAG=Watchtower")
