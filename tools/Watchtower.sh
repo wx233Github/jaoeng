@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.34-HTML代码块修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.36-菜单优化与HTML修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.34"
+SCRIPT_VERSION="v6.4.36"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -139,7 +139,6 @@ send_test_notify() {
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         if ! command -v jq &>/dev/null; then log_err "缺少 jq，无法发送测试通知。"; return; fi
         local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-        # 修正：同步使用 HTML 模式，确保测试消息格式一致
         local data
         data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" \
             '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
@@ -186,15 +185,14 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (HTML版) ---
+# --- 模板生成函数 (HTML增强版) ---
 _get_shoutrrr_template_raw() {
     local show_no_updates="$1"
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # 修正：回归 HTML 语法，并显式使用 <code> 标签渲染单行代码
-    # 标题部分直接写在模板里，完全接管格式
+    # 使用 <code> 确保等宽渲染，避免与 <b> 嵌套导致的兼容性问题
     cat <<EOF
 🔔 <b>Watchtower 自动更新</b>
 🏷 <b>节点</b>: <code>${alias_name}</code>
@@ -202,9 +200,11 @@ _get_shoutrrr_template_raw() {
 
 {{ if .Entries -}}
 📦 <b>更新详情</b>:
+<pre>
 {{- range .Entries }}
 • {{ .Message }}
 {{ end -}}
+</pre>
 {{ else -}}
 ✅ <b>状态</b>: 所有服务均为最新，暂无更新。
 {{- end -}}
@@ -233,12 +233,12 @@ _start_watchtower_container_logic(){
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 关键修正：设置标题为空，防止 Shoutrrr 自动添加英文标题 "Watchtower updates on..."
+        # 强制清空自动标题，完全使用模板控制
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=")
         
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # 关键修正：使用 HTML 模式以支持 <code> 标签
+        # 强制使用 HTML 模式
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
@@ -550,7 +550,7 @@ manage_tasks(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local -a items_array=(
-            "1. 停止/移除服务" 
+            "1. ${RED}停止并移除服务 (卸载)${NC}" 
             "2. 重建服务 (应用新配置)"
         )
         _render_menu "⚙️ 服务运维 ⚙️" "${items_array[@]}"
@@ -850,7 +850,7 @@ main_menu(){
         content_array+=("" "主菜单：" 
             "1. 部署/重新配置服务 (核心设置)" 
             "2. 通知参数设置 (Token/ID/别名)" 
-            "3. 服务运维 (停止/重建/卸载)" 
+            "3. 服务管理与卸载" 
             "4. 高级参数编辑器" 
             "5. 实时日志与容器看板"
         )
