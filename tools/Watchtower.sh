@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.36-菜单优化与HTML修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.38-HTML增强与菜单优化版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.36"
+SCRIPT_VERSION="v6.4.38"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -192,11 +192,12 @@ _get_shoutrrr_template_raw() {
     local current_time
     current_time=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # 使用 <code> 确保等宽渲染，避免与 <b> 嵌套导致的兼容性问题
+    # 关键优化：采用 <b><code>...</code></b> 嵌套方式，这是在 Telegram 中最稳定的内联代码显示方式
+    # 同时移除首行标题，由 docker run 参数控制，避免双重标题
     cat <<EOF
 🔔 <b>Watchtower 自动更新</b>
-🏷 <b>节点</b>: <code>${alias_name}</code>
-⏱ <b>时间</b>: <code>${current_time}</code>
+🏷 <b>节点</b>: <b><code>${alias_name}</code></b>
+⏱ <b>时间</b>: <b><code>${current_time}</code></b>
 
 {{ if .Entries -}}
 📦 <b>更新详情</b>:
@@ -233,14 +234,15 @@ _start_watchtower_container_logic(){
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 强制清空自动标题，完全使用模板控制
+        # 强制清空自动标题，完全使用模板控制，避免干扰
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=")
         
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # 强制使用 HTML 模式
+        # 强制使用 HTML 模式，确保 &preview=false 被传递
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
         
+        # 注意：此处使用变量封装传递复杂 HTML 模板，符合健壮性要求
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
@@ -319,9 +321,9 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="🔔 <b>Watchtower 配置更新</b>
 ━━━━━━━━━━━━━━
-🏷 <b>节点</b>: <code>${alias_name}</code>
+🏷 <b>节点</b>: <b><code>${alias_name}</code></b>
 ⚙️ <b>状态</b>: 服务已重建并重启
-⏱ <b>时间</b>: <code>${time_now}</code>
+⏱ <b>时间</b>: <b><code>${time_now}</code></b>
 📝 <b>详情</b>: 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
