@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.41-调度对齐与通知修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.42-通知与逻辑修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.41"
+SCRIPT_VERSION="v6.4.42"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -51,8 +51,7 @@ CRON_HOUR=""
 CRON_TASK_ENABLED=""
 WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 WATCHTOWER_HOST_ALIAS=""
-# 调度变量
-WATCHTOWER_RUN_MODE=""      # "interval" or "schedule"
+WATCHTOWER_RUN_MODE=""
 WATCHTOWER_SCHEDULE_CRON="" 
 
 # --- 配置加载与保存 ---
@@ -210,29 +209,42 @@ _start_watchtower_container_logic(){
 
     # 配置原生通知环境变量
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        # 关键修正：使用 read -d '' 来安全地定义多行变量
-        # 避免 cat 或 echo 在 shell 传递中丢失换行符的问题
-        # 移除了 Template 中的 Title，改由 TITLE 环境变量统一控制
-        local template_raw
-        read -r -d '' template_raw << EOM || true
-🏷 <b>节点</b>: <code>${run_hostname}</code>
-⏱ <b>时间</b>: <code>{{ .Title }}</code>
-
+        local current_time_str
+        current_time_str=$(date "+%Y-%m-%d %H:%M:%S")
+        
+        # 关键修正：使用变量拼接构建模板，彻底解决 Heredoc 缩进导致的函数丢失问题
+        # 同时，直接嵌入换行符，不再依赖 \n 转义
+        local tpl=""
+        tpl+="🔔 <b>Watchtower 自动更新</b>
+"
+        tpl+="🏷 <b>节点</b>: <b><code>${run_hostname}</code></b>
+"
+        tpl+="⏱ <b>时间</b>: <b><code>${current_time_str}</code></b>
+"
+        tpl+="
 {{ if .Entries -}}
-📦 <b>更新详情</b>:
-<pre>
-{{- range .Entries }}
-• {{ .Message }}
-{{ end -}}
-</pre>
-{{ else -}}
-✅ <b>状态</b>: 所有服务均为最新，暂无更新。
-{{- end -}}
-EOM
+"
+        tpl+="📦 <b>更新详情</b>:
+"
+        tpl+="<pre>
+"
+        tpl+="{{- range .Entries }}
+"
+        tpl+="• {{ .Message }}
+"
+        tpl+="{{ end -}}
+"
+        tpl+="</pre>
+"
+        tpl+="{{ else -}}
+"
+        tpl+="✅ <b>状态</b>: 所有服务均为最新，暂无更新。
+"
+        tpl+="{{- end -}}"
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 关键修正：显式设置标题为中文，这会覆盖默认的 "Watchtower updates on..."
+        # 显式设置中文标题，覆盖默认英文
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新")
         
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
@@ -240,8 +252,8 @@ EOM
         # 使用 HTML 模式
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
         
-        # 传递多行变量
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
+        # 传递构建好的多行模板变量
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
         log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
@@ -327,9 +339,9 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="🔔 <b>Watchtower 配置更新</b>
 ━━━━━━━━━━━━━━
-🏷 <b>节点</b>: <code>${alias_name}</code>
+🏷 <b>节点</b>: <b><code>${alias_name}</code></b>
 ⚙️ <b>状态</b>: 服务已重建并重启
-⏱ <b>时间</b>: <code>${time_now}</code>
+⏱ <b>时间</b>: <b><code>${time_now}</code></b>
 📝 <b>详情</b>: 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
