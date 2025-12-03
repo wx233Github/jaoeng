@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.51-Env单行化与交互优化版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.53-通知模板精修版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.51"
+SCRIPT_VERSION="v6.4.53"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -53,7 +53,7 @@ CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 
 # 运行时环境文件路径
 ENV_FILE="${SCRIPT_DIR}/watchtower.env"
-# 上一次成功运行的环境文件副本 (用于比对配置变更)
+# 上一次成功运行的环境文件副本
 ENV_FILE_LAST_RUN="${SCRIPT_DIR}/watchtower.env.last_run"
 
 # --- 模块变量 ---
@@ -217,7 +217,7 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 (单行化版本) ---
+# --- 核心：生成环境文件 (模板优化版) ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
@@ -235,25 +235,24 @@ _generate_env_file() {
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
 
-        # 3. 模板内容 - 关键修复
-        # 将多行模板合并为单行字符串，使用 {{ "\n" }} 作为换行符
-        # 这样 Docker --env-file 读取时不会报错，Watchtower 渲染时会解析出换行
+        # 3. 模板内容 - 布局调整
         local br='{{ "\n" }}'
-        # 构造单行模板
         local tpl=""
         tpl+="<b>🔔 Watchtower 自动更新</b>${br}"
-        tpl+="🏷 <b>节点:</b>${br}"
-        tpl+="<pre>${alias_name}</pre>${br}"
+        # 使用 <code> 包裹节点名。
+        tpl+="🏷 节点: <code>${alias_name}</code>${br}"
+        # Watchtower 不支持动态时间变量，此处省略时间行，以免显示错误的时间
         tpl+="${br}"
-        tpl+="{{ if .Entries -}}${br}"
+        
+        tpl+="{{ if .Entries -}}"
         tpl+="📦 <b>更新详情:</b>${br}"
-        tpl+="<pre>${br}"
-        tpl+="{{- range .Entries }}${br}"
+        tpl+="<pre>"
+        tpl+="{{- range .Entries }}"
         tpl+="{{ .Message }}${br}"
-        tpl+="{{- end }}${br}"
-        tpl+="</pre>${br}"
-        tpl+="{{- else -}}${br}"
-        tpl+="✅ <b>状态:</b> 所有服务均为最新，暂无更新。${br}"
+        tpl+="{{- end }}"
+        tpl+="</pre>"
+        tpl+="{{- else -}}"
+        tpl+="✅ 状态: 所有服务均为最新，暂无更新。"
         tpl+="{{- end -}}"
 
         echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
@@ -282,7 +281,7 @@ _start_watchtower_container_logic(){
     _generate_env_file
 
     local docker_run_args=(-h "${run_hostname}")
-    # 使用 --env-file 加载环境变量 (现在文件内是合法的单行变量)
+    # 使用 --env-file 加载环境变量
     docker_run_args+=(--env-file "$ENV_FILE")
 
     local wt_args=("--cleanup")
@@ -366,41 +365,31 @@ _rebuild_watchtower() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="🔔 <b>Watchtower 配置更新</b>
-━━━━━━━━━━━━━━
-🏷 <b>节点:</b>
-<pre>${alias_name}</pre>
+🏷 节点: <code>${alias_name}</code>
+⏱ 时间: <code>${time_now}</code>
 
-⚙️ <b>状态:</b> 服务已重建并重启
-⏱ <b>时间:</b> <code>${time_now}</code>
-📝 <b>详情:</b> 配置已重新加载，监控任务正常运行中。"
+⚙️ 状态: 服务已重建并重启
+📝 详情: 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
 
 # --- 智能重建提示 (精确指纹比对版) ---
 _prompt_rebuild_if_needed() {
-    # 只有容器在运行才需要提示
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         return
     fi
-    
-    # 如果没有上次运行的指纹，跳过比较（或者认为需要更新？）
     if [ ! -f "$ENV_FILE_LAST_RUN" ]; then
         return
     fi
 
-    # 生成当前的临时环境文件
     local temp_env="/tmp/watchtower_current_$$.env"
-    
-    # 临时覆盖 ENV_FILE 路径以生成内容到 temp_env
     local original_env_file="$ENV_FILE"
     ENV_FILE="$temp_env"
     _generate_env_file
     ENV_FILE="$original_env_file"
     
-    # 计算哈希
     local current_hash
     current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}')
-    
     local new_hash
     new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}')
     
@@ -502,7 +491,7 @@ notification_menu() {
     done
 }
 
-# --- 优化后的调度配置 (增加提示) ---
+# --- 优化后的调度配置 (带模板) ---
 _configure_schedule() {
     echo -e "${CYAN}请选择运行模式:${NC}"
     echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
@@ -740,7 +729,7 @@ manage_tasks(){
     done
 }
 
-# --- 辅助函数：解析日志时间戳 (仅保留用于详情展示) ---
+# --- 辅助函数：解析日志时间戳 ---
 _parse_watchtower_timestamp_from_log_line() {
     local line="$1"
     local ts
@@ -787,13 +776,55 @@ get_watchtower_all_raw_logs(){
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 500 watchtower 2>&1 || true
 }
 
+# --- Cron 下次执行时间计算 (纯Bash实现) ---
+_calculate_next_cron() {
+    local cron_expr="$1"
+    # 简化的 Cron 计算逻辑：仅支持固定值和 *
+    # 如果系统有 cronnext 工具最好，否则只能尝试简单推断
+    # 这里为了不引入新依赖，仅做简单展示，或调用 python/perl 如果有
+    
+    # 尝试使用 python3 (如果存在) 来计算 next run
+    if command -v python3 &>/dev/null; then
+        local py_script="
+try:
+    from datetime import datetime, timedelta
+    import sys
+    parts = '$cron_expr'.split()
+    if len(parts) != 6: exit(1)
+    # 简单模拟: 仅处理固定时间，不做复杂 * / 解析
+    # 这是一个极其简化的逻辑，仅用于显示基本信息
+    # 更好的方式是直接输出原样
+    print('$cron_expr')
+except:
+    print('$cron_expr')
+"
+        # 实际上，准确计算 cron 需要 croniter 库，默认 python 环境没有。
+        # 所以退而求其次，直接返回表达式，或尝试解析特定格式 (如 0 0 4 * * *)
+        :
+    fi
+    
+    # 解析常用格式
+    local sec min hour day month dow
+    read -r sec min hour day month dow <<< "$cron_expr"
+    
+    if [[ "$sec" == "0" && "$min" == "0" && "$hour" =~ ^[0-9]+$ && "$day" == "*" ]]; then
+        echo "每天 ${hour}:00:00"
+    elif [[ "$sec" == "0" && "$min" == "0" && "$hour" == "*" ]]; then
+        echo "每小时整点"
+    else
+        echo "$cron_expr"
+    fi
+}
+
 _get_watchtower_next_run_time(){
     local interval_seconds="$1"
     local raw_logs="$2"
     local schedule_env="$3"
     
     if [ -n "$schedule_env" ]; then
-        echo -e "${CYAN}定时任务: $schedule_env${NC}"
+        local readable_schedule
+        readable_schedule=$(_calculate_next_cron "$schedule_env")
+        echo -e "${CYAN}定时任务: ${readable_schedule}${NC}"
         return
     fi
     
@@ -870,8 +901,8 @@ show_watchtower_details(){
 }
 
 view_and_edit_config(){
-    # 已移除 WATCHTOWER_ENABLED 选项
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|string" "Cron表达式|WATCHTOWER_SCHEDULE_CRON|string" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval")
+    # 移除单独的 Cron 表达式选项，整合到运行模式中
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -886,6 +917,13 @@ view_and_edit_config(){
                         display_text="禁用 (已启用Cron)"; color="${YELLOW}"
                     else
                         display_text=$(_format_seconds_to_human "$current_value"); if [ "$display_text" != "N/A" ] && [ -n "$current_value" ]; then color="${GREEN}"; else color="${RED}"; display_text="未设置"; fi 
+                    fi
+                    ;;
+                schedule)
+                    if [[ "$current_value" == "cron" || "$current_value" == "aligned" ]]; then
+                        display_text="Cron调度 (${WATCHTOWER_SCHEDULE_CRON})"; color="${GREEN}"
+                    else
+                        display_text="间隔循环 ($(_format_seconds_to_human "${WATCHTOWER_CONFIG_INTERVAL:-0}"))"; color="${CYAN}"
                     fi
                     ;;
             esac
@@ -920,12 +958,16 @@ view_and_edit_config(){
                 ;;
             interval) 
                 if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]]; then
-                    log_warn "当前处于定时任务模式，设置间隔不会生效。请先更改运行模式。"
+                    log_warn "当前处于定时任务模式，设置间隔不会生效。请修改 '运行模式'。"
                     sleep 2
                 else
                     new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔")
                     if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi 
                 fi
+                ;;
+            schedule)
+                # 直接调用统一的调度配置函数
+                _configure_schedule
                 ;;
         esac
         save_config; log_info "'$label' 已更新。"; 
@@ -1006,15 +1048,16 @@ main_menu(){
         fi
         
         # --- 状态指示：检查配置是否变更 ---
-        # 改为使用 _prompt_rebuild_if_needed 内部的逻辑，这里仅做状态显示
+        local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
+        local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
         local warning_msg=""
-        if [ -f "$ENV_FILE_LAST_RUN" ] && [ -f "$ENV_FILE" ]; then
-             # 注意：这里我们通过重新生成内存中的 env 来比对
-             # 简单起见，这里直接调用检测函数获取返回值太复杂，暂且保留文字提示
-             # 但为了解决“未改动却提示”的问题，这里不应再单纯比对时间戳
-             # 逻辑已移至 _prompt_rebuild_if_needed，这里不再显示红色的 "待重启" 除非非常确定
-             # 暂时移除这里基于时间戳的不可靠检查
-             :
+        if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
+            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
+            # 只有当配置修改时间明显晚于容器创建时间（5秒以上）才提示
+            if [ "$config_mtime" -gt "$((container_ts + 5))" ]; then
+                warning_msg=" ${YELLOW}⚠️ 配置未生效 (需重建)${NC}"
+                STATUS_COLOR="${YELLOW}待重启${NC}"
+            fi
         fi
 
         local header_text="Watchtower 自动更新管理器"
