@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.42-调度与通知完美修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.43-HTML强制生效版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.42"
+SCRIPT_VERSION="v6.4.43"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -193,25 +193,28 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (HTML 纯净版) ---
+# --- 模板生成函数 (HTML 修复版) ---
 _get_shoutrrr_template_raw_var() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     
-    # 修复策略：
-    # 1. 不包含标题，标题由 WATCHTOWER_NOTIFICATION_TITLE 环境变量控制
-    # 2. 简化标签，只保留 <code> 用于代码块，避免复杂的嵌套导致解析失败
-    # 3. 换行符使用真实的换行，而非转义字符
+    # 模板说明：
+    # 1. 首行加粗标题，替代默认标题
+    # 2. emoji 后增加空格，防止解析粘连
+    # 3. 使用 <pre> 包裹更新详情，确保显示为等宽字体块
     
     local tpl
-    tpl="🏷 <b>节点</b>: <code>${alias_name}</code>
+    tpl="<b>🔔 Watchtower 自动更新</b>
+🏷 <b>节点:</b> <code>${alias_name}</code>
 
 {{ if .Entries -}}
-📦 <b>更新详情</b>:
+📦 <b>更新详情:</b>
+<pre>
 {{- range .Entries }}
-• <code>{{ .Message }}</code>
-{{ end -}}
-{{ else -}}
-✅ <b>状态</b>: 所有服务均为最新，暂无更新。
+{{ .Message }}
+{{- end }}
+</pre>
+{{- else -}}
+✅ <b>状态:</b> 所有服务均为最新。
 {{- end -}}"
     
     echo "$tpl"
@@ -239,15 +242,14 @@ _start_watchtower_container_logic(){
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
         
-        # 修正：设置自定义标题。如果不设置，Watchtower 会自动添加 "Watchtower updates on..."
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新")
+        # 【关键修复】设置为空格，欺骗 Watchtower 不显示默认标题，从而完全使用模板内容
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE= ")
         
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         
-        # 使用 HTML 模式
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?channels=${TG_CHAT_ID}&preview=false&parsemode=HTML")
+        # 【关键修复】将 parsemode=HTML 放在最前面，防止 URL 截断问题
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}")
         
-        # 直接传递包含真实换行符的变量
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
@@ -334,10 +336,10 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local msg="🔔 <b>Watchtower 配置更新</b>
 ━━━━━━━━━━━━━━
-🏷 <b>节点</b>: <code>${alias_name}</code>
-⚙️ <b>状态</b>: 服务已重建并重启
-⏱ <b>时间</b>: <code>${time_now}</code>
-📝 <b>详情</b>: 配置已重新加载，监控任务正常运行中。"
+🏷 <b>节点:</b> <code>${alias_name}</code>
+⚙️ <b>状态:</b> 服务已重建并重启
+⏱ <b>时间:</b> <code>${time_now}</code>
+📝 <b>详情:</b> 配置已重新加载，监控任务正常运行中。"
     send_test_notify "$msg"
 }
 
@@ -350,7 +352,7 @@ _prompt_rebuild_if_needed() {
         
         if [ -n "$container_created" ]; then
             local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
-            # 修正：增加 5 秒的时间容差，防止脚本执行过快导致误报
+            # 5秒容差，防止刚重建完就提示
             if [ $((config_mtime - container_ts)) -gt 5 ]; then
                 echo ""
                 echo -e "${RED}⚠️ 检测到 Watchtower 正在运行，且配置已变更。请前往'服务运维'重建服务以生效。${NC}"
@@ -492,7 +494,7 @@ _configure_schedule() {
                 WATCHTOWER_CONFIG_INTERVAL="0"
             fi
         else
-            # 分钟级间隔 (只能用 Interval，Cron做分钟间隔太复杂且没必要)
+            # 分钟级间隔
             WATCHTOWER_RUN_MODE="interval"
             local min_val=$(_prompt_for_interval "300" "请输入运行频率")
             WATCHTOWER_CONFIG_INTERVAL="$min_val"
@@ -517,15 +519,12 @@ _configure_schedule() {
 }
 
 configure_watchtower(){
-    # 交互优化: 进入重新配置前确认
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         if ! confirm_action "Watchtower 正在运行。进入配置可能会覆盖当前设置，是否继续?"; then
-            # 返回 10 表示用户取消，主菜单捕获后将跳过 press_enter_to_continue
             return 10
         fi
     fi
 
-    # 调用新的调度配置函数
     _configure_schedule
     
     sleep 1
@@ -608,7 +607,6 @@ configure_exclusion_list() {
         items_array+=("${CYAN}当前忽略: ${current_excluded_display}${NC}")
         _render_menu "配置忽略更新的容器" "${items_array[@]}"
         
-        # 修正：使用 read 直接读取，确保能捕捉到回车（空输入）
         local choice
         read -r -p "请选择 (数字切换, c 结束, 回车清空): " choice
         
@@ -647,7 +645,6 @@ configure_exclusion_list() {
 manage_tasks(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        # 修改：菜单中不显示红色，恢复普通颜色
         local -a items_array=(
             "1. 停止并移除服务 (卸载)" 
             "2. 重建服务 (应用新配置)"
@@ -658,7 +655,6 @@ manage_tasks(){
         case "$choice" in
             1) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
-                    # 保持：确认提示使用红色
                     echo -e "${RED}警告: 即将停止并移除 Watchtower 容器。${NC}"
                     if confirm_action "确定要继续吗？"; then 
                         set +e; JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null; set -e
@@ -716,7 +712,6 @@ _extract_interval_from_cmd(){
     if [ -z "$interval" ]; then echo ""; else echo "$interval"; fi
 }
 
-# --- 新增：从 env 中提取 schedule ---
 _extract_schedule_from_env(){
     if ! command -v jq &>/dev/null; then echo ""; return; fi
     local env_json
@@ -739,7 +734,7 @@ get_watchtower_all_raw_logs(){
 _get_watchtower_next_run_time(){
     local interval_seconds="$1"
     local raw_logs="$2"
-    local schedule_env="$3" # 新增参数
+    local schedule_env="$3"
     
     if [ -n "$schedule_env" ]; then
         echo -e "${CYAN}定时任务: $schedule_env${NC}"
@@ -851,13 +846,6 @@ view_and_edit_config(){
             string|string_list) 
                 if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then
                     configure_exclusion_list
-                elif [ "$var_name" = "WATCHTOWER_SCHEDULE_CRON" ]; then
-                    # 新增：Cron 提示
-                    echo -e "${YELLOW}Cron 格式说明: 秒 分 时 日 月 周${NC}"
-                    echo -e "示例: ${GREEN}0 30 4 * * *${NC} (每天凌晨 04:30:00)"
-                    echo -e "当前值: ${GREEN}${current_value:-[未设置]}${NC}"
-                    read -r -p "请输入新表达式 (回车保持): " val
-                    if [ -n "$val" ]; then declare "$var_name"="$val"; fi
                 else
                     echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
                     read -r -p "请输入新值 (回车保持, 空格清空): " val
