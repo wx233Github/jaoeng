@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.43-HTML强制生效版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.44-函数丢失修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.43"
+SCRIPT_VERSION="v6.4.44"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -193,14 +193,9 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (HTML 修复版) ---
+# --- 模板生成函数 (HTML 纯净版) ---
 _get_shoutrrr_template_raw_var() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
-    
-    # 模板说明：
-    # 1. 首行加粗标题，替代默认标题
-    # 2. emoji 后增加空格，防止解析粘连
-    # 3. 使用 <pre> 包裹更新详情，确保显示为等宽字体块
     
     local tpl
     tpl="<b>🔔 Watchtower 自动更新</b>
@@ -214,7 +209,7 @@ _get_shoutrrr_template_raw_var() {
 {{- end }}
 </pre>
 {{- else -}}
-✅ <b>状态:</b> 所有服务均为最新。
+✅ <b>状态:</b> 所有服务均为最新，暂无更新。
 {{- end -}}"
     
     echo "$tpl"
@@ -241,15 +236,9 @@ _start_watchtower_container_logic(){
         template_raw=$(_get_shoutrrr_template_raw_var)
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        
-        # 【关键修复】设置为空格，欺骗 Watchtower 不显示默认标题，从而完全使用模板内容
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE= ")
-        
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
-        
-        # 【关键修复】将 parsemode=HTML 放在最前面，防止 URL 截断问题
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}")
-        
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
@@ -345,14 +334,12 @@ _rebuild_watchtower() {
 
 # --- 智能重建提示 (去交互版) ---
 _prompt_rebuild_if_needed() {
-    # 如果 Watchtower 正在运行
     if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
         local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
         
         if [ -n "$container_created" ]; then
             local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
-            # 5秒容差，防止刚重建完就提示
             if [ $((config_mtime - container_ts)) -gt 5 ]; then
                 echo ""
                 echo -e "${RED}⚠️ 检测到 Watchtower 正在运行，且配置已变更。请前往'服务运维'重建服务以生效。${NC}"
@@ -875,6 +862,129 @@ view_and_edit_config(){
         save_config; log_info "'$label' 已更新。"; 
         _prompt_rebuild_if_needed
         sleep 1
+    done
+}
+
+show_container_info() { 
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        local -a content_lines_array=()
+        content_lines_array+=("编号 名称           镜像                               状态") 
+        
+        local -a containers=()
+        local i=1
+        while IFS='|' read -r name image status; do 
+            containers+=("$name")
+            local status_colored="$status"
+            if echo "$status" | grep -qE '^Up'; then 
+                status_colored="${GREEN}运行中${NC}"
+            elif echo "$status" | grep -qE '^Exited|Created'; then 
+                status_colored="${RED}已退出${NC}"
+            else 
+                status_colored="${YELLOW}${status}${NC}"
+            fi
+            content_lines_array+=("$(printf "%2d   %-15s %-35s %s" "$i" "$name" "$image" "$status_colored")")
+            i=$((i + 1))
+        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
+        
+        content_lines_array+=("" "a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
+        _render_menu "📋 容器看板 📋" "${content_array[@]}"
+        local choice
+        choice=$(_prompt_for_menu_choice "1-${#containers[@]}" "a,s")
+        case "$choice" in 
+            "") return ;;
+            a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
+            *)
+                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
+                local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+                local -a action_items_array=( "1. 查看日志 (Logs)" "2. 重启 (Restart)" "3. 停止 (Stop)" "4. 删除 (Remove)" "5. 查看详情 (Inspect)" "6. 进入容器 (Exec)" )
+                _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"
+                local action
+                action=$(_prompt_for_menu_choice "1-6")
+                case "$action" in 
+                    1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;;
+                    2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    3) echo "停止中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
+                    4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;; 
+                    5) _print_header "容器详情: ${selected_container}"; (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;; 
+                    6) if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
+                    *) ;; 
+                esac
+            ;;
+        esac
+    done
+}
+
+main_menu(){
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config
+        local STATUS_RAW="未运行"; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then STATUS_RAW="已启动"; fi
+        local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
+        local interval=""; local raw_logs=""; local schedule_env=""
+        if [ "$STATUS_RAW" = "已启动" ]; then 
+            interval=$(get_watchtower_inspect_summary || true)
+            raw_logs=$(get_watchtower_all_raw_logs || true)
+            schedule_env=$(_extract_schedule_from_env)
+        fi
+        local COUNTDOWN=$(_get_watchtower_next_run_time "${interval}" "${raw_logs}" "${schedule_env}")
+        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
+        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0"); local STOPPED=$((TOTAL - RUNNING))
+        
+        local notify_mode="${CYAN}关闭${NC}"
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            notify_mode="${GREEN}Telegram${NC}"
+        fi
+        
+        # --- 状态指示：检查配置是否变更 ---
+        local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
+        local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
+        local warning_msg=""
+        if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
+            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
+            if [ "$config_mtime" -gt "$container_ts" ]; then
+                warning_msg=" ${YELLOW}⚠️ 配置未生效 (需重建)${NC}"
+                STATUS_COLOR="${YELLOW}待重启${NC}"
+            fi
+        fi
+
+        local header_text="Watchtower 自动更新管理器"
+        
+        local -a content_array=(
+            "🕝 服务运行状态: ${STATUS_COLOR}${warning_msg}" 
+            "🔔 消息通知渠道: ${notify_mode}"
+            "⏳ 下一次扫描: ${COUNTDOWN}" 
+            "📦 受控容器统计: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
+        )
+        
+        content_array+=("" "主菜单：" 
+            "1. 部署/重新配置服务 (核心设置)" 
+            "2. 通知参数设置 (Token/ID/别名)" 
+            "3. 服务管理与卸载" 
+            "4. 高级参数编辑器" 
+            "5. 实时日志与容器看板"
+        )
+        _render_menu "$header_text" "${content_array[@]}"
+        local choice
+        choice=$(_prompt_for_menu_choice "1-5")
+        case "$choice" in
+            # 修正：捕获返回码，避免因 set -e 导致非0返回码直接退出脚本
+            1) 
+                set +e
+                configure_watchtower
+                local rc=$?
+                set -e
+                if [ "$rc" -ne 10 ]; then 
+                    press_enter_to_continue
+                fi 
+                ;;
+            2) notification_menu ;;
+            3) manage_tasks ;;
+            4) view_and_edit_config ;;
+            5) show_watchtower_details ;;
+            "") return 0 ;;
+            *) log_warn "无效选项。"; sleep 1 ;;
+        esac
     done
 }
 
