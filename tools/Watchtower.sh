@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.50-EnvFile 完美修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.51-Env单行化与交互优化版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.50"
+SCRIPT_VERSION="v6.4.51"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -51,9 +51,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 本地配置文件路径 (持久化配置)
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
 
-# 运行时环境文件路径 (用于 docker run --env-file)
-# 放在脚本目录下，方便用户查看
+# 运行时环境文件路径
 ENV_FILE="${SCRIPT_DIR}/watchtower.env"
+# 上一次成功运行的环境文件副本 (用于比对配置变更)
+ENV_FILE_LAST_RUN="${SCRIPT_DIR}/watchtower.env.last_run"
 
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
@@ -216,12 +217,11 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 ---
+# --- 核心：生成环境文件 (单行化版本) ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
     
-    # 强制覆盖旧的 env 文件
     rm -f "$ENV_FILE"
 
     # 1. 基础配置
@@ -230,33 +230,33 @@ _generate_env_file() {
     # 2. 通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         echo "WATCHTOWER_NOTIFICATIONS=shoutrrr" >> "$ENV_FILE"
-        # 强制标题为空格，利用模板控制
         echo "WATCHTOWER_NOTIFICATION_TITLE= " >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
-        # 写入 URL (无引号，避免Shell双重转义问题)
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
 
-        # 3. 模板内容 (使用 HereDoc 直接写入，保留多行结构和特殊字符)
-        # 注意：使用单引号界定符 'EOF' 以防止变量在生成文件时被提前展开，
-        # 但我们需要 $alias_name 被展开，所以使用 EOF。
-        # 对于 Shoutrrr 模板内部的变量 {{ ... }}，Shell 不会尝试展开它们，因为它们不是 $ 开头。
-        cat >> "$ENV_FILE" <<EOF
-WATCHTOWER_NOTIFICATION_TEMPLATE=<b>🔔 Watchtower 自动更新</b>
-🏷 <b>节点:</b>
-<pre>${alias_name}</pre>
+        # 3. 模板内容 - 关键修复
+        # 将多行模板合并为单行字符串，使用 {{ "\n" }} 作为换行符
+        # 这样 Docker --env-file 读取时不会报错，Watchtower 渲染时会解析出换行
+        local br='{{ "\n" }}'
+        # 构造单行模板
+        local tpl=""
+        tpl+="<b>🔔 Watchtower 自动更新</b>${br}"
+        tpl+="🏷 <b>节点:</b>${br}"
+        tpl+="<pre>${alias_name}</pre>${br}"
+        tpl+="${br}"
+        tpl+="{{ if .Entries -}}${br}"
+        tpl+="📦 <b>更新详情:</b>${br}"
+        tpl+="<pre>${br}"
+        tpl+="{{- range .Entries }}${br}"
+        tpl+="{{ .Message }}${br}"
+        tpl+="{{- end }}${br}"
+        tpl+="</pre>${br}"
+        tpl+="{{- else -}}${br}"
+        tpl+="✅ <b>状态:</b> 所有服务均为最新，暂无更新。${br}"
+        tpl+="{{- end -}}"
 
-{{ if .Entries -}}
-📦 <b>更新详情:</b>
-<pre>
-{{- range .Entries }}
-{{ .Message }}
-{{- end }}
-</pre>
-{{- else -}}
-✅ <b>状态:</b> 所有服务均为最新，暂无更新。
-{{- end -}}
-EOF
+        echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
     fi
 
     # 4. 调度配置
@@ -281,9 +281,8 @@ _start_watchtower_container_logic(){
     # 生成环境文件
     _generate_env_file
 
-    # 基础参数
     local docker_run_args=(-h "${run_hostname}")
-    # 关键修改：使用 --env-file 加载环境变量
+    # 使用 --env-file 加载环境变量 (现在文件内是合法的单行变量)
     docker_run_args+=(--env-file "$ENV_FILE")
 
     local wt_args=("--cleanup")
@@ -296,7 +295,7 @@ _start_watchtower_container_logic(){
     else
         docker_run_args+=(-d --name "$run_container_name" --restart unless-stopped)
         
-        # 间隔模式仍需通过 CLI 参数传递（Watchtower 只有 Cron 支持环境变量）
+        # 间隔模式仍需通过 CLI 参数传递
         if [[ "$WATCHTOWER_RUN_MODE" != "cron" && "$WATCHTOWER_RUN_MODE" != "aligned" ]]; then
             log_info "⏳ 启用间隔循环模式: ${wt_interval:-300}秒"
             wt_args+=(--interval "${wt_interval:-300}")
@@ -347,6 +346,8 @@ _start_watchtower_container_logic(){
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "核心服务已就绪 [$mode_description]"
             log_info "ℹ️  环境变量文件已生成: $ENV_FILE"
+            # 备份成功运行的 env 文件，用于指纹比对
+            cp -f "$ENV_FILE" "$ENV_FILE_LAST_RUN"
         else
             log_err "$mode_description 启动失败"
         fi
@@ -375,59 +376,39 @@ _rebuild_watchtower() {
     send_test_notify "$msg"
 }
 
-# --- 智能重建提示 (指纹比对版) ---
+# --- 智能重建提示 (精确指纹比对版) ---
 _prompt_rebuild_if_needed() {
+    # 只有容器在运行才需要提示
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         return
     fi
     
-    # 生成临时的预期 env 文件内容进行比对
-    local temp_env="/tmp/watchtower_verify_$$.env"
+    # 如果没有上次运行的指纹，跳过比较（或者认为需要更新？）
+    if [ ! -f "$ENV_FILE_LAST_RUN" ]; then
+        return
+    fi
+
+    # 生成当前的临时环境文件
+    local temp_env="/tmp/watchtower_current_$$.env"
     
-    # 临时覆盖 ENV_FILE 路径以生成内容到 temp_env，生成完后恢复
+    # 临时覆盖 ENV_FILE 路径以生成内容到 temp_env
     local original_env_file="$ENV_FILE"
     ENV_FILE="$temp_env"
     _generate_env_file
     ENV_FILE="$original_env_file"
     
-    # 获取运行中容器的 Env Hash (需要安装 jq 才能精确比对，这里用简单文件修改时间代替作为降级方案，或者读取容器 env)
-    # 简单方案：只比对 persistent config file 时间与容器创建时间
-    # 但为了解决 "未修改却提示"，我们直接比对文件指纹
+    # 计算哈希
+    local current_hash
+    current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}')
     
-    local current_env_hash="unknown"
-    if [ -f "$original_env_file" ]; then
-        current_env_hash=$(md5sum "$original_env_file" 2>/dev/null | awk '{print $1}')
-    fi
-    
-    local new_env_hash
-    new_env_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}')
+    local new_hash
+    new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}')
     
     rm -f "$temp_env"
 
-    # 如果生成的 env 内容跟现有的不一样，说明配置确实变了
-    # 注意：这需要确保 _generate_env_file 的输出是确定性的
-    if [ "$current_env_hash" != "$new_env_hash" ]; then
-         # 内容有变，提示重建
-         # 但如果用户修改了配置还没 save_config，这里拿到的其实是旧配置生成的新文件？
-         # 不，load_config 加载的是 disk 上的。
-         # 逻辑：config_file (磁盘) -> 生成 env。
-         # 如果 config_file 变了 -> 生成的 env 变了 -> 对比旧 env -> 提示。
-         # 但 "未改动配置却提示" 可能是因为 touch 了 config 文件？
-         
-         # 让我们回退到更可靠的方法：比对内存变量与运行状态
-         # 算了，最简单的修复：只有当用户明确在该 Session 中修改了值并保存后，再调用此函数。
-         # 并且，只比较 Config File mtime 和 Container Create Time 是不可靠的。
-         # 真正的修复：
-         local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
-         local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
-         if [ -n "$container_created" ]; then
-            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
-            # 只有当配置文件修改时间 晚于 容器创建时间 超过 5 秒时才提示
-            if [ $((config_mtime - container_ts)) -gt 5 ]; then
-                echo ""
-                echo -e "${RED}⚠️ 检测到配置已变更 (Config File updated)，建议重建服务。${NC}"
-            fi
-         fi
+    if [ "$current_hash" != "$new_hash" ]; then
+        echo ""
+        echo -e "${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"
     fi
 }
 
@@ -521,7 +502,7 @@ notification_menu() {
     done
 }
 
-# --- 优化后的调度配置 (带模板) ---
+# --- 优化后的调度配置 (增加提示) ---
 _configure_schedule() {
     echo -e "${CYAN}请选择运行模式:${NC}"
     echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
@@ -573,34 +554,22 @@ _configure_schedule() {
         fi
         
     elif [ "$mode_choice" = "2" ]; then
-        # 纯 Cron 模式 (增强版交互)
+        # 纯 Cron 模式 (增加示例提示)
         WATCHTOWER_RUN_MODE="cron"
-        echo -e "${CYAN}--- Cron 表达式生成器 ---${NC}"
-        echo "1. 每天凌晨 4 点 (推荐) -> 0 0 4 * * *"
-        echo "2. 每小时 -> 0 0 * * * *"
-        echo "3. 每周一凌晨 3 点 -> 0 0 3 * * 1"
-        echo "4. 手动输入 6 段表达式 (秒 分 时 日 月 周)"
+        echo -e "${CYAN}请输入 6段 Cron 表达式 (秒 分 时 日 月 周)${NC}"
+        echo -e "示例: ${GREEN}0 0 4 * * *${NC}   (每天凌晨 4 点)"
+        echo -e "示例: ${GREEN}0 0 * * * *${NC}   (每小时整点)"
         
-        local cron_tpl_choice
-        cron_tpl_choice=$(_prompt_for_menu_choice "1-4")
+        local cron_input
+        # 使用自定义的输入函数，并提供默认值提示
+        read -r -p "Cron表达式 (留空保留原值): " cron_input
         
-        local cron_input=""
-        case "$cron_tpl_choice" in
-            1) cron_input="0 0 4 * * *" ;;
-            2) cron_input="0 0 * * * *" ;;
-            3) cron_input="0 0 3 * * 1" ;;
-            4) 
-                echo -e "例如: ${GREEN}0 30 4 * * *${NC} (每天 04:30:00)"
-                read -r -p "请输入 Cron: " cron_input
-                ;;
-        esac
-
         if [ -n "$cron_input" ]; then
             WATCHTOWER_SCHEDULE_CRON="$cron_input"
             WATCHTOWER_CONFIG_INTERVAL="0"
             log_info "Cron 已设置为: $WATCHTOWER_SCHEDULE_CRON"
         else
-            log_warn "未输入，保留原设置"
+            log_warn "未输入，保留原设置: ${WATCHTOWER_SCHEDULE_CRON:-无}"
         fi
     fi
 }
@@ -1037,16 +1006,15 @@ main_menu(){
         fi
         
         # --- 状态指示：检查配置是否变更 ---
-        local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
-        local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
+        # 改为使用 _prompt_rebuild_if_needed 内部的逻辑，这里仅做状态显示
         local warning_msg=""
-        if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
-            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
-            # 只有当配置修改时间明显晚于容器创建时间（5秒以上）才提示
-            if [ "$config_mtime" -gt "$((container_ts + 5))" ]; then
-                warning_msg=" ${YELLOW}⚠️ 配置未生效 (需重建)${NC}"
-                STATUS_COLOR="${YELLOW}待重启${NC}"
-            fi
+        if [ -f "$ENV_FILE_LAST_RUN" ] && [ -f "$ENV_FILE" ]; then
+             # 注意：这里我们通过重新生成内存中的 env 来比对
+             # 简单起见，这里直接调用检测函数获取返回值太复杂，暂且保留文字提示
+             # 但为了解决“未改动却提示”的问题，这里不应再单纯比对时间戳
+             # 逻辑已移至 _prompt_rebuild_if_needed，这里不再显示红色的 "待重启" 除非非常确定
+             # 暂时移除这里基于时间戳的不可靠检查
+             :
         fi
 
         local header_text="Watchtower 自动更新管理器"
