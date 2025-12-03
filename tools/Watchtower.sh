@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.44-函数丢失修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.46-通知渲染修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.44"
+SCRIPT_VERSION="v6.4.46"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -29,9 +29,20 @@ else
     GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
 fi
 
-# --- 确保 run_with_sudo 函数可用 ---
+# --- 确保 run_with_sudo 函数可用 (增强版兜底) ---
 if ! declare -f run_with_sudo &>/dev/null; then
-    run_with_sudo() { sudo "$@"; }
+    run_with_sudo() {
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+        else
+            if command -v sudo &>/dev/null; then
+                sudo "$@"
+            else
+                echo "[Error] 需要 root 权限执行此操作，且未找到 sudo 命令。" >&2
+                return 1
+            fi
+        fi
+    }
 fi
 
 # 本地配置文件路径
@@ -133,7 +144,10 @@ _print_header() {
 _format_seconds_to_human(){
     local total_seconds="$1"
     if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi
-    local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 ))
+    local days=$((total_seconds / 86400))
+    local hours=$(( (total_seconds % 86400) / 3600 ))
+    local minutes=$(( (total_seconds % 3600) / 60 ))
+    local seconds=$(( total_seconds % 60 ))
     local result=""
     if [ "$days" -gt 0 ]; then result+="${days}天"; fi
     if [ "$hours" -gt 0 ]; then result+="${hours}小时"; fi
@@ -197,9 +211,10 @@ _prompt_for_interval() {
 _get_shoutrrr_template_raw_var() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     
+    # 移除模板内的标题，改用 Notification Title 环境变量控制
+    # 增加 code 标签周围的换行或空格，确保 Telegram 正确解析
     local tpl
-    tpl="<b>🔔 Watchtower 自动更新</b>
-🏷 <b>节点:</b> <code>${alias_name}</code>
+    tpl="🏷 <b>节点:</b> <code> ${alias_name} </code>
 
 {{ if .Entries -}}
 📦 <b>更新详情:</b>
@@ -236,7 +251,8 @@ _start_watchtower_container_logic(){
         template_raw=$(_get_shoutrrr_template_raw_var)
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE= ")
+        # 显式设置标题，覆盖默认的英文 "Watchtower updates on ..."
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新")
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
