@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.46-通知渲染修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.49-强制代码块样式版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.46"
+SCRIPT_VERSION="v6.4.49"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -47,6 +47,8 @@ fi
 
 # 本地配置文件路径
 CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
+# 本地模板文件路径
+TEMPLATE_FILE="$HOME/.watchtower-notification.tpl"
 
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
@@ -77,7 +79,9 @@ load_config(){
     local default_exclude_list="portainer,portainer_agent"
     local default_notify_on_no_updates="true"
     local default_alias
-    if [ ${#HOSTNAME} -gt 15 ]; then default_alias="DockerNode"; else default_alias="$(hostname)"; fi
+    # 确保 hostname 没有换行符
+    local sys_hostname; sys_hostname=$(hostname | tr -d '\n')
+    if [ ${#sys_hostname} -gt 15 ]; then default_alias="DockerNode"; else default_alias="$sys_hostname"; fi
 
     TG_BOT_TOKEN="${TG_BOT_TOKEN-${WATCHTOWER_CONF_BOT_TOKEN-}}"
     TG_CHAT_ID="${TG_CHAT_ID-${WATCHTOWER_CONF_CHAT_ID-}}"
@@ -207,14 +211,17 @@ _prompt_for_interval() {
     done
 }
 
-# --- 模板生成函数 (HTML 纯净版) ---
-_get_shoutrrr_template_raw_var() {
+# --- 模板生成逻辑 (文件生成版) ---
+_generate_template_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
-    
-    # 移除模板内的标题，改用 Notification Title 环境变量控制
-    # 增加 code 标签周围的换行或空格，确保 Telegram 正确解析
-    local tpl
-    tpl="🏷 <b>节点:</b> <code> ${alias_name} </code>
+    alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
+
+    # 关键修改：将 <code> 改为 <pre> 以强制显示块级代码样式
+    # <pre> 标签在所有 Telegram 客户端中都能稳定渲染背景色并支持点击复制
+    cat > "$TEMPLATE_FILE" <<EOF
+<b>🔔 Watchtower 自动更新</b>
+🏷 <b>节点:</b>
+<pre>${alias_name}</pre>
 
 {{ if .Entries -}}
 📦 <b>更新详情:</b>
@@ -225,9 +232,9 @@ _get_shoutrrr_template_raw_var() {
 </pre>
 {{- else -}}
 ✅ <b>状态:</b> 所有服务均为最新，暂无更新。
-{{- end -}}"
-    
-    echo "$tpl"
+{{- end -}}
+EOF
+    chmod 644 "$TEMPLATE_FILE"
 }
 
 # --- 核心启动逻辑 ---
@@ -247,18 +254,22 @@ _start_watchtower_container_logic(){
 
     # 配置原生通知环境变量
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-        local template_raw
-        template_raw=$(_get_shoutrrr_template_raw_var)
+        # 生成模板文件
+        _generate_template_file
+        
+        # 挂载模板文件到容器内部
+        docker_run_args+=(-v "${TEMPLATE_FILE}:/etc/watchtower/template.tpl:ro")
         
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATIONS=shoutrrr")
-        # 显式设置标题，覆盖默认的英文 "Watchtower updates on ..."
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新")
+        # 将标题设为空格，隐藏 Shoutrrr 默认标题，完全由模板控制
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TITLE= ")
         docker_run_args+=(-e "WATCHTOWER_NO_STARTUP_MESSAGE=true")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}")
-        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=$template_raw")
+        # 指向容器内的模板文件路径
+        docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_TEMPLATE=/etc/watchtower/template.tpl")
         docker_run_args+=(-e "WATCHTOWER_NOTIFICATION_REPORT=true")
         
-        log_info "✅ Telegram 通知通道已激活 (别名: ${run_hostname})"
+        log_info "✅ Telegram 通知通道已激活 (挂载模板: $TEMPLATE_FILE)"
     else
         log_info "ℹ️ 未配置 Telegram，将不发送通知"
     fi
