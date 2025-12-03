@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.53-通知模板精修版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.54-标题覆盖与Cron解析修复版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.53"
+SCRIPT_VERSION="v6.4.54"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -217,7 +217,7 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 (模板优化版) ---
+# --- 核心：生成环境文件 (标题修复版) ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
@@ -230,18 +230,17 @@ _generate_env_file() {
     # 2. 通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         echo "WATCHTOWER_NOTIFICATIONS=shoutrrr" >> "$ENV_FILE"
-        echo "WATCHTOWER_NOTIFICATION_TITLE= " >> "$ENV_FILE"
+        # 修正：直接设置中文标题，覆盖默认的英文标题
+        echo "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
 
-        # 3. 模板内容 - 布局调整
+        # 3. 模板内容
         local br='{{ "\n" }}'
         local tpl=""
-        tpl+="<b>🔔 Watchtower 自动更新</b>${br}"
-        # 使用 <code> 包裹节点名。
+        # 移除首行的标题，因为 TITLE 环境变量已经设置了
         tpl+="🏷 节点: <code>${alias_name}</code>${br}"
-        # Watchtower 不支持动态时间变量，此处省略时间行，以免显示错误的时间
         tpl+="${br}"
         
         tpl+="{{ if .Entries -}}"
@@ -689,7 +688,7 @@ configure_exclusion_list() {
 
 manage_tasks(){
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
         local -a items_array=(
             "1. 停止并移除服务 (卸载)" 
             "2. 重建服务 (应用新配置)"
@@ -776,41 +775,40 @@ get_watchtower_all_raw_logs(){
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs --tail 500 watchtower 2>&1 || true
 }
 
-# --- Cron 下次执行时间计算 (纯Bash实现) ---
+# --- Cron 下次执行时间计算 (纯Bash强化版) ---
 _calculate_next_cron() {
     local cron_expr="$1"
-    # 简化的 Cron 计算逻辑：仅支持固定值和 *
-    # 如果系统有 cronnext 工具最好，否则只能尝试简单推断
-    # 这里为了不引入新依赖，仅做简单展示，或调用 python/perl 如果有
-    
-    # 尝试使用 python3 (如果存在) 来计算 next run
-    if command -v python3 &>/dev/null; then
-        local py_script="
-try:
-    from datetime import datetime, timedelta
-    import sys
-    parts = '$cron_expr'.split()
-    if len(parts) != 6: exit(1)
-    # 简单模拟: 仅处理固定时间，不做复杂 * / 解析
-    # 这是一个极其简化的逻辑，仅用于显示基本信息
-    # 更好的方式是直接输出原样
-    print('$cron_expr')
-except:
-    print('$cron_expr')
-"
-        # 实际上，准确计算 cron 需要 croniter 库，默认 python 环境没有。
-        # 所以退而求其次，直接返回表达式，或尝试解析特定格式 (如 0 0 4 * * *)
-        :
-    fi
     
     # 解析常用格式
     local sec min hour day month dow
     read -r sec min hour day month dow <<< "$cron_expr"
     
-    if [[ "$sec" == "0" && "$min" == "0" && "$hour" =~ ^[0-9]+$ && "$day" == "*" ]]; then
-        echo "每天 ${hour}:00:00"
-    elif [[ "$sec" == "0" && "$min" == "0" && "$hour" == "*" ]]; then
-        echo "每小时整点"
+    if [[ "$sec" == "0" && "$min" == "0" ]]; then
+        if [[ "$day" == "*" && "$month" == "*" && "$dow" == "*" ]]; then
+            # 处理 */N 格式
+            if [[ "$hour" == "*" ]]; then
+                echo "每小时整点"
+            elif [[ "$hour" =~ ^\*/([0-9]+)$ ]]; then
+                echo "每 ${BASH_REMATCH[1]} 小时 (整点)"
+            elif [[ "$hour" =~ ^[0-9]+$ ]]; then
+                echo "每天 ${hour}:00:00"
+            else
+                echo "$cron_expr"
+            fi
+        else
+            echo "$cron_expr"
+        fi
+    elif [[ "$sec" == "0" ]]; then
+        # 处理分钟级 */N
+        if [[ "$hour" == "*" && "$day" == "*" ]]; then
+             if [[ "$min" =~ ^\*/([0-9]+)$ ]]; then
+                echo "每 ${BASH_REMATCH[1]} 分钟"
+             else
+                echo "$cron_expr"
+             fi
+        else
+            echo "$cron_expr"
+        fi
     else
         echo "$cron_expr"
     fi
