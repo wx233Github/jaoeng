@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.54-标题覆盖与Cron解析修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.55-排版优化与Cron解析修正版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.54"
+SCRIPT_VERSION="v6.4.55"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -217,7 +217,7 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 (标题修复版) ---
+# --- 核心：生成环境文件 (URL注入版) ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
@@ -230,16 +230,33 @@ _generate_env_file() {
     # 2. 通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         echo "WATCHTOWER_NOTIFICATIONS=shoutrrr" >> "$ENV_FILE"
-        # 修正：直接设置中文标题，覆盖默认的英文标题
-        echo "WATCHTOWER_NOTIFICATION_TITLE=🔔 Watchtower 自动更新" >> "$ENV_FILE"
+        
+        # 尝试进行 URL 编码以强制覆盖标题
+        local title_text="🔔 Watchtower 自动更新"
+        local encoded_title=""
+        
+        if command -v python3 &>/dev/null; then
+            encoded_title=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$title_text'))")
+        fi
+        
+        # 构造 URL，如果有编码后的标题则附加到 URL 参数中
+        local base_url="telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}"
+        if [ -n "$encoded_title" ]; then
+            echo "WATCHTOWER_NOTIFICATION_URL=${base_url}&title=${encoded_title}" >> "$ENV_FILE"
+        else
+            # 降级方案：使用无空格英文标题，避免默认的 'Watchtower updates on...'
+            echo "WATCHTOWER_NOTIFICATION_URL=${base_url}&title=Watchtower-Updates" >> "$ENV_FILE"
+        fi
+        
+        # 仍然设置这个环境变量作为双重保险
+        echo "WATCHTOWER_NOTIFICATION_TITLE=$title_text" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
-        echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
 
-        # 3. 模板内容
+        # 3. 模板内容 - 布局微调
         local br='{{ "\n" }}'
         local tpl=""
-        # 移除首行的标题，因为 TITLE 环境变量已经设置了
+        # 移除模板内的标题，完全依赖 Shoutrrr 的 Title 参数
         tpl+="🏷 节点: <code>${alias_name}</code>${br}"
         tpl+="${br}"
         
@@ -779,7 +796,7 @@ get_watchtower_all_raw_logs(){
 _calculate_next_cron() {
     local cron_expr="$1"
     
-    # 解析常用格式
+    # 解析常用格式，增加对 */N 的健壮支持
     local sec min hour day month dow
     read -r sec min hour day month dow <<< "$cron_expr"
     
@@ -788,7 +805,8 @@ _calculate_next_cron() {
             # 处理 */N 格式
             if [[ "$hour" == "*" ]]; then
                 echo "每小时整点"
-            elif [[ "$hour" =~ ^\*/([0-9]+)$ ]]; then
+            elif [[ "$hour" =~ \*/([0-9]+) ]]; then
+                # 修复：移除正则开头的 ^，并确保 BASH_REMATCH 能捕获
                 echo "每 ${BASH_REMATCH[1]} 小时 (整点)"
             elif [[ "$hour" =~ ^[0-9]+$ ]]; then
                 echo "每天 ${hour}:00:00"
@@ -801,7 +819,7 @@ _calculate_next_cron() {
     elif [[ "$sec" == "0" ]]; then
         # 处理分钟级 */N
         if [[ "$hour" == "*" && "$day" == "*" ]]; then
-             if [[ "$min" =~ ^\*/([0-9]+)$ ]]; then
+             if [[ "$min" =~ \*/([0-9]+) ]]; then
                 echo "每 ${BASH_REMATCH[1]} 分钟"
              else
                 echo "$cron_expr"
