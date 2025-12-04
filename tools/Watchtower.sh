@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.55-排版优化与Cron解析修正版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.58-标题ASCII化与中文适配版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.55"
+SCRIPT_VERSION="v6.4.58"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -72,7 +72,9 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES=""
 WATCHTOWER_HOST_ALIAS=""
 # 调度变量
 WATCHTOWER_RUN_MODE=""      # "interval", "aligned", "cron"
-WATCHTOWER_SCHEDULE_CRON="" 
+WATCHTOWER_SCHEDULE_CRON=""
+# 样式变量
+WATCHTOWER_TEMPLATE_STYLE="" # "standard", "terminal", "minimal"
 
 # --- 配置加载与保存 ---
 load_config(){
@@ -105,6 +107,8 @@ load_config(){
     
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
+    
+    WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE:-${WATCHTOWER_CONF_TEMPLATE_STYLE:-standard}}"
 }
 
 # 预加载一次配置
@@ -143,6 +147,7 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS}"
 WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE}"
 WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON}"
+WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
@@ -217,64 +222,80 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 (URL注入版) ---
+# --- 核心：生成环境文件 (ASCII Title版) ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
     
     rm -f "$ENV_FILE"
 
-    # 1. 基础配置
     echo "TZ=${JB_TIMEZONE:-Asia/Shanghai}" >> "$ENV_FILE"
     
-    # 2. 通知配置
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         echo "WATCHTOWER_NOTIFICATIONS=shoutrrr" >> "$ENV_FILE"
-        
-        # 尝试进行 URL 编码以强制覆盖标题
-        local title_text="🔔 Watchtower 自动更新"
-        local encoded_title=""
-        
-        if command -v python3 &>/dev/null; then
-            encoded_title=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$title_text'))")
-        fi
-        
-        # 构造 URL，如果有编码后的标题则附加到 URL 参数中
-        local base_url="telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}"
-        if [ -n "$encoded_title" ]; then
-            echo "WATCHTOWER_NOTIFICATION_URL=${base_url}&title=${encoded_title}" >> "$ENV_FILE"
-        else
-            # 降级方案：使用无空格英文标题，避免默认的 'Watchtower updates on...'
-            echo "WATCHTOWER_NOTIFICATION_URL=${base_url}&title=Watchtower-Updates" >> "$ENV_FILE"
-        fi
-        
-        # 仍然设置这个环境变量作为双重保险
-        echo "WATCHTOWER_NOTIFICATION_TITLE=$title_text" >> "$ENV_FILE"
-        echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
+        echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
+        
+        # 关键修正：使用纯 ASCII 标题，避免容器内字符集不支持导致的乱码或回退
+        # 这样能保证第一行显示 'Watchtower-Report' 而不是冗长的默认句
+        echo "WATCHTOWER_NOTIFICATION_TITLE=Watchtower-Report" >> "$ENV_FILE"
+        echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
 
-        # 3. 模板内容 - 布局微调
         local br='{{ "\n" }}'
         local tpl=""
-        # 移除模板内的标题，完全依赖 Shoutrrr 的 Title 参数
-        tpl+="🏷 节点: <code>${alias_name}</code>${br}"
-        tpl+="${br}"
         
-        tpl+="{{ if .Entries -}}"
-        tpl+="📦 <b>更新详情:</b>${br}"
-        tpl+="<pre>"
-        tpl+="{{- range .Entries }}"
-        tpl+="{{ .Message }}${br}"
-        tpl+="{{- end }}"
-        tpl+="</pre>"
-        tpl+="{{- else -}}"
-        tpl+="✅ 状态: 所有服务均为最新，暂无更新。"
-        tpl+="{{- end -}}"
+        case "$WATCHTOWER_TEMPLATE_STYLE" in
+            "terminal")
+                tpl+="${br}"
+                tpl+="<pre>"
+                tpl+="HOST: ${alias_name}${br}"
+                tpl+="{{ if .Entries -}}"
+                tpl+="UPDATES:${br}"
+                tpl+="{{- range .Entries }}"
+                tpl+="> {{ .Message }}${br}"
+                tpl+="{{- end }}"
+                tpl+="{{- else -}}"
+                tpl+="STATUS: All systems go.${br}"
+                tpl+="{{- end -}}"
+                tpl+="</pre>"
+                ;;
+            "minimal")
+                # 极简模式：标题就是 'Watchtower-Report'，下面直接跟状态
+                tpl+="${br}"
+                tpl+="{{ if .Entries -}}"
+                tpl+="📦 <b>Updates:</b>${br}"
+                tpl+="<pre>"
+                tpl+="{{- range .Entries }}"
+                tpl+="{{ .Message }}${br}"
+                tpl+="{{- end }}"
+                tpl+="</pre>"
+                tpl+="{{- else -}}"
+                tpl+="✅ No updates available"
+                tpl+="{{- end -}}"
+                ;;
+            *)
+                # Standard: 手动在模板里加回中文标题
+                tpl+="${br}"
+                tpl+="🔔 <b>Watchtower 自动更新</b>${br}"
+                tpl+="🏷 节点: <code>${alias_name}</code>${br}"
+                tpl+="${br}"
+                
+                tpl+="{{ if .Entries -}}"
+                tpl+="📦 <b>更新详情:</b>${br}"
+                tpl+="<pre>"
+                tpl+="{{- range .Entries }}"
+                tpl+="{{ .Message }}${br}"
+                tpl+="{{- end }}"
+                tpl+="</pre>"
+                tpl+="{{- else -}}"
+                tpl+="✅ 状态: 所有服务均为最新，暂无更新。"
+                tpl+="{{- end -}}"
+                ;;
+        esac
 
         echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
     fi
 
-    # 4. 调度配置
     if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]] && [ -n "$WATCHTOWER_SCHEDULE_CRON" ]; then
         echo "WATCHTOWER_SCHEDULE=$WATCHTOWER_SCHEDULE_CRON" >> "$ENV_FILE"
     fi
@@ -293,11 +314,9 @@ _start_watchtower_container_logic(){
     local container_names=()
     
     local run_hostname="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
-    # 生成环境文件
     _generate_env_file
 
     local docker_run_args=(-h "${run_hostname}")
-    # 使用 --env-file 加载环境变量
     docker_run_args+=(--env-file "$ENV_FILE")
 
     local wt_args=("--cleanup")
@@ -310,7 +329,6 @@ _start_watchtower_container_logic(){
     else
         docker_run_args+=(-d --name "$run_container_name" --restart unless-stopped)
         
-        # 间隔模式仍需通过 CLI 参数传递
         if [[ "$WATCHTOWER_RUN_MODE" != "cron" && "$WATCHTOWER_RUN_MODE" != "aligned" ]]; then
             log_info "⏳ 启用间隔循环模式: ${wt_interval:-300}秒"
             wt_args+=(--interval "${wt_interval:-300}")
@@ -361,7 +379,6 @@ _start_watchtower_container_logic(){
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "核心服务已就绪 [$mode_description]"
             log_info "ℹ️  环境变量文件已生成: $ENV_FILE"
-            # 备份成功运行的 env 文件，用于指纹比对
             cp -f "$ENV_FILE" "$ENV_FILE_LAST_RUN"
         else
             log_err "$mode_description 启动失败"
@@ -389,7 +406,6 @@ _rebuild_watchtower() {
     send_test_notify "$msg"
 }
 
-# --- 智能重建提示 (精确指纹比对版) ---
 _prompt_rebuild_if_needed() {
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
         return
@@ -446,8 +462,22 @@ _configure_telegram() {
     notify_on_no_updates_choice=$(_prompt_user_input "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
     
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
+    
+    echo -e "${CYAN}请选择通知模板风格:${NC}"
+    echo "1. 标准中文 (Standard) - 默认，信息全面"
+    echo "2. 极简风格 (Minimal) - 仅显示状态，无冗余信息"
+    echo "3. 终端风格 (Terminal) - 全代码块，极客风"
+    local style_choice
+    style_choice=$(_prompt_for_menu_choice "1-3")
+    case "$style_choice" in
+        1) WATCHTOWER_TEMPLATE_STYLE="standard" ;;
+        2) WATCHTOWER_TEMPLATE_STYLE="minimal" ;;
+        3) WATCHTOWER_TEMPLATE_STYLE="terminal" ;;
+        *) WATCHTOWER_TEMPLATE_STYLE="standard" ;;
+    esac
+    
     save_config
-    log_info "Telegram 通知参数已保存。"
+    log_info "通知配置已保存。"
     _prompt_rebuild_if_needed
 }
 
@@ -507,7 +537,6 @@ notification_menu() {
     done
 }
 
-# --- 优化后的调度配置 (带模板) ---
 _configure_schedule() {
     echo -e "${CYAN}请选择运行模式:${NC}"
     echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
@@ -517,7 +546,6 @@ _configure_schedule() {
     mode_choice=$(_prompt_for_menu_choice "1-2")
     
     if [ "$mode_choice" = "1" ]; then
-        # 间隔模式逻辑分支
         local interval_hour=""
         while true; do
             interval_hour=$(_prompt_user_input "每隔几小时运行一次? (输入 0 表示使用分钟): " "")
@@ -526,7 +554,6 @@ _configure_schedule() {
         done
         
         if [ "$interval_hour" -gt 0 ]; then
-            # 小时级间隔
             echo -e "${CYAN}请选择对齐方式:${NC}"
             echo "1. 从现在开始计时 (容器启动时间 + 间隔)"
             echo "2. 对齐到整点 (:00)"
@@ -534,23 +561,19 @@ _configure_schedule() {
             local align_choice=$(_prompt_for_menu_choice "1-3")
             
             if [ "$align_choice" = "1" ]; then
-                # 传统 Interval
                 WATCHTOWER_RUN_MODE="interval"
                 WATCHTOWER_CONFIG_INTERVAL=$((interval_hour * 3600))
                 WATCHTOWER_SCHEDULE_CRON=""
                 log_info "已设置: 每 $interval_hour 小时运行一次 (立即生效)"
             else
-                # Cron 对齐
                 WATCHTOWER_RUN_MODE="aligned"
                 local minute="0"
                 if [ "$align_choice" = "3" ]; then minute="30"; fi
-                # Cron: second minute hour dom month dow
                 WATCHTOWER_SCHEDULE_CRON="0 $minute */$interval_hour * * *"
                 log_info "已设置: 每 $interval_hour 小时在 :$minute 运行 (Cron: $WATCHTOWER_SCHEDULE_CRON)"
                 WATCHTOWER_CONFIG_INTERVAL="0"
             fi
         else
-            # 分钟级间隔
             WATCHTOWER_RUN_MODE="interval"
             local min_val=$(_prompt_for_interval "300" "请输入运行频率")
             WATCHTOWER_CONFIG_INTERVAL="$min_val"
@@ -559,14 +582,12 @@ _configure_schedule() {
         fi
         
     elif [ "$mode_choice" = "2" ]; then
-        # 纯 Cron 模式 (增加示例提示)
         WATCHTOWER_RUN_MODE="cron"
         echo -e "${CYAN}请输入 6段 Cron 表达式 (秒 分 时 日 月 周)${NC}"
         echo -e "示例: ${GREEN}0 0 4 * * *${NC}   (每天凌晨 4 点)"
         echo -e "示例: ${GREEN}0 0 * * * *${NC}   (每小时整点)"
         
         local cron_input
-        # 使用自定义的输入函数，并提供默认值提示
         read -r -p "Cron表达式 (留空保留原值): " cron_input
         
         if [ -n "$cron_input" ]; then
@@ -587,9 +608,7 @@ configure_watchtower(){
     fi
 
     _configure_schedule
-    
     sleep 1
-    
     configure_exclusion_list
     
     local extra_args_choice
@@ -623,6 +642,7 @@ configure_watchtower(){
         "忽略名单: ${final_exclude_list_display//,/, }" 
         "额外参数: ${temp_extra_args:-无}" 
         "调试模式: $temp_debug_enabled"
+        "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-standard}"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
@@ -805,8 +825,7 @@ _calculate_next_cron() {
             # 处理 */N 格式
             if [[ "$hour" == "*" ]]; then
                 echo "每小时整点"
-            elif [[ "$hour" =~ \*/([0-9]+) ]]; then
-                # 修复：移除正则开头的 ^，并确保 BASH_REMATCH 能捕获
+            elif [[ "$hour" =~ ^\*/([0-9]+)$ || "$hour" =~ \*/([0-9]+) ]]; then
                 echo "每 ${BASH_REMATCH[1]} 小时 (整点)"
             elif [[ "$hour" =~ ^[0-9]+$ ]]; then
                 echo "每天 ${hour}:00:00"
@@ -917,8 +936,7 @@ show_watchtower_details(){
 }
 
 view_and_edit_config(){
-    # 移除单独的 Cron 表达式选项，整合到运行模式中
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval")
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "通知风格|WATCHTOWER_TEMPLATE_STYLE|string")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -956,15 +974,17 @@ view_and_edit_config(){
             string|string_list) 
                 if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then
                     configure_exclusion_list
+                elif [ "$var_name" = "WATCHTOWER_TEMPLATE_STYLE" ]; then
+                    echo "1. standard (默认), 2. minimal, 3. terminal"
+                    local style_pick=$(_prompt_for_menu_choice "1-3")
+                    case "$style_pick" in
+                        1) new_value="standard" ;; 2) new_value="minimal" ;; 3) new_value="terminal" ;; *) new_value="standard" ;;
+                    esac
+                    declare "$var_name"="$new_value"
                 else
                     echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
                     read -r -p "请输入新值 (回车保持, 空格清空): " val
-                    if [[ "$val" =~ ^\ +$ ]]; then
-                        declare "$var_name"=""
-                        log_info "'$label' 已清空。"
-                    elif [ -n "$val" ]; then
-                        declare "$var_name"="$val"
-                    fi
+                    if [[ "$val" =~ ^\ +$ ]]; then declare "$var_name"=""; log_info "'$label' 已清空。"; elif [ -n "$val" ]; then declare "$var_name"="$val"; fi
                 fi
                 ;;
             bool) 
@@ -982,137 +1002,12 @@ view_and_edit_config(){
                 fi
                 ;;
             schedule)
-                # 直接调用统一的调度配置函数
                 _configure_schedule
                 ;;
         esac
         save_config; log_info "'$label' 已更新。"; 
         _prompt_rebuild_if_needed
         sleep 1
-    done
-}
-
-show_container_info() { 
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
-        local -a content_lines_array=()
-        content_lines_array+=("编号 名称           镜像                               状态") 
-        
-        local -a containers=()
-        local i=1
-        while IFS='|' read -r name image status; do 
-            containers+=("$name")
-            local status_colored="$status"
-            if echo "$status" | grep -qE '^Up'; then 
-                status_colored="${GREEN}运行中${NC}"
-            elif echo "$status" | grep -qE '^Exited|Created'; then 
-                status_colored="${RED}已退出${NC}"
-            else 
-                status_colored="${YELLOW}${status}${NC}"
-            fi
-            content_lines_array+=("$(printf "%2d   %-15s %-35s %s" "$i" "$name" "$image" "$status_colored")")
-            i=$((i + 1))
-        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}')
-        
-        content_lines_array+=("" "a. 全部启动 (Start All)   s. 全部停止 (Stop All)")
-        _render_menu "📋 容器看板 📋" "${content_array[@]}"
-        local choice
-        choice=$(_prompt_for_menu_choice "1-${#containers[@]}" "a,s")
-        case "$choice" in 
-            "") return ;;
-            a|A) if confirm_action "确定要启动所有已停止的容器吗?"; then log_info "正在启动..."; local stopped_containers; stopped_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -aq -f status=exited); if [ -n "$stopped_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker start $stopped_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
-            s|S) if confirm_action "警告: 确定要停止所有正在运行的容器吗?"; then log_info "正在停止..."; local running_containers; running_containers=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -q); if [ -n "$running_containers" ]; then JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop $running_containers &>/dev/null || true; fi; log_success "操作完成。"; press_enter_to_continue; else log_info "操作已取消。"; fi ;; 
-            *)
-                if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#containers[@]} ]; then log_warn "无效输入或编号超范围。"; sleep 1; continue; fi
-                local selected_container="${containers[$((choice - 1))]}"; if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-                local -a action_items_array=( "1. 查看日志 (Logs)" "2. 重启 (Restart)" "3. 停止 (Stop)" "4. 删除 (Remove)" "5. 查看详情 (Inspect)" "6. 进入容器 (Exec)" )
-                _render_menu "操作容器: ${selected_container}" "${action_items_array[@]}"
-                local action
-                action=$(_prompt_for_menu_choice "1-6")
-                case "$action" in 
-                    1) echo -e "${YELLOW}日志 (Ctrl+C 停止)...${NC}"; trap '' INT; JB_SUDO_LOG_QUIET="true" run_with_sudo docker logs -f --tail 100 "$selected_container" || true; trap 'echo -e "\n操作被中断。"; exit 10' INT; press_enter_to_continue ;;
-                    2) echo "重启中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker restart "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
-                    3) echo "停止中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker stop "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1 ;; 
-                    4) if confirm_action "警告: 这将永久删除 '${selected_container}'！"; then echo "删除中..."; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f "$selected_container"; then echo -e "${GREEN}✅ 成功。${NC}"; else echo -e "${RED}❌ 失败。${NC}"; fi; sleep 1; else echo "已取消。"; fi ;; 
-                    5) _print_header "容器详情: ${selected_container}"; (JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container" | jq '.' 2>/dev/null || JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect "$selected_container") | less -R ;; 
-                    6) if [ "$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.State.Status}}' "$selected_container")" != "running" ]; then log_warn "容器未在运行，无法进入。"; else log_info "尝试进入容器... (输入 'exit' 退出)"; JB_SUDO_LOG_QUIET="true" run_with_sudo docker exec -it "$selected_container" /bin/sh -c "[ -x /bin/bash ] && /bin/bash || /bin/sh" || true; fi; press_enter_to_continue ;; 
-                    *) ;; 
-                esac
-            ;;
-        esac
-    done
-}
-
-main_menu(){
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config
-        local STATUS_RAW="未运行"; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then STATUS_RAW="已启动"; fi
-        local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
-        local interval=""; local raw_logs=""; local schedule_env=""
-        if [ "$STATUS_RAW" = "已启动" ]; then 
-            interval=$(get_watchtower_inspect_summary || true)
-            raw_logs=$(get_watchtower_all_raw_logs || true)
-            schedule_env=$(_extract_schedule_from_env)
-        fi
-        local COUNTDOWN=$(_get_watchtower_next_run_time "${interval}" "${raw_logs}" "${schedule_env}")
-        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
-        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0"); local STOPPED=$((TOTAL - RUNNING))
-        
-        local notify_mode="${CYAN}关闭${NC}"
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-            notify_mode="${GREEN}Telegram${NC}"
-        fi
-        
-        # --- 状态指示：检查配置是否变更 ---
-        local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
-        local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
-        local warning_msg=""
-        if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
-            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
-            # 只有当配置修改时间明显晚于容器创建时间（5秒以上）才提示
-            if [ "$config_mtime" -gt "$((container_ts + 5))" ]; then
-                warning_msg=" ${YELLOW}⚠️ 配置未生效 (需重建)${NC}"
-                STATUS_COLOR="${YELLOW}待重启${NC}"
-            fi
-        fi
-
-        local header_text="Watchtower 自动更新管理器"
-        
-        local -a content_array=(
-            "🕝 服务运行状态: ${STATUS_COLOR}${warning_msg}" 
-            "🔔 消息通知渠道: ${notify_mode}"
-            "⏳ 下一次扫描: ${COUNTDOWN}" 
-            "📦 受控容器统计: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
-        )
-        
-        content_array+=("" "主菜单：" 
-            "1. 部署/重新配置服务 (核心设置)" 
-            "2. 通知参数设置 (Token/ID/别名)" 
-            "3. 服务管理与卸载" 
-            "4. 高级参数编辑器" 
-            "5. 实时日志与容器看板"
-        )
-        _render_menu "$header_text" "${content_array[@]}"
-        local choice
-        choice=$(_prompt_for_menu_choice "1-5")
-        case "$choice" in
-            # 修正：捕获返回码，避免因 set -e 导致非0返回码直接退出脚本
-            1) 
-                set +e
-                configure_watchtower
-                local rc=$?
-                set -e
-                if [ "$rc" -ne 10 ]; then 
-                    press_enter_to_continue
-                fi 
-                ;;
-            2) notification_menu ;;
-            3) manage_tasks ;;
-            4) view_and_edit_config ;;
-            5) show_watchtower_details ;;
-            "") return 0 ;;
-            *) log_warn "无效选项。"; sleep 1 ;;
-        esac
     done
 }
 
