@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.58-标题ASCII化与中文适配版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.59-修复函数丢失严重错误版)
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.58"
+SCRIPT_VERSION="v6.4.59"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -222,7 +222,7 @@ _prompt_for_interval() {
     done
 }
 
-# --- 核心：生成环境文件 (ASCII Title版) ---
+# --- 核心：生成环境文件 ---
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
@@ -236,8 +236,7 @@ _generate_env_file() {
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
         
-        # 关键修正：使用纯 ASCII 标题，避免容器内字符集不支持导致的乱码或回退
-        # 这样能保证第一行显示 'Watchtower-Report' 而不是冗长的默认句
+        # 使用纯 ASCII 标题，防止容器环境不支持中文导致的回退
         echo "WATCHTOWER_NOTIFICATION_TITLE=Watchtower-Report" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
 
@@ -260,7 +259,6 @@ _generate_env_file() {
                 tpl+="</pre>"
                 ;;
             "minimal")
-                # 极简模式：标题就是 'Watchtower-Report'，下面直接跟状态
                 tpl+="${br}"
                 tpl+="{{ if .Entries -}}"
                 tpl+="📦 <b>Updates:</b>${br}"
@@ -274,7 +272,7 @@ _generate_env_file() {
                 tpl+="{{- end -}}"
                 ;;
             *)
-                # Standard: 手动在模板里加回中文标题
+                # Standard
                 tpl+="${br}"
                 tpl+="🔔 <b>Watchtower 自动更新</b>${br}"
                 tpl+="🏷 节点: <code>${alias_name}</code>${br}"
@@ -936,6 +934,7 @@ show_watchtower_details(){
 }
 
 view_and_edit_config(){
+    # 移除单独的 Cron 表达式选项，整合到运行模式中
     local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "通知风格|WATCHTOWER_TEMPLATE_STYLE|string")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
@@ -1008,6 +1007,79 @@ view_and_edit_config(){
         save_config; log_info "'$label' 已更新。"; 
         _prompt_rebuild_if_needed
         sleep 1
+    done
+}
+
+main_menu(){
+    while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config
+        local STATUS_RAW="未运行"; if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then STATUS_RAW="已启动"; fi
+        local STATUS_COLOR; if [ "$STATUS_RAW" = "已启动" ]; then STATUS_COLOR="${GREEN}已启动${NC}"; else STATUS_COLOR="${RED}未运行${NC}"; fi
+        local interval=""; local raw_logs=""; local schedule_env=""
+        if [ "$STATUS_RAW" = "已启动" ]; then 
+            interval=$(get_watchtower_inspect_summary || true)
+            raw_logs=$(get_watchtower_all_raw_logs || true)
+            schedule_env=$(_extract_schedule_from_env)
+        fi
+        local COUNTDOWN=$(_get_watchtower_next_run_time "${interval}" "${raw_logs}" "${schedule_env}")
+        local TOTAL; TOTAL=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.ID}}' 2>/dev/null | wc -l || echo "0")
+        local RUNNING; RUNNING=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.ID}}' 2>/dev/null | wc -l || echo "0"); local STOPPED=$((TOTAL - RUNNING))
+        
+        local notify_mode="${CYAN}关闭${NC}"
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            notify_mode="${GREEN}Telegram${NC}"
+        fi
+        
+        # --- 状态指示：检查配置是否变更 ---
+        local config_mtime; config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
+        local container_created; container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
+        local warning_msg=""
+        if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
+            local container_ts; container_ts=$(date -d "$container_created" +%s 2>/dev/null || echo 0)
+            # 只有当配置修改时间明显晚于容器创建时间（5秒以上）才提示
+            if [ "$config_mtime" -gt "$((container_ts + 5))" ]; then
+                warning_msg=" ${YELLOW}⚠️ 配置未生效 (需重建)${NC}"
+                STATUS_COLOR="${YELLOW}待重启${NC}"
+            fi
+        fi
+
+        local header_text="Watchtower 自动更新管理器"
+        
+        local -a content_array=(
+            "🕝 服务运行状态: ${STATUS_COLOR}${warning_msg}" 
+            "🔔 消息通知渠道: ${notify_mode}"
+            "⏳ 下一次扫描: ${COUNTDOWN}" 
+            "📦 受控容器统计: 总计 $TOTAL (${GREEN}运行中 ${RUNNING}${NC}, ${RED}已停止 ${STOPPED}${NC})"
+        )
+        
+        content_array+=("" "主菜单：" 
+            "1. 部署/重新配置服务 (核心设置)" 
+            "2. 通知参数设置 (Token/ID/别名)" 
+            "3. 服务管理与卸载" 
+            "4. 高级参数编辑器" 
+            "5. 实时日志与容器看板"
+        )
+        _render_menu "$header_text" "${content_array[@]}"
+        local choice
+        choice=$(_prompt_for_menu_choice "1-5")
+        case "$choice" in
+            # 修正：捕获返回码，避免因 set -e 导致非0返回码直接退出脚本
+            1) 
+                set +e
+                configure_watchtower
+                local rc=$?
+                set -e
+                if [ "$rc" -ne 10 ]; then 
+                    press_enter_to_continue
+                fi 
+                ;;
+            2) notification_menu ;;
+            3) manage_tasks ;;
+            4) view_and_edit_config ;;
+            5) show_watchtower_details ;;
+            "") return 0 ;;
+            *) log_warn "无效选项。"; sleep 1 ;;
+        esac
     done
 }
 
