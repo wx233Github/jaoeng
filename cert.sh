@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.7.0-逻辑修正版)
-# - 修复: Standalone 续期时忽略因服务停止导致的 Reload 报错。
-# - 优化: 泛域名申请默认改为否 (No)，降低失败率。
-# - UI: 移除显式的"0"选项，优化菜单文案。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.8.0-代码结构优化)
+# - 优化: 提取 Web 服务检测与证书路径查找为公共函数。
+# - 维护: 保持 v3.7.0 所有业务逻辑不变，仅精简代码实现。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.7.0"
+SCRIPT_VERSION="v3.8.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -40,6 +39,34 @@ fi
 
 # --- 全局变量 ---
 ACME_BIN="$HOME/.acme.sh/acme.sh"
+
+# =============================================================
+# SECTION: 辅助功能函数 (私有)
+# =============================================================
+
+# 检测当前运行的 Web 服务 (返回: nginx/apache2/httpd/caddy 或空)
+_detect_web_service() {
+    if ! command -v systemctl &>/dev/null; then return; fi
+    local svc
+    for svc in nginx apache2 httpd caddy; do
+        if systemctl is-active --quiet "$svc"; then
+            echo "$svc"
+            return
+        fi
+    done
+}
+
+# 获取证书相关文件路径 (自动处理 ECC/RSA 目录回退)
+# 输出变量: CERT_FILE, CONF_FILE
+_get_cert_files() {
+    local domain="$1"
+    CERT_FILE="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
+    CONF_FILE="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
+    if [ ! -f "$CERT_FILE" ]; then
+        CERT_FILE="$HOME/.acme.sh/${domain}/fullchain.cer"
+        CONF_FILE="$HOME/.acme.sh/${domain}/${domain}.conf"
+    fi
+}
 
 # =============================================================
 # SECTION: 核心功能函数
@@ -99,13 +126,12 @@ _apply_for_certificate() {
         fi
     done
 
-    # 修改：泛域名默认改为 No
     local USE_WILDCARD=""
     echo -ne "${YELLOW}是否申请泛域名证书 (*.$DOMAIN)？ (y/[N]): ${NC}"
     read -r wild_choice
     if [[ "$wild_choice" == "y" || "$wild_choice" == "Y" ]]; then
         USE_WILDCARD="*.$DOMAIN"
-        log_info "已启用泛域名: $USE_WILDCARD (需 DNS 验证)"
+        log_info "已启用泛域名: $USE_WILDCARD"
     else
         log_info "不申请泛域名。"
     fi
@@ -113,26 +139,21 @@ _apply_for_certificate() {
     local INSTALL_PATH
     INSTALL_PATH=$(_prompt_user_input "证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
     
-    # 智能检测 Web 服务器
-    local detected_reload="systemctl reload nginx"
-    if command -v systemctl &>/dev/null; then
-        if systemctl is-active --quiet nginx; then detected_reload="systemctl reload nginx";
-        elif systemctl is-active --quiet apache2; then detected_reload="systemctl reload apache2";
-        elif systemctl is-active --quiet httpd; then detected_reload="systemctl reload httpd";
-        elif systemctl is-active --quiet caddy; then detected_reload="systemctl reload caddy"; fi
-    fi
-    local RELOAD_CMD
-    RELOAD_CMD=$(_prompt_user_input "重载命令 [默认: $detected_reload]: " "$detected_reload")
+    # 智能检测 Web 服务器用于默认重载命令
+    local active_svc
+    active_svc=$(_detect_web_service)
+    local default_reload="systemctl reload nginx"
+    [ -n "$active_svc" ] && default_reload="systemctl reload $active_svc"
 
-    # 验证方式选择
+    local RELOAD_CMD
+    RELOAD_CMD=$(_prompt_user_input "重载命令 [默认: $default_reload]: " "$default_reload")
+
     local -a method_display=("1. standalone (HTTP验证, 需80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
     _render_menu "验证方式" "${method_display[@]}"
     local VERIFY_CHOICE
     VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
     
-    local METHOD
-    local PRE_HOOK=""
-    local POST_HOOK=""
+    local METHOD PRE_HOOK POST_HOOK
 
     case "$VERIFY_CHOICE" in
         1) 
@@ -143,8 +164,7 @@ _apply_for_certificate() {
                 return 1
             fi
             if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
-                local svc_guess="nginx"
-                if [[ "$RELOAD_CMD" == *"apache"* ]]; then svc_guess="apache2"; fi
+                local svc_guess="${active_svc:-nginx}"
                 local svc
                 svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
                 PRE_HOOK="systemctl stop $svc"
@@ -172,7 +192,6 @@ _apply_for_certificate() {
         *) return ;;
     esac
 
-    # ZeroSSL 检查
     if ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
          log_info "检查账户..."
          local reg_email
@@ -209,7 +228,6 @@ _apply_for_certificate() {
     log_success "完成！路径: $INSTALL_PATH"
 }
 
-# --- 整合管理模块 ---
 _manage_certificates() {
     if ! [ -f "$ACME_BIN" ]; then log_err "acme.sh 未安装。"; return; fi
 
@@ -219,7 +237,6 @@ _manage_certificates() {
         
         local raw_list
         raw_list=$("$ACME_BIN" --list)
-
         local domains=()
         if [ -n "$raw_list" ]; then
             while read -r line; do
@@ -235,20 +252,12 @@ _manage_certificates() {
             return
         fi
 
-        # UI: 卡片式列表
         echo ""
         local i
         for ((i=0; i<${#domains[@]}; i++)); do
             local d="${domains[i]}"
-            
-            # 1. 查找证书文件
-            local cert_file="$HOME/.acme.sh/${d}_ecc/fullchain.cer"
-            local conf_file="$HOME/.acme.sh/${d}_ecc/${d}.conf"
-            
-            if [ ! -f "$cert_file" ]; then 
-                cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
-                conf_file="$HOME/.acme.sh/${d}/${d}.conf"
-            fi
+            local CERT_FILE CONF_FILE
+            _get_cert_files "$d" # 调用公共函数获取路径
             
             local status_text="未知"
             local days_info=""
@@ -257,13 +266,11 @@ _manage_certificates() {
             local color="$NC"
             local install_path="未知"
 
-            # 2. 解析证书信息 (状态、日期)
-            if [ -f "$cert_file" ]; then
-                local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+            if [ -f "$CERT_FILE" ]; then
+                local end_date; end_date=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
                 if [ -n "$end_date" ]; then
                     local end_ts; end_ts=$(date -d "$end_date" +%s)
-                    local now_ts; now_ts=$(date +%s)
-                    local left_days=$(( (end_ts - now_ts) / 86400 ))
+                    local left_days=$(( (end_ts - $(date +%s)) / 86400 ))
                     date_str=$(date -d "$end_date" +%F 2>/dev/null || echo "Err")
 
                     if (( left_days < 0 )); then
@@ -278,22 +285,13 @@ _manage_certificates() {
                 color="$RED"; status_text="文件丢失"; days_info="无文件"
             fi
             
-            # 3. 解析配置文件 (安装路径 & 下次续期时间)
-            if [ -f "$conf_file" ]; then
-                local raw_path
-                raw_path=$(grep "^Le_RealFullChainPath=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
-                if [ -n "$raw_path" ]; then
-                    install_path=$(dirname "$raw_path")
-                fi
-                
-                local next_renew_ts
-                next_renew_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
-                if [ -n "$next_renew_ts" ]; then
-                    next_renew_str=$(date -d "@$next_renew_ts" +%F 2>/dev/null || echo "时间戳错误")
-                fi
+            if [ -f "$CONF_FILE" ]; then
+                local raw_path; raw_path=$(grep "^Le_RealFullChainPath=" "$CONF_FILE" | cut -d= -f2- | tr -d "'\"")
+                [ -n "$raw_path" ] && install_path=$(dirname "$raw_path")
+                local next_ts; next_ts=$(grep "^Le_NextRenewTime=" "$CONF_FILE" | cut -d= -f2- | tr -d "'\"")
+                [ -n "$next_ts" ] && next_renew_str=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
             fi
 
-            # 4. 打印卡片
             printf "${GREEN}[ %d ] %s${NC}\n" "$((i+1))" "$d"
             printf "  ├─ 路 径 : %s\n" "$install_path"
             printf "  ├─ 续 期 : %s (计划)\n" "$next_renew_str"
@@ -301,12 +299,9 @@ _manage_certificates() {
             echo -e "${CYAN}····························································${NC}"
         done
         
-        # 5. 选择操作
         local choice_idx
         choice_idx=$(_prompt_user_input "请输入序号管理 (按 Enter 返回主菜单): " "")
-        
-        if [ -z "$choice_idx" ]; then return; fi 
-        if [ "$choice_idx" == "0" ]; then return; fi
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return; fi
 
         if ! [[ "$choice_idx" =~ ^[0-9]+$ ]] || (( choice_idx < 1 || choice_idx > ${#domains[@]} )); then
             log_err "无效序号。"
@@ -317,11 +312,7 @@ _manage_certificates() {
         local SELECTED_DOMAIN="${domains[$((choice_idx-1))]}"
         
         while true; do
-            local -a action_menu=(
-                "1. 查看详情 (Details)"
-                "2. 强制续期 (Force Renew)"
-                "3. 删除证书 (Delete)"
-            )
+            local -a action_menu=("1. 查看详情 (Details)" "2. 强制续期 (Force Renew)" "3. 删除证书 (Delete)")
             _render_menu "管理: $SELECTED_DOMAIN" "${action_menu[@]}"
             
             local action
@@ -329,13 +320,13 @@ _manage_certificates() {
             
             case "$action" in
                 1)
-                    local cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}_ecc/fullchain.cer"
-                    [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}/fullchain.cer"
-                    if [ -f "$cert_file" ]; then
+                    local CERT_FILE CONF_FILE
+                    _get_cert_files "$SELECTED_DOMAIN"
+                    if [ -f "$CERT_FILE" ]; then
                         echo -e "${CYAN}--- 证书详情 ---${NC}"
-                        openssl x509 -in "$cert_file" -noout -text | grep -E "Issuer:|Not After|Subject:|DNS:"
+                        openssl x509 -in "$CERT_FILE" -noout -text | grep -E "Issuer:|Not After|Subject:|DNS:"
                         echo -e "${CYAN}----------------${NC}"
-                        log_info "文件路径: $cert_file"
+                        log_info "文件路径: $CERT_FILE"
                     else
                         log_err "找不到证书文件。"
                     fi
@@ -343,19 +334,12 @@ _manage_certificates() {
                     ;;
                 2)
                     log_info "正在准备续期 $SELECTED_DOMAIN ..."
-                    
                     local port_conflict="false"
                     local temp_stop_svc=""
                     
-                    # 检查 80 端口占用
                     if run_with_sudo ss -tuln | grep -q ":80\s"; then
-                        log_warn "检测到 80 端口已被占用 (Standalone 模式可能会失败)。"
-                        
-                        if systemctl is-active --quiet nginx; then temp_stop_svc="nginx";
-                        elif systemctl is-active --quiet apache2; then temp_stop_svc="apache2";
-                        elif systemctl is-active --quiet httpd; then temp_stop_svc="httpd";
-                        elif systemctl is-active --quiet caddy; then temp_stop_svc="caddy";
-                        fi
+                        log_warn "检测到 80 端口占用 (可能影响 Standalone 模式)。"
+                        temp_stop_svc=$(_detect_web_service) # 复用检测函数
                         
                         if [ -n "$temp_stop_svc" ]; then
                             echo -e "${YELLOW}发现服务: $temp_stop_svc 正在运行。${NC}"
@@ -367,27 +351,18 @@ _manage_certificates() {
                         fi
                     fi
                     
-                    if [ "$port_conflict" == "true" ]; then
-                        log_info "正在停止 $temp_stop_svc ..."
-                        run_with_sudo systemctl stop "$temp_stop_svc"
-                    fi
+                    [ "$port_conflict" == "true" ] && { log_info "正在停止 $temp_stop_svc ..."; run_with_sudo systemctl stop "$temp_stop_svc"; }
                     
-                    log_info "执行 acme.sh 续期命令..."
-                    
-                    # 捕获续期结果
+                    log_info "执行续期命令..."
                     if "$ACME_BIN" --renew -d "$SELECTED_DOMAIN" --force --ecc; then
                         log_success "续期指令执行成功！"
                     else
                         local err_code=$?
-                        # 检查日志最后几行，看是否有 Reload error
-                        local log_tail=""
-                        [ -f "$HOME/.acme.sh/acme.sh.log" ] && log_tail=$(tail -n 10 "$HOME/.acme.sh/acme.sh.log")
-                        
+                        local log_tail=""; [ -f "$HOME/.acme.sh/acme.sh.log" ] && log_tail=$(tail -n 10 "$HOME/.acme.sh/acme.sh.log")
                         if [[ "$port_conflict" == "true" && "$log_tail" == *"Reload error"* ]]; then
-                            # 特殊情况处理：因为我们主动停了服务，所以 reload 必然失败，但这不代表 renew 失败
                             log_success "证书已生成 (Reload 跳过，因服务已停止)。"
                         else
-                            log_err "续期失败 (错误码: $err_code)。"
+                            log_err "续期失败 (Code: $err_code)。"
                             echo "$log_tail"
                         fi
                     fi
@@ -409,27 +384,17 @@ _manage_certificates() {
                         break 2 
                     fi
                     ;;
-                ""|"0")
-                    break 
-                    ;;
-                *) 
-                    log_warn "无效选项" 
-                    ;;
+                ""|"0") break ;;
+                *) log_warn "无效选项" ;;
             esac
         done
     done
 }
 
-# --- 整合系统维护模块 ---
 _system_maintenance() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local -a sys_menu=(
-            "1. 诊断自动续期 (Check Auto-Renew)"
-            "2. 升级 acme.sh (Upgrade Core)"
-            "3. 开启自动更新 (Enable Auto-Upgrade)"
-            "4. 关闭自动更新 (Disable Auto-Upgrade)"
-        )
+        local -a sys_menu=("1. 诊断自动续期" "2. 升级 acme.sh" "3. 开启自动更新" "4. 关闭自动更新")
         _render_menu "系统维护" "${sys_menu[@]}"
         local sys_choice
         sys_choice=$(_prompt_for_menu_choice "1-4")
@@ -451,24 +416,11 @@ _system_maintenance() {
                 fi
                 press_enter_to_continue
                 ;;
-            2)
-                "$ACME_BIN" --upgrade
-                press_enter_to_continue
-                ;;
-            3)
-                "$ACME_BIN" --upgrade --auto-upgrade
-                press_enter_to_continue
-                ;;
-            4)
-                "$ACME_BIN" --upgrade --auto-upgrade 0
-                press_enter_to_continue
-                ;;
-            ""|"0")
-                return
-                ;;
-            *)
-                log_warn "无效选项"
-                ;;
+            2) "$ACME_BIN" --upgrade; press_enter_to_continue ;;
+            3) "$ACME_BIN" --upgrade --auto-upgrade; press_enter_to_continue ;;
+            4) "$ACME_BIN" --upgrade --auto-upgrade 0; press_enter_to_continue ;;
+            ""|"0") return ;;
+            *) log_warn "无效选项" ;;
         esac
     done
 }
@@ -476,27 +428,16 @@ _system_maintenance() {
 main_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local -a menu_items=(
-            "1. 申请证书 (New Certificate)"
-            "2. 证书管理 (Manage Certificates)"
-            "3. 系统设置 (Settings)"
-        )
+        local -a menu_items=("1. 申请证书 (New Certificate)" "2. 证书管理 (Manage Certificates)" "3. 系统设置 (Settings)")
         _render_menu "🔐 SSL 证书管理 (acme.sh)" "${menu_items[@]}"
         
         local choice
         choice=$(_prompt_for_menu_choice "1-3")
 
         case "$choice" in
-            1) 
-                _apply_for_certificate
-                press_enter_to_continue
-                ;;
-            2) 
-                _manage_certificates 
-                ;;
-            3) 
-                _system_maintenance 
-                ;;
+            1) _apply_for_certificate; press_enter_to_continue ;;
+            2) _manage_certificates ;;
+            3) _system_maintenance ;;
             "") return 10 ;; 
             *) log_warn "无效选项。" ; press_enter_to_continue ;;
         esac
