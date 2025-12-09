@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v4.0.0-核心重构版)
-# - 重构: 提取证书查找、日期解析、服务检测为公共函数。
-# - 优化: 大幅减少冗余代码，提升脚本可维护性。
-# - 功能: 保持 v3.7.0 所有特性 (CA显示/续期时间/端口修复)。
+# 🚀 SSL 证书管理助手 (acme.sh) (v4.1.0-稳定回归版)
+# - 修复: 还原证书申请逻辑至 v3.7.0，解决执行出错问题。
+# - UI: 证书列表移除 CA 机构显示。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v4.0.0"
+SCRIPT_VERSION="v4.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -44,7 +43,6 @@ ACME_BIN="$HOME/.acme.sh/acme.sh"
 # =============================================================
 
 # 1. 查找证书文件路径 (优先ECC，回退RSA)
-# 用法: _get_cert_path "domain.com"
 _get_cert_path() {
     local d=$1
     local ecc="$HOME/.acme.sh/${d}_ecc/fullchain.cer"
@@ -58,7 +56,7 @@ _get_conf_path() {
     if [[ -f "$ecc" ]]; then echo "$ecc"; else echo "$HOME/.acme.sh/${d}/${d}.conf"; fi
 }
 
-# 3. 智能检测 Web 服务
+# 3. 智能检测 Web 服务 (用于续期和申请时的建议)
 _detect_web_service() {
     if command -v systemctl &>/dev/null; then
         if systemctl is-active --quiet nginx; then echo "nginx"; return; fi
@@ -69,19 +67,18 @@ _detect_web_service() {
     echo ""
 }
 
-# 4. 解析证书详情 (输出为全局变量，减少重复调用 openssl)
+# 4. 解析证书详情 (输出为全局变量)
 _parse_cert_info() {
     local cert_path="$1"
     # 重置全局变量
-    CERT_STATUS="未知"; CERT_DAYS="未知"; CERT_DATE="未知"; CERT_CA="未知"; CERT_COLOR="$NC"
+    CERT_STATUS="未知"; CERT_DAYS="未知"; CERT_DATE="未知"; CERT_COLOR="$NC"
 
     if [[ ! -f "$cert_path" ]]; then
         CERT_STATUS="文件丢失"; CERT_COLOR="$RED"; return
     fi
 
     local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_path" 2>/dev/null | cut -d= -f2)
-    local issuer; issuer=$(openssl x509 -issuer -noout -in "$cert_path" 2>/dev/null)
-
+    
     if [[ -n "$end_date" ]]; then
         local end_ts; end_ts=$(date -d "$end_date" +%s)
         local now_ts; now_ts=$(date +%s)
@@ -96,14 +93,9 @@ _parse_cert_info() {
             CERT_COLOR="$GREEN"; CERT_STATUS="有效"; CERT_DAYS="剩余 $left_days 天"
         fi
     fi
-
-    if [[ "$issuer" == *"ZeroSSL"* ]]; then CERT_CA="ZeroSSL"
-    elif [[ "$issuer" == *"Let's Encrypt"* ]]; then CERT_CA="Let's Encrypt"
-    elif [[ "$issuer" == *"Google"* ]]; then CERT_CA="Google Public CA"
-    else CERT_CA="Other CA"; fi
 }
 
-# 5. 处理 Standalone 端口冲突
+# 5. 处理 Standalone 端口冲突 (仅用于管理模块的续期逻辑)
 _handle_standalone_conflict() {
     local svc_name=$(_detect_web_service)
     local needs_restart="false"
@@ -122,106 +114,169 @@ _handle_standalone_conflict() {
             log_warn "端口 80 被未知进程占用，Standalone 模式可能失败。"
         fi
     fi
-    # 返回 needs_restart 状态 (通过全局变量或 echo)
     echo "$needs_restart:$svc_name"
 }
 
 # =============================================================
-# SECTION: 业务功能函数
+# SECTION: 核心业务函数
 # =============================================================
 
 _check_dependencies() {
     if ! command -v socat &>/dev/null; then
-        log_warn "未检测到 socat。"
-        confirm_action "自动安装 socat?" && {
-            if command -v apt-get &>/dev/null; then run_with_sudo apt-get update && run_with_sudo apt-get install -y socat
-            elif command -v yum &>/dev/null; then run_with_sudo yum install -y socat
-            else log_err "请手动安装 socat。"; return 1; fi
-        }
+        log_warn "未检测到 socat (HTTP验证必需)。"
+        if confirm_action "是否自动安装 socat?"; then
+            if command -v apt-get &>/dev/null; then
+                run_with_sudo apt-get update && run_with_sudo apt-get install -y socat
+            elif command -v yum &>/dev/null; then
+                run_with_sudo yum install -y socat
+            else
+                log_err "无法自动安装，请手动安装 socat。"
+                return 1
+            fi
+            log_success "socat 安装成功。"
+        fi
     fi
+
     if [[ ! -f "$ACME_BIN" ]]; then
-        log_warn "未安装 acme.sh。"
-        local m=$(_prompt_user_input "注册邮箱: " "")
+        log_warn "首次运行，正在安装 acme.sh ..."
+        local email
+        email=$(_prompt_user_input "请输入注册邮箱 (推荐): " "")
         local cmd="curl https://get.acme.sh | sh"
-        [[ -n "$m" ]] && cmd+=" -s email=$m"
-        eval "$cmd" || { log_err "安装失败"; return 1; }
+        if [ -n "$email" ]; then cmd+=" -s email=$email"; fi
+        if ! eval "$cmd"; then log_err "安装失败！"; return 1; fi
+        log_success "acme.sh 安装成功。"
     fi
     export PATH="$HOME/.acme.sh:$PATH"
 }
 
+# --- 还原后的申请逻辑 (v3.7.0版本) ---
 _apply_for_certificate() {
     log_info "--- 申请新证书 ---"
-    local domain; domain=$(_prompt_user_input "请输入域名: ")
-    [[ -z "$domain" ]] && return
+    
+    local DOMAIN SERVER_IP DOMAIN_IP
+    while true; do
+        DOMAIN=$(_prompt_user_input "请输入你的主域名: ")
+        if [ -z "$DOMAIN" ]; then log_warn "域名不能为空。"; continue; fi
 
-    # 解析验证
-    local s_ip; s_ip=$(curl -s https://api.ipify.org)
-    local d_ip; d_ip=$(dig +short "$domain" A | head -n1)
-    if [[ "$d_ip" != "$s_ip" ]]; then
-        log_warn "IP 不匹配 (本机:$s_ip 域名:$d_ip)"
-        confirm_action "强制继续?" || return
+        log_info "正在验证域名解析..."
+        SERVER_IP=$(curl -s https://api.ipify.org)
+        DOMAIN_IP=$(dig +short "$DOMAIN" A | head -n1)
+
+        if [ -z "$DOMAIN_IP" ]; then
+            log_err "无法获取域名解析IP。"
+            if ! confirm_action "是否忽略并继续？"; then return; fi
+            break
+        elif [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
+            log_warn "解析IP ($DOMAIN_IP) 与本机IP ($SERVER_IP) 不符！"
+            if ! confirm_action "强制继续？"; then continue; fi
+            break
+        else
+            log_success "域名解析正确。"
+            break
+        fi
+    done
+
+    local USE_WILDCARD=""
+    if confirm_action "是否申请泛域名证书 (*.$DOMAIN)？"; then
+        USE_WILDCARD="*.$DOMAIN"
     fi
 
-    local wc=""; confirm_action "申请泛域名 (*.$domain)?" && wc="*.$domain"
-    local path; path=$(_prompt_user_input "保存路径 [/etc/ssl/$domain]: " "/etc/ssl/$domain")
+    local INSTALL_PATH
+    INSTALL_PATH=$(_prompt_user_input "证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
     
-    local svc=$(_detect_web_service)
-    local reload_cmd="systemctl reload ${svc:-nginx}"
-    reload_cmd=$(_prompt_user_input "重载命令 [$reload_cmd]: " "$reload_cmd")
+    # 智能检测 Web 服务器
+    local detected_reload="systemctl reload nginx"
+    local detected_svc=$(_detect_web_service)
+    if [ -n "$detected_svc" ]; then
+        detected_reload="systemctl reload $detected_svc"
+    fi
 
-    local method_idx=$(_prompt_for_menu_choice "1-3" "1.Standalone,2.DNS_CF,3.DNS_Ali")
-    local method="standalone"; local pre=""; local post=""
+    local RELOAD_CMD
+    RELOAD_CMD=$(_prompt_user_input "重载命令 [默认: $detected_reload]: " "$detected_reload")
+
+    # 验证方式选择
+    local -a method_display=("1. standalone (HTTP验证, 需80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+    _render_menu "验证方式" "${method_display[@]}"
+    local VERIFY_CHOICE
+    VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
     
-    case "$method_idx" in
-        1)
-            method="standalone"
+    local METHOD
+    local PRE_HOOK=""
+    local POST_HOOK=""
+
+    case "$VERIFY_CHOICE" in
+        1) 
+            METHOD="standalone"
             if run_with_sudo ss -tuln | grep -q ":80\s"; then
-                log_err "80 端口被占用。"
+                log_err "80端口被占用。"
+                run_with_sudo ss -tuln | grep ":80\s"
                 return 1
             fi
-            if confirm_action "配置自动停/启钩子?"; then
-                local s=${svc:-nginx}
-                s=$(_prompt_user_input "服务名 [$s]: " "$s")
-                pre="systemctl stop $s"; post="systemctl start $s"
+            if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
+                local svc_guess="nginx"
+                if [[ "$RELOAD_CMD" == *"apache"* ]]; then svc_guess="apache2"; fi
+                local svc
+                svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
+                PRE_HOOK="systemctl stop $svc"
+                POST_HOOK="systemctl start $svc"
             fi
             ;;
-        2)
-            method="dns_cf"
-            local t=$(_prompt_user_input "CF_Token: " ""); local a=$(_prompt_user_input "CF_Account_ID: " "")
-            [[ -z "$t" || -z "$a" ]] && return 1
-            export CF_Token="$t" CF_Account_ID="$a"
+        2) 
+            METHOD="dns_cf"
+            local cf_token cf_acc
+            cf_token=$(_prompt_user_input "输入 CF_Token: " "")
+            cf_acc=$(_prompt_user_input "输入 CF_Account_ID: " "")
+            [ -z "$cf_token" ] || [ -z "$cf_acc" ] && { log_err "信息不完整。"; return 1; }
+            export CF_Token="$cf_token"
+            export CF_Account_ID="$cf_acc"
             ;;
-        3)
-            method="dns_ali"
-            local k=$(_prompt_user_input "Ali_Key: " ""); local s=$(_prompt_user_input "Ali_Secret: " "")
-            [[ -z "$k" || -z "$s" ]] && return 1
-            export Ali_Key="$k" Ali_Secret="$s"
+        3) 
+            METHOD="dns_ali"
+            local ali_key ali_sec
+            ali_key=$(_prompt_user_input "输入 Ali_Key: " "")
+            ali_sec=$(_prompt_user_input "输入 Ali_Secret: " "")
+            [ -z "$ali_key" ] || [ -z "$ali_sec" ] && { log_err "信息不完整。"; return 1; }
+            export Ali_Key="$ali_key"
+            export Ali_Secret="$ali_sec"
             ;;
+        *) return ;;
     esac
 
     # ZeroSSL 检查
     if ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-        local m=$(_prompt_user_input "ZeroSSL 注册邮箱 (可选): " "")
-        [[ -n "$m" ]] && "$ACME_BIN" --register-account -m "$m" --server zerossl
+         log_info "检查账户..."
+         local reg_email
+         reg_email=$(_prompt_user_input "若需使用 ZeroSSL，请输入邮箱注册 (回车跳过): " "")
+         if [ -n "$reg_email" ]; then
+             "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_warn "ZeroSSL 注册跳过。"
+         fi
     fi
 
-    local issue_cmd=("$ACME_BIN" --issue -d "$domain" --"$method")
-    [[ -n "$wc" ]] && issue_cmd+=(-d "$wc")
-    [[ -n "$pre" ]] && issue_cmd+=(--pre-hook "$pre")
-    [[ -n "$post" ]] && issue_cmd+=(--post-hook "$post")
-
-    if ! "${issue_cmd[@]}"; then
-        log_err "申请失败。查看日志: tail -n 20 ~/.acme.sh/acme.sh.log"
+    log_info "🚀 正在申请证书..."
+    local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN" --"$METHOD")
+    if [ -n "$USE_WILDCARD" ]; then ISSUE_CMD+=(-d "$USE_WILDCARD"); fi
+    if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
+    if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
+    
+    if ! "${ISSUE_CMD[@]}"; then
+        log_err "证书申请失败！日志如下:"
+        [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 20 "$HOME/.acme.sh/acme.sh.log"
         return 1
     fi
+    
+    log_success "证书生成成功，正在安装..."
+    run_with_sudo mkdir -p "$INSTALL_PATH"
 
-    run_with_sudo mkdir -p "$path"
-    "$ACME_BIN" --install-cert -d "$domain" --ecc \
-        --key-file "$path/$domain.key" --fullchain-file "$path/$domain.crt" \
-        --reloadcmd "$reload_cmd" || { log_err "安装失败"; return 1; }
-        
-    run_with_sudo bash -c "date +'%Y-%m-%d %H:%M:%S' > '$path/.apply_time'"
-    log_success "成功安装至: $path"
+    if ! "$ACME_BIN" --install-cert -d "$DOMAIN" --ecc \
+        --key-file       "$INSTALL_PATH/$DOMAIN.key" \
+        --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
+        --reloadcmd      "$RELOAD_CMD"; then
+        log_err "安装失败。"
+        return 1
+    fi
+    
+    run_with_sudo bash -c "date +'%Y-%m-%d %H:%M:%S' > '$INSTALL_PATH/.apply_time'"
+    log_success "完成！路径: $INSTALL_PATH"
 }
 
 _manage_certificates() {
@@ -259,9 +314,9 @@ _manage_certificates() {
                 [[ -n "$nt" ]] && next_renew=$(date -d "@$nt" +%F 2>/dev/null)
             fi
 
+            # UI: 移除机构显示
             printf "${GREEN}[ %d ] %s${NC}\n" "$((i+1))" "$d"
             printf "  ├─ 续 期 : %s (计划)\n" "$next_renew"
-            printf "  ├─ 机 构 : %s\n" "$CERT_CA"
             printf "  ├─ 路 径 : %s\n" "$install_path"
             printf "  └─ 证 书 : ${CERT_COLOR}%s (%s , %s 到 期)${NC}\n" "$CERT_STATUS" "$CERT_DAYS" "$CERT_DATE"
             echo -e "${CYAN}····························································${NC}"
