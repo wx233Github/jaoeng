@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.1.0-列表详情增强版)
-# - 修复: 证书管理菜单支持直接按 Enter 返回上一级。
-# - 增强: 证书列表直接显示剩余天数、CA 和状态颜色。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.3.0-列表显示日期)
+# - 新增: 证书列表增加"到期日期"列 (YYYY-MM-DD)。
+# - 优化: 调整表格布局以适配更多信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.1.0"
+SCRIPT_VERSION="v3.3.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -18,24 +18,23 @@ if [ -f "$UTILS_PATH" ]; then
     # shellcheck source=/dev/null
     source "$UTILS_PATH"
 else
-    # 在没有 utils.sh 的情况下提供基础的日志功能
-    log_err() { echo "[错误] $*" >&2; }
-    log_info() { echo "[信息] $*"; }
-    log_warn() { echo "[警告] $*"; }
-    log_success() { echo "[成功] $*"; }
-    _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
-    press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
-    confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
-    _prompt_user_input() { read -r -p "$1" val; echo "${val:-$2}"; }
-    _prompt_for_menu_choice() { read -r -p "请选择 [$1]: " val; echo "$val"; }
-    GREEN="\033[0;32m"; NC="\033[0m"; RED="\033[0;31m"; YELLOW="\033[0;33m"; CYAN="\033[0;36m";
-    log_err "警告: 通用工具库 $UTILS_PATH 未找到，使用内置回退模式。"
+    echo "警告: 未找到 $UTILS_PATH，样式可能异常。"
+    log_err() { echo "[Error] $*" >&2; }
+    log_info() { echo "[Info] $*"; }
+    log_warn() { echo "[Warn] $*"; }
+    log_success() { echo "[Success] $*"; }
+    generate_line() { local len=${1:-40}; printf "%${len}s" "" | sed "s/ /-/g"; }
+    press_enter_to_continue() { read -r -p "Press Enter..."; }
+    confirm_action() { read -r -p "$1 (y/n): " c; [[ "$c" == "y" ]] && return 0 || return 1; }
+    _prompt_user_input() { read -r -p "$1" v; echo "${v:-$2}"; }
+    _prompt_for_menu_choice() { read -r -p "Choice: " v; echo "$v"; }
+    _render_menu() { echo "--- $1 ---"; shift; for l in "$@"; do echo "$l"; done; }
+    RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD=""; ORANGE="";
 fi
 
 # --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
     run_with_sudo() { "$@"; }
-    log_warn "run_with_sudo 未定义，默认直接执行命令。"
 fi
 
 # --- 全局变量 ---
@@ -107,7 +106,7 @@ _apply_for_certificate() {
     local INSTALL_PATH
     INSTALL_PATH=$(_prompt_user_input "证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
     
-    # --- 智能检测 Web 服务器 ---
+    # 智能检测 Web 服务器
     local detected_reload="systemctl reload nginx"
     if command -v systemctl &>/dev/null; then
         if systemctl is-active --quiet nginx; then detected_reload="systemctl reload nginx";
@@ -119,10 +118,11 @@ _apply_for_certificate() {
     RELOAD_CMD=$(_prompt_user_input "重载命令 [默认: $detected_reload]: " "$detected_reload")
 
     # 验证方式选择
-    local method_options=("1. standalone (HTTP验证, 需80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-    _render_menu "验证方式" "${method_options[@]}"
+    local -a method_display=("1. standalone (HTTP验证, 需80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+    _render_menu "验证方式" "${method_display[@]}"
     local VERIFY_CHOICE
     VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
+    
     local METHOD
     local PRE_HOOK=""
     local POST_HOOK=""
@@ -228,10 +228,12 @@ _manage_certificates() {
             return
         fi
 
-        # 1. 详细列表展示
-        echo "================================ 证书列表 ================================"
-        printf "${CYAN}%-3s | %-20s | %-12s | %-15s${NC}\n" "No." "域名" "剩余天数" "颁发机构(CA)"
-        echo "--------------------------------------------------------------------------"
+        # UI: 绘制证书列表表格 (宽度 76)
+        echo ""
+        echo -e "${GREEN}╭$(generate_line 76 "─")╮${NC}"
+        # 表头
+        printf "${GREEN}│${NC} ${CYAN}%-3s${NC} | ${CYAN}%-20s${NC} | ${CYAN}%-10s${NC} | ${CYAN}%-12s${NC} | ${CYAN}%-12s${NC} ${GREEN}│${NC}\n" "No." "域名 (Domain)" "剩余" "到期日期" "CA 机构"
+        echo -e "${GREEN}│$(generate_line 76 "─")│${NC}"
         
         local i
         for ((i=0; i<${#domains[@]}; i++)); do
@@ -242,19 +244,23 @@ _manage_certificates() {
             [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
             
             local days_str="未知"
+            local date_str="未知"
             local ca_str="未知"
             local color="$NC"
 
             if [ -f "$cert_file" ]; then
-                # 计算剩余天数
+                # 计算剩余天数和日期
                 local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
                 if [ -n "$end_date" ]; then
                     local end_ts; end_ts=$(date -d "$end_date" +%s)
                     local now_ts; now_ts=$(date +%s)
                     local left_days=$(( (end_ts - now_ts) / 86400 ))
                     
+                    # 格式化日期
+                    date_str=$(date -d "$end_date" +%F 2>/dev/null || echo "Err")
+
                     if (( left_days < 0 )); then
-                        color="$RED"; days_str="已过期 ($left_days)"
+                        color="$RED"; days_str="过期($left_days)"
                     elif (( left_days < 30 )); then
                         color="$YELLOW"; days_str="$left_days 天"
                     else
@@ -266,7 +272,7 @@ _manage_certificates() {
                 local issuer
                 issuer=$(openssl x509 -issuer -noout -in "$cert_file" 2>/dev/null)
                 if [[ "$issuer" == *"ZeroSSL"* ]]; then ca_str="ZeroSSL"
-                elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="Let's Encrypt"
+                elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="R3/L.E."
                 elif [[ "$issuer" == *"Google"* ]]; then ca_str="Google"
                 else ca_str="Other"
                 fi
@@ -275,15 +281,19 @@ _manage_certificates() {
                 days_str="文件丢失"
             fi
             
-            printf "${CYAN}%-3d${NC} | %-20s | ${color}%-12s${NC} | %-15s\n" "$((i+1))" "$d" "$days_str" "$ca_str"
+            # 截断过长的域名显示
+            local d_display="$d"
+            if [ ${#d_display} -gt 20 ]; then d_display="${d_display:0:17}..."; fi
+
+            printf "${GREEN}│${NC} ${ORANGE}%-3d${NC} | %-20s | ${color}%-10s${NC} | %-12s | %-12s ${GREEN}│${NC}\n" "$((i+1))" "$d_display" "$days_str" "$date_str" "$ca_str"
         done
-        echo "=========================================================================="
+        echo -e "${GREEN}╰$(generate_line 76 "─")╯${NC}"
         
-        # 2. 选择对象 (支持回车返回)
+        # 2. 选择对象
         local choice_idx
         choice_idx=$(_prompt_user_input "请输入序号管理 (按 Enter 返回主菜单): " "")
         
-        if [ -z "$choice_idx" ]; then return; fi # 修复点：空输入直接返回
+        if [ -z "$choice_idx" ]; then return; fi 
         if [ "$choice_idx" == "0" ]; then return; fi
 
         if ! [[ "$choice_idx" =~ ^[0-9]+$ ]] || (( choice_idx < 1 || choice_idx > ${#domains[@]} )); then
@@ -296,24 +306,25 @@ _manage_certificates() {
         
         # 3. 对选中的对象进行操作
         while true; do
-            echo ""
-            _render_menu "管理域名: ${GREEN}$SELECTED_DOMAIN${NC}" \
-                "1. 查看详细信息 (OpenSSL info)" \
-                "2. 强制续期 (Force Renew)" \
-                "3. 删除证书 (Remove)" \
+            local -a action_menu=(
+                "1. 查看详细信息 (Details)"
+                "2. 强制续期 (Force Renew)"
+                "3. 删除证书 (Remove)"
                 "0. 返回列表"
+            )
+            _render_menu "管理: $SELECTED_DOMAIN" "${action_menu[@]}"
             
             local action
-            action=$(_prompt_user_input "请选择 [1-3/0]: " "")
+            action=$(_prompt_for_menu_choice "1-3/0")
             
             case "$action" in
                 1)
                     local cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}_ecc/fullchain.cer"
                     [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}/fullchain.cer"
                     if [ -f "$cert_file" ]; then
-                        echo "--- 证书详情 ---"
+                        echo -e "${CYAN}--- 证书详情 ---${NC}"
                         openssl x509 -in "$cert_file" -noout -text | grep -E "Issuer:|Not After|Subject:|DNS:"
-                        echo "----------------"
+                        echo -e "${CYAN}----------------${NC}"
                         log_info "文件路径: $cert_file"
                     else
                         log_err "找不到证书文件。"
@@ -364,7 +375,7 @@ _system_maintenance() {
         )
         _render_menu "系统维护" "${sys_menu[@]}"
         local sys_choice
-        sys_choice=$(_prompt_user_input "请选择 [1-4/0]: " "")
+        sys_choice=$(_prompt_for_menu_choice "1-4/0")
         
         case "$sys_choice" in
             1)
@@ -425,7 +436,6 @@ main_menu() {
                 ;;
             2) 
                 _manage_certificates 
-                # 这里不需要暂停，因为 _manage_certificates 内部已经处理了交互
                 ;;
             3) 
                 _system_maintenance 
