@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.3.0-列表显示日期)
-# - 新增: 证书列表增加"到期日期"列 (YYYY-MM-DD)。
-# - 优化: 调整表格布局以适配更多信息。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.4.0-卡片式列表UI)
+# - UI: 证书列表改为卡片式布局，信息更直观。
+# - 新增: 尝试自动读取并显示证书的实际安装路径。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.3.0"
+SCRIPT_VERSION="v3.4.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -228,68 +228,69 @@ _manage_certificates() {
             return
         fi
 
-        # UI: 绘制证书列表表格 (宽度 76)
+        # UI: 卡片式列表
         echo ""
-        echo -e "${GREEN}╭$(generate_line 76 "─")╮${NC}"
-        # 表头
-        printf "${GREEN}│${NC} ${CYAN}%-3s${NC} | ${CYAN}%-20s${NC} | ${CYAN}%-10s${NC} | ${CYAN}%-12s${NC} | ${CYAN}%-12s${NC} ${GREEN}│${NC}\n" "No." "域名 (Domain)" "剩余" "到期日期" "CA 机构"
-        echo -e "${GREEN}│$(generate_line 76 "─")│${NC}"
-        
         local i
         for ((i=0; i<${#domains[@]}; i++)); do
             local d="${domains[i]}"
             
-            # 尝试查找证书文件
+            # 1. 查找证书文件
             local cert_file="$HOME/.acme.sh/${d}_ecc/fullchain.cer"
-            [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
+            local conf_file="$HOME/.acme.sh/${d}_ecc/${d}.conf"
             
-            local days_str="未知"
+            # 回退到 RSA 目录
+            if [ ! -f "$cert_file" ]; then 
+                cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
+                conf_file="$HOME/.acme.sh/${d}/${d}.conf"
+            fi
+            
+            local status_text="未知"
+            local days_info=""
             local date_str="未知"
-            local ca_str="未知"
             local color="$NC"
+            local install_path="自动安装路径未知"
 
+            # 2. 解析证书信息 (状态、日期)
             if [ -f "$cert_file" ]; then
-                # 计算剩余天数和日期
                 local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
                 if [ -n "$end_date" ]; then
                     local end_ts; end_ts=$(date -d "$end_date" +%s)
                     local now_ts; now_ts=$(date +%s)
                     local left_days=$(( (end_ts - now_ts) / 86400 ))
-                    
-                    # 格式化日期
                     date_str=$(date -d "$end_date" +%F 2>/dev/null || echo "Err")
 
                     if (( left_days < 0 )); then
-                        color="$RED"; days_str="过期($left_days)"
+                        color="$RED"; status_text="已过期"; days_info="过期 ${left_days#-} 天"
                     elif (( left_days < 30 )); then
-                        color="$YELLOW"; days_str="$left_days 天"
+                        color="$YELLOW"; status_text="即将到期"; days_info="剩余 $left_days 天"
                     else
-                        color="$GREEN"; days_str="$left_days 天"
+                        color="$GREEN"; status_text="有效"; days_info="剩余 $left_days 天"
                     fi
-                fi
-                
-                # 获取 CA 名称
-                local issuer
-                issuer=$(openssl x509 -issuer -noout -in "$cert_file" 2>/dev/null)
-                if [[ "$issuer" == *"ZeroSSL"* ]]; then ca_str="ZeroSSL"
-                elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="R3/L.E."
-                elif [[ "$issuer" == *"Google"* ]]; then ca_str="Google"
-                else ca_str="Other"
                 fi
             else
                 color="$RED"
-                days_str="文件丢失"
+                status_text="文件丢失"
+                days_info="无文件"
             fi
             
-            # 截断过长的域名显示
-            local d_display="$d"
-            if [ ${#d_display} -gt 20 ]; then d_display="${d_display:0:17}..."; fi
+            # 3. 解析安装路径 (从 .conf 文件读取 Le_RealFullChainPath)
+            if [ -f "$conf_file" ]; then
+                local raw_path
+                # 尝试提取 Le_RealFullChainPath='/etc/ssl/xxx'
+                raw_path=$(grep "^Le_RealFullChainPath=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
+                if [ -n "$raw_path" ]; then
+                    install_path=$(dirname "$raw_path")
+                fi
+            fi
 
-            printf "${GREEN}│${NC} ${ORANGE}%-3d${NC} | %-20s | ${color}%-10s${NC} | %-12s | %-12s ${GREEN}│${NC}\n" "$((i+1))" "$d_display" "$days_str" "$date_str" "$ca_str"
+            # 4. 打印卡片
+            printf "${GREEN}[ %d ] %s${NC}\n" "$((i+1))" "$d"
+            printf "  ├─ 路 径 : %s\n" "$install_path"
+            printf "  └─ 证 书 : ${color}%s (%s , %s 到 期)${NC}\n" "$status_text" "$days_info" "$date_str"
+            echo -e "${CYAN}····························································${NC}"
         done
-        echo -e "${GREEN}╰$(generate_line 76 "─")╯${NC}"
         
-        # 2. 选择对象
+        # 5. 选择操作
         local choice_idx
         choice_idx=$(_prompt_user_input "请输入序号管理 (按 Enter 返回主菜单): " "")
         
@@ -304,7 +305,6 @@ _manage_certificates() {
 
         local SELECTED_DOMAIN="${domains[$((choice_idx-1))]}"
         
-        # 3. 对选中的对象进行操作
         while true; do
             local -a action_menu=(
                 "1. 查看详细信息 (Details)"
@@ -348,11 +348,11 @@ _manage_certificates() {
                             run_with_sudo rm -rf "/etc/ssl/$SELECTED_DOMAIN"
                         fi
                         log_success "已删除。"
-                        break 2 # 返回列表刷新
+                        break 2 
                     fi
                     ;;
                 0|"")
-                    break # 返回列表
+                    break 
                     ;;
                 *) 
                     log_warn "无效选项" 
