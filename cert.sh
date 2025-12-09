@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v2.0.1-修复版本号打印错误)
-# - 修复: 纠正了欢迎信息中打印两个 "v" 的小错误。
-# - 更新: 脚本版本号。
+# 🚀 SSL 证书管理助手 (acme.sh) (v2.1.0-自动续期修复增强版)
+# - 新增: 诊断与修复自动续期 (Crontab) 功能。
+# - 优化: Standalone 模式支持配置 Pre/Post Hook 防止端口冲突。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v2.0.1"
+SCRIPT_VERSION="v2.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -26,15 +26,16 @@ else
     _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
     press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
     confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
+    _prompt_user_input() { read -r -p "$1" val; echo "${val:-$2}"; }
+    _prompt_for_menu_choice() { read -r -p "请选择 [$1]: " val; echo "$val"; }
     GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
-    exit 1
+    log_err "警告: 通用工具库 $UTILS_PATH 未找到，使用内置回退模式。"
 fi
 
 # --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
-  log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
-  exit 1
+    run_with_sudo() { "$@"; }
+    log_warn "run_with_sudo 未定义，默认直接执行命令。"
 fi
 
 # --- 全局变量 ---
@@ -142,6 +143,9 @@ _apply_for_certificate() {
         *) METHOD="standalone" ;;
     esac
     
+    local PRE_HOOK=""
+    local POST_HOOK=""
+
     if [ "$METHOD" = "standalone" ]; then
         log_info "检查80端口占用情况..."
         if run_with_sudo ss -tuln | grep -q ":80\s"; then
@@ -150,6 +154,19 @@ _apply_for_certificate() {
             return 1
         fi
         log_success "80端口空闲。"
+
+        # --- 新增：自动续期钩子配置 ---
+        log_info "【重要】自动续期配置"
+        echo "为了保证未来自动续期成功，acme.sh 需要在续期时独占 80 端口。"
+        if confirm_action "您是否计划在此服务器上运行 Web 服务 (如 Nginx/Apache) ?"; then
+            log_info "我们将配置 Pre-Hook 和 Post-Hook，在续期时自动停止/启动 Web 服务。"
+            local SERVICE_NAME
+            SERVICE_NAME=$(_prompt_user_input "请输入服务名称 (默认: nginx): " "nginx")
+            PRE_HOOK="systemctl stop $SERVICE_NAME"
+            POST_HOOK="systemctl start $SERVICE_NAME"
+            log_info "已配置: 续期前 '$PRE_HOOK', 续期后 '$POST_HOOK'"
+        fi
+        # ---------------------------
 
         if [ "$CA" = "zerossl" ] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
              local ACCOUNT_EMAIL
@@ -167,9 +184,10 @@ _apply_for_certificate() {
 
     log_info "🚀 正在申请证书，请稍候..."
     local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN" --server "$CA" --"$METHOD")
-    if [ -n "$USE_WILDCARD" ]; then
-        ISSUE_CMD+=(-d "$USE_WILDCARD")
-    fi
+    
+    if [ -n "$USE_WILDCARD" ]; then ISSUE_CMD+=(-d "$USE_WILDCARD"); fi
+    if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
+    if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
     
     if ! "${ISSUE_CMD[@]}"; then
         log_err "证书申请失败！请检查端口、域名解析或API密钥，并查看上方的错误日志。"
@@ -246,6 +264,8 @@ _renew_certificate() {
         log_success "续期命令执行成功: $DOMAIN"
     else
         log_err "续期命令执行失败: $DOMAIN"
+        log_warn "如果是 Standalone 模式，请检查 80 端口是否被 Nginx/Apache 占用。"
+        log_warn "建议使用菜单选项 5 进行诊断。"
     fi
 }
 
@@ -271,6 +291,48 @@ _delete_certificate() {
     fi
 }
 
+_diagnose_auto_renew() {
+    log_info "--- 诊断自动续期 (Crontab) ---"
+    
+    # 1. 检查 Cron 服务
+    log_info "步骤 1: 检查系统 Cron 服务状态..."
+    if command -v systemctl &>/dev/null; then
+        if systemctl is-active --quiet cron || systemctl is-active --quiet crond; then
+            log_success "Cron 服务正在运行 (Active)。"
+        else
+            log_err "Cron 服务未运行！"
+            if confirm_action "是否尝试启动 Cron 服务?"; then
+                run_with_sudo systemctl enable --now cron 2>/dev/null || run_with_sudo systemctl enable --now crond 2>/dev/null
+                log_success "已尝试启动 Cron 服务。"
+            fi
+        fi
+    else
+        log_warn "无法检测 systemd，请手动确认 cron 守护进程是否运行。"
+    fi
+
+    # 2. 检查 Crontab 任务
+    log_info "步骤 2: 检查当前用户的 Crontab..."
+    local cron_output
+    cron_output=$(crontab -l 2>/dev/null || true)
+    
+    if echo "$cron_output" | grep -q "acme.sh"; then
+        log_success "发现 acme.sh 自动续期任务："
+        echo "$cron_output" | grep "acme.sh"
+    else
+        log_err "CRITICAL: 未找到 acme.sh 的自动续期任务！"
+        if confirm_action "是否立即修复 (重新安装 Cron 任务) ?"; then
+            if "$ACME_BIN" --install-cronjob; then
+                log_success "自动续期任务已修复。"
+            else
+                log_err "任务修复失败，请检查日志。"
+            fi
+        fi
+    fi
+    
+    log_info "--- 诊断完成 ---"
+    press_enter_to_continue
+}
+
 main_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -279,17 +341,19 @@ main_menu() {
             "2. 查看已申请证书"
             "3. 手动续期证书"
             "4. 删除证书"
+            "5. 诊断/修复自动续期"
         )
         _render_menu "🔐 SSL 证书管理 (acme.sh)" "${menu_items[@]}"
         
         local choice
-        choice=$(_prompt_for_menu_choice "1-4")
+        choice=$(_prompt_for_menu_choice "1-5")
 
         case "$choice" in
             1) _apply_for_certificate ;;
             2) _list_certificates ;;
             3) _renew_certificate ;;
             4) _delete_certificate ;;
+            5) _diagnose_auto_renew ;;
             "") return 10 ;; # 标准返回逻辑
             *) log_warn "无效选项。" ;;
         esac
