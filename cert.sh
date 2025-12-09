@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.4.0-卡片式列表UI)
-# - UI: 证书列表改为卡片式布局，信息更直观。
-# - 新增: 尝试自动读取并显示证书的实际安装路径。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.6.0-显示续期时间)
+# - 新增: 证书列表显示"下次计划续期时间" (Next Renew)。
+# - 优化: 从配置文件精确读取续期时间戳。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.4.0"
+SCRIPT_VERSION="v3.6.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -238,7 +238,7 @@ _manage_certificates() {
             local cert_file="$HOME/.acme.sh/${d}_ecc/fullchain.cer"
             local conf_file="$HOME/.acme.sh/${d}_ecc/${d}.conf"
             
-            # 回退到 RSA 目录
+            # 回退到 RSA 目录兼容
             if [ ! -f "$cert_file" ]; then 
                 cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
                 conf_file="$HOME/.acme.sh/${d}/${d}.conf"
@@ -247,8 +247,9 @@ _manage_certificates() {
             local status_text="未知"
             local days_info=""
             local date_str="未知"
+            local next_renew_str="自动/未知"
             local color="$NC"
-            local install_path="自动安装路径未知"
+            local install_path="未知"
 
             # 2. 解析证书信息 (状态、日期)
             if [ -f "$cert_file" ]; then
@@ -268,24 +269,30 @@ _manage_certificates() {
                     fi
                 fi
             else
-                color="$RED"
-                status_text="文件丢失"
-                days_info="无文件"
+                color="$RED"; status_text="文件丢失"; days_info="无文件"
             fi
             
-            # 3. 解析安装路径 (从 .conf 文件读取 Le_RealFullChainPath)
+            # 3. 解析配置文件 (安装路径 & 下次续期时间)
             if [ -f "$conf_file" ]; then
+                # 读取安装路径
                 local raw_path
-                # 尝试提取 Le_RealFullChainPath='/etc/ssl/xxx'
                 raw_path=$(grep "^Le_RealFullChainPath=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
                 if [ -n "$raw_path" ]; then
                     install_path=$(dirname "$raw_path")
+                fi
+                
+                # 读取下次续期时间戳 (Le_NextRenewTime)
+                local next_renew_ts
+                next_renew_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
+                if [ -n "$next_renew_ts" ]; then
+                    next_renew_str=$(date -d "@$next_renew_ts" +%F 2>/dev/null || echo "时间戳错误")
                 fi
             fi
 
             # 4. 打印卡片
             printf "${GREEN}[ %d ] %s${NC}\n" "$((i+1))" "$d"
             printf "  ├─ 路 径 : %s\n" "$install_path"
+            printf "  ├─ 续 期 : %s (计划)\n" "$next_renew_str"
             printf "  └─ 证 书 : ${color}%s (%s , %s 到 期)${NC}\n" "$status_text" "$days_info" "$date_str"
             echo -e "${CYAN}····························································${NC}"
         done
@@ -332,12 +339,47 @@ _manage_certificates() {
                     press_enter_to_continue
                     ;;
                 2)
-                    log_info "正在续期 $SELECTED_DOMAIN ..."
+                    log_info "正在准备续期 $SELECTED_DOMAIN ..."
+                    
+                    local port_conflict="false"
+                    local temp_stop_svc=""
+                    
+                    # 检查 80 端口占用
+                    if run_with_sudo ss -tuln | grep -q ":80\s"; then
+                        log_warn "检测到 80 端口已被占用，这可能会导致 Standalone 模式续期失败。"
+                        
+                        if systemctl is-active --quiet nginx; then temp_stop_svc="nginx";
+                        elif systemctl is-active --quiet apache2; then temp_stop_svc="apache2";
+                        elif systemctl is-active --quiet httpd; then temp_stop_svc="httpd";
+                        elif systemctl is-active --quiet caddy; then temp_stop_svc="caddy";
+                        fi
+                        
+                        if [ -n "$temp_stop_svc" ]; then
+                            echo -e "${YELLOW}发现服务: $temp_stop_svc 正在运行。${NC}"
+                            if confirm_action "是否临时停止 $temp_stop_svc 以释放端口? (续期后自动启动)"; then
+                                port_conflict="true"
+                            fi
+                        else
+                            log_warn "无法自动识别占用端口的服务，请手动检查。"
+                        fi
+                    fi
+                    
+                    if [ "$port_conflict" == "true" ]; then
+                        log_info "正在停止 $temp_stop_svc ..."
+                        run_with_sudo systemctl stop "$temp_stop_svc"
+                    fi
+                    
+                    log_info "执行 acme.sh 续期命令..."
                     if "$ACME_BIN" --renew -d "$SELECTED_DOMAIN" --force --ecc; then
-                        log_success "续期成功。"
+                        log_success "续期成功！"
                     else
                         log_err "续期失败。"
                         [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 10 "$HOME/.acme.sh/acme.sh.log"
+                    fi
+                    
+                    if [ "$port_conflict" == "true" ]; then
+                        log_info "正在重启 $temp_stop_svc ..."
+                        run_with_sudo systemctl start "$temp_stop_svc"
                     fi
                     press_enter_to_continue
                     ;;
