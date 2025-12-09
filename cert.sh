@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.0.0-架构重构版)
-# - 重构: 采用"对象管理"模式，将列表/续期/删除整合为单一入口。
-# - 优化: 主菜单精简为3个核心选项。
-# - 修复: 彻底解决操作结束后的重复回车等待问题。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.1.0-列表详情增强版)
+# - 修复: 证书管理菜单支持直接按 Enter 返回上一级。
+# - 增强: 证书列表直接显示剩余天数、CA 和状态颜色。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.0.0"
+SCRIPT_VERSION="v3.1.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -29,7 +28,7 @@ else
     confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
     _prompt_user_input() { read -r -p "$1" val; echo "${val:-$2}"; }
     _prompt_for_menu_choice() { read -r -p "请选择 [$1]: " val; echo "$val"; }
-    GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
+    GREEN="\033[0;32m"; NC="\033[0m"; RED="\033[0;31m"; YELLOW="\033[0;33m"; CYAN="\033[0;36m";
     log_err "警告: 通用工具库 $UTILS_PATH 未找到，使用内置回退模式。"
 fi
 
@@ -208,7 +207,9 @@ _manage_certificates() {
     if ! [ -f "$ACME_BIN" ]; then log_err "acme.sh 未安装。"; return; fi
 
     while true; do
-        log_info "正在扫描证书列表..."
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        log_info "正在扫描证书详情 (请稍候)..."
+        
         local raw_list
         raw_list=$("$ACME_BIN" --list)
 
@@ -227,57 +228,99 @@ _manage_certificates() {
             return
         fi
 
-        # 1. 展示列表
-        echo "================ 证书列表 ================"
-        printf "%-4s | %-25s | %s\n" "No." "域名" "状态"
-        echo "------------------------------------------"
+        # 1. 详细列表展示
+        echo "================================ 证书列表 ================================"
+        printf "${CYAN}%-3s | %-20s | %-12s | %-15s${NC}\n" "No." "域名" "剩余天数" "颁发机构(CA)"
+        echo "--------------------------------------------------------------------------"
+        
         local i
         for ((i=0; i<${#domains[@]}; i++)); do
             local d="${domains[i]}"
-            # 简易状态检查 (不读取文件，仅根据 acme list 存在性)
-            printf "%-4d | %-25s | %s\n" "$((i+1))" "$d" "已管理"
+            
+            # 尝试查找证书文件
+            local cert_file="$HOME/.acme.sh/${d}_ecc/fullchain.cer"
+            [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${d}/fullchain.cer"
+            
+            local days_str="未知"
+            local ca_str="未知"
+            local color="$NC"
+
+            if [ -f "$cert_file" ]; then
+                # 计算剩余天数
+                local end_date; end_date=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
+                if [ -n "$end_date" ]; then
+                    local end_ts; end_ts=$(date -d "$end_date" +%s)
+                    local now_ts; now_ts=$(date +%s)
+                    local left_days=$(( (end_ts - now_ts) / 86400 ))
+                    
+                    if (( left_days < 0 )); then
+                        color="$RED"; days_str="已过期 ($left_days)"
+                    elif (( left_days < 30 )); then
+                        color="$YELLOW"; days_str="$left_days 天"
+                    else
+                        color="$GREEN"; days_str="$left_days 天"
+                    fi
+                fi
+                
+                # 获取 CA 名称
+                local issuer
+                issuer=$(openssl x509 -issuer -noout -in "$cert_file" 2>/dev/null)
+                if [[ "$issuer" == *"ZeroSSL"* ]]; then ca_str="ZeroSSL"
+                elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="Let's Encrypt"
+                elif [[ "$issuer" == *"Google"* ]]; then ca_str="Google"
+                else ca_str="Other"
+                fi
+            else
+                color="$RED"
+                days_str="文件丢失"
+            fi
+            
+            printf "${CYAN}%-3d${NC} | %-20s | ${color}%-12s${NC} | %-15s\n" "$((i+1))" "$d" "$days_str" "$ca_str"
         done
-        echo "=========================================="
+        echo "=========================================================================="
         
-        # 2. 选择对象
+        # 2. 选择对象 (支持回车返回)
         local choice_idx
-        choice_idx=$(_prompt_user_input "请输入序号管理证书 (0 返回主菜单): " "0")
+        choice_idx=$(_prompt_user_input "请输入序号管理 (按 Enter 返回主菜单): " "")
         
+        if [ -z "$choice_idx" ]; then return; fi # 修复点：空输入直接返回
         if [ "$choice_idx" == "0" ]; then return; fi
+
         if ! [[ "$choice_idx" =~ ^[0-9]+$ ]] || (( choice_idx < 1 || choice_idx > ${#domains[@]} )); then
             log_err "无效序号。"
-            continue # 重新循环列表
+            press_enter_to_continue
+            continue
         fi
 
         local SELECTED_DOMAIN="${domains[$((choice_idx-1))]}"
         
         # 3. 对选中的对象进行操作
         while true; do
-            local -a action_menu=(
-                "1. 查看详细信息 (Check Details)"
-                "2. 强制续期 (Force Renew)"
-                "3. 删除证书 (Remove)"
+            echo ""
+            _render_menu "管理域名: ${GREEN}$SELECTED_DOMAIN${NC}" \
+                "1. 查看详细信息 (OpenSSL info)" \
+                "2. 强制续期 (Force Renew)" \
+                "3. 删除证书 (Remove)" \
                 "0. 返回列表"
-            )
-            _render_menu "管理: $SELECTED_DOMAIN" "${action_menu[@]}"
+            
             local action
-            action=$(_prompt_for_menu_choice "1-3/0")
+            action=$(_prompt_user_input "请选择 [1-3/0]: " "")
             
             case "$action" in
                 1)
-                    # 查看详情
                     local cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}_ecc/fullchain.cer"
                     [ ! -f "$cert_file" ] && cert_file="$HOME/.acme.sh/${SELECTED_DOMAIN}/fullchain.cer"
                     if [ -f "$cert_file" ]; then
-                        openssl x509 -in "$cert_file" -noout -text | grep -E "Issuer:|Not After|Subject:"
-                        log_info "物理文件位置: $cert_file"
+                        echo "--- 证书详情 ---"
+                        openssl x509 -in "$cert_file" -noout -text | grep -E "Issuer:|Not After|Subject:|DNS:"
+                        echo "----------------"
+                        log_info "文件路径: $cert_file"
                     else
                         log_err "找不到证书文件。"
                     fi
-                    read -r -p "按 Enter 返回..." 
+                    press_enter_to_continue
                     ;;
                 2)
-                    # 续期
                     log_info "正在续期 $SELECTED_DOMAIN ..."
                     if "$ACME_BIN" --renew -d "$SELECTED_DOMAIN" --force --ecc; then
                         log_success "续期成功。"
@@ -285,21 +328,20 @@ _manage_certificates() {
                         log_err "续期失败。"
                         [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 10 "$HOME/.acme.sh/acme.sh.log"
                     fi
-                    read -r -p "按 Enter 返回..."
+                    press_enter_to_continue
                     ;;
                 3)
-                    # 删除
-                    if confirm_action "⚠️ 确认彻底删除 $SELECTED_DOMAIN ?"; then
+                    if confirm_action "⚠️  确认彻底删除 $SELECTED_DOMAIN ?"; then
                         "$ACME_BIN" --remove -d "$SELECTED_DOMAIN" --ecc || true
                         if [ -d "/etc/ssl/$SELECTED_DOMAIN" ]; then
                             run_with_sudo rm -rf "/etc/ssl/$SELECTED_DOMAIN"
                         fi
                         log_success "已删除。"
-                        break 2 # 跳出两层循环，回到列表刷新
+                        break 2 # 返回列表刷新
                     fi
                     ;;
-                0)
-                    break # 跳出操作循环，回到列表
+                0|"")
+                    break # 返回列表
                     ;;
                 *) 
                     log_warn "无效选项" 
@@ -312,6 +354,7 @@ _manage_certificates() {
 # --- 整合系统维护模块 ---
 _system_maintenance() {
     while true; do
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local -a sys_menu=(
             "1. 诊断自动续期 (Check Auto-Renew)"
             "2. 升级 acme.sh (Upgrade Core)"
@@ -321,7 +364,7 @@ _system_maintenance() {
         )
         _render_menu "系统维护" "${sys_menu[@]}"
         local sys_choice
-        sys_choice=$(_prompt_for_menu_choice "1-4/0")
+        sys_choice=$(_prompt_user_input "请选择 [1-4/0]: " "")
         
         case "$sys_choice" in
             1)
@@ -338,24 +381,27 @@ _system_maintenance() {
                     log_err "Crontab 任务缺失。"
                     confirm_action "修复?" && "$ACME_BIN" --install-cronjob
                 fi
+                press_enter_to_continue
                 ;;
             2)
                 "$ACME_BIN" --upgrade
+                press_enter_to_continue
                 ;;
             3)
                 "$ACME_BIN" --upgrade --auto-upgrade
+                press_enter_to_continue
                 ;;
             4)
                 "$ACME_BIN" --upgrade --auto-upgrade 0
+                press_enter_to_continue
                 ;;
-            0)
+            0|"")
                 return
                 ;;
             *)
                 log_warn "无效选项"
                 ;;
         esac
-        echo "" # 空行美化
     done
 }
 
@@ -373,15 +419,20 @@ main_menu() {
         choice=$(_prompt_for_menu_choice "1-3")
 
         case "$choice" in
-            1) _apply_for_certificate ;;
-            2) _manage_certificates ;;
-            3) _system_maintenance ;;
+            1) 
+                _apply_for_certificate
+                press_enter_to_continue
+                ;;
+            2) 
+                _manage_certificates 
+                # 这里不需要暂停，因为 _manage_certificates 内部已经处理了交互
+                ;;
+            3) 
+                _system_maintenance 
+                ;;
             "") return 10 ;; 
-            *) log_warn "无效选项。" ;;
+            *) log_warn "无效选项。" ; press_enter_to_continue ;;
         esac
-        
-        # 统一的暂停点，仅在主循环的一轮结束时出现
-        press_enter_to_continue
     done
 }
 
