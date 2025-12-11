@@ -1,12 +1,12 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.9.0-续期逻辑增强)
-# - 修复: 续期失败后重启服务时的误导性提示。
-# - 新增: 智能识别 ZeroSSL/CA 限制错误 (retryafter)。
-# - 新增: 续期失败时提供"切换 CA"的快捷选项。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.11.0-CF代理修复版)
+# - 新增: "重新申请/切换模式"功能，方便修正配置错误的证书。
+# - 优化: Standalone 模式增加 Cloudflare 冲突警告。
+# - 逻辑: 续期遇到 504 错误时，引导用户切换至 DNS 模式。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.9.0"
+SCRIPT_VERSION="v3.11.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -98,31 +98,37 @@ _check_dependencies() {
     export PATH="$HOME/.acme.sh:$PATH"
 }
 
+# 参数1: 可选，预设域名 (用于重新配置模式)
 _apply_for_certificate() {
-    log_info "--- 申请新证书 ---"
+    local PRESET_DOMAIN="$1"
+    
+    log_info "--- 申请/重新配置证书 ---"
     
     local DOMAIN SERVER_IP DOMAIN_IP
-    while true; do
-        DOMAIN=$(_prompt_user_input "请输入你的主域名: ")
-        if [ -z "$DOMAIN" ]; then log_warn "域名不能为空。"; continue; fi
+    
+    if [ -n "$PRESET_DOMAIN" ]; then
+        DOMAIN="$PRESET_DOMAIN"
+        log_info "目标域名: ${CYAN}$DOMAIN${NC}"
+    else
+        while true; do
+            DOMAIN=$(_prompt_user_input "请输入你的主域名: ")
+            if [ -z "$DOMAIN" ]; then log_warn "域名不能为空。"; continue; fi
+            break
+        done
+    fi
 
-        log_info "正在验证域名解析..."
-        SERVER_IP=$(curl -s https://api.ipify.org)
-        DOMAIN_IP=$(dig +short "$DOMAIN" A | head -n1)
-
-        if [ -z "$DOMAIN_IP" ]; then
-            log_err "无法获取域名解析IP。"
-            if ! confirm_action "是否忽略并继续？"; then return; fi
-            break
-        elif [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
-            log_warn "解析IP ($DOMAIN_IP) 与本机IP ($SERVER_IP) 不符！"
-            if ! confirm_action "强制继续？"; then continue; fi
-            break
-        else
-            log_success "域名解析正确。"
-            break
-        fi
-    done
+    # 简化的解析验证，仅作提示
+    log_info "验证 DNS 解析..."
+    SERVER_IP=$(curl -s https://api.ipify.org)
+    DOMAIN_IP=$(dig +short "$DOMAIN" A | head -n1)
+    if [ -z "$DOMAIN_IP" ]; then
+        log_warn "警告: 无法获取域名解析 IP。"
+    elif [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
+        log_warn "提示: 域名解析 IP ($DOMAIN_IP) 与本机 ($SERVER_IP) 不一致。"
+        log_warn "如果开启了 Cloudflare 小黄云，请务必使用 [DNS API] 模式，否则会失败！"
+    else
+        log_success "域名解析指向本机。"
+    fi
 
     local USE_WILDCARD=""
     echo -ne "${YELLOW}是否申请泛域名证书 (*.$DOMAIN)？ (y/[N]): ${NC}"
@@ -130,8 +136,6 @@ _apply_for_certificate() {
     if [[ "$wild_choice" == "y" || "$wild_choice" == "Y" ]]; then
         USE_WILDCARD="*.$DOMAIN"
         log_info "已启用泛域名: $USE_WILDCARD"
-    else
-        log_info "不申请泛域名。"
     fi
 
     local INSTALL_PATH
@@ -145,7 +149,7 @@ _apply_for_certificate() {
     local RELOAD_CMD
     RELOAD_CMD=$(_prompt_user_input "重载命令 [默认: $default_reload]: " "$default_reload")
 
-    local -a method_display=("1. standalone (HTTP验证, 需80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+    local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
     _render_menu "验证方式" "${method_display[@]}"
     local VERIFY_CHOICE
     VERIFY_CHOICE=$(_prompt_for_menu_choice "1-3")
@@ -155,17 +159,24 @@ _apply_for_certificate() {
     case "$VERIFY_CHOICE" in
         1) 
             METHOD="standalone"
-            if run_with_sudo ss -tuln | grep -q ":80\s"; then
-                log_err "80端口被占用。"
-                run_with_sudo ss -tuln | grep ":80\s"
+            log_warn "注意: 如果您开启了 CDN (如 CF 小黄云)，Standalone 模式极大概率会失败(504错误)！"
+            if confirm_action "确认使用 Standalone 模式?"; then
+                # 继续
+                if run_with_sudo ss -tuln | grep -q ":80\s"; then
+                    log_err "80端口被占用。"
+                    run_with_sudo ss -tuln | grep ":80\s"
+                    return 1
+                fi
+                if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
+                    local svc_guess="${active_svc:-nginx}"
+                    local svc
+                    svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
+                    PRE_HOOK="systemctl stop $svc"
+                    POST_HOOK="systemctl start $svc"
+                fi
+            else
+                log_info "已取消，请重新选择。"
                 return 1
-            fi
-            if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
-                local svc_guess="${active_svc:-nginx}"
-                local svc
-                svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
-                PRE_HOOK="systemctl stop $svc"
-                POST_HOOK="systemctl start $svc"
             fi
             ;;
         2) 
@@ -204,6 +215,9 @@ _apply_for_certificate() {
     if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
     if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
     
+    # 使用 --force 确保如果是切换模式也能覆盖
+    ISSUE_CMD+=(--force)
+
     if ! "${ISSUE_CMD[@]}"; then
         log_err "证书申请失败！日志如下:"
         [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 20 "$HOME/.acme.sh/acme.sh.log"
@@ -309,11 +323,11 @@ _manage_certificates() {
         local SELECTED_DOMAIN="${domains[$((choice_idx-1))]}"
         
         while true; do
-            local -a action_menu=("1. 查看详情 (Details)" "2. 强制续期 (Force Renew)" "3. 删除证书 (Delete)")
+            local -a action_menu=("1. 查看详情 (Details)" "2. 强制续期 (Force Renew)" "3. 删除证书 (Delete)" "4. 重新申请/切换模式 (Re-issue)")
             _render_menu "管理: $SELECTED_DOMAIN" "${action_menu[@]}"
             
             local action
-            action=$(_prompt_for_menu_choice "1-3")
+            action=$(_prompt_for_menu_choice "1-4")
             
             case "$action" in
                 1)
@@ -343,8 +357,6 @@ _manage_certificates() {
                             if confirm_action "是否临时停止 $temp_stop_svc 以释放端口? (续期后自动启动)"; then
                                 port_conflict="true"
                             fi
-                        else
-                            log_warn "无法自动识别占用端口的服务，请手动检查。"
                         fi
                     fi
                     
@@ -366,19 +378,18 @@ _manage_certificates() {
                             log_err "续期失败 (Code: $err_code)。"
                             echo "$log_tail"
                             
-                            # --- 新增: 智能识别 retryafter ---
-                            if [[ "$log_tail" == *"retryafter"* ]]; then
-                                echo ""
-                                log_warn "检测到 CA 限制错误 (retryafter)。"
-                                echo "这通常意味着 ZeroSSL 正在处理或已限制请求。"
-                                if confirm_action "是否尝试切换到 Let's Encrypt 并重新申请?"; then
-                                    log_info "切换默认 CA 到 Let's Encrypt..."
-                                    "$ACME_BIN" --set-default-ca --server letsencrypt
-                                    log_info "正在重新申请证书..."
-                                    # 注意：切换 CA 实际上是 Issue 而不是 Renew
-                                    "$ACME_BIN" --issue -d "$SELECTED_DOMAIN" --standalone --force
+                            # --- 智能引导切换模式 ---
+                            if [[ "$log_tail" == *"504 Gateway Time-out"* ]]; then
+                                echo -e "\n${RED}检测到 504 错误。这通常是因为开启了 Cloudflare 小黄云导致 Standalone 模式失效。${NC}"
+                                if confirm_action "是否立即切换到 [DNS API] 模式重新申请?"; then
+                                    if [ "$port_conflict" == "true" ]; then
+                                        log_info "正在重启 $temp_stop_svc ..."
+                                        run_with_sudo systemctl start "$temp_stop_svc"
+                                    fi
+                                    # 跳转到重新申请流程
+                                    _apply_for_certificate "$SELECTED_DOMAIN"
                                     press_enter_to_continue
-                                    break # 退出当前循环刷新状态
+                                    break # 退出当前管理循环
                                 fi
                             fi
                         fi
@@ -403,6 +414,14 @@ _manage_certificates() {
                         fi
                         log_success "已删除。"
                         break 2 
+                    fi
+                    ;;
+                4)
+                    # 重新申请/切换模式
+                    if confirm_action "此操作将覆盖原有配置 (适用于修复配置错误)。确认继续?"; then
+                         _apply_for_certificate "$SELECTED_DOMAIN"
+                         press_enter_to_continue
+                         break 2 # 跳出管理层，刷新列表
                     fi
                     ;;
                 ""|"0") break ;;
