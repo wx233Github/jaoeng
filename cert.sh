@@ -1,11 +1,12 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.8.0-代码结构优化)
-# - 优化: 提取 Web 服务检测与证书路径查找为公共函数。
-# - 维护: 保持 v3.7.0 所有业务逻辑不变，仅精简代码实现。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.9.0-续期逻辑增强)
+# - 修复: 续期失败后重启服务时的误导性提示。
+# - 新增: 智能识别 ZeroSSL/CA 限制错误 (retryafter)。
+# - 新增: 续期失败时提供"切换 CA"的快捷选项。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.8.0"
+SCRIPT_VERSION="v3.9.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -44,7 +45,6 @@ ACME_BIN="$HOME/.acme.sh/acme.sh"
 # SECTION: 辅助功能函数 (私有)
 # =============================================================
 
-# 检测当前运行的 Web 服务 (返回: nginx/apache2/httpd/caddy 或空)
 _detect_web_service() {
     if ! command -v systemctl &>/dev/null; then return; fi
     local svc
@@ -56,8 +56,6 @@ _detect_web_service() {
     done
 }
 
-# 获取证书相关文件路径 (自动处理 ECC/RSA 目录回退)
-# 输出变量: CERT_FILE, CONF_FILE
 _get_cert_files() {
     local domain="$1"
     CERT_FILE="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
@@ -139,7 +137,6 @@ _apply_for_certificate() {
     local INSTALL_PATH
     INSTALL_PATH=$(_prompt_user_input "证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
     
-    # 智能检测 Web 服务器用于默认重载命令
     local active_svc
     active_svc=$(_detect_web_service)
     local default_reload="systemctl reload nginx"
@@ -257,7 +254,7 @@ _manage_certificates() {
         for ((i=0; i<${#domains[@]}; i++)); do
             local d="${domains[i]}"
             local CERT_FILE CONF_FILE
-            _get_cert_files "$d" # 调用公共函数获取路径
+            _get_cert_files "$d"
             
             local status_text="未知"
             local days_info=""
@@ -339,7 +336,7 @@ _manage_certificates() {
                     
                     if run_with_sudo ss -tuln | grep -q ":80\s"; then
                         log_warn "检测到 80 端口占用 (可能影响 Standalone 模式)。"
-                        temp_stop_svc=$(_detect_web_service) # 复用检测函数
+                        temp_stop_svc=$(_detect_web_service)
                         
                         if [ -n "$temp_stop_svc" ]; then
                             echo -e "${YELLOW}发现服务: $temp_stop_svc 正在运行。${NC}"
@@ -354,23 +351,47 @@ _manage_certificates() {
                     [ "$port_conflict" == "true" ] && { log_info "正在停止 $temp_stop_svc ..."; run_with_sudo systemctl stop "$temp_stop_svc"; }
                     
                     log_info "执行续期命令..."
+                    local renew_success="false"
                     if "$ACME_BIN" --renew -d "$SELECTED_DOMAIN" --force --ecc; then
                         log_success "续期指令执行成功！"
+                        renew_success="true"
                     else
                         local err_code=$?
-                        local log_tail=""; [ -f "$HOME/.acme.sh/acme.sh.log" ] && log_tail=$(tail -n 10 "$HOME/.acme.sh/acme.sh.log")
+                        local log_tail=""; [ -f "$HOME/.acme.sh/acme.sh.log" ] && log_tail=$(tail -n 15 "$HOME/.acme.sh/acme.sh.log")
+                        
                         if [[ "$port_conflict" == "true" && "$log_tail" == *"Reload error"* ]]; then
-                            log_success "证书已生成 (Reload 跳过，因服务已停止)。"
+                            log_success "证书可能已生成 (Reload 跳过，因服务已停止)。"
+                            renew_success="true"
                         else
                             log_err "续期失败 (Code: $err_code)。"
                             echo "$log_tail"
+                            
+                            # --- 新增: 智能识别 retryafter ---
+                            if [[ "$log_tail" == *"retryafter"* ]]; then
+                                echo ""
+                                log_warn "检测到 CA 限制错误 (retryafter)。"
+                                echo "这通常意味着 ZeroSSL 正在处理或已限制请求。"
+                                if confirm_action "是否尝试切换到 Let's Encrypt 并重新申请?"; then
+                                    log_info "切换默认 CA 到 Let's Encrypt..."
+                                    "$ACME_BIN" --set-default-ca --server letsencrypt
+                                    log_info "正在重新申请证书..."
+                                    # 注意：切换 CA 实际上是 Issue 而不是 Renew
+                                    "$ACME_BIN" --issue -d "$SELECTED_DOMAIN" --standalone --force
+                                    press_enter_to_continue
+                                    break # 退出当前循环刷新状态
+                                fi
+                            fi
                         fi
                     fi
                     
                     if [ "$port_conflict" == "true" ]; then
                         log_info "正在重启 $temp_stop_svc ..."
                         run_with_sudo systemctl start "$temp_stop_svc"
-                        log_success "服务已启动，新证书应已生效。"
+                        if [ "$renew_success" == "true" ]; then
+                            log_success "服务已启动，新证书应已生效。"
+                        else
+                            log_warn "服务已恢复 (使用旧证书)。"
+                        fi
                     fi
                     press_enter_to_continue
                     ;;
