@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.8.0-极简稳定版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.0-全能管理版)
 # =============================================================
-# - 精简: 移除高风险的"编辑"与"导入"功能，推荐"删除后重建"。
-# - 修复: 证书剩余天数显示颜色代码泄露问题。
-# - UI: 优化项目列表的可读性与对齐。
+# - 新增: "查看访问/错误日志" 功能，实时监控流量。
+# - 新增: "重新配置项目" 功能，支持修改端口或证书方式。
+# - 优化: 菜单逻辑与用户体验。
 
 set -euo pipefail
 
@@ -21,6 +21,9 @@ NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
 NGINX_WEBROOT_DIR="/var/www/html"
 SSL_CERTS_BASE_DIR="/etc/ssl"
+# 默认日志路径 (可视系统情况调整)
+NGINX_ACCESS_LOG="/var/log/nginx/access.log"
+NGINX_ERROR_LOG="/var/log/nginx/error.log"
 
 # --- 模式与全局状态 ---
 IS_INTERACTIVE_MODE="true"
@@ -211,6 +214,11 @@ _write_and_enable_nginx_config() {
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
 
+    if [[ -z "$port" || "$port" == "null" ]]; then
+        log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
+        return 1
+    fi
+
     cat > "$conf" << EOF
 server {
     listen 80;
@@ -246,6 +254,40 @@ EOF
 
 _remove_and_disable_nginx_config() {
     rm -f "$NGINX_SITES_AVAILABLE_DIR/$1.conf" "$NGINX_SITES_ENABLED_DIR/$1.conf"
+}
+
+_view_nginx_config() {
+    local domain="$1"
+    local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
+    if [ ! -f "$conf" ]; then
+        log_message ERROR "配置文件不存在: $conf"
+        return
+    fi
+    echo ""
+    echo -e "${GREEN}=== 配置文件: $domain ===${NC}"
+    cat "$conf"
+    echo -e "${GREEN}=======================${NC}"
+}
+
+_view_access_log() {
+    local domain="$1"
+    echo ""
+    _render_menu "查看日志: $domain" "1. 访问日志 (Access Log)" "2. 错误日志 (Error Log)"
+    local c=$(_prompt_for_menu_choice_local "1-2")
+    local log_path=""
+    case "$c" in
+        1) log_path="$NGINX_ACCESS_LOG" ;;
+        2) log_path="$NGINX_ERROR_LOG" ;;
+        *) return ;;
+    esac
+    
+    if [ ! -f "$log_path" ]; then
+        log_message ERROR "日志文件不存在: $log_path"
+        return
+    fi
+    
+    echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
+    tail -f -n 20 "$log_path"
 }
 
 # ==============================================================================
@@ -391,7 +433,7 @@ _display_projects_list() {
         
         printf "${GREEN}[ %d ] %s${NC}\n" "$idx" "$domain"
         printf "  ├─ 🎯 目 标 : %s\n" "$info"
-        printf "  └─ 📜 证 书 : %s %s\n" "$status" "$details"
+        echo -e "  └─ 📜 证 书 : ${status} ${details}"
         echo -e "${CYAN}····························································${NC}"
     done
 }
@@ -409,7 +451,10 @@ configure_nginx_projects() {
         return
     fi
     
-    _write_and_enable_nginx_config "$domain" "$json"
+    if ! _write_and_enable_nginx_config "$domain" "$json"; then
+        return 1
+    fi
+    
     if ! control_nginx reload; then
         _remove_and_disable_nginx_config "$domain"
         return
@@ -439,6 +484,27 @@ _handle_delete_project() {
     fi
 }
 
+_handle_view_config() {
+    local d; d=$(_prompt_user_input_with_validation "请输入域名" "" "" "" "false") || return
+    [ -z "$(_get_project_json "$d")" ] && { log_message ERROR "项目不存在"; return; }
+    _view_nginx_config "$d"
+}
+
+# 重新配置项目 (复用 gather_project_details)
+_handle_reconfigure_project() {
+    local d; d=$(_prompt_user_input_with_validation "请输入域名" "" "" "" "false") || return
+    local cur=$(_get_project_json "$d")
+    [ -z "$cur" ] && { log_message ERROR "项目不存在"; return; }
+    
+    log_message INFO "正在重新配置 $d，默认值将显示为当前配置..."
+    local new; new=$(_gather_project_details "$cur") || return
+    
+    if _issue_and_install_certificate "$new"; then
+        _write_and_enable_nginx_config "$d" "$new"
+        control_nginx reload && _save_project_json "$new" && log_message SUCCESS "重配成功"
+    fi
+}
+
 manage_configs() {
     while true; do
         local all=$(jq . "$PROJECTS_METADATA_FILE")
@@ -450,12 +516,18 @@ manage_configs() {
         echo ""
         _display_projects_list "$all"
         
-        local -a opts=("1. 🔄 手动续期" "2. 🗑️  删除项目")
+        local -a opts=("1. 🔄 手动续期" "2. 🗑️  删除项目" "3. 📝 查看配置" "4. 📊 查看日志" "5. ⚙️  重新配置")
         _render_menu "项目管理" "${opts[@]}"
         
-        case "$(_prompt_for_menu_choice_local "1-2")" in
+        case "$(_prompt_for_menu_choice_local "1-5")" in
             1) _handle_renew_cert ;;
             2) _handle_delete_project ;;
+            3) _handle_view_config ;;
+            4) 
+                local d; d=$(_prompt_user_input_with_validation "请输入域名" "" "" "" "false") || continue
+                _view_access_log "$d" 
+                ;;
+            5) _handle_reconfigure_project ;;
             "") break ;;
             *) log_message ERROR "无效选择" ;;
         esac
