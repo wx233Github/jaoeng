@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.0-JSON逻辑重构)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.7.0-调试增强版)
 # =============================================================
-# - 核心修复: 彻底解决重配跳过证书时 domain 变量丢失问题。
-# - 逻辑优化: 确保 JSON 数据在任何分支下都完整有效。
+# - 调试: 增加 JSON 数据流的详细日志，便于定位变量丢失问题。
+# - 修复: 重构 jq 参数传递，杜绝空变量引用。
 
 set -euo pipefail
 
@@ -329,13 +329,14 @@ _get_cert_files() {
 _issue_and_install_certificate() {
     local json="$1"
     if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
-        log_message WARN "未收到有效配置信息，流程中止。"
+        log_message ERROR "Debug: Received empty JSON in issue func."
         return 1
     fi
 
     local domain=$(echo "$json" | jq -r .domain)
+    # 增加双重检查
     if [[ -z "$domain" || "$domain" == "null" ]]; then
-        log_message ERROR "内部错误: 域名为空。"
+        log_message ERROR "Debug: JSON missing domain field: $json"
         return 1
     fi
 
@@ -473,6 +474,7 @@ _gather_project_details() {
                 exec 1>&3
                 port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
                 exec 1>&2
+                
                 is_docker="true"
                 if [ -z "$port" ]; then
                     port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
@@ -485,7 +487,7 @@ _gather_project_details() {
         done
     fi
 
-    # 默认值
+    # 变量初始化
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -493,7 +495,7 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 修复：确保默认值不为空，防止 jq 引用失败
+        # 修复: 确保默认值不为空，且不带引号
         method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
         provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
@@ -555,19 +557,25 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
+    # 修复: 显式处理空值
+    local d_val="${domain:-}"
+    local t_val="${type:-local_port}"
+    local n_val="${name:-}"
+    local p_val="${port:-}"
+    local m_val="${method:-http-01}"
+    local dp_val="${provider:-}"
+    local w_val="${wildcard:-n}"
+    local cu_val="${ca_server:-}"
+    local cn_val="${ca_name:-}"
+    local cf_val="${cf:-}"
+    local kf_val="${kf:-}"
+
     # 最终输出 JSON
     jq -n \
-        --arg d "${domain:-}" \
-        --arg t "${type:-local_port}" \
-        --arg n "${name:-}" \
-        --arg p "${port:-}" \
-        --arg m "${method:-http-01}" \
-        --arg dp "${provider:-}" \
-        --arg w "${wildcard:-n}" \
-        --arg cu "${ca_server:-}" \
-        --arg cn "${ca_name:-}" \
-        --arg cf "${cf:-}" \
-        --arg kf "${kf:-}" \
+        --arg d "$d_val" --arg t "$t_val" --arg n "$n_val" --arg p "$p_val" \
+        --arg m "$m_val" --arg dp "$dp_val" --arg w "$w_val" \
+        --arg cu "$cu_val" --arg cn "$cn_val" \
+        --arg cf "$cf_val" --arg kf "$kf_val" \
         '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
     
     exec 1>&3
