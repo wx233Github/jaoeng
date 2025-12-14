@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.11.0-CF代理修复版)
-# - 新增: "重新申请/切换模式"功能，方便修正配置错误的证书。
-# - 优化: Standalone 模式增加 Cloudflare 冲突警告。
-# - 逻辑: 续期遇到 504 错误时，引导用户切换至 DNS 模式。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.12.0-强制换CA版)
+# - 新增: "重新申请"流程中增加切换 CA (ZeroSSL <-> Let's Encrypt) 选项。
+# - 建议: 遇到 retryafter 错误时，请务必切换到 Let's Encrypt。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.11.0"
+SCRIPT_VERSION="v3.12.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -117,18 +116,29 @@ _apply_for_certificate() {
         done
     fi
 
-    # 简化的解析验证，仅作提示
-    log_info "验证 DNS 解析..."
-    SERVER_IP=$(curl -s https://api.ipify.org)
-    DOMAIN_IP=$(dig +short "$DOMAIN" A | head -n1)
-    if [ -z "$DOMAIN_IP" ]; then
-        log_warn "警告: 无法获取域名解析 IP。"
-    elif [ "$DOMAIN_IP" != "$SERVER_IP" ]; then
-        log_warn "提示: 域名解析 IP ($DOMAIN_IP) 与本机 ($SERVER_IP) 不一致。"
-        log_warn "如果开启了 Cloudflare 小黄云，请务必使用 [DNS API] 模式，否则会失败！"
-    else
-        log_success "域名解析指向本机。"
+    # --- 新增: 切换 CA 询问 ---
+    echo ""
+    log_info "当前 CA 机构可能为 ZeroSSL (acme.sh 默认)。"
+    log_warn "若您遇到 'retryafter' 错误，请务必切换到 Let's Encrypt。"
+    local CA_SERVER=""
+    if confirm_action "是否切换 CA 机构 (推荐切到 Let's Encrypt)?"; then
+        local -a ca_list=("1. Let's Encrypt (推荐)" "2. ZeroSSL (默认)" "3. Google Public CA")
+        _render_menu "选择 CA 机构" "${ca_list[@]}"
+        local ca_choice
+        ca_choice=$(_prompt_for_menu_choice "1-3")
+        case "$ca_choice" in
+            1) CA_SERVER="letsencrypt" ;;
+            2) CA_SERVER="zerossl" ;;
+            3) CA_SERVER="google" ;;
+            *) CA_SERVER="letsencrypt" ;; # 默认回退
+        esac
+        
+        if [ -n "$CA_SERVER" ]; then
+            log_info "正在设置默认 CA 为: $CA_SERVER ..."
+            "$ACME_BIN" --set-default-ca --server "$CA_SERVER"
+        fi
     fi
+    # -------------------------
 
     local USE_WILDCARD=""
     echo -ne "${YELLOW}是否申请泛域名证书 (*.$DOMAIN)？ (y/[N]): ${NC}"
@@ -136,6 +146,8 @@ _apply_for_certificate() {
     if [[ "$wild_choice" == "y" || "$wild_choice" == "Y" ]]; then
         USE_WILDCARD="*.$DOMAIN"
         log_info "已启用泛域名: $USE_WILDCARD"
+    else
+        log_info "不申请泛域名。"
     fi
 
     local INSTALL_PATH
@@ -161,7 +173,6 @@ _apply_for_certificate() {
             METHOD="standalone"
             log_warn "注意: 如果您开启了 CDN (如 CF 小黄云)，Standalone 模式极大概率会失败(504错误)！"
             if confirm_action "确认使用 Standalone 模式?"; then
-                # 继续
                 if run_with_sudo ss -tuln | grep -q ":80\s"; then
                     log_err "80端口被占用。"
                     run_with_sudo ss -tuln | grep ":80\s"
@@ -200,8 +211,10 @@ _apply_for_certificate() {
         *) return ;;
     esac
 
-    if ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-         log_info "检查账户..."
+    # 只有当没选切换 CA，且当前也没有 ZeroSSL 账号时才检查注册
+    # 如果用户刚才选了切换到 Lets Encrypt，这里就不需要 ZeroSSL 账号了
+    if [[ "$CA_SERVER" != "letsencrypt" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
+         log_info "检查 ZeroSSL 账户..."
          local reg_email
          reg_email=$(_prompt_user_input "若需使用 ZeroSSL，请输入邮箱注册 (回车跳过): " "")
          if [ -n "$reg_email" ]; then
@@ -215,8 +228,11 @@ _apply_for_certificate() {
     if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
     if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
     
-    # 使用 --force 确保如果是切换模式也能覆盖
+    # 强制覆盖
     ISSUE_CMD+=(--force)
+    
+    # 如果指定了 CA，显式加参数
+    if [ -n "$CA_SERVER" ]; then ISSUE_CMD+=(--server "$CA_SERVER"); fi
 
     if ! "${ISSUE_CMD[@]}"; then
         log_err "证书申请失败！日志如下:"
@@ -276,6 +292,7 @@ _manage_certificates() {
             local next_renew_str="自动/未知"
             local color="$NC"
             local install_path="未知"
+            local ca_str="未知"
 
             if [ -f "$CERT_FILE" ]; then
                 local end_date; end_date=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
@@ -292,6 +309,15 @@ _manage_certificates() {
                         color="$GREEN"; status_text="有效"; days_info="剩余 $left_days 天"
                     fi
                 fi
+                
+                # 获取 CA
+                local issuer
+                issuer=$(openssl x509 -issuer -noout -in "$CERT_FILE" 2>/dev/null)
+                if [[ "$issuer" == *"ZeroSSL"* ]]; then ca_str="ZeroSSL"
+                elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="Let's Encrypt"
+                elif [[ "$issuer" == *"Google"* ]]; then ca_str="Google"
+                else ca_str="Other"
+                fi
             else
                 color="$RED"; status_text="文件丢失"; days_info="无文件"
             fi
@@ -303,7 +329,7 @@ _manage_certificates() {
                 [ -n "$next_ts" ] && next_renew_str=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
             fi
 
-            printf "${GREEN}[ %d ] %s${NC}\n" "$((i+1))" "$d"
+            printf "${GREEN}[ %d ] %s${NC} (CA: %s)\n" "$((i+1))" "$d" "$ca_str"
             printf "  ├─ 路 径 : %s\n" "$install_path"
             printf "  ├─ 续 期 : %s (计划)\n" "$next_renew_str"
             printf "  └─ 证 书 : ${color}%s (%s , %s 到 期)${NC}\n" "$status_text" "$days_info" "$date_str"
@@ -378,19 +404,9 @@ _manage_certificates() {
                             log_err "续期失败 (Code: $err_code)。"
                             echo "$log_tail"
                             
-                            # --- 智能引导切换模式 ---
-                            if [[ "$log_tail" == *"504 Gateway Time-out"* ]]; then
-                                echo -e "\n${RED}检测到 504 错误。这通常是因为开启了 Cloudflare 小黄云导致 Standalone 模式失效。${NC}"
-                                if confirm_action "是否立即切换到 [DNS API] 模式重新申请?"; then
-                                    if [ "$port_conflict" == "true" ]; then
-                                        log_info "正在重启 $temp_stop_svc ..."
-                                        run_with_sudo systemctl start "$temp_stop_svc"
-                                    fi
-                                    # 跳转到重新申请流程
-                                    _apply_for_certificate "$SELECTED_DOMAIN"
-                                    press_enter_to_continue
-                                    break # 退出当前管理循环
-                                fi
+                            if [[ "$log_tail" == *"retryafter"* ]]; then
+                                echo ""
+                                log_warn "检测到 CA 限制错误 (retryafter)。请使用选项 [4. 重新申请] 并切换到 Let's Encrypt。"
                             fi
                         fi
                     fi
@@ -417,11 +433,10 @@ _manage_certificates() {
                     fi
                     ;;
                 4)
-                    # 重新申请/切换模式
-                    if confirm_action "此操作将覆盖原有配置 (适用于修复配置错误)。确认继续?"; then
+                    if confirm_action "此操作将覆盖原有配置 (可修复配置错误或切换CA)。确认继续?"; then
                          _apply_for_certificate "$SELECTED_DOMAIN"
                          press_enter_to_continue
-                         break 2 # 跳出管理层，刷新列表
+                         break 2 
                     fi
                     ;;
                 ""|"0") break ;;
