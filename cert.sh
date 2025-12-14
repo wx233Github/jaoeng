@@ -1,12 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.13.0-参数修复与安全加固)
-# - 修复: 修正 DNS 模式下的参数传递错误 (--dns dns_cf)。
-# - 安全: 敏感 Token 仅在内存短暂驻留，用后即焚。
-# - 默认: CA 推荐首选 Let's Encrypt。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.14.0-智能复用配置版)
+# - 优化: 输入 API Token 时自动填充历史记录，回车即可复用。
+# - 优化: 精简安全提示文案。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.13.0"
+SCRIPT_VERSION="v3.14.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -167,6 +166,9 @@ _apply_for_certificate() {
     
     local METHOD PRE_HOOK POST_HOOK
 
+    # 读取历史配置 (用于自动填充)
+    local account_conf="$HOME/.acme.sh/account.conf"
+    
     case "$VERIFY_CHOICE" in
         1) 
             METHOD="standalone"
@@ -186,23 +188,50 @@ _apply_for_certificate() {
         2) 
             METHOD="dns_cf"
             echo ""
-            log_info "【安全提示】"
-            echo "脚本会通过环境变量传递 API Token，这在 Linux 中是安全的。"
-            echo "Token 仅在内存中暂存，脚本执行完毕后会自动销毁，不会留存日志。"
-            echo "推荐使用 Edit Zone DNS 权限的 API Token，而非 Global Key。"
-            echo ""
+            log_info "【安全】Token 仅驻留内存用后即焚。推荐使用 API Token (Edit Zone DNS)。"
+            
+            # 尝试从 account.conf 读取历史 Token
+            local def_token=""
+            local def_acc=""
+            if [ -f "$account_conf" ]; then
+                def_token=$(grep "^SAVED_CF_Token=" "$account_conf" | cut -d= -f2- | tr -d "'\"")
+                def_acc=$(grep "^SAVED_CF_Account_ID=" "$account_conf" | cut -d= -f2- | tr -d "'\"")
+            fi
+            
+            local p_token="输入 CF_Token"
+            [ -n "$def_token" ] && p_token+=" [默认: 已保存]"
+            local p_acc="输入 CF_Account_ID"
+            [ -n "$def_acc" ] && p_acc+=" [默认: 已保存]"
+
             local cf_token cf_acc
-            cf_token=$(_prompt_user_input "输入 CF_Token: " "")
-            cf_acc=$(_prompt_user_input "输入 CF_Account_ID: " "")
+            cf_token=$(_prompt_user_input "$p_token: " "$def_token")
+            cf_acc=$(_prompt_user_input "$p_acc: " "$def_acc")
+            
             [ -z "$cf_token" ] || [ -z "$cf_acc" ] && { log_err "信息不完整。"; return 1; }
             export CF_Token="$cf_token"
             export CF_Account_ID="$cf_acc"
             ;;
         3) 
             METHOD="dns_ali"
+            log_info "【安全】Key/Secret 仅驻留内存用后即焚。"
+            
+            # 尝试从 account.conf 读取历史 Key
+            local def_key=""
+            local def_sec=""
+            if [ -f "$account_conf" ]; then
+                def_key=$(grep "^SAVED_Ali_Key=" "$account_conf" | cut -d= -f2- | tr -d "'\"")
+                def_sec=$(grep "^SAVED_Ali_Secret=" "$account_conf" | cut -d= -f2- | tr -d "'\"")
+            fi
+
+            local p_key="输入 Ali_Key"
+            [ -n "$def_key" ] && p_key+=" [默认: 已保存]"
+            local p_sec="输入 Ali_Secret"
+            [ -n "$def_sec" ] && p_sec+=" [默认: 已保存]"
+
             local ali_key ali_sec
-            ali_key=$(_prompt_user_input "输入 Ali_Key: " "")
-            ali_sec=$(_prompt_user_input "输入 Ali_Secret: " "")
+            ali_key=$(_prompt_user_input "$p_key: " "$def_key")
+            ali_sec=$(_prompt_user_input "$p_sec: " "$def_sec")
+            
             [ -z "$ali_key" ] || [ -z "$ali_sec" ] && { log_err "信息不完整。"; return 1; }
             export Ali_Key="$ali_key"
             export Ali_Secret="$ali_sec"
@@ -210,7 +239,6 @@ _apply_for_certificate() {
         *) return ;;
     esac
 
-    # ZeroSSL 账号注册检测 (仅在用户主动选 ZeroSSL 或默认未改时)
     if [[ "$CA_SERVER" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
          log_info "检查 ZeroSSL 账户..."
          local reg_email
@@ -222,7 +250,6 @@ _apply_for_certificate() {
 
     log_info "🚀 正在申请证书..."
     
-    # --- 修复参数拼接 ---
     local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN")
     
     if [[ "$METHOD" == "standalone" ]]; then
@@ -230,21 +257,17 @@ _apply_for_certificate() {
     else
         ISSUE_CMD+=(--dns "$METHOD")
     fi
-    # ------------------
     
     if [ -n "$USE_WILDCARD" ]; then ISSUE_CMD+=(-d "$USE_WILDCARD"); fi
     if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
     if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
     
-    # 强制覆盖 & 指定 CA
     ISSUE_CMD+=(--force)
     if [ -n "$CA_SERVER" ]; then ISSUE_CMD+=(--server "$CA_SERVER"); fi
 
     if ! "${ISSUE_CMD[@]}"; then
         log_err "证书申请失败！日志如下:"
         [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 20 "$HOME/.acme.sh/acme.sh.log"
-        
-        # 安全销毁变量
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
     fi
@@ -263,8 +286,6 @@ _apply_for_certificate() {
     
     run_with_sudo bash -c "date +'%Y-%m-%d %H:%M:%S' > '$INSTALL_PATH/.apply_time'"
     log_success "完成！路径: $INSTALL_PATH"
-    
-    # 安全销毁变量
     unset CF_Token CF_Account_ID Ali_Key Ali_Secret
 }
 
