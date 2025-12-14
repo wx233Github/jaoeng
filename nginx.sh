@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.3-StableIO)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.4-DockerFix)
 # =============================================================
-# - 核心修复: 采用 jq --argjson 彻底解决 JSON 数据存取时的转义崩溃问题。
-# - 诊断增强: Nginx 失败时自动输出配置文件语法检测结果。
+# - 核心修复: 修正 Docker 容器双栈网络下端口号被错误拼接的问题。
+# - 稳定性: 保持 jq --argjson 等安全 IO 机制。
 
 set -euo pipefail
 
@@ -229,7 +229,6 @@ _restart_nginx_ui() {
 # ==============================================================================
 
 _get_project_json() {
-    # 只取第一条匹配，防止多重数据
     jq -c "first(.[] | select(.domain == \"$1\"))" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""
 }
 
@@ -240,7 +239,6 @@ _save_project_json() {
     local temp
     temp=$(mktemp)
     
-    # 核心修复: 使用 --argjson 安全地传递 JSON 对象，严禁字符串拼接
     if [ -n "$(_get_project_json "$domain")" ]; then
         jq --argjson new_entry "$json" --arg target_domain "$domain" \
            '(.[] | select(.domain == $target_domain)) = $new_entry' \
@@ -274,7 +272,6 @@ _write_and_enable_nginx_config() {
     local key
     key=$(echo "$json" | jq -r .key_file)
     
-    # 核心检查: 端口绝对不能为空
     if [[ -z "$port" || "$port" == "null" ]]; then
         log_message ERROR "配置生成终止: 检测到端口为空，可能是解析失败。"
         return 1
@@ -500,7 +497,6 @@ _gather_project_details() {
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
     
     local domain
-    # 使用 printf 防止 echo 转义副作用
     domain=$(printf '%s' "$cur" | jq -r '.domain // ""' 2>/dev/null || echo "")
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
@@ -522,7 +518,8 @@ _gather_project_details() {
             if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
                 type="docker"
                 exec 1>&3
-                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
+                # 修复: 增加空格分隔并使用 awk 取第一列，防止 IPv4/IPv6 双重映射时端口号拼接 (例如 80808080)
+                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}' 2>/dev/null | head -n1 | awk '{print $1}')
                 exec 1>&2
                 
                 is_docker="true"
@@ -545,7 +542,6 @@ _gather_project_details() {
     local ca_name="letsencrypt"
     
     if [ "$skip_cert" == "true" ]; then
-        # 稳健性修复：如果 jq 解析失败，回退到默认值，防止 parse error 炸屏
         method=$(printf '%s' "$cur" | jq -r '.acme_validation_method // "http-01"' 2>/dev/null || echo "http-01")
         provider=$(printf '%s' "$cur" | jq -r '.dns_api_provider // ""' 2>/dev/null || echo "")
         wildcard=$(printf '%s' "$cur" | jq -r '.use_wildcard // "n"' 2>/dev/null || echo "n")
@@ -742,7 +738,6 @@ _handle_reconfigure_project() {
     local d="$1"
     local cur; cur=$(_get_project_json "$d")
     
-    # 健壮性检查: 如果读取到的旧配置无效，则视为空对象，避免阻塞流程
     if [ -z "$cur" ] || ! echo "$cur" | jq -e . >/dev/null 2>&1; then
         log_message WARN "无法读取或解析旧配置 ($d)，将作为新项目配置。"
         cur="{}"
