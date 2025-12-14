@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.1-FixUnboundVars)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.2-JsonRobust)
 # =============================================================
-# - 核心修复: 修正 Nginx 配置文件生成时 Shell 变量与 Nginx 变量转义冲突导致的崩溃。
-# - 代码规范: 强化 set -u 环境下的变量健壮性，修复变量作用域。
+# - 核心修复: 修复重配时 JSON 解析报错问题 (Unmatched '}')。
+# - 逻辑优化: 增强 Nginx 服务控制的容错性。
 
 set -euo pipefail
 
@@ -197,7 +197,17 @@ install_acme_sh() {
 
 control_nginx() {
     local action="$1"
-    systemctl "$action" nginx || { log_message ERROR "Nginx $action 失败"; return 1; }
+    # 修复: 如果是 reload 且服务未运行，则自动转为 restart/start
+    if [ "$action" == "reload" ] && ! systemctl is-active --quiet nginx; then
+        action="restart"
+    fi
+    
+    systemctl "$action" nginx || { 
+        log_message ERROR "Nginx $action 失败"; 
+        # 尝试 fallback 
+        if [ "$action" == "reload" ]; then systemctl restart nginx; fi
+        return 1; 
+    }
     return 0
 }
 
@@ -218,7 +228,10 @@ _restart_nginx_ui() {
 # SECTION: 数据与文件管理
 # ==============================================================================
 
-_get_project_json() { jq -c ".[] | select(.domain == \"$1\")" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""; }
+_get_project_json() {
+    # 修复: 使用 first() 确保只返回一条匹配记录，避免因重复数据导致 parse error
+    jq -c "first(.[] | select(.domain == \"$1\"))" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""
+}
 
 _save_project_json() {
     local json="$1"
@@ -261,7 +274,6 @@ _write_and_enable_nginx_config() {
         return 1
     fi
 
-    # 修复: 在 HereDoc 中对 Nginx 变量进行转义 ($host -> \$host)，防止 shell 尝试扩展它们
     cat > "$conf" << EOF
 server {
     listen 80;
@@ -366,7 +378,6 @@ _issue_and_install_certificate() {
     
     local domain
     domain=$(echo "$json" | jq -r .domain)
-    # 增加双重检查
     if [[ -z "$domain" || "$domain" == "null" ]]; then
         log_message ERROR "内部错误: 域名为空。"
         return 1
@@ -483,7 +494,8 @@ _gather_project_details() {
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
     
     local domain
-    domain=$(echo "$cur" | jq -r '.domain // ""')
+    # 修复: 使用 printf 避免 echo 对特殊字符的转义处理
+    domain=$(printf '%s' "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
@@ -493,7 +505,7 @@ _gather_project_details() {
     local port="cert_only"
     
     if [ "$is_cert_only" == "false" ]; then
-        name=$(echo "$cur" | jq -r '.name // ""')
+        name=$(printf '%s' "$cur" | jq -r '.name // ""')
         [ "$name" == "证书" ] && name=""
         
         while true; do
@@ -527,12 +539,12 @@ _gather_project_details() {
     local ca_name="letsencrypt"
     
     if [ "$skip_cert" == "true" ]; then
-        # 继承旧值
-        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
-        provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
-        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
-        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
-        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
+        # 修复: 继承旧值时增强健壮性，屏蔽错误输出并提供回退值
+        method=$(printf '%s' "$cur" | jq -r '.acme_validation_method // "http-01"' 2>/dev/null || echo "http-01")
+        provider=$(printf '%s' "$cur" | jq -r '.dns_api_provider // ""' 2>/dev/null || echo "")
+        wildcard=$(printf '%s' "$cur" | jq -r '.use_wildcard // "n"' 2>/dev/null || echo "n")
+        ca_server=$(printf '%s' "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"' 2>/dev/null || echo "https://acme-v02.api.letsencrypt.org/directory")
+        ca_name=$(printf '%s' "$cur" | jq -r '.ca_server_name // "letsencrypt"' 2>/dev/null || echo "letsencrypt")
     else
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
@@ -589,6 +601,7 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
+    # 修复: 明确变量默认值，防止空变量导致 json 生成错误
     jq -n \
         --arg d "${domain:-}" \
         --arg t "${type:-local_port}" \
