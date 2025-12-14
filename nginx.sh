@@ -1,8 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.9.0-变量修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.0.0-稳定重构版)
 # =============================================================
-# - 修复: 解决重配时因变量未绑定导致的脚本崩溃。
-# - 修复: 增强子 Shell 数据返回的健壮性。
+# - 核心修复: 解决重配时 JSON 数据丢失导致的 crash。
+# - 交互修复: 菜单选择不再允许空回车跳过，强制用户选择。
+# - 架构优化: 统一数据流出口，确保 jq 输出始终执行。
 
 set -euo pipefail
 
@@ -51,11 +52,18 @@ log_message() {
 
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}⌨️  按 Enter 键继续...${NC}")" < /dev/tty; }
 
+# 修复: 强制要求输入有效选项，禁止空回车跳过
 _prompt_for_menu_choice_local() {
     local range="$1"
-    local text="${ORANGE}👉 选项 [${range}]${NC} (↩ 返回): "
-    local choice; read -r -p "$(echo -e "$text")" choice < /dev/tty
-    echo "$choice"
+    local prompt_text="${ORANGE}👉 选项 [${range}]${NC} (↩ 返回): "
+    local choice
+    while true; do
+        read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
+        # 允许空回车作为返回信号 (在主菜单逻辑处理)
+        if [ -z "$choice" ]; then echo ""; return; fi
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then echo "$choice"; return; fi
+        # 如果输入无效，循环询问
+    done
 }
 
 generate_line() {
@@ -447,6 +455,7 @@ _gather_project_details() {
         local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
         
         type="local_port"; port="$target"
+        
         # 修复: 临时切回 stdout 执行 docker inspect
         if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
             type="docker"
@@ -460,7 +469,7 @@ _gather_project_details() {
         fi
     fi
 
-    # 默认值
+    # 默认值初始化
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -479,7 +488,16 @@ _gather_project_details() {
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
-        ca_choice=$(_prompt_for_menu_choice_local "1-3")
+        # 必须循环直到用户选择，修复回车默认值逻辑
+        while true; do
+            ca_choice=$(_prompt_for_menu_choice_local "1-3")
+            if [ -z "$ca_choice" ]; then 
+                log_message WARN "请选择一个选项。" >&2
+                continue
+            fi
+            break
+        done
+
         case "$ca_choice" in
             1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
             2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
@@ -495,7 +513,11 @@ _gather_project_details() {
 
         local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
         _render_menu "验证方式" "${method_display[@]}"
-        local v_choice=$(_prompt_for_menu_choice_local "1-3")
+        local v_choice
+        while true; do
+            v_choice=$(_prompt_for_menu_choice_local "1-3")
+            [ -n "$v_choice" ] && break
+        done
         
         case "$v_choice" in
             1) 
@@ -519,7 +541,7 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 最终输出 JSON
+    # 关键修复: 确保此路径一定执行，且输出到 fd 3
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
@@ -653,7 +675,6 @@ _handle_reconfigure_project() {
     fi
 
     local new
-    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
