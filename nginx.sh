@@ -1,9 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.0.0-稳定重构版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.1.0-变量终极修复)
 # =============================================================
-# - 核心修复: 解决重配时 JSON 数据丢失导致的 crash。
-# - 交互修复: 菜单选择不再允许空回车跳过，强制用户选择。
-# - 架构优化: 统一数据流出口，确保 jq 输出始终执行。
+# - 修复: 重配时跳过证书申请导致 domain 变量丢失的 Bug。
+# - 优化: 菜单选择逻辑，区分强制选择与可选返回。
 
 set -euo pipefail
 
@@ -52,17 +51,20 @@ log_message() {
 
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}⌨️  按 Enter 键继续...${NC}")" < /dev/tty; }
 
-# 修复: 强制要求输入有效选项，禁止空回车跳过
+# 增加参数：是否允许空回车 (true/false)
 _prompt_for_menu_choice_local() {
     local range="$1"
+    local allow_empty="${2:-false}"
     local prompt_text="${ORANGE}👉 选项 [${range}]${NC} (↩ 返回): "
     local choice
     while true; do
         read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
-        # 允许空回车作为返回信号 (在主菜单逻辑处理)
-        if [ -z "$choice" ]; then echo ""; return; fi
+        if [ -z "$choice" ]; then
+            if [ "$allow_empty" = "true" ]; then echo ""; return; fi
+            echo -e "${YELLOW}⚠️  请选择一个选项。${NC}" >&2
+            continue
+        fi
         if [[ "$choice" =~ ^[0-9]+$ ]]; then echo "$choice"; return; fi
-        # 如果输入无效，循环询问
     done
 }
 
@@ -287,7 +289,8 @@ _view_access_log() {
     local domain="$1"
     echo ""
     _render_menu "查看日志: $domain" "1. 访问日志 (Access Log)" "2. 错误日志 (Error Log)"
-    local c=$(_prompt_for_menu_choice_local "1-2")
+    # 日志查看允许空回车退出
+    local c=$(_prompt_for_menu_choice_local "1-2" "true")
     local log_path=""
     case "$c" in
         1) log_path="$NGINX_ACCESS_LOG" ;;
@@ -435,7 +438,6 @@ _gather_project_details() {
     exec 1>&2
 
     local cur="${1:-{\}}"
-    # 修复: 正确读取参数
     local skip_cert="${2:-false}"
     local is_cert_only="false"
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
@@ -456,7 +458,6 @@ _gather_project_details() {
         
         type="local_port"; port="$target"
         
-        # 修复: 临时切回 stdout 执行 docker inspect
         if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
             type="docker"
             exec 1>&3
@@ -469,7 +470,7 @@ _gather_project_details() {
         fi
     fi
 
-    # 默认值初始化
+    # 默认值
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -486,9 +487,8 @@ _gather_project_details() {
     else
         # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-        _render_menu "选择 CA 机构" "${ca_list[@]}"
+        _render_menu "选择 CA 机构" "${ca_list[@]}" >&2 # 强制重定向
         local ca_choice
-        # 必须循环直到用户选择，修复回车默认值逻辑
         while true; do
             ca_choice=$(_prompt_for_menu_choice_local "1-3")
             if [ -z "$ca_choice" ]; then 
@@ -506,13 +506,13 @@ _gather_project_details() {
         esac
         
         if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-             log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..."
+             log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
              local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
-             "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_message WARN "ZeroSSL 注册跳过"
-        fi
+             "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
+    fi
 
         local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-        _render_menu "验证方式" "${method_display[@]}"
+        _render_menu "验证方式" "${method_display[@]}" >&2 # 强制重定向
         local v_choice
         while true; do
             v_choice=$(_prompt_for_menu_choice_local "1-3")
@@ -523,7 +523,7 @@ _gather_project_details() {
             1) 
                 method="http-01" 
                 if [ "$is_cert_only" == "false" ]; then
-                    log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。"
+                    log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2
                 fi
                 ;;
             2) 
@@ -541,7 +541,7 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 关键修复: 确保此路径一定执行，且输出到 fd 3
+    # 最终输出 JSON
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
@@ -675,6 +675,7 @@ _handle_reconfigure_project() {
     fi
 
     local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
@@ -719,6 +720,7 @@ manage_configs() {
         echo ""
         _display_projects_list "$all"
         
+        # 允许回车返回
         local choice_idx
         choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
         
@@ -736,7 +738,10 @@ manage_configs() {
             "5. 📊 查看日志" \
             "6. ⚙️  重新配置"
         
-        case "$(_prompt_for_menu_choice_local "1-6")" in
+        # 管理菜单也允许空回车返回，不强制选择
+        local op=$(_prompt_for_menu_choice_local "1-6" "true")
+        
+        case "$op" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
