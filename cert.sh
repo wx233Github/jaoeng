@@ -1,11 +1,12 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.12.0-强制换CA版)
-# - 新增: "重新申请"流程中增加切换 CA (ZeroSSL <-> Let's Encrypt) 选项。
-# - 建议: 遇到 retryafter 错误时，请务必切换到 Let's Encrypt。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.13.0-参数修复与安全加固)
+# - 修复: 修正 DNS 模式下的参数传递错误 (--dns dns_cf)。
+# - 安全: 敏感 Token 仅在内存短暂驻留，用后即焚。
+# - 默认: CA 推荐首选 Let's Encrypt。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.12.0"
+SCRIPT_VERSION="v3.13.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -116,27 +117,25 @@ _apply_for_certificate() {
         done
     fi
 
-    # --- 新增: 切换 CA 询问 ---
+    # --- 切换 CA (默认推荐 Let's Encrypt) ---
     echo ""
-    log_info "当前 CA 机构可能为 ZeroSSL (acme.sh 默认)。"
-    log_warn "若您遇到 'retryafter' 错误，请务必切换到 Let's Encrypt。"
-    local CA_SERVER=""
-    if confirm_action "是否切换 CA 机构 (推荐切到 Let's Encrypt)?"; then
-        local -a ca_list=("1. Let's Encrypt (推荐)" "2. ZeroSSL (默认)" "3. Google Public CA")
-        _render_menu "选择 CA 机构" "${ca_list[@]}"
-        local ca_choice
-        ca_choice=$(_prompt_for_menu_choice "1-3")
-        case "$ca_choice" in
-            1) CA_SERVER="letsencrypt" ;;
-            2) CA_SERVER="zerossl" ;;
-            3) CA_SERVER="google" ;;
-            *) CA_SERVER="letsencrypt" ;; # 默认回退
-        esac
-        
-        if [ -n "$CA_SERVER" ]; then
-            log_info "正在设置默认 CA 为: $CA_SERVER ..."
-            "$ACME_BIN" --set-default-ca --server "$CA_SERVER"
-        fi
+    log_info "建议选择 CA 机构 (推荐 Let's Encrypt，兼容性最好)。"
+    local CA_SERVER="letsencrypt"
+    
+    local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
+    _render_menu "选择 CA 机构" "${ca_list[@]}"
+    local ca_choice
+    ca_choice=$(_prompt_for_menu_choice "1-3")
+    case "$ca_choice" in
+        1) CA_SERVER="letsencrypt" ;;
+        2) CA_SERVER="zerossl" ;;
+        3) CA_SERVER="google" ;;
+        *) CA_SERVER="letsencrypt" ;;
+    esac
+    
+    if [ -n "$CA_SERVER" ]; then
+        log_info "正在设置默认 CA 为: $CA_SERVER ..."
+        "$ACME_BIN" --set-default-ca --server "$CA_SERVER"
     fi
     # -------------------------
 
@@ -171,27 +170,27 @@ _apply_for_certificate() {
     case "$VERIFY_CHOICE" in
         1) 
             METHOD="standalone"
-            log_warn "注意: 如果您开启了 CDN (如 CF 小黄云)，Standalone 模式极大概率会失败(504错误)！"
-            if confirm_action "确认使用 Standalone 模式?"; then
-                if run_with_sudo ss -tuln | grep -q ":80\s"; then
-                    log_err "80端口被占用。"
-                    run_with_sudo ss -tuln | grep ":80\s"
-                    return 1
-                fi
-                if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
-                    local svc_guess="${active_svc:-nginx}"
-                    local svc
-                    svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
-                    PRE_HOOK="systemctl stop $svc"
-                    POST_HOOK="systemctl start $svc"
-                fi
-            else
-                log_info "已取消，请重新选择。"
+            if run_with_sudo ss -tuln | grep -q ":80\s"; then
+                log_err "80端口被占用。"
+                run_with_sudo ss -tuln | grep ":80\s"
                 return 1
+            fi
+            if confirm_action "配置自动续期钩子 (自动停/启 Web服务)?"; then
+                local svc_guess="${active_svc:-nginx}"
+                local svc
+                svc=$(_prompt_user_input "服务名称 (如 $svc_guess): " "$svc_guess")
+                PRE_HOOK="systemctl stop $svc"
+                POST_HOOK="systemctl start $svc"
             fi
             ;;
         2) 
             METHOD="dns_cf"
+            echo ""
+            log_info "【安全提示】"
+            echo "脚本会通过环境变量传递 API Token，这在 Linux 中是安全的。"
+            echo "Token 仅在内存中暂存，脚本执行完毕后会自动销毁，不会留存日志。"
+            echo "推荐使用 Edit Zone DNS 权限的 API Token，而非 Global Key。"
+            echo ""
             local cf_token cf_acc
             cf_token=$(_prompt_user_input "输入 CF_Token: " "")
             cf_acc=$(_prompt_user_input "输入 CF_Account_ID: " "")
@@ -211,9 +210,8 @@ _apply_for_certificate() {
         *) return ;;
     esac
 
-    # 只有当没选切换 CA，且当前也没有 ZeroSSL 账号时才检查注册
-    # 如果用户刚才选了切换到 Lets Encrypt，这里就不需要 ZeroSSL 账号了
-    if [[ "$CA_SERVER" != "letsencrypt" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
+    # ZeroSSL 账号注册检测 (仅在用户主动选 ZeroSSL 或默认未改时)
+    if [[ "$CA_SERVER" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
          log_info "检查 ZeroSSL 账户..."
          local reg_email
          reg_email=$(_prompt_user_input "若需使用 ZeroSSL，请输入邮箱注册 (回车跳过): " "")
@@ -223,20 +221,31 @@ _apply_for_certificate() {
     fi
 
     log_info "🚀 正在申请证书..."
-    local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN" --"$METHOD")
+    
+    # --- 修复参数拼接 ---
+    local ISSUE_CMD=("$ACME_BIN" --issue -d "$DOMAIN")
+    
+    if [[ "$METHOD" == "standalone" ]]; then
+        ISSUE_CMD+=(--standalone)
+    else
+        ISSUE_CMD+=(--dns "$METHOD")
+    fi
+    # ------------------
+    
     if [ -n "$USE_WILDCARD" ]; then ISSUE_CMD+=(-d "$USE_WILDCARD"); fi
     if [ -n "$PRE_HOOK" ]; then ISSUE_CMD+=(--pre-hook "$PRE_HOOK"); fi
     if [ -n "$POST_HOOK" ]; then ISSUE_CMD+=(--post-hook "$POST_HOOK"); fi
     
-    # 强制覆盖
+    # 强制覆盖 & 指定 CA
     ISSUE_CMD+=(--force)
-    
-    # 如果指定了 CA，显式加参数
     if [ -n "$CA_SERVER" ]; then ISSUE_CMD+=(--server "$CA_SERVER"); fi
 
     if ! "${ISSUE_CMD[@]}"; then
         log_err "证书申请失败！日志如下:"
         [ -f "$HOME/.acme.sh/acme.sh.log" ] && tail -n 20 "$HOME/.acme.sh/acme.sh.log"
+        
+        # 安全销毁变量
+        unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
     fi
     
@@ -248,11 +257,15 @@ _apply_for_certificate() {
         --fullchain-file "$INSTALL_PATH/$DOMAIN.crt" \
         --reloadcmd      "$RELOAD_CMD"; then
         log_err "安装失败。"
+        unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
     fi
     
     run_with_sudo bash -c "date +'%Y-%m-%d %H:%M:%S' > '$INSTALL_PATH/.apply_time'"
     log_success "完成！路径: $INSTALL_PATH"
+    
+    # 安全销毁变量
+    unset CF_Token CF_Account_ID Ali_Key Ali_Secret
 }
 
 _manage_certificates() {
@@ -310,12 +323,10 @@ _manage_certificates() {
                     fi
                 fi
                 
-                # 获取 CA
                 local issuer
                 issuer=$(openssl x509 -issuer -noout -in "$CERT_FILE" 2>/dev/null)
                 if [[ "$issuer" == *"ZeroSSL"* ]]; then ca_str="ZeroSSL"
                 elif [[ "$issuer" == *"Let's Encrypt"* ]]; then ca_str="Let's Encrypt"
-                elif [[ "$issuer" == *"Google"* ]]; then ca_str="Google"
                 else ca_str="Other"
                 fi
             else
