@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.1.0-变量终极修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.2.0-重配修复版)
 # =============================================================
-# - 修复: 重配时跳过证书申请导致 domain 变量丢失的 Bug。
-# - 优化: 菜单选择逻辑，区分强制选择与可选返回。
+# - 修复: 重配项目时跳过证书申请导致的变量未绑定崩溃。
+# - 优化: 增强 JSON 解析的容错性。
 
 set -euo pipefail
 
@@ -51,7 +51,6 @@ log_message() {
 
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}⌨️  按 Enter 键继续...${NC}")" < /dev/tty; }
 
-# 增加参数：是否允许空回车 (true/false)
 _prompt_for_menu_choice_local() {
     local range="$1"
     local allow_empty="${2:-false}"
@@ -289,8 +288,7 @@ _view_access_log() {
     local domain="$1"
     echo ""
     _render_menu "查看日志: $domain" "1. 访问日志 (Access Log)" "2. 错误日志 (Error Log)"
-    # 日志查看允许空回车退出
-    local c=$(_prompt_for_menu_choice_local "1-2" "true")
+    local c=$(_prompt_for_menu_choice_local "1-2")
     local log_path=""
     case "$c" in
         1) log_path="$NGINX_ACCESS_LOG" ;;
@@ -438,15 +436,18 @@ _gather_project_details() {
     exec 1>&2
 
     local cur="${1:-{\}}"
+    # 修复: 正确读取参数
     local skip_cert="${2:-false}"
     local is_cert_only="false"
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
+    # 1. 域名处理
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
     
+    # 2. 反代目标处理
     local type="cert_only"
     local name="证书"
     local port="cert_only"
@@ -470,7 +471,7 @@ _gather_project_details() {
         fi
     fi
 
-    # 默认值
+    # 3. 证书相关参数处理
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -478,16 +479,16 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 继承旧值
-        method=$(echo "$cur" | jq -r '.acme_validation_method')
-        provider=$(echo "$cur" | jq -r '.dns_api_provider')
-        wildcard=$(echo "$cur" | jq -r '.use_wildcard')
-        ca_server=$(echo "$cur" | jq -r '.ca_server_url')
-        ca_name=$(echo "$cur" | jq -r '.ca_server_name')
+        # 修复: 从 cur 中提取旧值，如果 cur 为空则使用默认值
+        # 必须给 jq 提供默认值 // "xxx"，否则会提取出 null
+        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
+        provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
+        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
+        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
+        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
-        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-        _render_menu "选择 CA 机构" "${ca_list[@]}" >&2 # 强制重定向
+        _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
         while true; do
             ca_choice=$(_prompt_for_menu_choice_local "1-3")
@@ -509,10 +510,10 @@ _gather_project_details() {
              log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
              local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
              "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
-    fi
+        fi
 
         local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-        _render_menu "验证方式" "${method_display[@]}" >&2 # 强制重定向
+        _render_menu "验证方式" "${method_display[@]}" >&2
         local v_choice
         while true; do
             v_choice=$(_prompt_for_menu_choice_local "1-3")
@@ -675,7 +676,6 @@ _handle_reconfigure_project() {
     fi
 
     local new
-    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
@@ -720,7 +720,6 @@ manage_configs() {
         echo ""
         _display_projects_list "$all"
         
-        # 允许回车返回
         local choice_idx
         choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
         
@@ -738,10 +737,7 @@ manage_configs() {
             "5. 📊 查看日志" \
             "6. ⚙️  重新配置"
         
-        # 管理菜单也允许空回车返回，不强制选择
-        local op=$(_prompt_for_menu_choice_local "1-6" "true")
-        
-        case "$op" in
+        case "$(_prompt_for_menu_choice_local "1-6")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
