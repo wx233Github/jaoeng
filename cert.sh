@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.14.0-智能复用配置版)
-# - 优化: 输入 API Token 时自动填充历史记录，回车即可复用。
-# - 优化: 精简安全提示文案。
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.15.0-文案微调版)
+# - 优化: API Token 输入提示更符合直觉。
+# - 移除: 冗余的 CA 推荐日志信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.14.0"
+SCRIPT_VERSION="v3.15.0"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -118,7 +118,7 @@ _apply_for_certificate() {
 
     # --- 切换 CA (默认推荐 Let's Encrypt) ---
     echo ""
-    log_info "建议选择 CA 机构 (推荐 Let's Encrypt，兼容性最好)。"
+    # 移除了之前的 log_info 建议提示
     local CA_SERVER="letsencrypt"
     
     local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
@@ -199,13 +199,23 @@ _apply_for_certificate() {
             fi
             
             local p_token="输入 CF_Token"
-            [ -n "$def_token" ] && p_token+=" [默认: 已保存]"
+            [ -n "$def_token" ] && p_token+=" (回车复用已保存)"
             local p_acc="输入 CF_Account_ID"
-            [ -n "$def_acc" ] && p_acc+=" [默认: 已保存]"
+            [ -n "$def_acc" ] && p_acc+=" (回车复用已保存)"
 
             local cf_token cf_acc
-            cf_token=$(_prompt_user_input "$p_token: " "$def_token")
-            cf_acc=$(_prompt_user_input "$p_acc: " "$def_acc")
+            cf_token=$(_prompt_user_input "$p_token: " "")
+            cf_acc=$(_prompt_user_input "$p_acc: " "")
+            
+            # 逻辑：如果输入为空且有默认值，则使用默认值
+            if [ -z "$cf_token" ] && [ -n "$def_token" ]; then
+                cf_token="$def_token"
+                echo -e "${CYAN}  -> 已使用保存的 Token${NC}"
+            fi
+            if [ -z "$cf_acc" ] && [ -n "$def_acc" ]; then
+                cf_acc="$def_acc"
+                echo -e "${CYAN}  -> 已使用保存的 Account ID${NC}"
+            fi
             
             [ -z "$cf_token" ] || [ -z "$cf_acc" ] && { log_err "信息不完整。"; return 1; }
             export CF_Token="$cf_token"
@@ -215,7 +225,6 @@ _apply_for_certificate() {
             METHOD="dns_ali"
             log_info "【安全】Key/Secret 仅驻留内存用后即焚。"
             
-            # 尝试从 account.conf 读取历史 Key
             local def_key=""
             local def_sec=""
             if [ -f "$account_conf" ]; then
@@ -224,13 +233,22 @@ _apply_for_certificate() {
             fi
 
             local p_key="输入 Ali_Key"
-            [ -n "$def_key" ] && p_key+=" [默认: 已保存]"
+            [ -n "$def_key" ] && p_key+=" (回车复用已保存)"
             local p_sec="输入 Ali_Secret"
-            [ -n "$def_sec" ] && p_sec+=" [默认: 已保存]"
+            [ -n "$def_sec" ] && p_sec+=" (回车复用已保存)"
 
             local ali_key ali_sec
-            ali_key=$(_prompt_user_input "$p_key: " "$def_key")
-            ali_sec=$(_prompt_user_input "$p_sec: " "$def_sec")
+            ali_key=$(_prompt_user_input "$p_key: " "")
+            ali_sec=$(_prompt_user_input "$p_sec: " "")
+            
+            if [ -z "$ali_key" ] && [ -n "$def_key" ]; then
+                ali_key="$def_key"
+                echo -e "${CYAN}  -> 已使用保存的 Key${NC}"
+            fi
+            if [ -z "$ali_sec" ] && [ -n "$def_sec" ]; then
+                ali_sec="$def_sec"
+                echo -e "${CYAN}  -> 已使用保存的 Secret${NC}"
+            fi
             
             [ -z "$ali_key" ] || [ -z "$ali_sec" ] && { log_err "信息不完整。"; return 1; }
             export Ali_Key="$ali_key"
