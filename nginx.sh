@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.7.0-深度优化版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v2.8.0-极简稳定版)
 # =============================================================
-# - 逻辑: 引入 ECC 证书路径自动探测，修复路径拼接隐患。
-# - 交互: 新增 CA 机构选择，泛域名默认关闭以降低错误率。
-# - 健壮: 增强 HTTP 验证模式下的端口冲突检测。
+# - 精简: 移除高风险的"编辑"与"导入"功能，推荐"删除后重建"。
+# - 修复: 证书剩余天数显示颜色代码泄露问题。
+# - UI: 优化项目列表的可读性与对齐。
 
 set -euo pipefail
 
@@ -64,30 +64,20 @@ generate_line() {
 }
 
 _render_menu() {
-    local title="$1"; shift; local -a lines=("$@")
+    local title="$1"; shift; 
     local max_width=42
-    for line in "${lines[@]}"; do
-        local len=${#line}
-        [ "$len" -gt "$max_width" ] && max_width=$len
-    done
+    local title_len=${#title}
+    if [ "$title_len" -gt "$max_width" ]; then max_width=$title_len; fi
     max_width=$((max_width + 4))
 
     echo ""
     echo -e "${GREEN}╭$(generate_line "$max_width")╮${NC}"
-    
-    local title_len=${#title}
     local pad_left=$(( (max_width - title_len) / 2 ))
     local pad_right=$(( max_width - title_len - pad_left ))
     echo -e "${GREEN}│${NC}$(printf "%${pad_left}s" "")${BOLD}${title}${NC}$(printf "%${pad_right}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}├$(generate_line "$max_width")┤${NC}"
-    
-    for line in "${lines[@]}"; do
-        local plain=$(echo -e "$line" | sed 's/\x1b\[[0-9;]*m//g')
-        local p_len=${#plain}
-        local pad=$(( max_width - p_len - 2 ))
-        echo -e "${GREEN}│${NC} ${line}$(printf "%${pad}s" "")${GREEN}│${NC}"
-    done
     echo -e "${GREEN}╰$(generate_line "$max_width")╯${NC}"
+    
+    for line in "$@"; do echo -e " ${line}"; done
 }
 
 cleanup_temp_files() {
@@ -107,7 +97,6 @@ get_vps_ip() {
 
 _prompt_user_input_with_validation() {
     local prompt="$1" default="$2" regex="$3" error_msg="$4" allow_empty="${5:-false}" val=""
-    
     while true; do
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local disp=""
@@ -123,10 +112,8 @@ _prompt_user_input_with_validation() {
                 log_message ERROR "非交互模式缺失: $prompt"; return 1
             fi
         fi
-
         if [[ -z "$val" && "$allow_empty" = "true" ]]; then echo ""; return 0; fi
         if [[ -z "$val" ]]; then log_message ERROR "输入不能为空"; [ "$IS_INTERACTIVE_MODE" = "false" ] && return 1; continue; fi
-        
         if [[ -n "$regex" && ! "$val" =~ $regex ]]; then
             log_message ERROR "${error_msg:-格式错误}"; [ "$IS_INTERACTIVE_MODE" = "false" ] && return 1; continue; fi
         echo "$val"; return 0
@@ -184,6 +171,19 @@ control_nginx() {
     return 0
 }
 
+_get_nginx_status() {
+    if systemctl is-active --quiet nginx; then
+        echo -e "${GREEN}🟢 Nginx (运行中)${NC}"
+    else
+        echo -e "${RED}🔴 Nginx (已停止)${NC}"
+    fi
+}
+
+_restart_nginx_ui() {
+    log_message INFO "正在重启 Nginx..."
+    if control_nginx restart; then log_message SUCCESS "Nginx 重启成功。"; fi
+}
+
 # ==============================================================================
 # SECTION: 数据与文件管理
 # ==============================================================================
@@ -208,7 +208,6 @@ _delete_project_json() {
 _write_and_enable_nginx_config() {
     local domain="$1" json="$2" conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     local port=$(echo "$json" | jq -r .resolved_port)
-    # 路径使用保存的绝对路径
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
 
@@ -260,8 +259,6 @@ _issue_and_install_certificate() {
     local provider=$(echo "$json" | jq -r .dns_api_provider)
     local wildcard=$(echo "$json" | jq -r .use_wildcard)
     local ca=$(echo "$json" | jq -r .ca_server_url)
-    
-    # 动态获取安装路径
     local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
     local key="$SSL_CERTS_BASE_DIR/$domain.key"
 
@@ -269,7 +266,6 @@ _issue_and_install_certificate() {
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca")
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
-    # 安全：DNS 密钥实时询问，用后即焚
     if [ "$method" = "dns-01" ]; then
         if [ "$provider" = "dns_cf" ]; then
             log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
@@ -289,12 +285,7 @@ _issue_and_install_certificate() {
 server { listen 80; server_name ${domain}; location /.well-known/acme-challenge/ { root ${NGINX_WEBROOT_DIR}; } }
 EOF
         ln -sf "$NGINX_SITES_AVAILABLE_DIR/acme.temp" "$NGINX_SITES_ENABLED_DIR/"
-        
-        # 增强: 确保 Nginx 正常重载
-        if ! control_nginx reload; then
-            log_message ERROR "Nginx 重载失败，无法进行 HTTP 验证。"
-            return 1
-        fi
+        control_nginx reload || return 1
     fi
 
     local log_temp=$(mktemp)
@@ -316,7 +307,6 @@ EOF
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
     fi
-    
     unset CF_Token CF_Account_ID Ali_Key Ali_Secret
     return 0
 }
@@ -350,7 +340,6 @@ _gather_project_details() {
         local p_idx=$([ "$(echo "$cur" | jq -r '.dns_api_provider')" = "dns_ali" ] && echo "2" || echo "1")
         local p_sel=$(_prompt_user_input_with_validation "📡 DNS提供商 (1.CF, 2.Ali)" "$p_idx" "^[12]$" "" "false")
         provider=$([ "$p_sel" -eq 1 ] && echo "dns_cf" || echo "dns_ali")
-        # 优化: 泛域名默认选 N，防止新手错误
         wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "$(echo "$cur" | jq -r '.use_wildcard // "n"')" "^[yYnN]$" "" "false")
     fi
 
@@ -359,7 +348,6 @@ _gather_project_details() {
     local ca_name=$([ "$c_sel" -eq 1 ] && echo "letsencrypt" || echo "zerossl")
     local ca_url=$([ "$c_sel" -eq 1 ] && echo "https://acme-v02.api.letsencrypt.org/directory" || echo "https://acme.zerossl.com/v2/DV90")
     
-    # 自动探测 ECC 路径（与证书脚本逻辑保持一致）
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
@@ -384,13 +372,12 @@ _display_projects_list() {
         local port=$(echo "$p" | jq -r '.resolved_port')
         local cert=$(echo "$p" | jq -r '.cert_file')
         
-        local info="Port: $port"
-        [ "$type" = "docker" ] && info="Docker: $(echo "$p" | jq -r '.name') ($port)"
+        local info="本地端口: $port"
+        [ "$type" = "docker" ] && info="容器: $(echo "$p" | jq -r '.name') ($port)"
         
         local status="${RED}缺失${NC}"
         local details=""
         
-        # 增强: 检查是否存在
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
@@ -399,12 +386,12 @@ _display_projects_list() {
             if (( days < 0 )); then status="${RED}已过期${NC}";
             elif (( days <= 30 )); then status="${YELLOW}即将到期${NC}";
             else status="${GREEN}有效${NC}"; fi
-            details="(${days}天)"
+            details="(剩余 $days 天)"
         fi
         
         printf "${GREEN}[ %d ] %s${NC}\n" "$idx" "$domain"
-        printf "  ├─ 🎯 目标 : %s\n" "$info"
-        printf "  └─ 📜 证书 : %s %s\n" "$status" "$details"
+        printf "  ├─ 🎯 目 标 : %s\n" "$info"
+        printf "  └─ 📜 证 书 : %s %s\n" "$status" "$details"
         echo -e "${CYAN}····························································${NC}"
     done
 }
@@ -452,48 +439,23 @@ _handle_delete_project() {
     fi
 }
 
-_handle_edit_project() {
-    local d; d=$(_prompt_user_input_with_validation "请输入域名" "" "" "" "false") || return
-    local cur=$(_get_project_json "$d")
-    [ -z "$cur" ] && { log_message ERROR "项目不存在"; return; }
-
-    local new; new=$(_gather_project_details "$cur") || return
-    if _issue_and_install_certificate "$new"; then
-        _write_and_enable_nginx_config "$d" "$new"
-        control_nginx reload && _save_project_json "$new" && log_message SUCCESS "更新成功"
-    fi
-}
-
-_handle_import_project() {
-    local d; d=$(_prompt_user_input_with_validation "请输入域名" "" "" "" "false") || return
-    if [ ! -f "$NGINX_SITES_AVAILABLE_DIR/$d.conf" ]; then
-        log_message ERROR "配置文件不存在。"
-        return
-    fi
-    local json; json=$(_gather_project_details "{\"domain\":\"$d\"}") || return
-    _save_project_json "$json" && log_message SUCCESS "导入完成。"
-}
-
 manage_configs() {
     while true; do
         local all=$(jq . "$PROJECTS_METADATA_FILE")
         if [ "$(echo "$all" | jq 'length')" -eq 0 ]; then
             log_message WARN "暂无项目。"
-            _confirm_action_or_exit_non_interactive "是否导入现有配置？" && { _handle_import_project; continue; }
             break
         fi
         
         echo ""
         _display_projects_list "$all"
         
-        local -a opts=("1. ✏️  编辑项目" "2. 🔄 手动续期" "3. 🗑️  删除项目" "4. 📥 导入项目")
+        local -a opts=("1. 🔄 手动续期" "2. 🗑️  删除项目")
         _render_menu "项目管理" "${opts[@]}"
         
-        case "$(_prompt_for_menu_choice_local "1-4")" in
-            1) _handle_edit_project ;;
-            2) _handle_renew_cert ;;
-            3) _handle_delete_project ;;
-            4) _handle_import_project ;;
+        case "$(_prompt_for_menu_choice_local "1-2")" in
+            1) _handle_renew_cert ;;
+            2) _handle_delete_project ;;
             "") break ;;
             *) log_message ERROR "无效选择" ;;
         esac
@@ -520,19 +482,16 @@ check_and_auto_renew_certs() {
 
 main_menu() {
     while true; do
+        local nginx_status="$(_get_nginx_status)"
         _render_menu "Nginx 证书与反代管理" \
-            "1. 🚀 配置新项目 (New Project)" \
-            "2. 📂 项目管理 (Manage Projects)" \
-            "3. 🔄 批量续期 (Auto Renew All)"
+            "1. ${nginx_status}" \
+            "2. 🚀 配置新项目 (New Project)" \
+            "3. 📂 项目管理 (Manage Projects)"
             
         case "$(_prompt_for_menu_choice_local "1-3")" in
-            1) configure_nginx_projects; press_enter_to_continue ;;
-            2) manage_configs ;;
-            3) 
-                if _confirm_action_or_exit_non_interactive "确认检查所有项目？"; then
-                    check_and_auto_renew_certs
-                    press_enter_to_continue
-                fi ;;
+            1) _restart_nginx_ui; press_enter_to_continue ;;
+            2) configure_nginx_projects; press_enter_to_continue ;;
+            3) manage_configs ;;
             "") log_message INFO "👋 Bye."; return 10 ;;
             *) log_message ERROR "无效选择" ;;
         esac
