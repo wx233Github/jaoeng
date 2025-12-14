@@ -1,13 +1,12 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.5.0-IO流修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.6.0-JSON捕获修复版)
 # =============================================================
-# - 修复: 解决 "Cert Only" 模式下的变量未绑定崩溃问题。
-# - 修复: 解决交互菜单输出污染 JSON 数据导致的 jq 解析错误。
-# - 优化: 标准化输入输出流，分离 UI 显示与数据返回。
+# - 修复: 解决信息收集阶段因输出污染导致的流程中断问题。
+# - 优化: 移除冗余提示，提升交互体验。
 
 set -euo pipefail
 
-# --- 全局变量和颜色定义 ---
+# --- 全局变量 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
 ORANGE='\033[38;5;208m';
@@ -16,7 +15,6 @@ LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 RENEW_THRESHOLD_DAYS=30
 
-# --- Nginx 路径变量 ---
 NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
 NGINX_WEBROOT_DIR="/var/www/html"
@@ -33,7 +31,7 @@ done
 VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 
 # ==============================================================================
-# SECTION: 核心工具函数 & UI 渲染
+# SECTION: 核心工具函数
 # ==============================================================================
 
 _log_prefix() {
@@ -102,7 +100,7 @@ _prompt_user_input_with_validation() {
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local disp=""
             if [ -n "$default" ]; then disp=" [默认: ${default}]"
-            elif [ "$allow_empty" = "true" ]; then disp=" [可空]"
+            # 移除 [可空] 提示，避免冗余
             fi
             echo -ne "${YELLOW}🔹 ${prompt}${NC}${disp}: " >&2
             read -r val
@@ -299,7 +297,7 @@ _view_access_log() {
 }
 
 # ==============================================================================
-# SECTION: 业务逻辑 (证书申请)
+# SECTION: 业务逻辑 (核心逻辑)
 # ==============================================================================
 
 _detect_web_service() {
@@ -424,10 +422,9 @@ _issue_and_install_certificate() {
     return 0
 }
 
-# --- 移植的交互式项目信息收集 (Fix: All Output >&2) ---
+# --- 关键修复: 所有输出重定向到 stderr，确保 stdout 只有纯 JSON ---
 _gather_project_details() {
     local cur="${1:-{\}}"
-    # 模式开关: 修复变量引用，避免未绑定错误
     local is_cert_only="false"
     if [ "${2:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
@@ -446,14 +443,15 @@ _gather_project_details() {
         local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || return 1
         
         type="local_port"; port="$target"
-        if command -v docker &>/dev/null && docker ps --format '{{.Names}}' | grep -wq "$target"; then
+        # 修复: 抑制 Docker 命令输出
+        if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
             type="docker"
-            port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' | head -n1)
+            port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1)
             [ -z "$port" ] && port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || return 1
         fi
     fi
 
-    # --- 交互式 CA 选择 (输出到 >&2) ---
+    # 交互输出重定向
     local ca_server="https://acme-v02.api.letsencrypt.org/directory"
     local ca_name="letsencrypt"
     local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
@@ -467,14 +465,12 @@ _gather_project_details() {
         *) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
     esac
     
-    # 注册 ZeroSSL (如果选了)
     if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
          log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
          local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
          "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
     fi
 
-    # --- 交互式验证方式选择 ---
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -504,7 +500,7 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 最后仅输出 JSON 到 STDOUT
+    # 仅此处输出纯净 JSON
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
@@ -563,11 +559,9 @@ _display_projects_list() {
 }
 
 configure_nginx_projects() {
-    # 修复：传递参数时使用 ${1:-} 防止 unbound error
     local is_cert_only="false"
     if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
-    # 捕获 JSON，如果用户在 gather 中按了 Ctrl+C 或出错，这里会捕获空
     local json
     if ! json=$(_gather_project_details "{}" "${1:-}"); then
         log_message WARN "信息收集已取消或失败。"
@@ -632,7 +626,11 @@ _handle_reconfigure_project() {
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
 
-    local new; new=$(_gather_project_details "$cur" "$mode") || return
+    local new
+    if ! new=$(_gather_project_details "$cur" "$mode"); then
+        log_message WARN "重配取消。"
+        return
+    fi
     
     if _issue_and_install_certificate "$new"; then
         if [ "$mode" != "cert_only" ]; then
@@ -666,7 +664,6 @@ manage_configs() {
         echo ""
         _display_projects_list "$all"
         
-        # 允许回车返回（默认为空）
         local choice_idx
         choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
         
