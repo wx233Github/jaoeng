@@ -1,8 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.3.0-逻辑修正版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.4.0-健壮性修复)
 # =============================================================
-# - 修复: 重配时跳过证书申请后的逻辑路径错误。
-# - 增强: 对 JSON 数据完整性的校验。
+# - 修复: 严格校验后端目标，禁止输入无效的容器名导致生成错误配置。
+# - 修复: 增强变量引用安全性，防止 unbound variable 报错。
+# - 优化: 重配流程逻辑。
 
 set -euo pipefail
 
@@ -328,17 +329,7 @@ _get_cert_files() {
 
 _issue_and_install_certificate() {
     local json="$1"
-    # 防御性编程: 确保 domain 存在
-    if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
-        log_message ERROR "JSON 数据为空，无法申请证书。"
-        return 1
-    fi
     local domain=$(echo "$json" | jq -r .domain)
-    if [[ -z "$domain" || "$domain" == "null" ]]; then
-        log_message ERROR "域名为空，无法申请证书。"
-        return 1
-    fi
-
     local method=$(echo "$json" | jq -r .acme_validation_method)
     local provider=$(echo "$json" | jq -r .dns_api_provider)
     local wildcard=$(echo "$json" | jq -r .use_wildcard)
@@ -464,17 +455,39 @@ _gather_project_details() {
         [ "$name" == "证书" ] && name=""
         local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
         
-        type="local_port"; port="$target"
+        # 修复: 只有当 docker 命令存在且 inspect 成功且 output 非空时，才视为 docker
+        local is_docker="false"
+        local inspect_out=""
         
         if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
-            type="docker"
             exec 1>&3
-            port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1)
+            inspect_out=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
             exec 1>&2
             
-            if [ -z "$port" ]; then
-                port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
+            # 如果 inspect 成功拿到了内容（即使是空，也代表容器存在），则认为是 docker
+            # 但这里我们主要目的是为了拿端口
+            if [ -n "$inspect_out" ]; then
+                is_docker="true"
+                port="$inspect_out"
+                type="docker"
+            else
+                # 容器存在但没获取到端口，或者获取失败
+                # 此时仍视为 Docker，但端口需要手动输
+                is_docker="true"
+                type="docker"
             fi
+        fi
+        
+        # 如果不是 Docker，或者 Docker 端口未获取到，校验是否为有效端口号
+        if [ "$is_docker" == "false" ]; then
+            type="local_port"
+            port="$target"
+            if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+                log_message ERROR "错误: 输入 '$target' 既不是运行中的容器，也不是有效端口。" >&2
+                exec 1>&3; return 1;
+            fi
+        elif [ -z "$port" ]; then
+             port=$(_prompt_user_input_with_validation "⚠️ 容器未暴露端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
         fi
     fi
 
@@ -493,7 +506,6 @@ _gather_project_details() {
         ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
-        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
@@ -517,7 +529,7 @@ _gather_project_details() {
              log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
              local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
              "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
-    fi
+        fi
 
         local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
         _render_menu "验证方式" "${method_display[@]}" >&2
@@ -549,12 +561,19 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 最终输出 JSON
+    # 修复: 确保所有变量都有默认值 (防止 jq 构建时引用空变量)
     jq -n \
-        --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
-        --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
-        --arg cu "$ca_server" --arg cn "$ca_name" \
-        --arg cf "$cf" --arg kf "$kf" \
+        --arg d "${domain:-}" \
+        --arg t "${type:-local_port}" \
+        --arg n "${name:-}" \
+        --arg p "${port:-}" \
+        --arg m "${method:-http-01}" \
+        --arg dp "${provider:-}" \
+        --arg w "${wildcard:-n}" \
+        --arg cu "${ca_server:-}" \
+        --arg cn "${ca_name:-}" \
+        --arg cf "${cf:-}" \
+        --arg kf "${kf:-}" \
         '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
     
     exec 1>&3
@@ -683,7 +702,6 @@ _handle_reconfigure_project() {
     fi
 
     local new
-    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
