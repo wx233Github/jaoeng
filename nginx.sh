@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.8.0-重配优化版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.9.0-变量修复版)
 # =============================================================
-# - 新增: 重新配置时可选"跳过证书申请"，仅修改反代目标。
-# - 优化: 提升配置修改效率，避免频繁触发 CA 限制。
+# - 修复: 解决重配时因变量未绑定导致的脚本崩溃。
+# - 修复: 增强子 Shell 数据返回的健壮性。
 
 set -euo pipefail
 
@@ -296,7 +296,7 @@ _view_access_log() {
 }
 
 # ==============================================================================
-# SECTION: 业务逻辑
+# SECTION: 业务逻辑 (证书申请)
 # ==============================================================================
 
 _detect_web_service() {
@@ -421,19 +421,16 @@ _issue_and_install_certificate() {
     return 0
 }
 
+# --- IO 修复版: 彻底分离 UI 与 数据流 ---
 _gather_project_details() {
     exec 3>&1
     exec 1>&2
 
     local cur="${1:-{\}}"
-    # 增加参数：skip_cert_questions (true/false)
+    # 修复: 正确读取参数
     local skip_cert="${2:-false}"
-    
     local is_cert_only="false"
-    # 如果 cur 中 port 为 cert_only，或者外部指定了 cert_only 模式
-    if [ "$(echo "$cur" | jq -r '.resolved_port // ""')" == "cert_only" ] || [ "${3:-}" == "cert_only" ]; then 
-        is_cert_only="true"
-    fi
+    if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
@@ -444,36 +441,42 @@ _gather_project_details() {
     local name="证书"
     local port="cert_only"
 
-    # 如果不是纯证书模式，询问反代目标
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""')
         [ "$name" == "证书" ] && name=""
         local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
         
         type="local_port"; port="$target"
+        # 修复: 临时切回 stdout 执行 docker inspect
         if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
             type="docker"
             exec 1>&3
             port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1)
             exec 1>&2
+            
             if [ -z "$port" ]; then
                 port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
             fi
         fi
     fi
 
-    # 如果跳过证书询问，直接复用旧值
-    local method provider wildcard ca_server ca_name
+    # 默认值
+    local method="http-01"
+    local provider=""
+    local wildcard="n"
+    local ca_server="https://acme-v02.api.letsencrypt.org/directory"
+    local ca_name="letsencrypt"
+
     if [ "$skip_cert" == "true" ]; then
-        # 从旧 JSON 读取
+        # 继承旧值
         method=$(echo "$cur" | jq -r '.acme_validation_method')
         provider=$(echo "$cur" | jq -r '.dns_api_provider')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard')
         ca_server=$(echo "$cur" | jq -r '.ca_server_url')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name')
     else
-        # 完整的证书询问流程
-        local ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
+        # 交互选择
+        local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
         ca_choice=$(_prompt_for_menu_choice_local "1-3")
@@ -490,21 +493,33 @@ _gather_project_details() {
              "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_message WARN "ZeroSSL 注册跳过"
         fi
 
-        local method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+        local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
         _render_menu "验证方式" "${method_display[@]}"
         local v_choice=$(_prompt_for_menu_choice_local "1-3")
         
         case "$v_choice" in
-            1) method="http-01"; provider=""; wildcard="n" ;;
-            2) method="dns-01"; provider="dns_cf"; wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
-            3) method="dns-01"; provider="dns_ali"; wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
-            *) method="http-01"; provider=""; wildcard="n" ;;
+            1) 
+                method="http-01" 
+                if [ "$is_cert_only" == "false" ]; then
+                    log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。"
+                fi
+                ;;
+            2) 
+                method="dns-01"; provider="dns_cf"
+                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+                ;;
+            3) 
+                method="dns-01"; provider="dns_ali"
+                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+                ;;
+            *) method="http-01" ;;
         esac
     fi
 
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
+    # 最终输出 JSON
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
@@ -514,6 +529,10 @@ _gather_project_details() {
     
     exec 1>&3
 }
+
+# ==============================================================================
+# SECTION: 交互菜单
+# ==============================================================================
 
 _display_projects_list() {
     local json="$1" idx=0
@@ -565,7 +584,6 @@ configure_nginx_projects() {
     if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
     local json
-    # 新配置：跳过证书询问=false, 模式=cert_only 或 null
     if ! json=$(_gather_project_details "{}" "false" "${1:-}"); then
         log_message WARN "信息收集已取消或失败。"
         return 0
@@ -629,19 +647,18 @@ _handle_reconfigure_project() {
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
 
-    # 新增: 询问是否重申证书
     local skip_cert="true"
     if _confirm_action_or_exit_non_interactive "是否重新申请/续期证书 (Renew Cert)?"; then
         skip_cert="false"
     fi
 
     local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
     fi
     
-    # 只有当 skip_cert 为 false 时才重新申请证书
     if [ "$skip_cert" == "false" ]; then
         if ! _issue_and_install_certificate "$new"; then
             log_message ERROR "证书申请失败，重配终止。"
