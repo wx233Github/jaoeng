@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.3.0-核心升级版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.4.0-交互融合版)
 # =============================================================
-# - 核心: 移植证书管理脚本 (v3.15.0) 的高健壮性申请逻辑。
-# - 特性: 支持端口冲突智能处理、504错误诊断、CA自动切换。
-# - UI: 统一采用高级卡片式列表。
+# - 交互: 完全移植证书管理脚本的申请流程 (CA选择/验证方式/Token输入)。
+# - 优化: "项目管理"列表支持回车直接返回。
+# - 修复: 取消覆盖操作时的错误报错逻辑。
 
 set -euo pipefail
 
@@ -299,7 +299,7 @@ _view_access_log() {
 }
 
 # ==============================================================================
-# SECTION: 核心业务逻辑 (复用证书脚本逻辑)
+# SECTION: 核心业务逻辑 (证书申请 - 移植自证书脚本)
 # ==============================================================================
 
 _detect_web_service() {
@@ -328,7 +328,6 @@ _issue_and_install_certificate() {
     local wildcard=$(echo "$json" | jq -r .use_wildcard)
     local ca=$(echo "$json" | jq -r .ca_server_url)
     
-    # 路径
     local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
     local key="$SSL_CERTS_BASE_DIR/$domain.key"
 
@@ -336,27 +335,31 @@ _issue_and_install_certificate() {
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca")
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
-    # 1. 验证方式处理
+    # 1. 验证方式与密钥处理
     if [ "$method" = "dns-01" ]; then
-        # 从用户输入获取Token，不存JSON
         if [ "$provider" = "dns_cf" ]; then
-            log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
-            local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
-            local t=$(_prompt_user_input_with_validation "CF_Token" "$def_t" "" "不能为空" "false")
-            local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
-            local a=$(_prompt_user_input_with_validation "Account_ID" "$def_a" "" "不能为空" "false")
-            export CF_Token="$t" CF_Account_ID="$a"
+            # 只有在 interactive 模式下才询问，否则假设已 export
+            if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+                log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
+                local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local t=$(_prompt_user_input_with_validation "CF_Token" "$def_t" "" "不能为空" "false")
+                local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local a=$(_prompt_user_input_with_validation "Account_ID" "$def_a" "" "不能为空" "false")
+                export CF_Token="$t" CF_Account_ID="$a"
+            fi
         elif [ "$provider" = "dns_ali" ]; then
-            log_message INFO "🔐 请输入 Aliyun Key (仅内存暂存)"
-            local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
-            local k=$(_prompt_user_input_with_validation "Ali_Key" "$def_k" "" "不能为空" "false")
-            local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
-            local s=$(_prompt_user_input_with_validation "Ali_Secret" "$def_s" "" "不能为空" "false")
-            export Ali_Key="$k" Ali_Secret="$s"
+            if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+                log_message INFO "🔐 请输入 Aliyun Key (仅内存暂存)"
+                local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local k=$(_prompt_user_input_with_validation "Ali_Key" "$def_k" "" "不能为空" "false")
+                local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local s=$(_prompt_user_input_with_validation "Ali_Secret" "$def_s" "" "不能为空" "false")
+                export Ali_Key="$k" Ali_Secret="$s"
+            fi
         fi
         cmd+=("--dns" "$provider")
     elif [ "$method" = "http-01" ]; then
-        # 移植 Standalone 逻辑：检查端口占用
+        # Standalone 端口冲突检测
         local port_conflict="false"
         local temp_svc=""
         if run_with_sudo ss -tuln | grep -q ":80\s"; then
@@ -388,21 +391,18 @@ _issue_and_install_certificate() {
         local err_log=$(cat "$log_temp")
         rm -f "$log_temp"
         
-        # 错误恢复：如果停了服务，要开起来
         if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
             log_message INFO "重启 $temp_svc ..."
             systemctl start "$temp_svc"
         fi
         
-        # 智能诊断 (移植自证书脚本)
         if [[ "$err_log" == *"504 Gateway Time-out"* ]]; then
             echo -e "\n${RED}诊断: 504 Gateway Time-out${NC}"
-            log_message WARN "原因可能是开启了 Cloudflare 小黄云导致 HTTP 验证被拦截。"
-            log_message WARN "建议: 切换到 DNS 验证模式。"
+            log_message WARN "原因可能是 Cloudflare 小黄云导致。建议切换 DNS 模式。"
         fi
         if [[ "$err_log" == *"retryafter"* ]]; then
             echo -e "\n${RED}诊断: CA 限制 (retryafter)${NC}"
-            log_message WARN "建议: 切换 CA 机构 (如 Let's Encrypt)。"
+            log_message WARN "建议: 切换 CA (如 Let's Encrypt)。"
         fi
 
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
@@ -410,7 +410,6 @@ _issue_and_install_certificate() {
     fi
     rm -f "$log_temp"
 
-    # 成功后的恢复
     if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
         log_message INFO "重启 $temp_svc ..."
         systemctl start "$temp_svc"
@@ -430,6 +429,7 @@ _issue_and_install_certificate() {
     return 0
 }
 
+# --- 移植的交互式项目信息收集 (Cert Script Style) ---
 _gather_project_details() {
     local cur="${1:-{\}}"
     # 模式开关
@@ -458,30 +458,61 @@ _gather_project_details() {
         fi
     fi
 
-    local m_idx=$([ "$(echo "$cur" | jq -r '.acme_validation_method')" = "dns-01" ] && echo "2" || echo "1")
-    local m_sel=$(_prompt_user_input_with_validation "🔒 验证方式 (1.http, 2.dns)" "$m_idx" "^[12]$" "" "false")
-    local method=$([ "$m_sel" -eq 1 ] && echo "http-01" || echo "dns-01")
+    # --- 交互式 CA 选择 ---
+    local ca_server="letsencrypt"
+    local ca_name="letsencrypt"
+    local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
+    _render_menu "选择 CA 机构" "${ca_list[@]}"
+    local ca_choice
+    ca_choice=$(_prompt_for_menu_choice_local "1-3")
+    case "$ca_choice" in
+        1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
+        2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
+        3) ca_server="google"; ca_name="google" ;;
+        *) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
+    esac
     
-    local provider="" wildcard="n"
-    if [ "$method" = "dns-01" ]; then
-        local p_idx=$([ "$(echo "$cur" | jq -r '.dns_api_provider')" = "dns_ali" ] && echo "2" || echo "1")
-        local p_sel=$(_prompt_user_input_with_validation "📡 DNS提供商 (1.CF, 2.Ali)" "$p_idx" "^[12]$" "" "false")
-        provider=$([ "$p_sel" -eq 1 ] && echo "dns_cf" || echo "dns_ali")
-        wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "$(echo "$cur" | jq -r '.use_wildcard // "n"')" "^[yYnN]$" "" "false")
+    # 注册 ZeroSSL (如果选了)
+    if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
+         log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..."
+         local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
+         "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_message WARN "ZeroSSL 注册跳过"
     fi
 
-    local c_idx=$([ "$(echo "$cur" | jq -r '.ca_server_name')" = "zerossl" ] && echo "2" || echo "1")
-    local c_sel=$(_prompt_user_input_with_validation "🏢 选择CA (1.LE, 2.ZeroSSL)" "$c_idx" "^[12]$" "" "false")
-    local ca_name=$([ "$c_sel" -eq 1 ] && echo "letsencrypt" || echo "zerossl")
-    local ca_url=$([ "$c_sel" -eq 1 ] && echo "https://acme-v02.api.letsencrypt.org/directory" || echo "https://acme.zerossl.com/v2/DV90")
+    # --- 交互式验证方式选择 ---
+    local method="http-01"
+    local provider=""
+    local wildcard="n"
     
+    local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+    _render_menu "验证方式" "${method_display[@]}"
+    local v_choice=$(_prompt_for_menu_choice_local "1-3")
+    
+    case "$v_choice" in
+        1) 
+            method="http-01" 
+            if [ "$is_cert_only" == "false" ]; then
+                log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。"
+            fi
+            ;;
+        2) 
+            method="dns-01"; provider="dns_cf"
+            wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+            ;;
+        3) 
+            method="dns-01"; provider="dns_ali"
+            wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+            ;;
+        *) method="http-01" ;;
+    esac
+
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
-        --arg cu "$ca_url" --arg cn "$ca_name" \
+        --arg cu "$ca_server" --arg cn "$ca_name" \
         --arg cf "$cf" --arg kf "$kf" \
         '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}'
 }
@@ -507,7 +538,6 @@ _display_projects_list() {
         local details=""
         local next_renew="自动/未知"
         
-        # 1. 尝试读取配置文件获取下次续期时间
         local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
         [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
         if [ -f "$conf_file" ]; then
@@ -517,7 +547,6 @@ _display_projects_list() {
             fi
         fi
 
-        # 2. 检查证书文件状态
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
@@ -541,11 +570,15 @@ configure_nginx_projects() {
     local is_cert_only="false"
     if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
+    # 如果 gather 返回失败，直接返回，不继续
     local json; json=$(_gather_project_details "{}" "$1") || return
     local domain=$(echo "$json" | jq -r .domain)
 
     if [ -n "$(_get_project_json "$domain")" ]; then
-        _confirm_action_or_exit_non_interactive "域名 $domain 已存在，是否覆盖？" || return
+        if ! _confirm_action_or_exit_non_interactive "域名 $domain 已存在，是否覆盖？"; then
+            log_message INFO "用户取消操作。"
+            return 0
+        fi
     fi
 
     if ! _issue_and_install_certificate "$json"; then
@@ -597,6 +630,7 @@ _handle_reconfigure_project() {
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
 
+    # 注意：重配时不一定能完美复用所有旧交互参数，通常视为重新走一遍流程
     local new; new=$(_gather_project_details "$cur" "$mode") || return
     
     if _issue_and_install_certificate "$new"; then
@@ -631,10 +665,11 @@ manage_configs() {
         echo ""
         _display_projects_list "$all"
         
+        # 允许回车返回（默认为空）
         local choice_idx
-        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (0 返回)" "" "^[0-9]+$" "无效序号" "false")
+        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
         
-        if [ "$choice_idx" == "0" ]; then break; fi
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         
         local selected_domain
