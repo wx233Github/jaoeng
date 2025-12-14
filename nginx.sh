@@ -1,9 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.4.0-交互融合版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.5.0-IO流修复版)
 # =============================================================
-# - 交互: 完全移植证书管理脚本的申请流程 (CA选择/验证方式/Token输入)。
-# - 优化: "项目管理"列表支持回车直接返回。
-# - 修复: 取消覆盖操作时的错误报错逻辑。
+# - 修复: 解决 "Cert Only" 模式下的变量未绑定崩溃问题。
+# - 修复: 解决交互菜单输出污染 JSON 数据导致的 jq 解析错误。
+# - 优化: 标准化输入输出流，分离 UI 显示与数据返回。
 
 set -euo pipefail
 
@@ -299,7 +299,7 @@ _view_access_log() {
 }
 
 # ==============================================================================
-# SECTION: 核心业务逻辑 (证书申请 - 移植自证书脚本)
+# SECTION: 业务逻辑 (证书申请)
 # ==============================================================================
 
 _detect_web_service() {
@@ -335,10 +335,8 @@ _issue_and_install_certificate() {
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca")
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
-    # 1. 验证方式与密钥处理
     if [ "$method" = "dns-01" ]; then
         if [ "$provider" = "dns_cf" ]; then
-            # 只有在 interactive 模式下才询问，否则假设已 export
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
                 log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
                 local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
@@ -359,7 +357,6 @@ _issue_and_install_certificate() {
         fi
         cmd+=("--dns" "$provider")
     elif [ "$method" = "http-01" ]; then
-        # Standalone 端口冲突检测
         local port_conflict="false"
         local temp_svc=""
         if run_with_sudo ss -tuln | grep -q ":80\s"; then
@@ -383,7 +380,6 @@ _issue_and_install_certificate() {
         cmd+=("--standalone")
     fi
 
-    # 2. 执行申请
     local log_temp=$(mktemp)
     if ! "${cmd[@]}" > "$log_temp" 2>&1; then
         log_message ERROR "申请失败: $domain"
@@ -415,7 +411,6 @@ _issue_and_install_certificate() {
         systemctl start "$temp_svc"
     fi
 
-    # 3. 安装证书
     log_message INFO "证书签发成功，安装中..."
     local inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --reloadcmd "systemctl reload nginx")
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
@@ -429,10 +424,10 @@ _issue_and_install_certificate() {
     return 0
 }
 
-# --- 移植的交互式项目信息收集 (Cert Script Style) ---
+# --- 移植的交互式项目信息收集 (Fix: All Output >&2) ---
 _gather_project_details() {
     local cur="${1:-{\}}"
-    # 模式开关
+    # 模式开关: 修复变量引用，避免未绑定错误
     local is_cert_only="false"
     if [ "${2:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
@@ -458,11 +453,11 @@ _gather_project_details() {
         fi
     fi
 
-    # --- 交互式 CA 选择 ---
-    local ca_server="letsencrypt"
+    # --- 交互式 CA 选择 (输出到 >&2) ---
+    local ca_server="https://acme-v02.api.letsencrypt.org/directory"
     local ca_name="letsencrypt"
     local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-    _render_menu "选择 CA 机构" "${ca_list[@]}"
+    _render_menu "选择 CA 机构" "${ca_list[@]}" >&2
     local ca_choice
     ca_choice=$(_prompt_for_menu_choice_local "1-3")
     case "$ca_choice" in
@@ -474,9 +469,9 @@ _gather_project_details() {
     
     # 注册 ZeroSSL (如果选了)
     if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-         log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..."
+         log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
          local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
-         "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_message WARN "ZeroSSL 注册跳过"
+         "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
     fi
 
     # --- 交互式验证方式选择 ---
@@ -485,14 +480,14 @@ _gather_project_details() {
     local wildcard="n"
     
     local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-    _render_menu "验证方式" "${method_display[@]}"
+    _render_menu "验证方式" "${method_display[@]}" >&2
     local v_choice=$(_prompt_for_menu_choice_local "1-3")
     
     case "$v_choice" in
         1) 
             method="http-01" 
             if [ "$is_cert_only" == "false" ]; then
-                log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。"
+                log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2
             fi
             ;;
         2) 
@@ -509,6 +504,7 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
+    # 最后仅输出 JSON 到 STDOUT
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
@@ -567,11 +563,17 @@ _display_projects_list() {
 }
 
 configure_nginx_projects() {
+    # 修复：传递参数时使用 ${1:-} 防止 unbound error
     local is_cert_only="false"
     if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
-    # 如果 gather 返回失败，直接返回，不继续
-    local json; json=$(_gather_project_details "{}" "$1") || return
+    # 捕获 JSON，如果用户在 gather 中按了 Ctrl+C 或出错，这里会捕获空
+    local json
+    if ! json=$(_gather_project_details "{}" "${1:-}"); then
+        log_message WARN "信息收集已取消或失败。"
+        return 0
+    fi
+    
     local domain=$(echo "$json" | jq -r .domain)
 
     if [ -n "$(_get_project_json "$domain")" ]; then
@@ -630,7 +632,6 @@ _handle_reconfigure_project() {
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
 
-    # 注意：重配时不一定能完美复用所有旧交互参数，通常视为重新走一遍流程
     local new; new=$(_gather_project_details "$cur" "$mode") || return
     
     if _issue_and_install_certificate "$new"; then
