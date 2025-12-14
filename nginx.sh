@@ -1,13 +1,13 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.2.0-纯证书支持版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.3.0-核心升级版)
 # =============================================================
-# - 新增: "仅申请证书"模式，不生成 Nginx 反代配置。
-# - 优化: 项目管理支持序号选择，增加证书详情查看。
-# - 自动化: 默认开启 acme.sh 自动更新与证书自动续期。
+# - 核心: 移植证书管理脚本 (v3.15.0) 的高健壮性申请逻辑。
+# - 特性: 支持端口冲突智能处理、504错误诊断、CA自动切换。
+# - UI: 统一采用高级卡片式列表。
 
 set -euo pipefail
 
-# --- 全局变量 ---
+# --- 全局变量和颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
 ORANGE='\033[38;5;208m';
@@ -16,6 +16,7 @@ LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 RENEW_THRESHOLD_DAYS=30
 
+# --- Nginx 路径变量 ---
 NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
 NGINX_WEBROOT_DIR="/var/www/html"
@@ -32,7 +33,7 @@ done
 VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 
 # ==============================================================================
-# SECTION: 核心工具函数
+# SECTION: 核心工具函数 & UI 渲染
 # ==============================================================================
 
 _log_prefix() {
@@ -156,7 +157,6 @@ install_dependencies() {
 
 install_acme_sh() {
     if [ -f "$ACME_BIN" ]; then 
-        # 确保自动更新开启
         "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
         return 0
     fi
@@ -218,7 +218,6 @@ _write_and_enable_nginx_config() {
     local domain="$1" json="$2" conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     local port=$(echo "$json" | jq -r .resolved_port)
     
-    # 纯证书模式跳过配置生成
     if [ "$port" == "cert_only" ]; then return 0; fi
 
     local cert=$(echo "$json" | jq -r .cert_file)
@@ -295,13 +294,12 @@ _view_access_log() {
         log_message ERROR "日志文件不存在: $log_path"
         return
     fi
-    
     echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
     tail -f -n 20 "$log_path"
 }
 
 # ==============================================================================
-# SECTION: 业务逻辑 (证书申请)
+# SECTION: 核心业务逻辑 (复用证书脚本逻辑)
 # ==============================================================================
 
 _detect_web_service() {
@@ -329,6 +327,8 @@ _issue_and_install_certificate() {
     local provider=$(echo "$json" | jq -r .dns_api_provider)
     local wildcard=$(echo "$json" | jq -r .use_wildcard)
     local ca=$(echo "$json" | jq -r .ca_server_url)
+    
+    # 路径
     local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
     local key="$SSL_CERTS_BASE_DIR/$domain.key"
 
@@ -336,12 +336,13 @@ _issue_and_install_certificate() {
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca")
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
+    # 1. 验证方式处理
     if [ "$method" = "dns-01" ]; then
+        # 从用户输入获取Token，不存JSON
         if [ "$provider" = "dns_cf" ]; then
             log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
             local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
             local t=$(_prompt_user_input_with_validation "CF_Token" "$def_t" "" "不能为空" "false")
-            
             local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
             local a=$(_prompt_user_input_with_validation "Account_ID" "$def_a" "" "不能为空" "false")
             export CF_Token="$t" CF_Account_ID="$a"
@@ -349,31 +350,73 @@ _issue_and_install_certificate() {
             log_message INFO "🔐 请输入 Aliyun Key (仅内存暂存)"
             local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
             local k=$(_prompt_user_input_with_validation "Ali_Key" "$def_k" "" "不能为空" "false")
-            
             local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
             local s=$(_prompt_user_input_with_validation "Ali_Secret" "$def_s" "" "不能为空" "false")
             export Ali_Key="$k" Ali_Secret="$s"
         fi
         cmd+=("--dns" "$provider")
     elif [ "$method" = "http-01" ]; then
-        cmd+=("-w" "$NGINX_WEBROOT_DIR")
-        cat > "$NGINX_SITES_AVAILABLE_DIR/acme.temp" <<EOF
-server { listen 80; server_name ${domain}; location /.well-known/acme-challenge/ { root ${NGINX_WEBROOT_DIR}; } }
-EOF
-        ln -sf "$NGINX_SITES_AVAILABLE_DIR/acme.temp" "$NGINX_SITES_ENABLED_DIR/"
-        control_nginx reload || return 1
+        # 移植 Standalone 逻辑：检查端口占用
+        local port_conflict="false"
+        local temp_svc=""
+        if run_with_sudo ss -tuln | grep -q ":80\s"; then
+            log_message WARN "检测到 80 端口占用 (Standalone 模式可能失败)。"
+            temp_svc=$(_detect_web_service)
+            if [ -n "$temp_svc" ]; then
+                log_message INFO "发现服务: $temp_svc"
+                if _confirm_action_or_exit_non_interactive "是否临时停止 $temp_svc 以释放端口? (续期后自动启动)"; then
+                    port_conflict="true"
+                fi
+            else
+                log_message WARN "无法识别服务，请手动检查。"
+            fi
+        fi
+        
+        if [ "$port_conflict" == "true" ]; then
+            log_message INFO "停止 $temp_svc ..."
+            systemctl stop "$temp_svc"
+        fi
+        
+        cmd+=("--standalone")
     fi
 
+    # 2. 执行申请
     local log_temp=$(mktemp)
     if ! "${cmd[@]}" > "$log_temp" 2>&1; then
-        log_message ERROR "申请失败: $domain"; cat "$log_temp"; rm -f "$log_temp"
-        [ "$method" = "http-01" ] && { _remove_and_disable_nginx_config "acme.temp"; control_nginx reload; }
+        log_message ERROR "申请失败: $domain"
+        cat "$log_temp"
+        local err_log=$(cat "$log_temp")
+        rm -f "$log_temp"
+        
+        # 错误恢复：如果停了服务，要开起来
+        if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
+            log_message INFO "重启 $temp_svc ..."
+            systemctl start "$temp_svc"
+        fi
+        
+        # 智能诊断 (移植自证书脚本)
+        if [[ "$err_log" == *"504 Gateway Time-out"* ]]; then
+            echo -e "\n${RED}诊断: 504 Gateway Time-out${NC}"
+            log_message WARN "原因可能是开启了 Cloudflare 小黄云导致 HTTP 验证被拦截。"
+            log_message WARN "建议: 切换到 DNS 验证模式。"
+        fi
+        if [[ "$err_log" == *"retryafter"* ]]; then
+            echo -e "\n${RED}诊断: CA 限制 (retryafter)${NC}"
+            log_message WARN "建议: 切换 CA 机构 (如 Let's Encrypt)。"
+        fi
+
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
     fi
     rm -f "$log_temp"
-    [ "$method" = "http-01" ] && _remove_and_disable_nginx_config "acme.temp"
 
+    # 成功后的恢复
+    if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
+        log_message INFO "重启 $temp_svc ..."
+        systemctl start "$temp_svc"
+    fi
+
+    # 3. 安装证书
     log_message INFO "证书签发成功，安装中..."
     local inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --reloadcmd "systemctl reload nginx")
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
@@ -389,7 +432,7 @@ EOF
 
 _gather_project_details() {
     local cur="${1:-{\}}"
-    # 模式开关：cert_only_mode (由外部传入或参数判断，此处简化为交互询问)
+    # 模式开关
     local is_cert_only="false"
     if [ "${2:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
@@ -404,7 +447,7 @@ _gather_project_details() {
 
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""')
-        [ "$name" == "证书" ] && name="" # 重置旧数据
+        [ "$name" == "证书" ] && name=""
         local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || return 1
         
         type="local_port"; port="$target"
@@ -449,9 +492,6 @@ _gather_project_details() {
 
 _display_projects_list() {
     local json="$1" idx=0
-    # 存储域名与序号的映射，供后续选择使用
-    declare -gA DOMAIN_MAP
-    
     echo "$json" | jq -c '.[]' | while read -r p; do
         idx=$((idx + 1))
         local domain=$(echo "$p" | jq -r '.domain // "未知"')
@@ -465,7 +505,19 @@ _display_projects_list() {
         
         local status="${RED}缺失${NC}"
         local details=""
+        local next_renew="自动/未知"
         
+        # 1. 尝试读取配置文件获取下次续期时间
+        local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
+        [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
+        if [ -f "$conf_file" ]; then
+            local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
+            if [ -n "$next_ts" ]; then
+                next_renew=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
+            fi
+        fi
+
+        # 2. 检查证书文件状态
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
@@ -479,10 +531,10 @@ _display_projects_list() {
         
         printf "${GREEN}[ %d ] %s${NC}\n" "$idx" "$domain"
         printf "  ├─ 🎯 目 标 : %s\n" "$info"
+        printf "  ├─ ⏱️ 续 期 : %s\n" "$next_renew"
         echo -e "  └─ 📜 证 书 : ${status} ${details}"
         echo -e "${CYAN}····························································${NC}"
     done
-    return "$idx" # 返回总数
 }
 
 configure_nginx_projects() {
@@ -501,7 +553,6 @@ configure_nginx_projects() {
         return
     fi
     
-    # 仅在非纯证书模式下生成 Nginx 配置
     if [ "$is_cert_only" == "false" ]; then
         if ! _write_and_enable_nginx_config "$domain" "$json"; then return 1; fi
         if ! control_nginx reload; then
@@ -542,7 +593,6 @@ _handle_reconfigure_project() {
     local cur=$(_get_project_json "$d")
     log_message INFO "正在重配 $d ..."
     
-    # 检测原类型是否为纯证书
     local port=$(echo "$cur" | jq -r .resolved_port)
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
@@ -587,7 +637,6 @@ manage_configs() {
         if [ "$choice_idx" == "0" ]; then break; fi
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         
-        # 获取选中域名
         local selected_domain
         selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
         
@@ -602,7 +651,7 @@ manage_configs() {
         case "$(_prompt_for_menu_choice_local "1-6")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
-            3) _handle_delete_project "$selected_domain"; break ;; # 删除后需刷新列表
+            3) _handle_delete_project "$selected_domain"; break ;; 
             4) _handle_view_config "$selected_domain" ;;
             5) _view_access_log "$selected_domain" ;;
             6) _handle_reconfigure_project "$selected_domain" ;;
