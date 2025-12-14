@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.2-JsonRobust)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.3-StableIO)
 # =============================================================
-# - 核心修复: 修复重配时 JSON 解析报错问题 (Unmatched '}')。
-# - 逻辑优化: 增强 Nginx 服务控制的容错性。
+# - 核心修复: 采用 jq --argjson 彻底解决 JSON 数据存取时的转义崩溃问题。
+# - 诊断增强: Nginx 失败时自动输出配置文件语法检测结果。
 
 set -euo pipefail
 
@@ -197,17 +197,17 @@ install_acme_sh() {
 
 control_nginx() {
     local action="$1"
-    # 修复: 如果是 reload 且服务未运行，则自动转为 restart/start
     if [ "$action" == "reload" ] && ! systemctl is-active --quiet nginx; then
         action="restart"
     fi
     
-    systemctl "$action" nginx || { 
-        log_message ERROR "Nginx $action 失败"; 
-        # 尝试 fallback 
-        if [ "$action" == "reload" ]; then systemctl restart nginx; fi
-        return 1; 
-    }
+    if ! systemctl "$action" nginx; then
+        log_message ERROR "Nginx $action 失败"
+        echo -e "${YELLOW}--- 配置文件语法检查 (nginx -t) ---${NC}"
+        nginx -t || true
+        echo -e "${YELLOW}------------------------------------${NC}"
+        return 1
+    fi
     return 0
 }
 
@@ -229,7 +229,7 @@ _restart_nginx_ui() {
 # ==============================================================================
 
 _get_project_json() {
-    # 修复: 使用 first() 确保只返回一条匹配记录，避免因重复数据导致 parse error
+    # 只取第一条匹配，防止多重数据
     jq -c "first(.[] | select(.domain == \"$1\"))" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""
 }
 
@@ -240,10 +240,15 @@ _save_project_json() {
     local temp
     temp=$(mktemp)
     
+    # 核心修复: 使用 --argjson 安全地传递 JSON 对象，严禁字符串拼接
     if [ -n "$(_get_project_json "$domain")" ]; then
-        jq "(.[] | select(.domain == \"$domain\")) = $json" "$PROJECTS_METADATA_FILE" > "$temp"
+        jq --argjson new_entry "$json" --arg target_domain "$domain" \
+           '(.[] | select(.domain == $target_domain)) = $new_entry' \
+           "$PROJECTS_METADATA_FILE" > "$temp"
     else
-        jq ". + [$json]" "$PROJECTS_METADATA_FILE" > "$temp"
+        jq --argjson new_entry "$json" \
+           '. + [$new_entry]' \
+           "$PROJECTS_METADATA_FILE" > "$temp"
     fi
     
     if [ $? -eq 0 ]; then mv "$temp" "$PROJECTS_METADATA_FILE"; return 0; else rm -f "$temp"; return 1; fi
@@ -269,8 +274,9 @@ _write_and_enable_nginx_config() {
     local key
     key=$(echo "$json" | jq -r .key_file)
     
+    # 核心检查: 端口绝对不能为空
     if [[ -z "$port" || "$port" == "null" ]]; then
-        log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
+        log_message ERROR "配置生成终止: 检测到端口为空，可能是解析失败。"
         return 1
     fi
 
@@ -494,8 +500,8 @@ _gather_project_details() {
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
     
     local domain
-    # 修复: 使用 printf 避免 echo 对特殊字符的转义处理
-    domain=$(printf '%s' "$cur" | jq -r '.domain // ""')
+    # 使用 printf 防止 echo 转义副作用
+    domain=$(printf '%s' "$cur" | jq -r '.domain // ""' 2>/dev/null || echo "")
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
@@ -505,7 +511,7 @@ _gather_project_details() {
     local port="cert_only"
     
     if [ "$is_cert_only" == "false" ]; then
-        name=$(printf '%s' "$cur" | jq -r '.name // ""')
+        name=$(printf '%s' "$cur" | jq -r '.name // ""' 2>/dev/null || echo "")
         [ "$name" == "证书" ] && name=""
         
         while true; do
@@ -539,7 +545,7 @@ _gather_project_details() {
     local ca_name="letsencrypt"
     
     if [ "$skip_cert" == "true" ]; then
-        # 修复: 继承旧值时增强健壮性，屏蔽错误输出并提供回退值
+        # 稳健性修复：如果 jq 解析失败，回退到默认值，防止 parse error 炸屏
         method=$(printf '%s' "$cur" | jq -r '.acme_validation_method // "http-01"' 2>/dev/null || echo "http-01")
         provider=$(printf '%s' "$cur" | jq -r '.dns_api_provider // ""' 2>/dev/null || echo "")
         wildcard=$(printf '%s' "$cur" | jq -r '.use_wildcard // "n"' 2>/dev/null || echo "n")
@@ -601,7 +607,6 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 修复: 明确变量默认值，防止空变量导致 json 生成错误
     jq -n \
         --arg d "${domain:-}" \
         --arg t "${type:-local_port}" \
@@ -736,12 +741,17 @@ _handle_view_config() {
 _handle_reconfigure_project() {
     local d="$1"
     local cur; cur=$(_get_project_json "$d")
-    [ -z "$cur" ] && { log_message ERROR "读取项目配置失败: $d"; return; }
+    
+    # 健壮性检查: 如果读取到的旧配置无效，则视为空对象，避免阻塞流程
+    if [ -z "$cur" ] || ! echo "$cur" | jq -e . >/dev/null 2>&1; then
+        log_message WARN "无法读取或解析旧配置 ($d)，将作为新项目配置。"
+        cur="{}"
+    fi
 
     log_message INFO "正在重配 $d ..."
     
     local port
-    port=$(echo "$cur" | jq -r .resolved_port)
+    port=$(echo "$cur" | jq -r '.resolved_port // empty')
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
     
