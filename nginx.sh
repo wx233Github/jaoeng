@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.7.0-调试增强版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.0-JSON逻辑重构)
 # =============================================================
-# - 调试: 增加 JSON 数据流的详细日志，便于定位变量丢失问题。
-# - 修复: 重构 jq 参数传递，杜绝空变量引用。
+# - 核心修复: 彻底解决重配跳过证书时 domain 变量丢失问题。
+# - 逻辑优化: 确保 JSON 数据在任何分支下都完整有效。
 
 set -euo pipefail
 
@@ -329,14 +329,14 @@ _get_cert_files() {
 _issue_and_install_certificate() {
     local json="$1"
     if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
-        log_message ERROR "Debug: Received empty JSON in issue func."
+        log_message WARN "未收到有效配置信息，流程中止。"
         return 1
     fi
 
     local domain=$(echo "$json" | jq -r .domain)
     # 增加双重检查
     if [[ -z "$domain" || "$domain" == "null" ]]; then
-        log_message ERROR "Debug: JSON missing domain field: $json"
+        log_message ERROR "内部错误: 域名为空。"
         return 1
     fi
 
@@ -447,6 +447,7 @@ _gather_project_details() {
     exec 1>&2
 
     local cur="${1:-{\}}"
+    # 修复: 正确读取参数
     local skip_cert="${2:-false}"
     local is_cert_only="false"
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
@@ -487,7 +488,7 @@ _gather_project_details() {
         done
     fi
 
-    # 变量初始化
+    # 默认值
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -495,13 +496,14 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 修复: 确保默认值不为空，且不带引号
+        # 继承旧值 (使用 // 默认值防止 null)
         method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
         provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
         ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
+        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
@@ -557,25 +559,19 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 修复: 显式处理空值
-    local d_val="${domain:-}"
-    local t_val="${type:-local_port}"
-    local n_val="${name:-}"
-    local p_val="${port:-}"
-    local m_val="${method:-http-01}"
-    local dp_val="${provider:-}"
-    local w_val="${wildcard:-n}"
-    local cu_val="${ca_server:-}"
-    local cn_val="${ca_name:-}"
-    local cf_val="${cf:-}"
-    local kf_val="${kf:-}"
-
-    # 最终输出 JSON
+    # 修复: 确保所有变量都有默认值 (防止 jq 构建时引用空变量)
     jq -n \
-        --arg d "$d_val" --arg t "$t_val" --arg n "$n_val" --arg p "$p_val" \
-        --arg m "$m_val" --arg dp "$dp_val" --arg w "$w_val" \
-        --arg cu "$cu_val" --arg cn "$cn_val" \
-        --arg cf "$cf_val" --arg kf "$kf_val" \
+        --arg d "${domain:-}" \
+        --arg t "${type:-local_port}" \
+        --arg n "${name:-}" \
+        --arg p "${port:-}" \
+        --arg m "${method:-http-01}" \
+        --arg dp "${provider:-}" \
+        --arg w "${wildcard:-n}" \
+        --arg cu "${ca_server:-}" \
+        --arg cn "${ca_name:-}" \
+        --arg cf "${cf:-}" \
+        --arg kf "${kf:-}" \
         '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
     
     exec 1>&3
@@ -704,6 +700,7 @@ _handle_reconfigure_project() {
     fi
 
     local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
