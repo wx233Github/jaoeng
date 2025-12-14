@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.6.0-JSON捕获修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.7.0-终极IO修复版)
 # =============================================================
-# - 修复: 解决信息收集阶段因输出污染导致的流程中断问题。
-# - 优化: 移除冗余提示，提升交互体验。
+# - 核心修复: 使用 exec 文件描述符彻底分离 UI 输出与数据返回。
+# - 解决: "重配取消"、"信息收集失败" 等 JSON 解析相关错误。
 
 set -euo pipefail
 
@@ -100,7 +100,6 @@ _prompt_user_input_with_validation() {
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local disp=""
             if [ -n "$default" ]; then disp=" [默认: ${default}]"
-            # 移除 [可空] 提示，避免冗余
             fi
             echo -ne "${YELLOW}🔹 ${prompt}${NC}${disp}: " >&2
             read -r val
@@ -297,7 +296,7 @@ _view_access_log() {
 }
 
 # ==============================================================================
-# SECTION: 业务逻辑 (核心逻辑)
+# SECTION: 业务逻辑 (证书申请)
 # ==============================================================================
 
 _detect_web_service() {
@@ -422,15 +421,21 @@ _issue_and_install_certificate() {
     return 0
 }
 
-# --- 关键修复: 所有输出重定向到 stderr，确保 stdout 只有纯 JSON ---
+# --- 核心修复: 使用 exec 3>&1 分离 IO 流 ---
 _gather_project_details() {
+    # 1. 保存当前 stdout 到 fd 3
+    exec 3>&1
+    # 2. 将接下来所有的 stdout 重定向到 stderr (fd 2)
+    #    这样所有的 echo, printf, read prompt 都会显示在屏幕上，但不会被 $() 捕获
+    exec 1>&2
+
     local cur="${1:-{\}}"
     local is_cert_only="false"
     if [ "${2:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
-        domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || return 1
+        domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
     
     local type="cert_only"
@@ -440,22 +445,22 @@ _gather_project_details() {
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""')
         [ "$name" == "证书" ] && name=""
-        local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || return 1
+        local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
         
         type="local_port"; port="$target"
-        # 修复: 抑制 Docker 命令输出
+        # 修复: 确保 docker 命令不产生干扰输出
         if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
             type="docker"
             port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1)
-            [ -z "$port" ] && port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || return 1
+            [ -z "$port" ] && port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
         fi
     fi
 
-    # 交互输出重定向
+    # 交互流程...
     local ca_server="https://acme-v02.api.letsencrypt.org/directory"
     local ca_name="letsencrypt"
     local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-    _render_menu "选择 CA 机构" "${ca_list[@]}" >&2
+    _render_menu "选择 CA 机构" "${ca_list[@]}"
     local ca_choice
     ca_choice=$(_prompt_for_menu_choice_local "1-3")
     case "$ca_choice" in
@@ -466,9 +471,9 @@ _gather_project_details() {
     esac
     
     if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-         log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
+         log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..."
          local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
-         "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
+         "$ACME_BIN" --register-account -m "$reg_email" --server zerossl || log_message WARN "ZeroSSL 注册跳过"
     fi
 
     local method="http-01"
@@ -476,14 +481,14 @@ _gather_project_details() {
     local wildcard="n"
     
     local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-    _render_menu "验证方式" "${method_display[@]}" >&2
+    _render_menu "验证方式" "${method_display[@]}"
     local v_choice=$(_prompt_for_menu_choice_local "1-3")
     
     case "$v_choice" in
         1) 
             method="http-01" 
             if [ "$is_cert_only" == "false" ]; then
-                log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2
+                log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。"
             fi
             ;;
         2) 
@@ -500,13 +505,16 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 仅此处输出纯净 JSON
+    # 3. 最后将结果输出到 fd 3 (最初的 stdout)
     jq -n \
         --arg d "$domain" --arg t "$type" --arg n "$name" --arg p "$port" \
         --arg m "$method" --arg dp "$provider" --arg w "$wildcard" \
         --arg cu "$ca_server" --arg cn "$ca_name" \
         --arg cf "$cf" --arg kf "$kf" \
-        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}'
+        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
+    
+    # 4. 恢复 stdout (虽然子 shell 结束后会自动恢复，但这是好习惯)
+    exec 1>&3
 }
 
 # ==============================================================================
