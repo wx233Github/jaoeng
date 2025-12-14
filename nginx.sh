@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.2.0-重配修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.3.0-逻辑修正版)
 # =============================================================
-# - 修复: 重配项目时跳过证书申请导致的变量未绑定崩溃。
-# - 优化: 增强 JSON 解析的容错性。
+# - 修复: 重配时跳过证书申请后的逻辑路径错误。
+# - 增强: 对 JSON 数据完整性的校验。
 
 set -euo pipefail
 
@@ -328,7 +328,17 @@ _get_cert_files() {
 
 _issue_and_install_certificate() {
     local json="$1"
+    # 防御性编程: 确保 domain 存在
+    if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
+        log_message ERROR "JSON 数据为空，无法申请证书。"
+        return 1
+    fi
     local domain=$(echo "$json" | jq -r .domain)
+    if [[ -z "$domain" || "$domain" == "null" ]]; then
+        log_message ERROR "域名为空，无法申请证书。"
+        return 1
+    fi
+
     local method=$(echo "$json" | jq -r .acme_validation_method)
     local provider=$(echo "$json" | jq -r .dns_api_provider)
     local wildcard=$(echo "$json" | jq -r .use_wildcard)
@@ -436,18 +446,15 @@ _gather_project_details() {
     exec 1>&2
 
     local cur="${1:-{\}}"
-    # 修复: 正确读取参数
     local skip_cert="${2:-false}"
     local is_cert_only="false"
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
-    # 1. 域名处理
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
     
-    # 2. 反代目标处理
     local type="cert_only"
     local name="证书"
     local port="cert_only"
@@ -471,7 +478,7 @@ _gather_project_details() {
         fi
     fi
 
-    # 3. 证书相关参数处理
+    # 默认值
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -479,14 +486,14 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 修复: 从 cur 中提取旧值，如果 cur 为空则使用默认值
-        # 必须给 jq 提供默认值 // "xxx"，否则会提取出 null
+        # 继承旧值
         method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
         provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
         ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
+        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
@@ -510,7 +517,7 @@ _gather_project_details() {
              log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
              local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
              "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
-        fi
+    fi
 
         local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
         _render_menu "验证方式" "${method_display[@]}" >&2
@@ -676,6 +683,7 @@ _handle_reconfigure_project() {
     fi
 
     local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
