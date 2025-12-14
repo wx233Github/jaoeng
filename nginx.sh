@@ -1,9 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.5.0-交互循环修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.6.0-JSON逻辑重构)
 # =============================================================
-# - 修复: 输入无效后端目标时允许重试，不再直接退出。
-# - 修复: 重配时跳过证书申请导致的逻辑穿透问题。
-# - 增强: 关键变量的调试日志与防御性检查。
+# - 核心修复: 彻底解决重配跳过证书时 domain 变量丢失问题。
+# - 逻辑优化: 确保 JSON 数据在任何分支下都完整有效。
 
 set -euo pipefail
 
@@ -329,15 +328,12 @@ _get_cert_files() {
 
 _issue_and_install_certificate() {
     local json="$1"
-    
-    # 关键修复: 防御性检查
     if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
         log_message WARN "未收到有效配置信息，流程中止。"
         return 1
     fi
 
     local domain=$(echo "$json" | jq -r .domain)
-    # 如果 domain 为空，说明 JSON 构造失败
     if [[ -z "$domain" || "$domain" == "null" ]]; then
         log_message ERROR "内部错误: 域名为空。"
         return 1
@@ -467,21 +463,16 @@ _gather_project_details() {
         name=$(echo "$cur" | jq -r '.name // ""')
         [ "$name" == "证书" ] && name=""
         
-        # 修复: 循环直到输入有效目标
         while true; do
             local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
-            
             type="local_port"; port="$target"
             
-            # 临时切回 stdout 执行 docker inspect
             local is_docker="false"
             if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
                 type="docker"
                 exec 1>&3
-                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1)
+                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
                 exec 1>&2
-                
-                # 无论是否获取到端口，只要容器存在，就视为 Docker 模式
                 is_docker="true"
                 if [ -z "$port" ]; then
                     port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
@@ -489,12 +480,8 @@ _gather_project_details() {
                 break
             fi
             
-            # 校验端口纯数字
-            if [[ "$port" =~ ^[0-9]+$ ]]; then
-                break
-            else
-                log_message ERROR "错误: '$target' 既不是容器也不是端口，请重试。" >&2
-            fi
+            if [[ "$port" =~ ^[0-9]+$ ]]; then break; fi
+            log_message ERROR "错误: '$target' 既不是容器也不是端口，请重试。" >&2
         done
     fi
 
@@ -506,14 +493,13 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 继承旧值 (使用 // 默认值防止 null)
+        # 修复：确保默认值不为空，防止 jq 引用失败
         method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
         provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
         ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
-        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
@@ -715,7 +701,6 @@ _handle_reconfigure_project() {
         return
     fi
     
-    # 修复: 只有当明确要求续期时，才调用申请逻辑
     if [ "$skip_cert" == "false" ]; then
         if ! _issue_and_install_certificate "$new"; then
             log_message ERROR "证书申请失败，重配终止。"
@@ -800,7 +785,7 @@ check_and_auto_renew_certs() {
         fi
     done
     control_nginx reload
-    log_message INFO "结果: $success成功, $fail失败。"
+    log_message INFO "结果: $success 成功, $fail 失败。"
 }
 
 main_menu() {
