@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.10.0-Nginx日志版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.11.0-菜单修复版)
 # =============================================================
-# - 新增: 主菜单增加全局 Nginx 日志查看功能。
-# - 优化: 日志查看模块的中文提示。
+# - 修复: 主菜单无法进入的问题。
+# - 调整: 菜单项重排，分别提供 acme.sh 和 Nginx 日志查看。
 
 set -euo pipefail
 
@@ -444,6 +444,7 @@ _issue_and_install_certificate() {
             systemctl start "$temp_svc"
         fi
         
+        # --- 核心新增: CA 救灾逻辑 ---
         if [[ "$err_log" == *"retryafter"* ]]; then
             echo -e "\n${RED}检测到 CA 限制 (retryafter)${NC}"
             if _confirm_action_or_exit_non_interactive "是否切换 CA 到 Let's Encrypt 并重试?"; then
@@ -745,6 +746,7 @@ _handle_reconfigure_project() {
     fi
 
     local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
@@ -803,7 +805,7 @@ manage_configs() {
             "2. 🔄 手动续期" \
             "3. 🗑️  删除项目" \
             "4. 📝 查看配置" \
-            "5. 📊 查看日志" \
+            "5. 📊 查看项目日志" \
             "6. ⚙️  重新配置"
         
         case "$(_prompt_for_menu_choice_local "1-6")" in
@@ -846,9 +848,10 @@ main_menu() {
             "3. 🚀 配置新项目 (New Project)" \
             "4. 📂 项目管理 (Manage Projects)" \
             "5. 🔄 批量续期 (Auto Renew All)" \
-            "6. 📜 查看 Nginx 运行日志"
+            "6. 📜 查看 acme.sh 运行日志" \
+            "7. 📜 查看 Nginx 运行日志"
             
-        case "$(_prompt_for_menu_choice_local "1-6")" in
+        case "$(_prompt_for_menu_choice_local "1-7")" in
             1) _restart_nginx_ui; press_enter_to_continue ;;
             2) configure_nginx_projects "cert_only"; press_enter_to_continue ;;
             3) configure_nginx_projects; press_enter_to_continue ;;
@@ -858,7 +861,8 @@ main_menu() {
                     check_and_auto_renew_certs
                     press_enter_to_continue
                 fi ;;
-            6) _view_nginx_global_log; press_enter_to_continue ;;
+            6) _view_acme_log; press_enter_to_continue ;;
+            7) _view_nginx_global_log; press_enter_to_continue ;;
             "") log_message INFO "👋 Bye."; return 10 ;;
             *) log_message ERROR "无效选择" ;;
         esac
