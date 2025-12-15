@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.4-交互完善版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.5-极速启动版)
 # =============================================================
-# - 修复: 主菜单按回车键无法退出(返回)的问题。
-# - 修复: 自动修正旧版本生成的英文日志初始化文本。
+# - 优化: 移除启动时的 IP 获取操作，实现主菜单秒开。
+# - 优化: 退出时不再打印冗余日志，且返回标准代码 0。
 
 set -euo pipefail
 
@@ -95,7 +95,7 @@ cleanup_temp_files() {
 # 定义全局陷阱函数
 _on_exit() {
     cleanup_temp_files
-    exit 10
+    # 移除 exit 10，允许脚本自然结束或由调用者控制退出码
 }
 trap _on_exit INT TERM
 
@@ -297,7 +297,7 @@ _write_and_enable_nginx_config() {
         return 1
     fi
 
-    # 延迟获取 IP
+    # 延迟获取 IP (这是唯一需要 IP 的地方)
     get_vps_ip
 
     cat > "$conf" << EOF
@@ -887,7 +887,7 @@ main_menu() {
                 fi ;;
             6) _view_acme_log; press_enter_to_continue ;;
             7) _view_nginx_global_log; press_enter_to_continue ;;
-            "") log_message INFO "👋 Bye."; return 10 ;;
+            "") return 0 ;; # 修复：静默退出
             *) log_message ERROR "无效选择" ;;
         esac
     done
@@ -900,5 +900,6 @@ initialize_environment
 
 if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; exit $?; fi
 
-install_dependencies && install_acme_sh && get_vps_ip && main_menu
+# 修复：移除 get_vps_ip 调用，解决启动慢问题
+install_dependencies && install_acme_sh && main_menu
 exit $?
