@@ -1,8 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.11.0-菜单修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.0-极速启动版)
 # =============================================================
-# - 修复: 主菜单无法进入的问题。
-# - 调整: 菜单项重排，分别提供 acme.sh 和 Nginx 日志查看。
+# - 性能: 移除启动时的冗余依赖检查，秒级启动。
+# - 性能: IP 获取推迟到配置生成阶段，不再阻塞主菜单。
+# - 体验: 消除主菜单卡顿感。
 
 set -euo pipefail
 
@@ -14,6 +15,7 @@ ORANGE='\033[38;5;208m';
 LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 RENEW_THRESHOLD_DAYS=30
+DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v1"
 
 NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
@@ -91,16 +93,25 @@ _render_menu() {
 cleanup_temp_files() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
 }
-trap cleanup_temp_files EXIT
+# 定义全局陷阱函数
+_on_exit() {
+    cleanup_temp_files
+    exit 10
+}
+trap _on_exit INT TERM
 
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then log_message ERROR "请使用 root 用户运行此操作。"; return 1; fi
     return 0
 }
 
-get_vps_ip() {
-    VPS_IP=$(curl -s https://api.ipify.org)
-    VPS_IPV6=$(curl -s -6 https://api64.ipify.org 2>/dev/null || echo "")
+# 优化: 仅在需要时调用
+ensure_vps_ip() {
+    if [ -z "$VPS_IP" ]; then
+        # log_message INFO "正在获取本机 IP..."
+        VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
+        VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
+    fi
 }
 
 _prompt_user_input_with_validation() {
@@ -148,24 +159,29 @@ initialize_environment() {
 }
 
 install_dependencies() {
+    # 优化: 检查标记文件，存在则跳过 apt update
+    if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
+
     local deps="nginx curl socat openssl jq idn dnsutils nano"
     local missing=0
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
             log_message WARN "缺失: $pkg，安装中..."
-            apt update -y >/dev/null 2>&1 && apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "安装 $pkg 失败"; return 1; }
+            # 只有确实缺失时才执行 apt update
+            if [ "$missing" -eq 0 ]; then apt update -y >/dev/null 2>&1; fi
+            apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "安装 $pkg 失败"; return 1; }
             missing=1
         fi
     done
+    
+    # 标记已检查
+    touch "$DEPS_MARK_FILE"
     [ "$missing" -eq 1 ] && log_message SUCCESS "依赖就绪。"
     return 0
 }
 
 install_acme_sh() {
-    if [ -f "$ACME_BIN" ]; then 
-        "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
-        return 0
-    fi
+    if [ -f "$ACME_BIN" ]; then return 0; fi
     log_message WARN "acme.sh 未安装，开始安装..."
     local email; email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "true")
     local cmd="curl https://get.acme.sh | sh"
@@ -199,18 +215,42 @@ _restart_nginx_ui() {
     if control_nginx restart; then log_message SUCCESS "Nginx 重启成功。"; fi
 }
 
+_view_file_with_tail() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        log_message ERROR "文件不存在: $file"
+        return
+    fi
+    echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
+    
+    # 临时禁用 INT 信号，防止 Ctrl+C 退出脚本
+    trap '' INT
+    tail -f -n 50 "$file" || true
+    # 恢复 INT 信号
+    trap _on_exit INT
+    
+    echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
+}
+
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
+    if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
+    
     if [ ! -f "$log_file" ]; then
         log_message WARN "日志文件未找到，正在尝试初始化..."
-        "$ACME_BIN" --version --log >/dev/null 2>&1
+        "$ACME_BIN" --version --log >/dev/null 2>&1 || true
+        if [ ! -f "$log_file" ]; then
+            mkdir -p "$(dirname "$log_file")"
+            touch "$log_file"
+            echo "Log initialized." > "$log_file"
+        fi
     fi
+    
     if [ -f "$log_file" ]; then
-        echo ""; echo -e "${CYAN}=== acme.sh 运行日志 (最后 50 行) ===${NC}"
-        tail -n 50 "$log_file"; echo -e "${CYAN}=======================================${NC}"
-        echo -e "提示: 如果看到 'retryafter'，说明 CA 限制了请求频率。"
+        echo -e "\n${CYAN}=== acme.sh 运行日志 ===${NC}"
+        _view_file_with_tail "$log_file"
     else
-        log_message ERROR "无法读取 acme.sh 日志。"
+        log_message ERROR "无法创建或读取日志文件: $log_file"
     fi
 }
 
@@ -224,13 +264,7 @@ _view_nginx_global_log() {
         2) log_path="$NGINX_ERROR_LOG" ;;
         *) return ;;
     esac
-    
-    if [ ! -f "$log_path" ]; then
-        log_message ERROR "日志文件不存在: $log_path"
-        return
-    fi
-    echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
-    tail -f -n 20 "$log_path"
+    _view_file_with_tail "$log_path"
 }
 
 # ==============================================================================
@@ -267,6 +301,9 @@ _write_and_enable_nginx_config() {
         log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
         return 1
     fi
+
+    # 延迟获取 IP
+    ensure_vps_ip
 
     cat > "$conf" << EOF
 server {
@@ -329,13 +366,7 @@ _view_project_access_log() {
         2) log_path="$NGINX_ERROR_LOG" ;;
         *) return ;;
     esac
-    
-    if [ ! -f "$log_path" ]; then
-        log_message ERROR "日志文件不存在: $log_path"
-        return
-    fi
-    echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
-    tail -f -n 20 "$log_path"
+    _view_file_with_tail "$log_path"
 }
 
 # ==============================================================================
@@ -444,7 +475,6 @@ _issue_and_install_certificate() {
             systemctl start "$temp_svc"
         fi
         
-        # --- 核心新增: CA 救灾逻辑 ---
         if [[ "$err_log" == *"retryafter"* ]]; then
             echo -e "\n${RED}检测到 CA 限制 (retryafter)${NC}"
             if _confirm_action_or_exit_non_interactive "是否切换 CA 到 Let's Encrypt 并重试?"; then
@@ -805,7 +835,7 @@ manage_configs() {
             "2. 🔄 手动续期" \
             "3. 🗑️  删除项目" \
             "4. 📝 查看配置" \
-            "5. 📊 查看项目日志" \
+            "5. 📊 查看日志" \
             "6. ⚙️  重新配置"
         
         case "$(_prompt_for_menu_choice_local "1-6")" in
@@ -870,7 +900,7 @@ main_menu() {
 }
 
 # --- 入口 ---
-trap 'echo -e "\n${YELLOW}中断退出...${NC}"; exit 10' INT TERM
+trap '_on_exit' INT TERM
 if ! check_root; then exit 1; fi
 initialize_environment
 
