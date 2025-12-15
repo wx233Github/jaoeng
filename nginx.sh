@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.2-函数名修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.0-日志交互修复)
 # =============================================================
-# - 修复: 解决 "get_vps_ip: command not found" 错误。
-# - 优化: 确保 IP 获取逻辑按需执行，不拖慢启动。
+# - 修复: 查看日志时 Ctrl+C 可正常退出查看模式而不终止脚本。
+# - 优化: 日志初始化提示中文化。
 
 set -euo pipefail
 
@@ -104,8 +104,7 @@ check_root() {
     return 0
 }
 
-# 修复: 函数名统一为 get_vps_ip，逻辑改为按需获取
-get_vps_ip() {
+ensure_vps_ip() {
     if [ -z "$VPS_IP" ]; then
         VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
         VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
@@ -218,10 +217,12 @@ _view_file_with_tail() {
         return
     fi
     echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
-    trap '' INT
+    
+    # 临时覆盖 INT 信号处理，使其只停止 tail 命令
+    trap 'echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"; return' INT
     tail -f -n 50 "$file" || true
+    # 恢复全局陷阱
     trap _on_exit INT
-    echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
 }
 
 _view_acme_log() {
@@ -233,7 +234,7 @@ _view_acme_log() {
         if [ ! -f "$log_file" ]; then
             mkdir -p "$(dirname "$log_file")"
             touch "$log_file"
-            echo "Log initialized." > "$log_file"
+            echo "[信息] 日志文件已初始化。" > "$log_file"
         fi
     fi
     if [ -f "$log_file" ]; then
@@ -293,7 +294,7 @@ _write_and_enable_nginx_config() {
     fi
 
     # 延迟获取 IP
-    get_vps_ip
+    ensure_vps_ip
 
     cat > "$conf" << EOF
 server {
@@ -459,6 +460,7 @@ _issue_and_install_certificate() {
         local err_log=$(cat "$log_temp")
         rm -f "$log_temp"
         
+        # 恢复服务
         if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
             log_message INFO "重启 $temp_svc ..."
             systemctl start "$temp_svc"
