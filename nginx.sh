@@ -1,7 +1,7 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.2-入口修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.2-函数名修正版)
 # =============================================================
-# - 修复: 脚本入口调用了错误的函数名。
+# - 修复: 彻底解决 get_vps_ip 函数未定义的错误。
 
 set -euo pipefail
 
@@ -103,8 +103,8 @@ check_root() {
     return 0
 }
 
-# 优化: 按需获取 IP，不阻塞启动
-ensure_vps_ip() {
+# 修复: 恢复函数名为 get_vps_ip，逻辑保持按需获取
+get_vps_ip() {
     if [ -z "$VPS_IP" ]; then
         VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
         VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
@@ -292,7 +292,7 @@ _write_and_enable_nginx_config() {
     fi
 
     # 延迟获取 IP
-    ensure_vps_ip
+    get_vps_ip
 
     cat > "$conf" << EOF
 server {
@@ -507,6 +507,357 @@ _issue_and_install_certificate() {
     return 0
 }
 
+# --- IO 修复版: 彻底分离 UI 与 数据流 ---
+_gather_project_details() {
+    exec 3>&1
+    exec 1>&2
+
+    local cur="${1:-{\}}"
+    local skip_cert="${2:-false}"
+    local is_cert_only="false"
+    if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
+
+    local domain=$(echo "$cur" | jq -r '.domain // ""')
+    if [ -z "$domain" ]; then
+        domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
+    fi
+    
+    local type="cert_only"
+    local name="证书"
+    local port="cert_only"
+
+    if [ "$is_cert_only" == "false" ]; then
+        name=$(echo "$cur" | jq -r '.name // ""')
+        [ "$name" == "证书" ] && name=""
+        
+        while true; do
+            local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
+            type="local_port"; port="$target"
+            
+            local is_docker="false"
+            if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
+                type="docker"
+                exec 1>&3
+                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
+                exec 1>&2
+                
+                is_docker="true"
+                if [ -z "$port" ]; then
+                    port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
+                fi
+                break
+            fi
+            
+            if [[ "$port" =~ ^[0-9]+$ ]]; then break; fi
+            log_message ERROR "错误: '$target' 既不是容器也不是端口，请重试。" >&2
+        done
+    fi
+
+    # 默认值
+    local method="http-01"
+    local provider=""
+    local wildcard="n"
+    local ca_server="https://acme-v02.api.letsencrypt.org/directory"
+    local ca_name="letsencrypt"
+
+    if [ "$skip_cert" == "true" ]; then
+        # 继承旧值 (使用 // 默认值防止 null)
+        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
+        provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
+        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
+        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
+        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
+    else
+        # 交互选择
+        local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
+        _render_menu "选择 CA 机构" "${ca_list[@]}"
+        local ca_choice
+        while true; do
+            ca_choice=$(_prompt_for_menu_choice_local "1-3")
+            if [ -z "$ca_choice" ]; then 
+                log_message WARN "请选择一个选项。" >&2
+                continue
+            fi
+            break
+        done
+
+        case "$ca_choice" in
+            1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
+            2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
+            3) ca_server="google"; ca_name="google" ;;
+            *) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
+        esac
+        
+        if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
+             log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
+             local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
+             "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
+        fi
+
+        local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
+        _render_menu "验证方式" "${method_display[@]}" >&2
+        local v_choice
+        while true; do
+            v_choice=$(_prompt_for_menu_choice_local "1-3")
+            [ -n "$v_choice" ] && break
+        done
+        
+        case "$v_choice" in
+            1) 
+                method="http-01" 
+                if [ "$is_cert_only" == "false" ]; then
+                    log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2
+                fi
+                ;;
+            2) 
+                method="dns-01"; provider="dns_cf"
+                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+                ;;
+            3) 
+                method="dns-01"; provider="dns_ali"
+                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false")
+                ;;
+            *) method="http-01" ;;
+        esac
+    fi
+
+    local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
+    local kf="$SSL_CERTS_BASE_DIR/$domain.key"
+    
+    # 最终输出 JSON
+    jq -n \
+        --arg d "${domain:-}" \
+        --arg t "${type:-local_port}" \
+        --arg n "${name:-}" \
+        --arg p "${port:-}" \
+        --arg m "${method:-http-01}" \
+        --arg dp "${provider:-}" \
+        --arg w "${wildcard:-n}" \
+        --arg cu "${ca_server:-}" \
+        --arg cn "${ca_name:-}" \
+        --arg cf "${cf:-}" \
+        --arg kf "${kf:-}" \
+        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
+    
+    exec 1>&3
+}
+
+# ==============================================================================
+# SECTION: 交互菜单
+# ==============================================================================
+
+_display_projects_list() {
+    local json="$1" idx=0
+    echo "$json" | jq -c '.[]' | while read -r p; do
+        idx=$((idx + 1))
+        local domain=$(echo "$p" | jq -r '.domain // "未知"')
+        local type=$(echo "$p" | jq -r '.type')
+        local port=$(echo "$p" | jq -r '.resolved_port')
+        local cert=$(echo "$p" | jq -r '.cert_file')
+        
+        local info="本地端口: $port"
+        [ "$type" = "docker" ] && info="容器: $(echo "$p" | jq -r '.name') ($port)"
+        [ "$port" == "cert_only" ] && info="(纯证书模式)"
+        
+        local status="${RED}缺失${NC}"
+        local details=""
+        local next_renew="自动/未知"
+        
+        local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
+        [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
+        if [ -f "$conf_file" ]; then
+            local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
+            if [ -n "$next_ts" ]; then
+                next_renew=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
+            fi
+        fi
+
+        if [[ -f "$cert" ]]; then
+            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
+            local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
+            local days=$(( (ts - $(date +%s)) / 86400 ))
+            
+            if (( days < 0 )); then status="${RED}已过期${NC}";
+            elif (( days <= 30 )); then status="${YELLOW}即将到期${NC}";
+            else status="${GREEN}有效${NC}"; fi
+            details="(剩余 $days 天)"
+        fi
+        
+        printf "${GREEN}[ %d ] %s${NC}\n" "$idx" "$domain"
+        printf "  ├─ 🎯 目 标 : %s\n" "$info"
+        printf "  ├─ ⏱️ 续 期 : %s\n" "$next_renew"
+        echo -e "  └─ 📜 证 书 : ${status} ${details}"
+        echo -e "${CYAN}····························································${NC}"
+    done
+}
+
+configure_nginx_projects() {
+    local is_cert_only="false"
+    if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
+
+    local json
+    if ! json=$(_gather_project_details "{}" "false" "${1:-}"); then
+        log_message WARN "信息收集已取消或失败。"
+        return 0
+    fi
+    
+    local domain=$(echo "$json" | jq -r .domain)
+
+    if [ -n "$(_get_project_json "$domain")" ]; then
+        if ! _confirm_action_or_exit_non_interactive "域名 $domain 已存在，是否覆盖？"; then
+            log_message INFO "用户取消操作。"
+            return 0
+        fi
+    fi
+
+    if ! _issue_and_install_certificate "$json"; then
+        log_message ERROR "配置失败：证书申请未通过。"
+        return
+    fi
+    
+    if [ "$is_cert_only" == "false" ]; then
+        if ! _write_and_enable_nginx_config "$domain" "$json"; then return 1; fi
+        if ! control_nginx reload; then
+            _remove_and_disable_nginx_config "$domain"
+            return
+        fi
+    fi
+
+    _save_project_json "$json"
+    log_message SUCCESS "项目 $domain 配置完成。"
+}
+
+_handle_renew_cert() {
+    local d="$1"
+    local p=$(_get_project_json "$d")
+    [ -z "$p" ] && { log_message ERROR "项目不存在"; return; }
+    _issue_and_install_certificate "$p" && control_nginx reload
+}
+
+_handle_delete_project() {
+    local d="$1"
+    if _confirm_action_or_exit_non_interactive "确认彻底删除 $d 及其证书？"; then
+        _remove_and_disable_nginx_config "$d"
+        "$ACME_BIN" --remove -d "$d" --ecc >/dev/null 2>&1
+        rm -f "$SSL_CERTS_BASE_DIR/$d.cer" "$SSL_CERTS_BASE_DIR/$d.key"
+        _delete_project_json "$d"
+        control_nginx reload
+    fi
+}
+
+_handle_view_config() {
+    local d="$1"
+    _view_nginx_config "$d"
+}
+
+_handle_reconfigure_project() {
+    local d="$1"
+    local cur=$(_get_project_json "$d")
+    log_message INFO "正在重配 $d ..."
+    
+    local port=$(echo "$cur" | jq -r .resolved_port)
+    local mode=""
+    [ "$port" == "cert_only" ] && mode="cert_only"
+
+    local skip_cert="true"
+    if _confirm_action_or_exit_non_interactive "是否重新申请/续期证书 (Renew Cert)?"; then
+        skip_cert="false"
+    fi
+
+    local new
+    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
+    if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
+        log_message WARN "重配取消。"
+        return
+    fi
+    
+    if [ "$skip_cert" == "false" ]; then
+        if ! _issue_and_install_certificate "$new"; then
+            log_message ERROR "证书申请失败，重配终止。"
+            return 1
+        fi
+    else
+        log_message INFO "已跳过证书申请，仅更新配置。"
+    fi
+
+    if [ "$mode" != "cert_only" ]; then
+        _write_and_enable_nginx_config "$d" "$new"
+    fi
+    control_nginx reload && _save_project_json "$new" && log_message SUCCESS "重配成功"
+}
+
+_handle_cert_details() {
+    local d="$1"
+    local cert="$SSL_CERTS_BASE_DIR/$d.cer"
+    if [ -f "$cert" ]; then
+        echo -e "${CYAN}--- 证书详情 ($d) ---${NC}"
+        openssl x509 -in "$cert" -noout -text | grep -E "Issuer:|Not After|Subject:|DNS:"
+        echo -e "${CYAN}-----------------------${NC}"
+    else
+        log_message ERROR "证书文件不存在。"
+    fi
+}
+
+manage_configs() {
+    while true; do
+        local all=$(jq . "$PROJECTS_METADATA_FILE")
+        local count=$(echo "$all" | jq 'length')
+        if [ "$count" -eq 0 ]; then
+            log_message WARN "暂无项目。"
+            break
+        fi
+        
+        echo ""
+        _display_projects_list "$all"
+        
+        local choice_idx
+        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
+        
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
+        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
+        
+        local selected_domain
+        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
+        
+        _render_menu "Manage: $selected_domain" \
+            "1. 🔍 查看证书详情" \
+            "2. 🔄 手动续期" \
+            "3. 🗑️  删除项目" \
+            "4. 📝 查看配置" \
+            "5. 📊 查看日志" \
+            "6. ⚙️  重新配置"
+        
+        case "$(_prompt_for_menu_choice_local "1-6")" in
+            1) _handle_cert_details "$selected_domain" ;;
+            2) _handle_renew_cert "$selected_domain" ;;
+            3) _handle_delete_project "$selected_domain"; break ;; 
+            4) _handle_view_config "$selected_domain" ;;
+            5) _view_project_access_log "$selected_domain" ;;
+            6) _handle_reconfigure_project "$selected_domain" ;;
+            "") continue ;;
+            *) log_message ERROR "无效选择" ;;
+        esac
+        press_enter_to_continue
+    done
+}
+
+check_and_auto_renew_certs() {
+    log_message INFO "正在检查所有证书..."
+    local success=0 fail=0
+    
+    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
+        local d=$(echo "$p" | jq -r .domain)
+        local f=$(echo "$p" | jq -r .cert_file)
+        
+        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
+            log_message WARN "正在续期: $d"
+            if _issue_and_install_certificate "$p"; then success=$((success+1)); else fail=$((fail+1)); fi
+        fi
+    done
+    control_nginx reload
+    log_message INFO "结果: $success 成功, $fail 失败。"
+}
+
 main_menu() {
     while true; do
         local nginx_status="$(_get_nginx_status)"
@@ -544,5 +895,5 @@ initialize_environment
 
 if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; exit $?; fi
 
-install_dependencies && install_acme_sh && ensure_vps_ip && main_menu
+install_dependencies && install_acme_sh && get_vps_ip && main_menu
 exit $?
