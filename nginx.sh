@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.0-日志交互修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.1-入口修复版)
 # =============================================================
-# - 修复: 查看日志时 Ctrl+C 可正常退出查看模式而不终止脚本。
-# - 优化: 日志初始化提示中文化。
+# - 修复: 脚本入口调用了不存在的 get_vps_ip 函数导致崩溃。
+# - 优化: 彻底移除启动时的阻塞性 IP 查询。
 
 set -euo pipefail
 
@@ -104,6 +104,7 @@ check_root() {
     return 0
 }
 
+# 优化: 按需获取 IP，不阻塞启动
 ensure_vps_ip() {
     if [ -z "$VPS_IP" ]; then
         VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
@@ -217,12 +218,10 @@ _view_file_with_tail() {
         return
     fi
     echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
-    
-    # 临时覆盖 INT 信号处理，使其只停止 tail 命令
-    trap 'echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"; return' INT
+    trap '' INT
     tail -f -n 50 "$file" || true
-    # 恢复全局陷阱
     trap _on_exit INT
+    echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
 }
 
 _view_acme_log() {
@@ -896,5 +895,5 @@ initialize_environment
 
 if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; exit $?; fi
 
-install_dependencies && install_acme_sh && get_vps_ip && main_menu
+install_dependencies && install_acme_sh && main_menu
 exit $?
