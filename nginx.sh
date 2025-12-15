@@ -1,5 +1,5 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.1-启动修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.2-函数名修复版)
 # =============================================================
 # - 修复: 解决 "get_vps_ip: command not found" 错误。
 # - 优化: 确保 IP 获取逻辑按需执行，不拖慢启动。
@@ -104,8 +104,8 @@ check_root() {
     return 0
 }
 
-# 优化: 按需获取 IP，不阻塞启动
-ensure_vps_ip() {
+# 修复: 函数名统一为 get_vps_ip，逻辑改为按需获取
+get_vps_ip() {
     if [ -z "$VPS_IP" ]; then
         VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
         VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
@@ -293,7 +293,7 @@ _write_and_enable_nginx_config() {
     fi
 
     # 延迟获取 IP
-    ensure_vps_ip
+    get_vps_ip
 
     cat > "$conf" << EOF
 server {
@@ -765,7 +765,6 @@ _handle_reconfigure_project() {
     fi
 
     local new
-    # 修复: 传递正确的参数顺序 cur, skip_cert, mode
     if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
         log_message WARN "重配取消。"
         return
