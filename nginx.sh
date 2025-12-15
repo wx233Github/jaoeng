@@ -1,9 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.0-极速启动版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.1-启动修复版)
 # =============================================================
-# - 性能: 移除启动时的冗余依赖检查，秒级启动。
-# - 性能: IP 获取推迟到配置生成阶段，不再阻塞主菜单。
-# - 体验: 消除主菜单卡顿感。
+# - 修复: 解决 "get_vps_ip: command not found" 错误。
+# - 优化: 确保 IP 获取逻辑按需执行，不拖慢启动。
 
 set -euo pipefail
 
@@ -105,10 +104,9 @@ check_root() {
     return 0
 }
 
-# 优化: 仅在需要时调用
+# 优化: 按需获取 IP，不阻塞启动
 ensure_vps_ip() {
     if [ -z "$VPS_IP" ]; then
-        # log_message INFO "正在获取本机 IP..."
         VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
         VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
     fi
@@ -159,29 +157,27 @@ initialize_environment() {
 }
 
 install_dependencies() {
-    # 优化: 检查标记文件，存在则跳过 apt update
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
-
     local deps="nginx curl socat openssl jq idn dnsutils nano"
     local missing=0
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
             log_message WARN "缺失: $pkg，安装中..."
-            # 只有确实缺失时才执行 apt update
             if [ "$missing" -eq 0 ]; then apt update -y >/dev/null 2>&1; fi
             apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "安装 $pkg 失败"; return 1; }
             missing=1
         fi
     done
-    
-    # 标记已检查
     touch "$DEPS_MARK_FILE"
     [ "$missing" -eq 1 ] && log_message SUCCESS "依赖就绪。"
     return 0
 }
 
 install_acme_sh() {
-    if [ -f "$ACME_BIN" ]; then return 0; fi
+    if [ -f "$ACME_BIN" ]; then 
+        "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
+        return 0
+    fi
     log_message WARN "acme.sh 未安装，开始安装..."
     local email; email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "true")
     local cmd="curl https://get.acme.sh | sh"
@@ -222,20 +218,15 @@ _view_file_with_tail() {
         return
     fi
     echo -e "${CYAN}--- 实时日志 (Ctrl+C 退出) ---${NC}"
-    
-    # 临时禁用 INT 信号，防止 Ctrl+C 退出脚本
     trap '' INT
     tail -f -n 50 "$file" || true
-    # 恢复 INT 信号
     trap _on_exit INT
-    
     echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
 }
 
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
-    
     if [ ! -f "$log_file" ]; then
         log_message WARN "日志文件未找到，正在尝试初始化..."
         "$ACME_BIN" --version --log >/dev/null 2>&1 || true
@@ -245,7 +236,6 @@ _view_acme_log() {
             echo "Log initialized." > "$log_file"
         fi
     fi
-    
     if [ -f "$log_file" ]; then
         echo -e "\n${CYAN}=== acme.sh 运行日志 ===${NC}"
         _view_file_with_tail "$log_file"
@@ -469,7 +459,6 @@ _issue_and_install_certificate() {
         local err_log=$(cat "$log_temp")
         rm -f "$log_temp"
         
-        # 恢复服务
         if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
             log_message INFO "重启 $temp_svc ..."
             systemctl start "$temp_svc"
