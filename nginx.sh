@@ -1,8 +1,9 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.5-极速启动版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.7-Cron修复版)
 # =============================================================
-# - 优化: 移除启动时的 IP 获取操作，实现主菜单秒开。
-# - 优化: 退出时不再打印冗余日志，且返回标准代码 0。
+# - 新增: 定时任务(Cron)的诊断与一键修复功能。
+# - 优化: acme.sh 安装时确保 Cron 日志可追溯。
+# - 修复: 解决证书即将过期但未自动续期的痛点。
 
 set -euo pipefail
 
@@ -30,6 +31,7 @@ for arg in "$@"; do
     fi
 done
 VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
+SCRIPT_PATH=$(realpath "$0")
 
 # ==============================================================================
 # SECTION: 核心工具函数
@@ -95,7 +97,6 @@ cleanup_temp_files() {
 # 定义全局陷阱函数
 _on_exit() {
     cleanup_temp_files
-    # 移除 exit 10，允许脚本自然结束或由调用者控制退出码
 }
 trap _on_exit INT TERM
 
@@ -185,6 +186,8 @@ install_acme_sh() {
     if eval "$cmd"; then 
         initialize_environment
         "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
+        # 优化: 确保 acme.sh 自己的 Cron 也不丢失日志
+        crontab -l | sed "s| > /dev/null| >> $LOG_FILE 2>\&1|g" | crontab -
         log_message SUCCESS "acme.sh 安装成功 (已开启自动更新)。"
         return 0
     fi
@@ -227,20 +230,20 @@ _view_file_with_tail() {
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
+    
+    # 强制刷新
+    if [ -x "$ACME_BIN" ]; then "$ACME_BIN" --version >/dev/null 2>&1 || true; fi
+
     if [ ! -f "$log_file" ]; then
-        log_message WARN "日志文件未找到，正在尝试初始化..."
-        "$ACME_BIN" --version --log >/dev/null 2>&1 || true
-        if [ ! -f "$log_file" ]; then
-            mkdir -p "$(dirname "$log_file")"
-            touch "$log_file"
-            echo "日志文件已初始化。" > "$log_file"
-        fi
+        mkdir -p "$(dirname "$log_file")"
+        touch "$log_file"
+        echo "日志文件已初始化。" > "$log_file"
     else
-        # 修复: 如果是旧版脚本生成的英文初始化文本，强制中文化
-        if [ "$(head -n 1 "$log_file" 2>/dev/null | tr -d '\0')" == "Log initialized." ] && [ "$(wc -l < "$log_file")" -le 2 ]; then
-            echo "日志文件已初始化。" > "$log_file"
+        if grep -q "Log initialized." "$log_file"; then
+            sed -i 's/Log initialized./日志文件已初始化。/g' "$log_file"
         fi
     fi
+
     if [ -f "$log_file" ]; then
         echo -e "\n${CYAN}=== acme.sh 运行日志 ===${NC}"
         _view_file_with_tail "$log_file"
@@ -297,7 +300,6 @@ _write_and_enable_nginx_config() {
         return 1
     fi
 
-    # 延迟获取 IP (这是唯一需要 IP 的地方)
     get_vps_ip
 
     cat > "$conf" << EOF
@@ -394,7 +396,6 @@ _issue_and_install_certificate() {
     fi
 
     local domain=$(echo "$json" | jq -r .domain)
-    # 增加双重检查
     if [[ -z "$domain" || "$domain" == "null" ]]; then
         log_message ERROR "内部错误: 域名为空。"
         return 1
@@ -474,19 +475,15 @@ _issue_and_install_certificate() {
             if _confirm_action_or_exit_non_interactive "是否切换 CA 到 Let's Encrypt 并重试?"; then
                 log_message INFO "正在切换默认 CA ..."
                 "$ACME_BIN" --set-default-ca --server letsencrypt
-                
-                # 更新 JSON 中的 CA 设置
                 json=$(echo "$json" | jq '.ca_server_url = "https://acme-v02.api.letsencrypt.org/directory"')
-                
                 log_message INFO "正在重试申请..."
-                _issue_and_install_certificate "$json" # 递归调用一次
+                _issue_and_install_certificate "$json"
                 return $?
             fi
         fi
 
         if [[ "$err_log" == *"504 Gateway Time-out"* ]]; then
-            echo -e "\n${RED}诊断: 504 Gateway Time-out${NC}"
-            log_message WARN "原因可能是 Cloudflare 小黄云导致。建议切换 DNS 模式。"
+            log_message WARN "诊断: 504 Gateway Time-out。可能是 Cloudflare 小黄云导致，建议切换 DNS 模式。"
         fi
 
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
@@ -512,7 +509,6 @@ _issue_and_install_certificate() {
     return 0
 }
 
-# --- IO 修复版: 彻底分离 UI 与 数据流 ---
 _gather_project_details() {
     exec 3>&1
     exec 1>&2
@@ -558,7 +554,6 @@ _gather_project_details() {
         done
     fi
 
-    # 默认值
     local method="http-01"
     local provider=""
     local wildcard="n"
@@ -566,24 +561,18 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        # 继承旧值 (使用 // 默认值防止 null)
         method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
         provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
         wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
         ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
         ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
     else
-        # 交互选择
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
         local ca_choice
         while true; do
             ca_choice=$(_prompt_for_menu_choice_local "1-3")
-            if [ -z "$ca_choice" ]; then 
-                log_message WARN "请选择一个选项。" >&2
-                continue
-            fi
-            break
+            [ -n "$ca_choice" ] && break
         done
 
         case "$ca_choice" in
@@ -629,7 +618,6 @@ _gather_project_details() {
     local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
     local kf="$SSL_CERTS_BASE_DIR/$domain.key"
     
-    # 最终输出 JSON
     jq -n \
         --arg d "${domain:-}" \
         --arg t "${type:-local_port}" \
@@ -646,10 +634,6 @@ _gather_project_details() {
     
     exec 1>&3
 }
-
-# ==============================================================================
-# SECTION: 交互菜单
-# ==============================================================================
 
 _display_projects_list() {
     local json="$1" idx=0
@@ -696,40 +680,145 @@ _display_projects_list() {
     done
 }
 
-configure_nginx_projects() {
-    local is_cert_only="false"
-    if [ "${1:-}" == "cert_only" ]; then is_cert_only="true"; fi
+manage_configs() {
+    while true; do
+        local all=$(jq . "$PROJECTS_METADATA_FILE")
+        local count=$(echo "$all" | jq 'length')
+        if [ "$count" -eq 0 ]; then
+            log_message WARN "暂无项目。"
+            break
+        fi
+        
+        echo ""
+        _display_projects_list "$all"
+        
+        local choice_idx
+        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
+        
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
+        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
+        
+        local selected_domain
+        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
+        
+        _render_menu "Manage: $selected_domain" \
+            "1. 🔍 查看证书详情" \
+            "2. 🔄 手动续期" \
+            "3. 🗑️  删除项目" \
+            "4. 📝 查看配置" \
+            "5. 📊 查看日志" \
+            "6. ⚙️  重新配置"
+        
+        case "$(_prompt_for_menu_choice_local "1-6")" in
+            1) _handle_cert_details "$selected_domain" ;;
+            2) _handle_renew_cert "$selected_domain" ;;
+            3) _handle_delete_project "$selected_domain"; break ;; 
+            4) _handle_view_config "$selected_domain" ;;
+            5) _view_project_access_log "$selected_domain" ;;
+            6) _handle_reconfigure_project "$selected_domain" ;;
+            "") continue ;;
+            *) log_message ERROR "无效选择" ;;
+        esac
+        press_enter_to_continue
+    done
+}
 
-    local json
-    if ! json=$(_gather_project_details "{}" "false" "${1:-}"); then
-        log_message WARN "信息收集已取消或失败。"
-        return 0
+check_and_auto_renew_certs() {
+    log_message INFO "正在检查所有证书..."
+    local success=0 fail=0
+    
+    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
+        local d=$(echo "$p" | jq -r .domain)
+        local f=$(echo "$p" | jq -r .cert_file)
+        
+        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
+            log_message WARN "正在续期: $d"
+            if _issue_and_install_certificate "$p"; then success=$((success+1)); else fail=$((fail+1)); fi
+        fi
+    done
+    control_nginx reload
+    log_message INFO "结果: $success 成功, $fail 失败。"
+}
+
+_manage_cron_jobs() {
+    echo ""
+    echo -e "${GREEN}=== 定时任务 (Cron) 管理 ===${NC}"
+    
+    # 诊断 acme.sh 自己的 Cron
+    local acme_cron_status="${RED}未发现${NC}"
+    if crontab -l 2>/dev/null | grep -q "acme.sh --cron"; then
+        acme_cron_status="${GREEN}已存在${NC}"
+    fi
+
+    # 诊断 本脚本 自己的 Cron
+    local script_cron_status="${RED}未发现${NC}"
+    if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then
+        script_cron_status="${GREEN}已存在${NC}"
     fi
     
-    local domain=$(echo "$json" | jq -r .domain)
+    echo -e "1. acme.sh 原生任务: $acme_cron_status"
+    echo -e "2. 本脚本续期任务:   $script_cron_status"
+    echo ""
+    echo -e "${YELLOW}说明：本脚本任务会强制检查所有项目，有效期 < 30 天即续期。${NC}"
+    echo -e "${YELLOW}      建议添加本脚本任务以确保万无一失。${NC}"
+    echo ""
 
-    if [ -n "$(_get_project_json "$domain")" ]; then
-        if ! _confirm_action_or_exit_non_interactive "域名 $domain 已存在，是否覆盖？"; then
-            log_message INFO "用户取消操作。"
-            return 0
+    if _confirm_action_or_exit_non_interactive "是否自动添加/修复本脚本的每日续期任务?"; then
+        # 备份当前 cron
+        crontab -l > /tmp/cron.bk 2>/dev/null || true
+        # 移除旧的本脚本任务（防止重复）
+        grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
+        # 添加新任务 (每天凌晨 3:00)
+        echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
+        # 应用
+        crontab /tmp/cron.new
+        rm -f /tmp/cron.bk /tmp/cron.new
+        log_message SUCCESS "定时任务已添加: 每天 03:00 执行。"
+    fi
+}
+
+# 修复后的主菜单
+manage_configs() {
+    while true; do
+        local all=$(jq . "$PROJECTS_METADATA_FILE")
+        local count=$(echo "$all" | jq 'length')
+        if [ "$count" -eq 0 ]; then
+            log_message WARN "暂无项目。"
+            break
         fi
-    fi
-
-    if ! _issue_and_install_certificate "$json"; then
-        log_message ERROR "配置失败：证书申请未通过。"
-        return
-    fi
-    
-    if [ "$is_cert_only" == "false" ]; then
-        if ! _write_and_enable_nginx_config "$domain" "$json"; then return 1; fi
-        if ! control_nginx reload; then
-            _remove_and_disable_nginx_config "$domain"
-            return
-        fi
-    fi
-
-    _save_project_json "$json"
-    log_message SUCCESS "项目 $domain 配置完成。"
+        
+        echo ""
+        _display_projects_list "$all"
+        
+        local choice_idx
+        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
+        
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
+        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
+        
+        local selected_domain
+        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
+        
+        _render_menu "Manage: $selected_domain" \
+            "1. 🔍 查看证书详情" \
+            "2. 🔄 手动续期" \
+            "3. 🗑️  删除项目" \
+            "4. 📝 查看配置" \
+            "5. 📊 查看日志" \
+            "6. ⚙️  重新配置"
+        
+        case "$(_prompt_for_menu_choice_local "1-6")" in
+            1) _handle_cert_details "$selected_domain" ;;
+            2) _handle_renew_cert "$selected_domain" ;;
+            3) _handle_delete_project "$selected_domain"; break ;; 
+            4) _handle_view_config "$selected_domain" ;;
+            5) _view_project_access_log "$selected_domain" ;;
+            6) _handle_reconfigure_project "$selected_domain" ;;
+            "") continue ;;
+            *) log_message ERROR "无效选择" ;;
+        esac
+        press_enter_to_continue
+    done
 }
 
 _handle_renew_cert() {
@@ -802,66 +891,6 @@ _handle_cert_details() {
     fi
 }
 
-manage_configs() {
-    while true; do
-        local all=$(jq . "$PROJECTS_METADATA_FILE")
-        local count=$(echo "$all" | jq 'length')
-        if [ "$count" -eq 0 ]; then
-            log_message WARN "暂无项目。"
-            break
-        fi
-        
-        echo ""
-        _display_projects_list "$all"
-        
-        local choice_idx
-        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
-        
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
-        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
-        
-        local selected_domain
-        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
-        
-        _render_menu "Manage: $selected_domain" \
-            "1. 🔍 查看证书详情" \
-            "2. 🔄 手动续期" \
-            "3. 🗑️  删除项目" \
-            "4. 📝 查看配置" \
-            "5. 📊 查看日志" \
-            "6. ⚙️  重新配置"
-        
-        case "$(_prompt_for_menu_choice_local "1-6")" in
-            1) _handle_cert_details "$selected_domain" ;;
-            2) _handle_renew_cert "$selected_domain" ;;
-            3) _handle_delete_project "$selected_domain"; break ;; 
-            4) _handle_view_config "$selected_domain" ;;
-            5) _view_project_access_log "$selected_domain" ;;
-            6) _handle_reconfigure_project "$selected_domain" ;;
-            "") continue ;;
-            *) log_message ERROR "无效选择" ;;
-        esac
-        press_enter_to_continue
-    done
-}
-
-check_and_auto_renew_certs() {
-    log_message INFO "正在检查所有证书..."
-    local success=0 fail=0
-    
-    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
-        local d=$(echo "$p" | jq -r .domain)
-        local f=$(echo "$p" | jq -r .cert_file)
-        
-        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
-            log_message WARN "正在续期: $d"
-            if _issue_and_install_certificate "$p"; then success=$((success+1)); else fail=$((fail+1)); fi
-        fi
-    done
-    control_nginx reload
-    log_message INFO "结果: $success 成功, $fail 失败。"
-}
-
 main_menu() {
     while true; do
         local nginx_status="$(_get_nginx_status)"
@@ -872,10 +901,10 @@ main_menu() {
             "4. 📂 项目管理 (Manage Projects)" \
             "5. 🔄 批量续期 (Auto Renew All)" \
             "6. 📜 查看 acme.sh 运行日志" \
-            "7. 📜 查看 Nginx 运行日志"
+            "7. 📜 查看 Nginx 运行日志" \
+            "8. ⏰ 定时任务管理 (Cron)"
             
-        # 修复: 传递 "true" 允许空输入(回车)以退出
-        case "$(_prompt_for_menu_choice_local "1-7" "true")" in
+        case "$(_prompt_for_menu_choice_local "1-8" "true")" in
             1) _restart_nginx_ui; press_enter_to_continue ;;
             2) configure_nginx_projects "cert_only"; press_enter_to_continue ;;
             3) configure_nginx_projects; press_enter_to_continue ;;
@@ -887,19 +916,18 @@ main_menu() {
                 fi ;;
             6) _view_acme_log; press_enter_to_continue ;;
             7) _view_nginx_global_log; press_enter_to_continue ;;
-            "") return 0 ;; # 修复：静默退出
+            8) _manage_cron_jobs; press_enter_to_continue ;;
+            "") return 0 ;;
             *) log_message ERROR "无效选择" ;;
         esac
     done
 }
 
-# --- 入口 ---
 trap '_on_exit' INT TERM
 if ! check_root; then exit 1; fi
 initialize_environment
 
 if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; exit $?; fi
 
-# 修复：移除 get_vps_ip 调用，解决启动慢问题
 install_dependencies && install_acme_sh && main_menu
 exit $?
