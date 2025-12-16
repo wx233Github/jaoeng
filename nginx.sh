@@ -1,9 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.7-Cron修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.8-UI交互优化)
 # =============================================================
-# - 新增: 定时任务(Cron)的诊断与一键修复功能。
-# - 优化: acme.sh 安装时确保 Cron 日志可追溯。
-# - 修复: 解决证书即将过期但未自动续期的痛点。
+# - 优化: 统一 "定时任务管理" 界面的 UI 风格。
+# - 优化: Cron 管理根据状态智能切换 "添加" 或 "重置" 提示。
 
 set -euo pipefail
 
@@ -680,104 +679,50 @@ _display_projects_list() {
     done
 }
 
-manage_configs() {
-    while true; do
-        local all=$(jq . "$PROJECTS_METADATA_FILE")
-        local count=$(echo "$all" | jq 'length')
-        if [ "$count" -eq 0 ]; then
-            log_message WARN "暂无项目。"
-            break
-        fi
-        
-        echo ""
-        _display_projects_list "$all"
-        
-        local choice_idx
-        choice_idx=$(_prompt_user_input_with_validation "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true")
-        
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
-        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
-        
-        local selected_domain
-        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
-        
-        _render_menu "Manage: $selected_domain" \
-            "1. 🔍 查看证书详情" \
-            "2. 🔄 手动续期" \
-            "3. 🗑️  删除项目" \
-            "4. 📝 查看配置" \
-            "5. 📊 查看日志" \
-            "6. ⚙️  重新配置"
-        
-        case "$(_prompt_for_menu_choice_local "1-6")" in
-            1) _handle_cert_details "$selected_domain" ;;
-            2) _handle_renew_cert "$selected_domain" ;;
-            3) _handle_delete_project "$selected_domain"; break ;; 
-            4) _handle_view_config "$selected_domain" ;;
-            5) _view_project_access_log "$selected_domain" ;;
-            6) _handle_reconfigure_project "$selected_domain" ;;
-            "") continue ;;
-            *) log_message ERROR "无效选择" ;;
-        esac
-        press_enter_to_continue
-    done
-}
-
-check_and_auto_renew_certs() {
-    log_message INFO "正在检查所有证书..."
-    local success=0 fail=0
-    
-    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
-        local d=$(echo "$p" | jq -r .domain)
-        local f=$(echo "$p" | jq -r .cert_file)
-        
-        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
-            log_message WARN "正在续期: $d"
-            if _issue_and_install_certificate "$p"; then success=$((success+1)); else fail=$((fail+1)); fi
-        fi
-    done
-    control_nginx reload
-    log_message INFO "结果: $success 成功, $fail 失败。"
-}
-
+# 优化后的 Cron 管理函数
 _manage_cron_jobs() {
-    echo ""
-    echo -e "${GREEN}=== 定时任务 (Cron) 管理 ===${NC}"
-    
-    # 诊断 acme.sh 自己的 Cron
     local acme_cron_status="${RED}未发现${NC}"
     if crontab -l 2>/dev/null | grep -q "acme.sh --cron"; then
         acme_cron_status="${GREEN}已存在${NC}"
     fi
 
-    # 诊断 本脚本 自己的 Cron
     local script_cron_status="${RED}未发现${NC}"
+    local is_installed="false"
     if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then
         script_cron_status="${GREEN}已存在${NC}"
+        is_installed="true"
     fi
     
-    echo -e "1. acme.sh 原生任务: $acme_cron_status"
-    echo -e "2. 本脚本续期任务:   $script_cron_status"
+    local line1="1. acme.sh 原生任务 : ${acme_cron_status}"
+    local line2="2. 本脚本续期任务   : ${script_cron_status}"
+    
+    # 统一 UI 渲染
+    _render_menu "定时任务 (Cron) 管理" "$line1" "$line2"
+    
     echo ""
-    echo -e "${YELLOW}说明：本脚本任务会强制检查所有项目，有效期 < 30 天即续期。${NC}"
-    echo -e "${YELLOW}      建议添加本脚本任务以确保万无一失。${NC}"
-    echo ""
-
-    if _confirm_action_or_exit_non_interactive "是否自动添加/修复本脚本的每日续期任务?"; then
-        # 备份当前 cron
-        crontab -l > /tmp/cron.bk 2>/dev/null || true
-        # 移除旧的本脚本任务（防止重复）
-        grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
-        # 添加新任务 (每天凌晨 3:00)
-        echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
-        # 应用
-        crontab /tmp/cron.new
-        rm -f /tmp/cron.bk /tmp/cron.new
-        log_message SUCCESS "定时任务已添加: 每天 03:00 执行。"
+    if [ "$is_installed" == "true" ]; then
+        echo -e "${YELLOW}ℹ️  检测到本脚本任务已存在。${NC}"
+        if _confirm_action_or_exit_non_interactive "是否强制 🔄 重置/修复 定时任务配置?"; then
+            crontab -l > /tmp/cron.bk 2>/dev/null || true
+            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
+            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
+            crontab /tmp/cron.new
+            rm -f /tmp/cron.bk /tmp/cron.new
+            log_message SUCCESS "定时任务已重置。"
+        fi
+    else
+        echo -e "${YELLOW}💡 建议添加任务以确保证书自动续期 (<30天)。${NC}"
+        if _confirm_action_or_exit_non_interactive "是否 ➕ 添加每日自动续期任务?"; then
+            crontab -l > /tmp/cron.bk 2>/dev/null || true
+            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
+            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
+            crontab /tmp/cron.new
+            rm -f /tmp/cron.bk /tmp/cron.new
+            log_message SUCCESS "定时任务已添加: 每天 03:00 执行。"
+        fi
     fi
 }
 
-# 修复后的主菜单
 manage_configs() {
     while true; do
         local all=$(jq . "$PROJECTS_METADATA_FILE")
@@ -889,6 +834,23 @@ _handle_cert_details() {
     else
         log_message ERROR "证书文件不存在。"
     fi
+}
+
+check_and_auto_renew_certs() {
+    log_message INFO "正在检查所有证书..."
+    local success=0 fail=0
+    
+    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
+        local d=$(echo "$p" | jq -r .domain)
+        local f=$(echo "$p" | jq -r .cert_file)
+        
+        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
+            log_message WARN "正在续期: $d"
+            if _issue_and_install_certificate "$p"; then success=$((success+1)); else fail=$((fail+1)); fi
+        fi
+    done
+    control_nginx reload
+    log_message INFO "结果: $success 成功, $fail 失败。"
 }
 
 main_menu() {
