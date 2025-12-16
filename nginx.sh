@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.8-UI交互优化)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.9-UI对齐修复)
 # =============================================================
-# - 优化: 统一 "定时任务管理" 界面的 UI 风格。
-# - 优化: Cron 管理根据状态智能切换 "添加" 或 "重置" 提示。
+# - 修复: 菜单标题包含中文/Emoji时右侧边框不对齐的问题。
+# - 核心: 引入视觉宽度计算逻辑，替代字符计数。
 
 set -euo pipefail
 
@@ -73,19 +73,44 @@ generate_line() {
     local len=${1:-40}; printf "%${len}s" "" | sed "s/ /─/g"
 }
 
+# --- UI 对齐修复核心逻辑 ---
+_strip_colors() {
+    echo -e "$1" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
+}
+
+_str_width() {
+    local str="$1"
+    local clean="$(_strip_colors "$str")"
+    # 使用 wc -L 计算视觉宽度 (处理中文宽字符)
+    if command -v wc >/dev/null 2>&1; then
+        echo -n "$clean" | wc -L
+    else
+        echo "${#clean}"
+    fi
+}
+
 _render_menu() {
     local title="$1"; shift; 
-    local max_width=42
-    local title_len=${#title}
-    if [ "$title_len" -gt "$max_width" ]; then max_width=$title_len; fi
-    max_width=$((max_width + 4))
+    
+    # 计算标题的真实视觉宽度
+    local title_vis_len=$(_str_width "$title")
+    
+    # 设定基准宽度，如果标题过长则自动扩展
+    local min_width=42
+    local box_width=$min_width
+    if [ "$title_vis_len" -gt "$((min_width - 4))" ]; then
+        box_width=$((title_vis_len + 6))
+    fi
 
     echo ""
-    echo -e "${GREEN}╭$(generate_line "$max_width")╮${NC}"
-    local pad_left=$(( (max_width - title_len) / 2 ))
-    local pad_right=$(( max_width - title_len - pad_left ))
+    echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
+    
+    local pad_total=$((box_width - title_vis_len))
+    local pad_left=$((pad_total / 2))
+    local pad_right=$((pad_total - pad_left))
+    
     echo -e "${GREEN}│${NC}$(printf "%${pad_left}s" "")${BOLD}${title}${NC}$(printf "%${pad_right}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(generate_line "$max_width")╯${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
     
     for line in "$@"; do echo -e " ${line}"; done
 }
@@ -158,7 +183,7 @@ initialize_environment() {
 
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
-    local deps="nginx curl socat openssl jq idn dnsutils nano"
+    local deps="nginx curl socat openssl jq idn dnsutils nano wc"
     local missing=0
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
@@ -679,7 +704,6 @@ _display_projects_list() {
     done
 }
 
-# 优化后的 Cron 管理函数
 _manage_cron_jobs() {
     local acme_cron_status="${RED}未发现${NC}"
     if crontab -l 2>/dev/null | grep -q "acme.sh --cron"; then
@@ -696,7 +720,6 @@ _manage_cron_jobs() {
     local line1="1. acme.sh 原生任务 : ${acme_cron_status}"
     local line2="2. 本脚本续期任务   : ${script_cron_status}"
     
-    # 统一 UI 渲染
     _render_menu "定时任务 (Cron) 管理" "$line1" "$line2"
     
     echo ""
