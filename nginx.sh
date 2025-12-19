@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.11-函数顺序修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.12-变量修复版)
 # =============================================================
-# - 修复: "_detect_web_service: command not found" 致命错误。
-# - 调整: 优化函数定义顺序，确保所有依赖函数在使用前已加载。
+# - 修复: "domain: unbound variable" 导致脚本在成功签发后崩溃的问题。
+# - 优化: Cron 模式下遇到端口冲突自动处理 Nginx 启停，无需人工干预。
 
 set -euo pipefail
 
@@ -157,10 +157,12 @@ _confirm_action_or_exit_non_interactive() {
         local c; read -r -p "$(echo -e "${YELLOW}❓ $1 ([y]/n): ${NC}")" c < /dev/tty
         case "$c" in n|N) return 1;; *) return 0;; esac
     fi
+    # 在非交互模式下，如果是为了解决端口冲突，我们默认返回 0 (同意)，否则返回 1 (拒绝)
+    # 这里为了安全起见，依然报错，但在调用处做特殊处理
     log_message ERROR "非交互需确认: '$1'，已取消。"; return 1
 }
 
-# --- 关键修复：将此函数提前到这里 ---
+# --- 关键函数：提前定义 ---
 _detect_web_service() {
     if ! command -v systemctl &>/dev/null; then return; fi
     local svc
@@ -254,7 +256,6 @@ _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
     
-    # 强制刷新 acme.sh 自己的日志
     if [ -x "$ACME_BIN" ]; then "$ACME_BIN" --version >/dev/null 2>&1 || true; fi
 
     if [ ! -f "$log_file" ]; then
@@ -323,6 +324,13 @@ _write_and_enable_nginx_config() {
     fi
 
     get_vps_ip
+
+    # 修复：domain 变量必须在此处是有效的。
+    # 上下文：该变量是通过参数 $1 传递进来的。
+    if [ -z "${domain:-}" ]; then
+        log_message ERROR "内部错误：生成配置时域名未定义。"
+        return 1
+    fi
 
     cat > "$conf" << EOF
 server {
@@ -443,8 +451,15 @@ _issue_and_install_certificate() {
             temp_svc=$(_detect_web_service)
             if [ -n "$temp_svc" ]; then
                 log_message INFO "发现服务: $temp_svc"
-                if _confirm_action_or_exit_non_interactive "是否临时停止 $temp_svc 以释放端口? (续期后自动启动)"; then
+                
+                # 修复: Cron 模式下自动同意，无需人工确认
+                if [ "$IS_INTERACTIVE_MODE" = "false" ]; then
                     port_conflict="true"
+                    log_message INFO "Cron 模式自动操作: 临时停止 $temp_svc 以释放端口。"
+                else
+                    if _confirm_action_or_exit_non_interactive "是否临时停止 $temp_svc 以释放端口? (续期后自动启动)"; then
+                        port_conflict="true"
+                    fi
                 fi
             else
                 log_message WARN "无法识别服务，请手动检查。"
