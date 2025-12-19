@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.10-日志显式修复)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.11-函数顺序修复)
 # =============================================================
-# - 修复: 强制开启 acme.sh 日志记录，解决日志文件内容为空的问题。
-# - 优化: 批量续期时实时显示进度，不再静默运行。
+# - 修复: "_detect_web_service: command not found" 致命错误。
+# - 调整: 优化函数定义顺序，确保所有依赖函数在使用前已加载。
 
 set -euo pipefail
 
@@ -33,7 +33,7 @@ VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 SCRIPT_PATH=$(realpath "$0")
 
 # ==============================================================================
-# SECTION: 核心工具函数
+# SECTION: 核心工具函数 (必须在业务逻辑前定义)
 # ==============================================================================
 
 _log_prefix() {
@@ -158,6 +158,15 @@ _confirm_action_or_exit_non_interactive() {
         case "$c" in n|N) return 1;; *) return 0;; esac
     fi
     log_message ERROR "非交互需确认: '$1'，已取消。"; return 1
+}
+
+# --- 关键修复：将此函数提前到这里 ---
+_detect_web_service() {
+    if ! command -v systemctl &>/dev/null; then return; fi
+    local svc
+    for svc in nginx apache2 httpd caddy; do
+        if systemctl is-active --quiet "$svc"; then echo "$svc"; return; fi
+    done
 }
 
 # ==============================================================================
@@ -365,6 +374,20 @@ _view_nginx_config() {
     echo -e "${GREEN}=======================${NC}"
 }
 
+# ==============================================================================
+# SECTION: 业务逻辑 (证书申请)
+# ==============================================================================
+
+_get_cert_files() {
+    local domain="$1"
+    CERT_FILE="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
+    CONF_FILE="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
+    if [ ! -f "$CERT_FILE" ]; then
+        CERT_FILE="$HOME/.acme.sh/${domain}/fullchain.cer"
+        CONF_FILE="$HOME/.acme.sh/${domain}/${domain}.conf"
+    fi
+}
+
 _issue_and_install_certificate() {
     local json="$1"
     if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
@@ -388,7 +411,6 @@ _issue_and_install_certificate() {
 
     log_message INFO "正在为 $domain 申请证书 ($method)..."
     
-    # 修复: 强制添加 --log 参数，确保写入日志文件
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca" --log)
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
@@ -477,7 +499,6 @@ _issue_and_install_certificate() {
 
     log_message INFO "证书签发成功，安装中..."
     
-    # 修复: 安装时也加上 --log
     local inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --reloadcmd "systemctl reload nginx" --log)
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
     
@@ -493,11 +514,6 @@ _issue_and_install_certificate() {
 _gather_project_details() {
     exec 3>&1
     exec 1>&2
-    
-    # ... (此处省略 _gather_project_details 内部逻辑，与上个版本保持一致) ...
-    # 限于篇幅，且此函数未变动逻辑，此处使用省略号占位。
-    # 实际部署时请保留完整函数内容。
-    # 为确保完整性，我将在下面提供完整的 _gather_project_details。
     
     local cur="${1:-{\}}"
     local skip_cert="${2:-false}"
@@ -814,7 +830,6 @@ check_and_auto_renew_certs() {
         local d=$(echo "$p" | jq -r .domain)
         local f=$(echo "$p" | jq -r .cert_file)
         
-        # 优化: 实时显示进度
         echo -ne "🔎 检查: $d ... "
         
         if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
