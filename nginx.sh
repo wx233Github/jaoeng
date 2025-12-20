@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.12-变量修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.13-交互体验优化)
 # =============================================================
-# - 修复: "domain: unbound variable" 导致脚本在成功签发后崩溃的问题。
-# - 优化: Cron 模式下遇到端口冲突自动处理 Nginx 启停，无需人工干预。
+# - 新增: 证书申请过程中的进度动画，拒绝"假死"现象。
+# - 新增: Ctrl+C 中断保护机制，确保 Nginx 在脚本意外退出时自动恢复。
 
 set -euo pipefail
 
@@ -33,7 +33,7 @@ VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 SCRIPT_PATH=$(realpath "$0")
 
 # ==============================================================================
-# SECTION: 核心工具函数 (必须在业务逻辑前定义)
+# SECTION: 核心工具函数
 # ==============================================================================
 
 _log_prefix() {
@@ -73,7 +73,6 @@ generate_line() {
     local len=${1:-40}; printf "%${len}s" "" | sed "s/ /─/g"
 }
 
-# --- UI 对齐修复核心逻辑 ---
 _strip_colors() {
     echo -e "$1" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
 }
@@ -157,12 +156,9 @@ _confirm_action_or_exit_non_interactive() {
         local c; read -r -p "$(echo -e "${YELLOW}❓ $1 ([y]/n): ${NC}")" c < /dev/tty
         case "$c" in n|N) return 1;; *) return 0;; esac
     fi
-    # 在非交互模式下，如果是为了解决端口冲突，我们默认返回 0 (同意)，否则返回 1 (拒绝)
-    # 这里为了安全起见，依然报错，但在调用处做特殊处理
     log_message ERROR "非交互需确认: '$1'，已取消。"; return 1
 }
 
-# --- 关键函数：提前定义 ---
 _detect_web_service() {
     if ! command -v systemctl &>/dev/null; then return; fi
     local svc
@@ -325,8 +321,6 @@ _write_and_enable_nginx_config() {
 
     get_vps_ip
 
-    # 修复：domain 变量必须在此处是有效的。
-    # 上下文：该变量是通过参数 $1 传递进来的。
     if [ -z "${domain:-}" ]; then
         log_message ERROR "内部错误：生成配置时域名未定义。"
         return 1
@@ -451,8 +445,6 @@ _issue_and_install_certificate() {
             temp_svc=$(_detect_web_service)
             if [ -n "$temp_svc" ]; then
                 log_message INFO "发现服务: $temp_svc"
-                
-                # 修复: Cron 模式下自动同意，无需人工确认
                 if [ "$IS_INTERACTIVE_MODE" = "false" ]; then
                     port_conflict="true"
                     log_message INFO "Cron 模式自动操作: 临时停止 $temp_svc 以释放端口。"
@@ -469,21 +461,42 @@ _issue_and_install_certificate() {
         if [ "$port_conflict" == "true" ]; then
             log_message INFO "停止 $temp_svc ..."
             systemctl stop "$temp_svc"
+            # 新增: 注册临时 trap，防止用户中断导致 Nginx 挂掉
+            trap "echo; log_message WARN '检测到中断，正在恢复 $temp_svc ...'; systemctl start $temp_svc; cleanup_temp_files; exit 130" INT TERM
         fi
         
         cmd+=("--standalone")
     fi
 
+    # 新增: 带进度动画的执行逻辑
     local log_temp=$(mktemp)
-    if ! "${cmd[@]}" > "$log_temp" 2>&1; then
+    echo -ne "${YELLOW}⏳ 正在与 CA 服务器通信 (约 30-60 秒，请勿中断)... ${NC}"
+    "${cmd[@]}" > "$log_temp" 2>&1 &
+    local pid=$!
+    local spinstr='|/-\'
+    while kill -0 $pid 2>/dev/null; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep 0.2
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    wait $pid
+    local ret=$?
+
+    if [ $ret -ne 0 ]; then
+        echo -e "\n" # 换行
         log_message ERROR "申请失败: $domain"
         cat "$log_temp"
         local err_log=$(cat "$log_temp")
         rm -f "$log_temp"
         
+        # 恢复服务
         if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
             log_message INFO "重启 $temp_svc ..."
             systemctl start "$temp_svc"
+            trap _on_exit INT TERM
         fi
         
         if [[ "$err_log" == *"retryafter"* ]]; then
@@ -510,6 +523,7 @@ _issue_and_install_certificate() {
     if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
         log_message INFO "重启 $temp_svc ..."
         systemctl start "$temp_svc"
+        trap _on_exit INT TERM
     fi
 
     log_message INFO "证书签发成功，安装中..."
