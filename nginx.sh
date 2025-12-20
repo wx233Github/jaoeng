@@ -1,8 +1,8 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.13-交互体验优化)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.14-智能诊断版)
 # =============================================================
-# - 新增: 证书申请过程中的进度动画，拒绝"假死"现象。
-# - 新增: Ctrl+C 中断保护机制，确保 Nginx 在脚本意外退出时自动恢复。
+# - 新增: 智能诊断证书申请失败原因(IPv6/CDN/防火墙)。
+# - 优化: 增强错误提示，指导用户关闭 CDN 或检查 AAAA 记录。
 
 set -euo pipefail
 
@@ -461,14 +461,12 @@ _issue_and_install_certificate() {
         if [ "$port_conflict" == "true" ]; then
             log_message INFO "停止 $temp_svc ..."
             systemctl stop "$temp_svc"
-            # 新增: 注册临时 trap，防止用户中断导致 Nginx 挂掉
             trap "echo; log_message WARN '检测到中断，正在恢复 $temp_svc ...'; systemctl start $temp_svc; cleanup_temp_files; exit 130" INT TERM
         fi
         
         cmd+=("--standalone")
     fi
 
-    # 新增: 带进度动画的执行逻辑
     local log_temp=$(mktemp)
     echo -ne "${YELLOW}⏳ 正在与 CA 服务器通信 (约 30-60 秒，请勿中断)... ${NC}"
     "${cmd[@]}" > "$log_temp" 2>&1 &
@@ -486,13 +484,12 @@ _issue_and_install_certificate() {
     local ret=$?
 
     if [ $ret -ne 0 ]; then
-        echo -e "\n" # 换行
+        echo -e "\n"
         log_message ERROR "申请失败: $domain"
         cat "$log_temp"
         local err_log=$(cat "$log_temp")
         rm -f "$log_temp"
         
-        # 恢复服务
         if [[ "$method" == "http-01" && "$port_conflict" == "true" ]]; then
             log_message INFO "重启 $temp_svc ..."
             systemctl start "$temp_svc"
@@ -511,8 +508,17 @@ _issue_and_install_certificate() {
             fi
         fi
 
-        if [[ "$err_log" == *"504 Gateway Time-out"* ]]; then
-            log_message WARN "诊断: 504 Gateway Time-out。可能是 Cloudflare 小黄云导致，建议切换 DNS 模式。"
+        # 新增: 智能诊断
+        if [[ "$err_log" == *"Invalid status"* || "$err_log" == *"404"* ]]; then
+            echo -e "\n${YELLOW}🔍 智能诊断:${NC}"
+            if echo "$err_log" | grep -qE "2600:|2400:|2a03:|::"; then
+                echo -e "${RED}⚠️  检测到 IPv6 验证失败。${NC}"
+                echo -e "   Let's Encrypt 优先使用 IPv6。如果你的服务器未配置 IPv6 或防火墙未放行，验证会失败。"
+                echo -e "   👉 建议: 在 DNS (如 Cloudflare) 中暂时删除 AAAA 记录，仅保留 A 记录后重试。"
+            elif [[ "$err_log" == *"Cloudflare"* ]]; then
+                echo -e "${RED}⚠️  检测到 CDN 干扰。${NC}"
+                echo -e "   👉 建议: 请关闭 Cloudflare 小黄云 (Proxy)，设置为 '仅DNS' 模式后再试。"
+            fi
         fi
 
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
