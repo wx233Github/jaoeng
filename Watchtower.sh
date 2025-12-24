@@ -1,41 +1,49 @@
 #!/usr/bin/env bash
-#
-# Docker 自动更新助手（完整可执行脚本 - 修复日志读取顺序 & main_menu）
-# Version: 2.17.35-fixed-option7-final
-#
-set -euo pipefail
-IFS='\n\t'
+# =============================================================
+# 🚀 Watchtower.sh (v2.19.0 - Telegram 通知美化版)
+# =============================================================
+# 作者：Linux Shell Expert
+# 描述：Docker 容器自动更新助手，支持 Watchtower 与 Cron 模式，集成美化版通知功能。
+# 版本历史：
+#   v2.19.0 - Telegram 通知改用 Markdown 美化排版，增加节点与时间显示
+#   v2.18.0 - 修复全局 IFS 导致的参数解析 Bug，替换 echo 为 printf
+# =============================================================
 
-VERSION="2.17.35-fixed-option7-final"
+set -euo pipefail
+
+# 全局配置
+VERSION="2.19.0"
 SCRIPT_NAME="Watchtower.sh"
 CONFIG_FILE="/etc/docker-auto-update.conf"
-if [ ! -w "$(dirname "$CONFIG_FILE")" ]; then
+
+# 优先使用当前用户目录配置，如果系统配置不可写
+if [ ! -w "$(dirname "$CONFIG_FILE")" ] && [ ! -f "$CONFIG_FILE" ]; then
   CONFIG_FILE="$HOME/.docker-auto-update.conf"
 fi
 
-# Colors
+# 颜色定义 (使用 printf 兼容格式)
 if [ -t 1 ]; then
-  COLOR_GREEN="\033[0m\033[0;32m"
-  COLOR_RED="\033[0m\033[0;31m"
-  COLOR_YELLOW="\033[0m\033[0;33m"
-  COLOR_BLUE="\033[0m\033[0;34m"
-  COLOR_CYAN="\033[0m\033[0;36m"
+  COLOR_GREEN="\033[0;32m"
+  COLOR_RED="\033[0;31m"
+  COLOR_YELLOW="\033[0;33m"
+  COLOR_BLUE="\033[0;34m"
+  COLOR_CYAN="\033[0;36m"
   COLOR_RESET="\033[0m"
 else
   COLOR_GREEN=""; COLOR_RED=""; COLOR_YELLOW=""; COLOR_BLUE=""; COLOR_CYAN=""; COLOR_RESET=""
 fi
 
-# basic checks
+# 基础检查
 if ! command -v docker >/dev/null 2>&1; then
-  echo -e "${COLOR_RED}❌ 未检测到 docker 客户端，请安装并确保当前用户可访问 Docker。${COLOR_RESET}"
+  printf "%b❌ 未检测到 docker 客户端，请安装并确保当前用户可访问 Docker。%b\n" "$COLOR_RED" "$COLOR_RESET"
   exit 1
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo -e "${COLOR_YELLOW}⚠️ 未检测到 jq（可选），脚本会使用降级解析方式。建议安装 jq。${COLOR_RESET}"
+  printf "%b⚠️ 未检测到 jq（可选），脚本会使用降级解析方式。建议安装 jq。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
 fi
 
-# Default config vars
+# 默认配置变量
 TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
 TG_CHAT_ID="${TG_CHAT_ID:-}"
 EMAIL_TO="${EMAIL_TO:-}"
@@ -49,13 +57,13 @@ DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON:-}"
 CRON_HOUR="${CRON_HOUR:-4}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED:-false}"
 
-# logging helpers
+# 日志辅助函数
 log_info(){ printf "%b[INFO] %s%b\n" "$COLOR_BLUE" "$*" "$COLOR_RESET"; }
 log_warn(){ printf "%b[WARN] %s%b\n" "$COLOR_YELLOW" "$*" "$COLOR_RESET"; }
 log_err(){ printf "%b[ERROR] %s%b\n" "$COLOR_RED" "$*" "$COLOR_RESET"; }
 
 _date_to_epoch() {
-  local dt="$1"
+  local dt="${1:-}"
   [ -z "$dt" ] && echo "" && return
   if date -d "$dt" +%s >/dev/null 2>&1; then
     date -d "$dt" +%s 2>/dev/null || echo ""
@@ -66,7 +74,7 @@ _date_to_epoch() {
   fi
 }
 
-# config load/save
+# 配置加载/保存
 load_config(){
   if [ -f "$CONFIG_FILE" ]; then
     # shellcheck disable=SC1090
@@ -84,19 +92,20 @@ EMAIL_TO="${EMAIL_TO}"
 WATCHTOWER_LABELS="${WATCHTOWER_LABELS}"
 WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS}"
 WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED}"
-WATCHTOWER_CONFIG_interval="${WATCHTOWER_CONFIG_INTERVAL}"
+WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL}"
 WATCHTOWER_CONFIG_SELF_UPDATE_MODE="${WATCHTOWER_CONFIG_SELF_UPDATE_MODE}"
 WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED}"
 DOCKER_COMPOSE_PROJECT_DIR_CRON="${DOCKER_COMPOSE_PROJECT_DIR_CRON}"
 CRON_HOUR="${CRON_HOUR}"
 CRON_TASK_ENABLED="${CRON_TASK_ENABLED}"
 EOF
-  log_info "✅ 配置已保存到 $CONFIG_FILE"
+  log_info "配置已保存到 $CONFIG_FILE"
 }
 
 confirm_action() {
   local PROMPT_MSG="$1"
-  read -r -p "$(echo -e "${COLOR_YELLOW}$PROMPT_MSG (y/n): ${COLOR_RESET}")" choice
+  printf "%b%s (y/n): %b" "$COLOR_YELLOW" "$PROMPT_MSG" "$COLOR_RESET"
+  read -r choice
   case "$choice" in
     y|Y ) return 0 ;;
     * ) return 1 ;;
@@ -104,35 +113,40 @@ confirm_action() {
 }
 
 press_enter_to_continue() {
-  echo -e "\n${COLOR_YELLOW}按 Enter 键继续...${COLOR_RESET}"
-  # drain
+  printf "\n%b按 Enter 键继续...%b" "$COLOR_YELLOW" "$COLOR_RESET"
+  # drain input buffer
   while read -t 0 -r; do read -r; done || true
   read -r || true
 }
 
 send_notify() {
   local MSG="$1"
+  local TIMESTAMP
+  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+  local NODE_NAME
+  NODE_NAME=$(hostname)
+
+  # Telegram Notification (Markdown)
   if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+    local TG_MSG
+    # 构造 Markdown 消息格式
+    # 注意：使用 printf 处理换行，Markdown 中 `code` 包裹变量可防止特殊字符破坏格式
+    TG_MSG=$(printf "🔔 *Docker 自动更新通知*\n🏷 *节点*: \`%s\`\n⏱ *时间*: \`%s\`\n\n📝 *详情*:\n%s" "$NODE_NAME" "$TIMESTAMP" "$MSG")
+
     curl -s --retry 3 --retry-delay 5 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
       --data-urlencode "chat_id=${TG_CHAT_ID}" \
-      --data-urlencode "text=$MSG" >/dev/null || log_warn "⚠️ Telegram 通知发送失败。"
+      --data-urlencode "parse_mode=Markdown" \
+      --data-urlencode "text=$TG_MSG" >/dev/null || log_warn "Telegram 通知发送失败。"
   fi
+
+  # Email Notification
   if [ -n "$EMAIL_TO" ]; then
     if command -v mail &>/dev/null; then
-      echo -e "$MSG" | mail -s "Docker 更新通知" "$EMAIL_TO" || log_warn "⚠️ Email 通知发送失败。"
+      # 邮件正文也包含节点和时间，方便归档
+      echo -e "节点: $NODE_NAME\n时间: $TIMESTAMP\n--------------------\n内容: $MSG" | mail -s "Docker 更新通知 [$NODE_NAME]" "$EMAIL_TO" || log_warn "Email 通知发送失败。"
     else
-      log_warn "⚠️ 邮件通知启用但未检测到 mail 命令。"
+      log_warn "邮件通知启用但未检测到 mail 命令。"
     fi
-  fi
-}
-
-get_docker_compose_command_main() {
-  if command -v docker compose &>/dev/null; then
-    echo "docker compose"
-  elif command -v docker-compose &>/dev/null; then
-    echo "docker-compose"
-  else
-    echo ""
   fi
 }
 
@@ -140,9 +154,15 @@ get_docker_compose_command_main() {
 # show_container_info
 # -------------------------
 show_container_info() {
-  echo -e "${COLOR_YELLOW}📋 Docker 容器信息：${COLOR_RESET}"
+  printf "%b📋 Docker 容器信息：%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   printf "% -25s %-45s %-25s %-20s %-15s\n" "容器名称" "镜像" "创建时间" "状态" "应用版本"
   echo "--------------------------------------------------------------------------------------------------------------------------------"
+  
+  if ! docker ps -a >/dev/null 2>&1; then
+     log_err "无法连接 Docker 守护进程。"
+     return
+  fi
+
   docker ps -a --format '{{.Names}}|{{.Image}}|{{.CreatedAt}}|{{.Status}}' | while IFS='|' read -r name image created status; do
     local APP_VERSION="N/A"
     local IMAGE_NAME_FOR_LABELS
@@ -188,6 +208,11 @@ _start_watchtower_container_logic(){
   local enable_self_update="$2"
   local mode_description="$3"
 
+  # 检查 Socket 权限
+  if [ ! -w "/var/run/docker.sock" ]; then
+    log_warn "当前用户对 /var/run/docker.sock 无写权限，Watchtower 可能无法工作。"
+  fi
+
   echo "⬇️ 正在拉取 Watchtower 镜像..."
   set +e
   docker pull containrrr/watchtower >/dev/null 2>&1 || true
@@ -206,35 +231,41 @@ _start_watchtower_container_logic(){
   if [ -n "$WATCHTOWER_LABELS" ]; then
     cmd_parts+=("--label-enable" "$WATCHTOWER_LABELS")
   fi
+  
   if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then
+    local extra_tokens
     read -r -a extra_tokens <<<"$WATCHTOWER_EXTRA_ARGS"
-    cmd_parts+=("${extra_tokens[@]}")
+    # shellcheck disable=SC2068
+    if [ ${#extra_tokens[@]} -gt 0 ]; then
+        cmd_parts+=("${extra_tokens[@]}")
+    fi
   fi
 
-  echo -e "${COLOR_BLUE}--- 正在启动 $mode_description ---${COLOR_RESET}"
+  printf "%b--- 正在启动 %s ---%b\n" "$COLOR_BLUE" "$mode_description" "$COLOR_RESET"
   set +e
   "${cmd_parts[@]}" 2>&1 || true
   local rc=$?
   set -e
+  
   if [ "$mode_description" = "一次性更新" ]; then
     if [ $rc -eq 0 ]; then
-      echo -e "${COLOR_GREEN}✅ $mode_description 完成。${COLOR_RESET}"
-      send_notify "✅ Docker 自动更新助手：$mode_description 成功。"
+      printf "%b✅ %s 完成。%b\n" "$COLOR_GREEN" "$mode_description" "$COLOR_RESET"
+      send_notify "✅ 操作成功：$mode_description 执行完毕。"
       return 0
     else
-      echo -e "${COLOR_RED}❌ $mode_description 失败。${COLOR_RESET}"
-      send_notify "❌ Docker 自动更新助手：$mode_description 失败。"
+      printf "%b❌ %s 失败。%b\n" "$COLOR_RED" "$mode_description" "$COLOR_RESET"
+      send_notify "❌ 操作失败：$mode_description 执行遇到错误。"
       return 1
     fi
   else
     sleep 3
     if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-      echo -e "${COLOR_GREEN}✅ $mode_description 启动成功。${COLOR_RESET}"
-      send_notify "✅ Docker 自动更新助手：$mode_description 启动成功。"
+      printf "%b✅ %s 启动成功。%b\n" "$COLOR_GREEN" "$mode_description" "$COLOR_RESET"
+      send_notify "✅ 服务启动：$mode_description 已成功在后台运行。"
       return 0
     else
-      echo -e "${COLOR_RED}❌ $mode_description 启动失败，请检查 Docker 日志。${COLOR_RESET}"
-      send_notify "❌ Docker 自动更新助手：$mode_description 启动失败。"
+      printf "%b❌ %s 启动失败，请检查 Docker 日志。%b\n" "$COLOR_RED" "$mode_description" "$COLOR_RESET"
+      send_notify "❌ 服务启动失败：$mode_description 未能正常启动，请检查日志。"
       return 1
     fi
   fi
@@ -244,7 +275,7 @@ _start_watchtower_container_logic(){
 # configure_watchtower
 # -------------------------
 configure_watchtower(){
-  echo -e "${COLOR_YELLOW}🚀 Watchtower模式 ${COLOR_RESET}"
+  printf "%b🚀 Watchtower模式 %b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   local INTERVAL_INPUT=""
   local WT_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-300}"
 
@@ -260,7 +291,7 @@ configure_watchtower(){
     elif [[ "$INTERVAL_INPUT" =~ ^[0-9]+$ ]]; then
       WT_INTERVAL="${INTERVAL_INPUT}"; break
     else
-      echo -e "${COLOR_RED}❌ 输入格式错误，请使用 '300s','2h','1d' 或纯数字(秒)。${COLOR_RESET}"
+      printf "%b❌ 输入格式错误，请使用 '300s','2h','1d' 或纯数字(秒)。%b\n" "$COLOR_RED" "$COLOR_RESET"
     fi
   done
 
@@ -291,7 +322,7 @@ configure_watchtower(){
   set -e
 
   if ! _start_watchtower_container_logic "$WT_INTERVAL" "false" "Watchtower模式"; then
-    echo -e "${COLOR_RED}❌ Watchtower 启动失败。${COLOR_RESET}"
+    printf "%b❌ Watchtower 启动失败。%b\n" "$COLOR_RED" "$COLOR_RESET"
     return 1
   fi
   echo "您可以使用选项2查看 Docker 容器信息。"
@@ -302,7 +333,7 @@ configure_watchtower(){
 # configure_cron_task
 # -------------------------
 configure_cron_task(){
-  echo -e "${COLOR_YELLOW}🕑 Cron定时任务模式${COLOR_RESET}"
+  printf "%b🕑 Cron定时任务模式%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   local CRON_HOUR_TEMP=""
   local DOCKER_COMPOSE_PROJECT_DIR_TEMP=""
 
@@ -312,7 +343,7 @@ configure_cron_task(){
     if [[ "$CRON_HOUR_INPUT" =~ ^[0-9]+$ ]] && [ "$CRON_HOUR_INPUT" -ge 0 ] && [ "$CRON_HOUR_INPUT" -le 23 ]; then
       CRON_HOUR_TEMP="$CRON_HOUR_INPUT"; break
     else
-      echo -e "${COLOR_RED}❌ 小时输入无效，请在 0-23 之间输入。${COLOR_RESET}"
+      printf "%b❌ 小时输入无效，请在 0-23 之间输入。%b\n" "$COLOR_RED" "$COLOR_RESET"
     fi
   done
 
@@ -320,9 +351,9 @@ configure_cron_task(){
     read -r -p "请输入 Docker Compose 文件所在的完整目录路径 (例如 /opt/my_docker_project): " DOCKER_COMPOSE_PROJECT_DIR_INPUT
     DOCKER_COMPOSE_PROJECT_DIR_INPUT=${DOCKER_COMPOSE_PROJECT_DIR_INPUT:-$DOCKER_COMPOSE_PROJECT_DIR_CRON}
     if [ -z "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
-      echo -e "${COLOR_RED}❌ 路径不能为空。${COLOR_RESET}"
+      printf "%b❌ 路径不能为空。%b\n" "$COLOR_RED" "$COLOR_RESET"
     elif [ ! -d "$DOCKER_COMPOSE_PROJECT_DIR_INPUT" ]; then
-      echo -e "${COLOR_RED}❌ 指定目录不存在。${COLOR_RESET}"
+      printf "%b❌ 指定目录不存在。%b\n" "$COLOR_RED" "$COLOR_RESET"
     else
       DOCKER_COMPOSE_PROJECT_DIR_TEMP="$DOCKER_COMPOSE_PROJECT_DIR_INPUT"; break
     fi
@@ -333,8 +364,8 @@ configure_cron_task(){
   CRON_TASK_ENABLED="true"
   save_config
 
-  CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
-  LOG_FILE="/var/log/docker-auto-update-cron.log"
+  local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
+  local LOG_FILE="/var/log/docker-auto-update-cron.log"
 
   cat > "$CRON_UPDATE_SCRIPT" <<'EOF_INNER_SCRIPT'
 #!/bin/bash
@@ -373,10 +404,10 @@ EOF_INNER_SCRIPT
 
   crontab -l 2>/dev/null > /tmp/crontab.backup.$$ || true
   (crontab -l 2>/dev/null | grep -v "$CRON_UPDATE_SCRIPT" || true; echo "0 $CRON_HOUR * * * $CRON_UPDATE_SCRIPT >> \"$LOG_FILE\" 2>&1") | crontab -
-  echo "crontab 已备份：/tmp/crontab.backup.$$"
+  log_info "crontab 已备份：/tmp/crontab.backup.$$"
 
-  send_notify "✅ Cron 定时任务配置完成，每天 $CRON_HOUR 点更新容器，项目目录：$DOCKER_COMPOSE_PROJECT_DIR_CRON"
-  echo -e "${COLOR_GREEN}🎉 Cron 定时任务设置成功！${COLOR_RESET}"
+  send_notify "✅ Cron 配置完成：每天 $CRON_HOUR 点更新项目 $DOCKER_COMPOSE_PROJECT_DIR_CRON"
+  printf "%b🎉 Cron 定时任务设置成功！%b\n" "$COLOR_GREEN" "$COLOR_RESET"
   echo "更新日志: $LOG_FILE"
   return 0
 }
@@ -385,7 +416,7 @@ EOF_INNER_SCRIPT
 # manage_tasks
 # -------------------------
 manage_tasks(){
-  echo -e "${COLOR_YELLOW}⚙️ 任务管理：${COLOR_RESET}"
+  printf "%b⚙️ 任务管理：%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   echo "1) 停止并移除 Watchtower 容器"
   echo "2) 移除 Cron 定时任务"
   read -r -p "请选择 [1-2] 或按 Enter 返回: " MANAGE_CHOICE
@@ -402,15 +433,15 @@ manage_tasks(){
           WATCHTOWER_CONFIG_SELF_UPDATE_MODE="false"
           WATCHTOWER_ENABLED="false"
           save_config
-          send_notify "🗑️ Watchtower 已移除"
-          echo -e "${COLOR_GREEN}✅ 已停止并移除。${COLOR_RESET}"
+          send_notify "🗑️ 服务移除：Watchtower 已停止并移除。"
+          printf "%b✅ 已停止并移除。%b\n" "$COLOR_GREEN" "$COLOR_RESET"
         fi
       else
-        echo -e "${COLOR_YELLOW}ℹ️ Watchtower 未检测到。${COLOR_RESET}"
+        printf "%bℹ️ Watchtower 未检测到。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
       fi
       ;;
     2)
-      CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
+      local CRON_UPDATE_SCRIPT="/usr/local/bin/docker-auto-update-cron.sh"
       if crontab -l 2>/dev/null | grep -q "$CRON_UPDATE_SCRIPT"; then
         if confirm_action "确定移除 Cron 任务吗？"; then
           (crontab -l 2>/dev/null | grep -v "$CRON_UPDATE_SCRIPT") | crontab -
@@ -421,26 +452,27 @@ manage_tasks(){
           CRON_HOUR=""
           CRON_TASK_ENABLED="false"
           save_config
-          send_notify "🗑️ Cron 任务已移除"
-          echo -e "${COLOR_GREEN}✅ Cron 任务已移除。${COLOR_RESET}"
+          send_notify "🗑️ 任务移除：Cron 定时任务已移除。"
+          printf "%b✅ Cron 任务已移除。%b\n" "$COLOR_GREEN" "$COLOR_RESET"
         fi
       else
-        echo -e "${COLOR_YELLOW}ℹ️ 未检测到由本脚本配置的 Cron 任务。${COLOR_RESET}"
+        printf "%bℹ️ 未检测到由本脚本配置的 Cron 任务。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
       fi
       ;;
     *)
-      echo -e "${COLOR_YELLOW}ℹ️ 已取消。${COLOR_RESET}"
+      printf "%bℹ️ 已取消。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
       ;;
   esac
   return 0
 }
 
 # -------------------------
-# log helpers (KEY FIX: docker logs options before container)
+# log helpers
 # -------------------------
 get_watchtower_all_raw_logs(){
   local temp_log_file
   temp_log_file=$(mktemp /tmp/watchtower_raw_logs.XXXXXX) || temp_log_file="/tmp/watchtower_raw_logs.$$"
+  
   trap 'rm -f "$temp_log_file"' RETURN
 
   if ! docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
@@ -483,7 +515,7 @@ _get_watchtower_remaining_time(){
   local wt_interval_running="$1"
   local raw_logs="$2"
   if ! echo "$raw_logs" | grep -q "Session done"; then
-    echo "${COLOR_YELLOW}⚠️ 等待首次扫描完成${COLOR_RESET}"
+    printf "%b⚠️ 等待首次扫描完成%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
     return
   fi
   local last_check_log
@@ -495,7 +527,7 @@ _get_watchtower_remaining_time(){
   if [ -n "$last_check_timestamp_str" ]; then
     local last_check_epoch
     last_check_epoch=$(_date_to_epoch "$last_check_timestamp_str")
-    if [ -n "$last_check_epoch" ]; then
+    if [ -n "$last_check_epoch" ] && [ -n "$wt_interval_running" ]; then
       local current_epoch
       current_epoch=$(date +%s)
       local time_since_last_check=$((current_epoch - last_check_epoch))
@@ -509,10 +541,10 @@ _get_watchtower_remaining_time(){
         printf "%b即将进行或已超时 (%ds)%b\n" "$COLOR_GREEN" "$remaining_time" "$COLOR_RESET"
       fi
     else
-      echo "${COLOR_RED}❌ 日志时间解析失败${COLOR_RESET}"
+      printf "%b❌ 日志时间解析失败%b\n" "$COLOR_RED" "$COLOR_RESET"
     fi
   else
-    echo "${COLOR_YELLOW}⚠️ 未找到最近扫描日志${COLOR_RESET}"
+    printf "%b⚠️ 未找到最近扫描日志%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   fi
 }
 
@@ -543,7 +575,6 @@ get_watchtower_inspect_summary(){
     echo "未能解析到 --interval（将使用脚本配置或默认值）"
   fi
 
-  # 最后一行输出 interval（或空）
   echo "${interval}"
   return 0
 }
@@ -749,7 +780,7 @@ show_watchtower_details(){
 # configure_notify
 # -------------------------
 configure_notify(){
-  echo -e "${COLOR_YELLOW}⚙️ 通知配置${COLOR_RESET}"
+  printf "%b⚙️ 通知配置%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   read -r -p "是否启用 Telegram 通知？(y/N): " tchoice
   if [[ "$tchoice" =~ ^[Yy]$ ]]; then
     read -r -p "请输入 Telegram Bot Token: " TG_BOT_TOKEN
@@ -764,18 +795,18 @@ configure_notify(){
     EMAIL_TO=""
   fi
   save_config
-  echo -e "${COLOR_GREEN}通知配置已保存。${COLOR_RESET}"
+  printf "%b通知配置已保存。%b\n" "$COLOR_GREEN" "$COLOR_RESET"
 }
 
 # -------------------------
 # run_watchtower_once
 # -------------------------
 run_watchtower_once(){
-  echo -e "${COLOR_YELLOW}🆕 运行一次 Watchtower (立即检查并更新)${COLOR_RESET}"
+  printf "%b🆕 运行一次 Watchtower (立即检查并更新)%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   if docker ps --format '{{.Names}}' | grep -q '^watchtower$'; then
-    echo -e "${COLOR_YELLOW}⚠️ Watchtower 容器已在后台运行。${COLOR_RESET}"
+    printf "%b⚠️ Watchtower 容器已在后台运行。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
     if ! confirm_action "是否继续运行一次性 Watchtower 更新？"; then
-      echo -e "${COLOR_YELLOW}已取消。${COLOR_RESET}"
+      printf "%b已取消。%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
       press_enter_to_continue
       return 0
     fi
@@ -792,7 +823,7 @@ run_watchtower_once(){
 # view_and_edit_config
 # -------------------------
 view_and_edit_config(){
-  echo -e "${COLOR_YELLOW}🔍 脚本配置查看与编辑：${COLOR_RESET}"
+  printf "%b🔍 脚本配置查看与编辑：%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   echo "-------------------------------------------------------------------------------------------------------------------"
   echo "1) Telegram Bot Token: ${TG_BOT_TOKEN:-未设置}"
   echo "2) Telegram Chat ID:   ${TG_CHAT_ID:-未设置}"
@@ -836,7 +867,7 @@ view_and_edit_config(){
 }
 
 # -------------------------
-# main menu (已修复 LAST_CHECK 提取)
+# main menu
 # -------------------------
 main_menu(){
   while true; do
@@ -881,13 +912,13 @@ main_menu(){
       6) run_watchtower_once ;; 
       7) show_watchtower_details ;; 
       q|Q) echo "退出."; exit 0 ;; 
-      *) echo -e "${COLOR_YELLOW}无效选项${COLOR_RESET}"; sleep 1 ;; 
+      *) printf "%b无效选项%b\n" "$COLOR_YELLOW" "$COLOR_RESET"; sleep 1 ;; 
     esac
   done
 }
 
 update_menu(){
-  echo -e "${COLOR_YELLOW}请选择更新模式：${COLOR_RESET}"
+  printf "%b请选择更新模式：%b\n" "$COLOR_YELLOW" "$COLOR_RESET"
   echo "1) Watchtower 模式"
   echo "2) Cron 定时任务 模式"
   read -r -p "选择 [1-2] 或回车返回: " c
@@ -902,9 +933,9 @@ update_menu(){
 # main
 main(){
   echo ""
-  echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
-  echo -e " ${COLOR_YELLOW}Docker 自动更新助手 v$VERSION${COLOR_RESET}"
-  echo -e "${COLOR_GREEN}===========================================${COLOR_RESET}"
+  printf "%b===========================================%b\n" "$COLOR_GREEN" "$COLOR_RESET"
+  printf " %bDocker 自动更新助手 v%s%b\n" "$COLOR_YELLOW" "$VERSION" "$COLOR_RESET"
+  printf "%b===========================================%b\n" "$COLOR_GREEN" "$COLOR_RESET"
   echo ""
   main_menu
 }
