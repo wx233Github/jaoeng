@@ -1,8 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.13.14-智能诊断版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.0-智能诊断增强版)
 # =============================================================
-# - 新增: 智能诊断证书申请失败原因(IPv6/CDN/防火墙)。
-# - 优化: 增强错误提示，指导用户关闭 CDN 或检查 AAAA 记录。
+# 作者：Shell 脚本专家
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，集成故障自检功能
+# 版本历史：
+#   v4.14.0 - 新增 IPv6/CDN/防火墙 智能诊断，补全缺失的核心函数
+#   v4.13.14 - 优化 UI 交互与日志显示
 
 set -euo pipefail
 
@@ -14,7 +17,7 @@ ORANGE='\033[38;5;208m';
 LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 RENEW_THRESHOLD_DAYS=30
-DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v1"
+DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v2"
 
 NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
@@ -285,6 +288,20 @@ _view_nginx_global_log() {
     _view_file_with_tail "$log_path"
 }
 
+_view_project_access_log() {
+    local domain="$1"
+    if [ ! -f "$NGINX_ACCESS_LOG" ]; then
+        log_message ERROR "全局访问日志不存在: $NGINX_ACCESS_LOG"
+        return
+    fi
+    echo -e "${CYAN}--- 实时访问日志: $domain (Ctrl+C 退出) ---${NC}"
+    echo -e "${YELLOW}正在 grep 全局日志...${NC}"
+    trap ':' INT
+    tail -f "$NGINX_ACCESS_LOG" | grep --line-buffered "$domain" || true
+    trap _on_exit INT
+    echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
+}
+
 # ==============================================================================
 # SECTION: 数据与文件管理
 # ==============================================================================
@@ -508,18 +525,49 @@ _issue_and_install_certificate() {
             fi
         fi
 
-        # 新增: 智能诊断
-        if [[ "$err_log" == *"Invalid status"* || "$err_log" == *"404"* ]]; then
-            echo -e "\n${YELLOW}🔍 智能诊断:${NC}"
-            if echo "$err_log" | grep -qE "2600:|2400:|2a03:|::"; then
-                echo -e "${RED}⚠️  检测到 IPv6 验证失败。${NC}"
-                echo -e "   Let's Encrypt 优先使用 IPv6。如果你的服务器未配置 IPv6 或防火墙未放行，验证会失败。"
-                echo -e "   👉 建议: 在 DNS (如 Cloudflare) 中暂时删除 AAAA 记录，仅保留 A 记录后重试。"
-            elif [[ "$err_log" == *"Cloudflare"* ]]; then
-                echo -e "${RED}⚠️  检测到 CDN 干扰。${NC}"
-                echo -e "   👉 建议: 请关闭 Cloudflare 小黄云 (Proxy)，设置为 '仅DNS' 模式后再试。"
+        # ==================== 智能诊断模块 ====================
+        echo -e "\n${YELLOW}🔍 --- 智能故障诊断助手 ---${NC}"
+        local diag_found="false"
+
+        # 1. 检测 IPv6 (AAAA) 干扰
+        if command -v dig >/dev/null; then
+            local aaaa_rec=$(dig AAAA +short "$domain" 2>/dev/null | head -n 1)
+            if [ -n "$aaaa_rec" ]; then
+                echo -e "${ORANGE}👉 检测到 IPv6 (AAAA) 记录: $aaaa_rec${NC}"
+                echo -e "   Let's Encrypt 优先通过 IPv6 验证。如果本机未配置 IPv6 或防火墙未放行，验证必挂。"
+                echo -e "   ${GREEN}建议:${NC} 在 DNS 解析处暂时删除 AAAA 记录，仅保留 A 记录。"
+                diag_found="true"
             fi
         fi
+
+        # 2. 检测 CDN (Cloudflare)
+        if [[ "$err_log" == *"Cloudflare"* ]] || (command -v dig >/dev/null && dig +short "$domain" | grep -qE "^172\.|^104\."); then
+            echo -e "${ORANGE}👉 检测到 Cloudflare CDN 特征${NC}"
+            echo -e "   HTTP-01 验证无法穿透 CDN 防护模式。"
+            echo -e "   ${GREEN}建议:${NC} 请在 Cloudflare 控制台将小黄云 (Proxy) 关闭，改为 '仅DNS' (灰云)。"
+            diag_found="true"
+        fi
+
+        # 3. 具体错误日志分析
+        if [[ "$err_log" == *"Connection refused"* ]]; then
+             echo -e "${RED}❌ 连接被拒绝 (Connection refused)${NC}"
+             echo -e "   ${GREEN}建议:${NC} 检查 80 端口是否开放 (ufw/安全组)，或 Nginx 是否正在运行。"
+             diag_found="true"
+        elif [[ "$err_log" == *"Timeout"* ]]; then
+             echo -e "${RED}❌ 连接超时 (Timeout)${NC}"
+             echo -e "   ${GREEN}建议:${NC} 检查防火墙是否拦截了海外 IP (Let's Encrypt 服务器主要在海外)。"
+             diag_found="true"
+        elif [[ "$err_log" == *"404 Not Found"* ]]; then
+             echo -e "${RED}❌ 404 Not Found${NC}"
+             echo -e "   验证文件无法被访问。如果是 Standalone 模式，确保 80 端口未被其他服务占用。"
+             diag_found="true"
+        fi
+
+        if [ "$diag_found" == "false" ]; then
+            echo -e "暂无具体建议，请仔细检查上方 acme.sh 详细日志。"
+        fi
+        echo -e "${YELLOW}------------------------${NC}"
+        # =======================================================
 
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret
         return 1
@@ -882,6 +930,49 @@ check_and_auto_renew_certs() {
     done
     control_nginx reload
     log_message INFO "批量续期结果: $success 成功, $fail 失败。"
+}
+
+configure_nginx_projects() {
+    local mode="${1:-standard}" # standard or cert_only
+    local json
+    
+    echo ""
+    echo -e "${CYAN}🚀 开始配置新项目...${NC}"
+    
+    if ! json=$(_gather_project_details "{}" "false" "$mode"); then
+        log_message WARN "用户取消配置。"
+        return
+    fi
+    
+    # 申请证书
+    if ! _issue_and_install_certificate "$json"; then
+        log_message ERROR "证书申请失败，项目未保存。"
+        return
+    fi
+    
+    # 如果不是纯证书模式，生成 Nginx 配置
+    if [ "$mode" != "cert_only" ]; then
+        local domain=$(echo "$json" | jq -r .domain)
+        if _write_and_enable_nginx_config "$domain" "$json"; then
+            control_nginx reload
+            log_message SUCCESS "Nginx 配置已生成并加载。"
+        else
+            log_message ERROR "Nginx 配置生成失败。"
+            return
+        fi
+    fi
+    
+    # 保存元数据
+    _save_project_json "$json"
+    log_message SUCCESS "项目配置已保存。"
+    
+    # 提示查看
+    local domain=$(echo "$json" | jq -r .domain)
+    if [ "$mode" != "cert_only" ]; then
+        echo -e "\n🎉 您的网站已上线: https://${domain}"
+    else
+        echo -e "\n🎉 证书已就绪: /etc/ssl/${domain}.cer"
+    fi
 }
 
 main_menu() {
