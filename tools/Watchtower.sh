@@ -1,15 +1,15 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.63-双风格通知版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.64-别名修复版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.4.64 - 修复主机名显示问题；优化通知排版
 #   v6.4.63 - 增加通知风格切换(专业/亲切)；适配用户指定文案
-#   v6.4.62 - 重构 Telegram 通知排版；移除冗余终端日志
 #   ...
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.63"
+SCRIPT_VERSION="v6.4.64"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -251,7 +251,7 @@ _generate_env_file() {
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=Markdown&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
         
-        # 将 Alias 传入 Title，以便在模板中使用
+        # 将 Alias 传入 Title (Shoutrrr 可能会添加前缀，所以下面模板中我们直接用变量)
         echo "WATCHTOWER_NOTIFICATION_TITLE=${alias_name}" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
 
@@ -259,8 +259,7 @@ _generate_env_file() {
         local tpl=""
         
         # 根据风格生成 Go Template
-        # 注意：Telegram (Shoutrrr) 只能接收 Entries 列表，不支持直接访问 Report 对象
-        # 因此我们将用户提供的模板逻辑适配为基于 Entries 的迭代
+        # 注意：这里直接使用 ${alias_name} 变量硬编码进模板，不再依赖 {{ .Title }}，以避免 Watchtower 自动添加的前缀
         
         if [ "$WATCHTOWER_TEMPLATE_STYLE" = "friendly" ]; then
             # --- 亲切版 (Friendly) ---
@@ -281,14 +280,13 @@ _generate_env_file() {
             tpl+="{{- end -}}"
             # 底部签名
             tpl+="${br}"
-            tpl+="—— 来自 \`{{ .Title }}\` 的 Watchtower"
+            tpl+="—— 来自 \`${alias_name}\` 的 Watchtower"
             
         else
             # --- 专业版 (Professional) ---
             tpl+="*🛡️ Watchtower 自动更新报告*${br}"
             tpl+="${br}"
-            tpl+="*主机*：\`{{ .Title }}\`${br}"
-            # Shoutrrr 不支持 .Time，这里留空或让 TG 自带时间
+            tpl+="*主机*：\`${alias_name}\`${br}"
             tpl+="${br}"
             
             tpl+="{{ if .Entries -}}"
@@ -408,11 +406,10 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local safe_time; safe_time=$(_escape_markdown "$time_now")
     
-    # 构造 Markdown 美化消息 (匹配用户指定格式)
+    # 构造 Markdown 美化消息 (移除多余空行)
     local msg="🔔 *Watchtower 配置更新*
 🏷 节点: \`${safe_alias}\`
 ⏱ 时间: \`${safe_time}\`
-
 ⚙️ *状态*: 服务已重建并重启
 📝 *详情*: 配置已重新加载，监控任务正常运行中。"
     
