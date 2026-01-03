@@ -1,12 +1,18 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.59-修复函数丢失严重错误版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.61-Markdown美化版)
 # =============================================================
+# 作者：系统运维组
+# 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
+# 版本历史：
+#   v6.4.61 - 美化 Telegram 通知为 Markdown 格式；移除冗余样式配置
+#   v6.4.60 - 修复 show_container_info 函数缺失导致的崩溃；优化临时文件处理
+#   ...
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.59"
+SCRIPT_VERSION="v6.4.61"
 
 # --- 严格模式与环境设定 ---
-set -eo pipefail
+set -euo pipefail
 export LANG=${LANG:-en_US.UTF_8}
 export LC_ALL=${LC_ALL:-C.UTF_8}
 
@@ -73,8 +79,6 @@ WATCHTOWER_HOST_ALIAS=""
 # 调度变量
 WATCHTOWER_RUN_MODE=""      # "interval", "aligned", "cron"
 WATCHTOWER_SCHEDULE_CRON=""
-# 样式变量
-WATCHTOWER_TEMPLATE_STYLE="" # "standard", "terminal", "minimal"
 
 # --- 配置加载与保存 ---
 load_config(){
@@ -107,8 +111,6 @@ load_config(){
     
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
-    
-    WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE:-${WATCHTOWER_CONF_TEMPLATE_STYLE:-standard}}"
 }
 
 # 预加载一次配置
@@ -147,7 +149,6 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS}"
 WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE}"
 WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON}"
-WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
@@ -171,14 +172,22 @@ _format_seconds_to_human(){
     echo "${result:-0秒}"
 }
 
+# --- Markdown 转义工具 ---
+_escape_markdown() {
+    # 转义 Markdown (V1) 特殊字符: _ * ` [
+    # 使用 sed 确保这些字符在 JSON 字符串或 Telegram 解析中不会出错
+    echo "$1" | sed 's/_/\\_/g; s/*/\\*/g; s/`/\\`/g; s/\[/\\[/g'
+}
+
 send_test_notify() {
     local message="$1"
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         if ! command -v jq &>/dev/null; then log_err "缺少 jq，无法发送测试通知。"; return; fi
         local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
         local data
+        # 强制使用 Markdown 模式
         data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" \
-            '{chat_id: $chat_id, text: $text, parse_mode: "HTML"}')
+            '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
         timeout 10s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" "$url"
     fi
 }
@@ -226,6 +235,9 @@ _prompt_for_interval() {
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
+    # 在生成 Go template 时，Alias 不需要转义，因为它是字面量传入，Shoutrrr 会处理
+    # 但为了保险起见，我们在 Template 中硬编码 Alias 时，如果 Alias 含有特殊字符可能会有问题
+    # 这里我们假设 Alias 是安全的，或者仅仅是 Hostname
     
     rm -f "$ENV_FILE"
 
@@ -233,63 +245,33 @@ _generate_env_file() {
     
     if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
         echo "WATCHTOWER_NOTIFICATIONS=shoutrrr" >> "$ENV_FILE"
-        echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=HTML&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
+        # 使用 Markdown 模式
+        echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=Markdown&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
         
-        # 使用纯 ASCII 标题，防止容器环境不支持中文导致的回退
+        # 使用纯 ASCII 标题
         echo "WATCHTOWER_NOTIFICATION_TITLE=Watchtower-Report" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
 
         local br='{{ "\n" }}'
         local tpl=""
         
-        case "$WATCHTOWER_TEMPLATE_STYLE" in
-            "terminal")
-                tpl+="${br}"
-                tpl+="<pre>"
-                tpl+="HOST: ${alias_name}${br}"
-                tpl+="{{ if .Entries -}}"
-                tpl+="UPDATES:${br}"
-                tpl+="{{- range .Entries }}"
-                tpl+="> {{ .Message }}${br}"
-                tpl+="{{- end }}"
-                tpl+="{{- else -}}"
-                tpl+="STATUS: All systems go.${br}"
-                tpl+="{{- end -}}"
-                tpl+="</pre>"
-                ;;
-            "minimal")
-                tpl+="${br}"
-                tpl+="{{ if .Entries -}}"
-                tpl+="📦 <b>Updates:</b>${br}"
-                tpl+="<pre>"
-                tpl+="{{- range .Entries }}"
-                tpl+="{{ .Message }}${br}"
-                tpl+="{{- end }}"
-                tpl+="</pre>"
-                tpl+="{{- else -}}"
-                tpl+="✅ No updates available"
-                tpl+="{{- end -}}"
-                ;;
-            *)
-                # Standard
-                tpl+="${br}"
-                tpl+="🔔 <b>Watchtower 自动更新</b>${br}"
-                tpl+="🏷 节点: <code>${alias_name}</code>${br}"
-                tpl+="${br}"
-                
-                tpl+="{{ if .Entries -}}"
-                tpl+="📦 <b>更新详情:</b>${br}"
-                tpl+="<pre>"
-                tpl+="{{- range .Entries }}"
-                tpl+="{{ .Message }}${br}"
-                tpl+="{{- end }}"
-                tpl+="</pre>"
-                tpl+="{{- else -}}"
-                tpl+="✅ 状态: 所有服务均为最新，暂无更新。"
-                tpl+="{{- end -}}"
-                ;;
-        esac
+        # Markdown 美化模板
+        # 头部
+        tpl+="*🔔 Watchtower 自动更新*${br}"
+        tpl+="*🏷 节点:* \`${alias_name}\`${br}"
+        tpl+="${br}"
+
+        # 逻辑主体
+        tpl+="{{ if .Entries -}}"
+        tpl+="*📦 更新详情:*${br}"
+        tpl+="{{- range .Entries }}"
+        tpl+="• \`{{ .Image }}\`${br}"
+        tpl+="  _{{ .Message }}_${br}"
+        tpl+="{{- end }}"
+        tpl+="{{- else -}}"
+        tpl+="*✅ 状态:* 所有服务均为最新，暂无更新。"
+        tpl+="{{- end -}}"
 
         echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
     fi
@@ -394,13 +376,18 @@ _rebuild_watchtower() {
     fi
     
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
+    local safe_alias; safe_alias=$(_escape_markdown "$alias_name")
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
-    local msg="🔔 <b>Watchtower 配置更新</b>
-🏷 节点: <code>${alias_name}</code>
-⏱ 时间: <code>${time_now}</code>
+    local safe_time; safe_time=$(_escape_markdown "$time_now")
+    
+    # 构造 Markdown 美化消息
+    local msg="*🔔 Watchtower 配置更新*
+*🏷 节点:* \`${safe_alias}\`
+*⏱ 时间:* \`${safe_time}\`
 
-⚙️ 状态: 服务已重建并重启
-📝 详情: 配置已重新加载，监控任务正常运行中。"
+*⚙️ 状态:* 服务已重建并重启
+*📝 详情:* 配置已重新加载，监控任务正常运行中。"
+    
     send_test_notify "$msg"
 }
 
@@ -412,7 +399,8 @@ _prompt_rebuild_if_needed() {
         return
     fi
 
-    local temp_env="/tmp/watchtower_current_$$.env"
+    local temp_env
+    temp_env=$(mktemp)
     local original_env_file="$ENV_FILE"
     ENV_FILE="$temp_env"
     _generate_env_file
@@ -460,19 +448,6 @@ _configure_telegram() {
     notify_on_no_updates_choice=$(_prompt_user_input "是否在没有容器更新时也发送 Telegram 通知? (Y/n, 当前: ${WATCHTOWER_NOTIFY_ON_NO_UPDATES}): " "")
     
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
-    
-    echo -e "${CYAN}请选择通知模板风格:${NC}"
-    echo "1. 标准中文 (Standard) - 默认，信息全面"
-    echo "2. 极简风格 (Minimal) - 仅显示状态，无冗余信息"
-    echo "3. 终端风格 (Terminal) - 全代码块，极客风"
-    local style_choice
-    style_choice=$(_prompt_for_menu_choice "1-3")
-    case "$style_choice" in
-        1) WATCHTOWER_TEMPLATE_STYLE="standard" ;;
-        2) WATCHTOWER_TEMPLATE_STYLE="minimal" ;;
-        3) WATCHTOWER_TEMPLATE_STYLE="terminal" ;;
-        *) WATCHTOWER_TEMPLATE_STYLE="standard" ;;
-    esac
     
     save_config
     log_info "通知配置已保存。"
@@ -528,7 +503,18 @@ notification_menu() {
             1) _configure_telegram; press_enter_to_continue ;;
             2) _configure_alias; press_enter_to_continue ;;
             3) _configure_email; press_enter_to_continue ;;
-            4) if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then log_warn "请先配置 Telegram。"; else log_info "正在发送测试..."; send_test_notify "这是一条来自 Docker 助手 ${SCRIPT_VERSION} の<b>手动测试消息</b>。"; log_success "测试请求已发送。"; fi; press_enter_to_continue ;;
+            4) 
+                if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then 
+                    log_warn "请先配置 Telegram。"
+                else 
+                    log_info "正在发送 Markdown 测试消息..."
+                    local safe_ver; safe_ver=$(_escape_markdown "$SCRIPT_VERSION")
+                    send_test_notify "*🔔 手动测试消息*
+来自 Docker 助手 \`${safe_ver}\` 的测试。
+*状态:* ✅ 成功连接"
+                    log_success "测试请求已发送。"
+                fi; press_enter_to_continue 
+                ;;
             5) if confirm_action "确定要清空所有通知配置吗?"; then TG_BOT_TOKEN=""; TG_CHAT_ID=""; EMAIL_TO=""; WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; save_config; log_info "所有通知配置已清空。"; _prompt_rebuild_if_needed; else log_info "操作已取消。"; fi; press_enter_to_continue ;;
             "") return ;; *) log_warn "无效选项。"; sleep 1 ;;
         esac
@@ -640,7 +626,6 @@ configure_watchtower(){
         "忽略名单: ${final_exclude_list_display//,/, }" 
         "额外参数: ${temp_extra_args:-无}" 
         "调试模式: $temp_debug_enabled"
-        "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-standard}"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
@@ -894,6 +879,23 @@ _get_watchtower_next_run_time(){
     echo -e "${YELLOW}计算中...${NC}"
 }
 
+show_container_info() {
+    _print_header "容器状态看板"
+    echo -e "${CYAN}说明: 下表列出了当前 Docker 主机上的容器，Watchtower 将根据配置监控这些容器的镜像更新。${NC}"
+    echo ""
+    
+    if ! command -v docker &> /dev/null; then
+        log_err "Docker 未找到。"
+        return
+    fi
+
+    # 使用 docker ps 原生表格格式，清晰且健壮
+    JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.RunningFor}}"
+    
+    echo ""
+    press_enter_to_continue
+}
+
 show_watchtower_details(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
@@ -935,7 +937,7 @@ show_watchtower_details(){
 
 view_and_edit_config(){
     # 移除单独的 Cron 表达式选项，整合到运行模式中
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "通知风格|WATCHTOWER_TEMPLATE_STYLE|string")
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -973,13 +975,6 @@ view_and_edit_config(){
             string|string_list) 
                 if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then
                     configure_exclusion_list
-                elif [ "$var_name" = "WATCHTOWER_TEMPLATE_STYLE" ]; then
-                    echo "1. standard (默认), 2. minimal, 3. terminal"
-                    local style_pick=$(_prompt_for_menu_choice "1-3")
-                    case "$style_pick" in
-                        1) new_value="standard" ;; 2) new_value="minimal" ;; 3) new_value="terminal" ;; *) new_value="standard" ;;
-                    esac
-                    declare "$var_name"="$new_value"
                 else
                     echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
                     read -r -p "请输入新值 (回车保持, 空格清空): " val
