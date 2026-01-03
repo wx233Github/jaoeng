@@ -1,15 +1,15 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.62-通知排版重构版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.63-双风格通知版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.4.63 - 增加通知风格切换(专业/亲切)；适配用户指定文案
 #   v6.4.62 - 重构 Telegram 通知排版；移除冗余终端日志
-#   v6.4.61 - 美化 Telegram 通知为 Markdown 格式；移除冗余样式配置
 #   ...
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.62"
+SCRIPT_VERSION="v6.4.63"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -79,6 +79,8 @@ WATCHTOWER_HOST_ALIAS=""
 # 调度变量
 WATCHTOWER_RUN_MODE=""      # "interval", "aligned", "cron"
 WATCHTOWER_SCHEDULE_CRON=""
+# 样式变量 (新增)
+WATCHTOWER_TEMPLATE_STYLE="" # "professional", "friendly"
 
 # --- 配置加载与保存 ---
 load_config(){
@@ -111,6 +113,8 @@ load_config(){
     
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
+    
+    WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE:-professional}"
 }
 
 # 预加载一次配置
@@ -149,6 +153,7 @@ WATCHTOWER_NOTIFY_ON_NO_UPDATES="${WATCHTOWER_NOTIFY_ON_NO_UPDATES}"
 WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS}"
 WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE}"
 WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON}"
+WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE}"
 EOF
     chmod 600 "$CONFIG_FILE" || log_warn "⚠️ 无法设置配置文件权限。"
 }
@@ -246,38 +251,56 @@ _generate_env_file() {
         echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=Markdown&preview=false&channels=${TG_CHAT_ID}" >> "$ENV_FILE"
         echo "WATCHTOWER_NOTIFICATION_REPORT=true" >> "$ENV_FILE"
         
-        # 使用纯 ASCII 标题
-        echo "WATCHTOWER_NOTIFICATION_TITLE=Watchtower-Report" >> "$ENV_FILE"
+        # 将 Alias 传入 Title，以便在模板中使用
+        echo "WATCHTOWER_NOTIFICATION_TITLE=${alias_name}" >> "$ENV_FILE"
         echo "WATCHTOWER_NO_STARTUP_MESSAGE=true" >> "$ENV_FILE"
 
         local br='{{ "\n" }}'
         local tpl=""
         
-        # Markdown 美化模板 (重新设计)
-        # 逻辑主体
-        tpl+="{{if .Entries -}}"
+        # 根据风格生成 Go Template
+        # 注意：Telegram (Shoutrrr) 只能接收 Entries 列表，不支持直接访问 Report 对象
+        # 因此我们将用户提供的模板逻辑适配为基于 Entries 的迭代
         
-        # 有更新的情况
-        tpl+="🚀 *Watchtower 更新完成*${br}"
-        tpl+="${br}"
-        tpl+="📦 *更新列表:*${br}"
-        tpl+="{{- range .Entries }}"
-        tpl+="• \`{{ .Image }}\`${br}"
-        # tpl+="  _{{ .Message }}_${br}" # 移除冗余信息，保持清爽
-        tpl+="{{- end }}"
-        
-        tpl+="{{- else -}}"
-        
-        # 无更新的情况
-        tpl+="✅ *Watchtower 巡检完成*${br}"
-        tpl+="${br}"
-        tpl+="所有容器均为最新。${br}"
-        
-        tpl+="{{- end -}}"
-        
-        # 底部元数据
-        tpl+="${br}"
-        tpl+="🏷 节点: \`${alias_name}\`"
+        if [ "$WATCHTOWER_TEMPLATE_STYLE" = "friendly" ]; then
+            # --- 亲切版 (Friendly) ---
+            tpl+="{{ if .Entries -}}"
+            tpl+="*🎉 好消息！有容器刚刚完成了自动升级～*${br}"
+            tpl+="${br}"
+            tpl+="{{- range .Entries }}"
+            # 简化日志，只显示消息主体
+            tpl+="• {{ .Message }}${br}"
+            tpl+="{{- end }}"
+            tpl+="${br}"
+            tpl+="一切都在安全高效地运行中 🚀${br}"
+            tpl+="{{- else -}}"
+            # 无日志时（巡检完成无更新）
+            tpl+="*🌟 完美！所有容器都已经是最新版本了*${br}"
+            tpl+="${br}"
+            tpl+="你维护得真棒，继续保持～ 👍${br}"
+            tpl+="{{- end -}}"
+            # 底部签名
+            tpl+="${br}"
+            tpl+="—— 来自 \`{{ .Title }}\` 的 Watchtower"
+            
+        else
+            # --- 专业版 (Professional) ---
+            tpl+="*🛡️ Watchtower 自动更新报告*${br}"
+            tpl+="${br}"
+            tpl+="*主机*：\`{{ .Title }}\`${br}"
+            # Shoutrrr 不支持 .Time，这里留空或让 TG 自带时间
+            tpl+="${br}"
+            
+            tpl+="{{ if .Entries -}}"
+            tpl+="*📈 更新摘要*${br}"
+            tpl+="{{- range .Entries }}"
+            tpl+="{{ if eq .Level \"error\" }}*❌ 失败*{{ else }}*✅ 更新*{{ end }}: {{ .Message }}${br}"
+            tpl+="{{- end }}"
+            tpl+="{{- else -}}"
+            tpl+="*✨ 状态完美*${br}"
+            tpl+="所有容器均为最新版本，无需干预。${br}"
+            tpl+="{{- end -}}"
+        fi
 
         echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
     fi
@@ -364,7 +387,6 @@ _start_watchtower_container_logic(){
         sleep 1
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "核心服务已就绪 [$mode_description]"
-            # log_info "ℹ️  环境变量文件已生成: $ENV_FILE"  <-- 已移除冗余日志
             cp -f "$ENV_FILE" "$ENV_FILE_LAST_RUN"
         else
             log_err "$mode_description 启动失败"
@@ -386,13 +408,13 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local safe_time; safe_time=$(_escape_markdown "$time_now")
     
-    # 构造 Markdown 美化消息 (重新设计)
-    local msg="⚙️ *配置变更生效*
-
-服务已重建并重启，监控任务正常运行。
-
+    # 构造 Markdown 美化消息 (匹配用户指定格式)
+    local msg="🔔 *Watchtower 配置更新*
 🏷 节点: \`${safe_alias}\`
-⏱ 时间: \`${safe_time}\`"
+⏱ 时间: \`${safe_time}\`
+
+⚙️ *状态*: 服务已重建并重启
+📝 *详情*: 配置已重新加载，监控任务正常运行中。"
     
     send_test_notify "$msg"
 }
@@ -455,6 +477,19 @@ _configure_telegram() {
     
     if echo "$notify_on_no_updates_choice" | grep -qE '^[Nn]$'; then WATCHTOWER_NOTIFY_ON_NO_UPDATES="false"; else WATCHTOWER_NOTIFY_ON_NO_UPDATES="true"; fi
     
+    # 增加模板风格选择
+    echo -e "${CYAN}请选择通知模板风格:${NC}"
+    echo "1. 专业/详细版 (Professional) - 显示详细的主机和更新列表"
+    echo "2. 亲切/活泼版 (Friendly)     - 使用更轻松的语气和Emoji"
+    
+    local style_choice
+    style_choice=$(_prompt_for_menu_choice "1-2")
+    case "$style_choice" in
+        1) WATCHTOWER_TEMPLATE_STYLE="professional" ;;
+        2) WATCHTOWER_TEMPLATE_STYLE="friendly" ;;
+        *) WATCHTOWER_TEMPLATE_STYLE="professional" ;;
+    esac
+    
     save_config
     log_info "通知配置已保存。"
     _prompt_rebuild_if_needed
@@ -496,7 +531,7 @@ notification_menu() {
         local alias_status="${CYAN}${WATCHTOWER_HOST_ALIAS:-默认}${NC}"
         
         local -a content_array=(
-            "1. 配置 Telegram (状态: $tg_status)"
+            "1. 配置 Telegram (状态: $tg_status, 风格: ${WATCHTOWER_TEMPLATE_STYLE})"
             "2. 设置服务器别名 (当前: $alias_status)"
             "3. 配置 Email (当前未使用)"
             "4. 发送手动测试通知 (使用 curl)"
@@ -632,6 +667,7 @@ configure_watchtower(){
         "忽略名单: ${final_exclude_list_display//,/, }" 
         "额外参数: ${temp_extra_args:-无}" 
         "调试模式: $temp_debug_enabled"
+        "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-professional}"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
@@ -943,7 +979,7 @@ show_watchtower_details(){
 
 view_and_edit_config(){
     # 移除单独的 Cron 表达式选项，整合到运行模式中
-    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval")
+    local -a config_items=("TG Token|TG_BOT_TOKEN|string" "TG Chat ID|TG_CHAT_ID|string" "Email|EMAIL_TO|string" "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list" "服务器别名|WATCHTOWER_HOST_ALIAS|string" "额外参数|WATCHTOWER_EXTRA_ARGS|string" "调试模式|WATCHTOWER_DEBUG_ENABLED|bool" "运行模式|WATCHTOWER_RUN_MODE|schedule" "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval" "通知风格|WATCHTOWER_TEMPLATE_STYLE|string")
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; load_config; 
         local -a content_lines_array=(); local i
@@ -981,6 +1017,13 @@ view_and_edit_config(){
             string|string_list) 
                 if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then
                     configure_exclusion_list
+                elif [ "$var_name" = "WATCHTOWER_TEMPLATE_STYLE" ]; then
+                    echo "1. professional, 2. friendly"
+                    local style_pick=$(_prompt_for_menu_choice "1-2")
+                    case "$style_pick" in
+                        1) new_value="professional" ;; 2) new_value="friendly" ;; *) new_value="professional" ;;
+                    esac
+                    declare "$var_name"="$new_value"
                 else
                     echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
                     read -r -p "请输入新值 (回车保持, 空格清空): " val
