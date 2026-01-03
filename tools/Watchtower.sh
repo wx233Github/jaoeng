@@ -1,15 +1,15 @@
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.4.61-Markdown美化版)
+# 🚀 Watchtower 自动更新管理器 (v6.4.62-通知排版重构版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.4.62 - 重构 Telegram 通知排版；移除冗余终端日志
 #   v6.4.61 - 美化 Telegram 通知为 Markdown 格式；移除冗余样式配置
-#   v6.4.60 - 修复 show_container_info 函数缺失导致的崩溃；优化临时文件处理
 #   ...
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v6.4.61"
+SCRIPT_VERSION="v6.4.62"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -235,9 +235,6 @@ _prompt_for_interval() {
 _generate_env_file() {
     local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
     alias_name=$(echo "$alias_name" | tr -d '\n' | tr -d '\r')
-    # 在生成 Go template 时，Alias 不需要转义，因为它是字面量传入，Shoutrrr 会处理
-    # 但为了保险起见，我们在 Template 中硬编码 Alias 时，如果 Alias 含有特殊字符可能会有问题
-    # 这里我们假设 Alias 是安全的，或者仅仅是 Hostname
     
     rm -f "$ENV_FILE"
 
@@ -256,22 +253,31 @@ _generate_env_file() {
         local br='{{ "\n" }}'
         local tpl=""
         
-        # Markdown 美化模板
-        # 头部
-        tpl+="*🔔 Watchtower 自动更新*${br}"
-        tpl+="*🏷 节点:* \`${alias_name}\`${br}"
-        tpl+="${br}"
-
+        # Markdown 美化模板 (重新设计)
         # 逻辑主体
-        tpl+="{{ if .Entries -}}"
-        tpl+="*📦 更新详情:*${br}"
+        tpl+="{{if .Entries -}}"
+        
+        # 有更新的情况
+        tpl+="🚀 *Watchtower 更新完成*${br}"
+        tpl+="${br}"
+        tpl+="📦 *更新列表:*${br}"
         tpl+="{{- range .Entries }}"
         tpl+="• \`{{ .Image }}\`${br}"
-        tpl+="  _{{ .Message }}_${br}"
+        # tpl+="  _{{ .Message }}_${br}" # 移除冗余信息，保持清爽
         tpl+="{{- end }}"
+        
         tpl+="{{- else -}}"
-        tpl+="*✅ 状态:* 所有服务均为最新，暂无更新。"
+        
+        # 无更新的情况
+        tpl+="✅ *Watchtower 巡检完成*${br}"
+        tpl+="${br}"
+        tpl+="所有容器均为最新。${br}"
+        
         tpl+="{{- end -}}"
+        
+        # 底部元数据
+        tpl+="${br}"
+        tpl+="🏷 节点: \`${alias_name}\`"
 
         echo "WATCHTOWER_NOTIFICATION_TEMPLATE=$tpl" >> "$ENV_FILE"
     fi
@@ -358,7 +364,7 @@ _start_watchtower_container_logic(){
         sleep 1
         if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then
             log_success "核心服务已就绪 [$mode_description]"
-            log_info "ℹ️  环境变量文件已生成: $ENV_FILE"
+            # log_info "ℹ️  环境变量文件已生成: $ENV_FILE"  <-- 已移除冗余日志
             cp -f "$ENV_FILE" "$ENV_FILE_LAST_RUN"
         else
             log_err "$mode_description 启动失败"
@@ -380,13 +386,13 @@ _rebuild_watchtower() {
     local time_now; time_now=$(date "+%Y-%m-%d %H:%M:%S")
     local safe_time; safe_time=$(_escape_markdown "$time_now")
     
-    # 构造 Markdown 美化消息
-    local msg="*🔔 Watchtower 配置更新*
-*🏷 节点:* \`${safe_alias}\`
-*⏱ 时间:* \`${safe_time}\`
+    # 构造 Markdown 美化消息 (重新设计)
+    local msg="⚙️ *配置变更生效*
 
-*⚙️ 状态:* 服务已重建并重启
-*📝 详情:* 配置已重新加载，监控任务正常运行中。"
+服务已重建并重启，监控任务正常运行。
+
+🏷 节点: \`${safe_alias}\`
+⏱ 时间: \`${safe_time}\`"
     
     send_test_notify "$msg"
 }
