@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.0-全能配置版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.1-专业版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持任意 Nginx 自定义指令
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，界面简洁化
 # 版本历史：
-#   v4.16.0 - 新增通用自定义配置功能 (custom_config)
-#   v4.15.5 - 修复 Nginx 配置文件中上传限制参数缺失的问题
+#   v4.16.1 - 移除所有 Emoji，项目列表改为表格显示
+#   v4.16.0 - 新增通用自定义配置功能
 
 set -euo pipefail
 
@@ -46,26 +46,26 @@ _log_prefix() {
 log_message() {
     local level="${1:-INFO}" message="${2:-}"
     case "$level" in
-        INFO)    echo -e "$(_log_prefix)${CYAN}ℹ️  [信息]${NC} ${message}";;
-        SUCCESS) echo -e "$(_log_prefix)${GREEN}✅ [成功]${NC} ${message}";;
-        WARN)    echo -e "$(_log_prefix)${YELLOW}⚠️  [警告]${NC} ${message}" >&2;;
-        ERROR)   echo -e "$(_log_prefix)${RED}❌ [错误]${NC} ${message}" >&2;;
+        INFO)    echo -e "$(_log_prefix)${CYAN}[INFO]${NC} ${message}";;
+        SUCCESS) echo -e "$(_log_prefix)${GREEN}[OK]${NC}   ${message}";;
+        WARN)    echo -e "$(_log_prefix)${YELLOW}[WARN]${NC} ${message}" >&2;;
+        ERROR)   echo -e "$(_log_prefix)${RED}[ERR]${NC}  ${message}" >&2;;
     esac
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] [${level^^}] ${message}" >> "$LOG_FILE"
 }
 
-press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}⌨️  按 Enter 键继续...${NC}")" < /dev/tty; }
+press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty; }
 
 _prompt_for_menu_choice_local() {
     local range="${1:-}"
     local allow_empty="${2:-false}"
-    local prompt_text="${ORANGE}👉 选项 [${range}]${NC} (↩ 返回): "
+    local prompt_text="${ORANGE}选项 [${range}]${NC} (Enter 返回): "
     local choice
     while true; do
         read -r -p "$(echo -e "$prompt_text")" choice < /dev/tty
         if [ -z "$choice" ]; then
             if [ "$allow_empty" = "true" ]; then echo ""; return; fi
-            echo -e "${YELLOW}⚠️  请选择一个选项。${NC}" >&2
+            echo -e "${YELLOW}请选择一个选项。${NC}" >&2
             continue
         fi
         if [[ "$choice" =~ ^[0-9]+$ ]]; then echo "$choice"; return; fi
@@ -93,7 +93,7 @@ _str_width() {
 _render_menu() {
     local title="${1:-菜单}"; shift; 
     local title_vis_len=$(_str_width "$title")
-    local min_width=42
+    local min_width=50
     local box_width=$min_width
     if [ "$title_vis_len" -gt "$((min_width - 4))" ]; then
         box_width=$((title_vis_len + 6))
@@ -137,7 +137,7 @@ _prompt_user_input_with_validation() {
             local disp=""
             if [ -n "$default" ]; then disp=" [默认: ${default}]"
             fi
-            echo -ne "${YELLOW}🔹 ${prompt}${NC}${disp}: " >&2
+            echo -ne "${YELLOW}${prompt}${NC}${disp}: " >&2
             read -r val
             val=${val:-$default}
         else
@@ -156,7 +156,7 @@ _prompt_user_input_with_validation() {
 
 _confirm_action_or_exit_non_interactive() {
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        local c; read -r -p "$(echo -e "${YELLOW}❓ $1 ([y]/n): ${NC}")" c < /dev/tty
+        local c; read -r -p "$(echo -e "${YELLOW}${1} ([y]/n): ${NC}")" c < /dev/tty
         case "$c" in n|N) return 1;; *) return 0;; esac
     fi
     log_message ERROR "非交互需确认: '$1'，已取消。"; return 1
@@ -227,9 +227,9 @@ control_nginx() {
 
 _get_nginx_status() {
     if systemctl is-active --quiet nginx; then
-        echo -e "${GREEN}🟢 Nginx (运行中)${NC}"
+        echo -e "${GREEN}Nginx (运行中)${NC}"
     else
-        echo -e "${RED}🔴 Nginx (已停止)${NC}"
+        echo -e "${RED}Nginx (已停止)${NC}"
     fi
 }
 
@@ -316,7 +316,6 @@ _save_project_json() {
     local domain=$(echo "$json" | jq -r .domain)
     local temp=$(mktemp)
     
-    # 使用 --argjson 将 json 对象安全地作为参数传递给 jq
     if [ -n "$(_get_project_json "$domain")" ]; then
         jq --argjson new_val "$json" --arg d "$domain" \
            'map(if .domain == $d then $new_val else . end)' \
@@ -348,11 +347,9 @@ _write_and_enable_nginx_config() {
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
     
-    # 提取配置参数
     local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
     local custom_cfg=$(echo "$json" | jq -r '.custom_config // empty')
     
-    # 预计算注入字符串
     local body_cfg=""
     if [[ -n "$max_body" && "$max_body" != "null" ]]; then
         body_cfg="client_max_body_size ${max_body};"
@@ -393,10 +390,9 @@ server {
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';
     add_header Strict-Transport-Security "max-age=31536000;" always;
 
-    # --- 用户自定义配置区域 ---
+    # 用户自定义配置
     ${body_cfg}
     ${extra_cfg}
-    # -----------------------
 
     location / {
         proxy_pass http://127.0.0.1:${port};
@@ -476,7 +472,7 @@ _issue_and_install_certificate() {
     if [ "$method" = "dns-01" ]; then
         if [ "$provider" = "dns_cf" ]; then
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-                log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
+                log_message INFO "请输入 Cloudflare Token (仅内存暂存)"
                 local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
                 local t=$(_prompt_user_input_with_validation "CF_Token" "$def_t" "" "不能为空" "false")
                 local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
@@ -485,7 +481,7 @@ _issue_and_install_certificate() {
             fi
         elif [ "$provider" = "dns_ali" ]; then
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-                log_message INFO "🔐 请输入 Aliyun Key (仅内存暂存)"
+                log_message INFO "请输入 Aliyun Key (仅内存暂存)"
                 local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
                 local k=$(_prompt_user_input_with_validation "Ali_Key" "$def_k" "" "不能为空" "false")
                 local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
@@ -525,7 +521,7 @@ _issue_and_install_certificate() {
     fi
 
     local log_temp=$(mktemp)
-    echo -ne "${YELLOW}⏳ 正在与 CA 服务器通信 (约 30-60 秒，请勿中断)... ${NC}"
+    echo -ne "${YELLOW}正在与 CA 服务器通信 (约 30-60 秒，请勿中断)... ${NC}"
     "${cmd[@]}" > "$log_temp" 2>&1 &
     local pid=$!
     local spinstr='|/-\'
@@ -566,40 +562,37 @@ _issue_and_install_certificate() {
         fi
 
         # ==================== 智能诊断模块 ====================
-        echo -e "\n${YELLOW}🔍 --- 智能故障诊断助手 ---${NC}"
+        echo -e "\n${YELLOW}--- 智能故障诊断助手 ---${NC}"
         local diag_found="false"
 
-        # 1. 检测 IPv6 (AAAA) 干扰
         if command -v dig >/dev/null; then
             local aaaa_rec=$(dig AAAA +short "$domain" 2>/dev/null | head -n 1)
             if [ -n "$aaaa_rec" ]; then
-                echo -e "${ORANGE}👉 检测到 IPv6 (AAAA) 记录: $aaaa_rec${NC}"
-                echo -e "   Let's Encrypt 优先通过 IPv6 验证。如果本机未配置 IPv6 或防火墙未放行，验证必挂。"
-                echo -e "   ${GREEN}建议:${NC} 在 DNS 解析处暂时删除 AAAA 记录，仅保留 A 记录。"
+                echo -e "${ORANGE}检测到 IPv6 (AAAA) 记录: $aaaa_rec${NC}"
+                echo -e "Let's Encrypt 优先通过 IPv6 验证。如果本机未配置 IPv6 或防火墙未放行，验证必挂。"
+                echo -e "建议: 在 DNS 解析处暂时删除 AAAA 记录，仅保留 A 记录。"
                 diag_found="true"
             fi
         fi
 
-        # 2. 检测 CDN (Cloudflare)
         if [[ "$err_log" == *"Cloudflare"* ]] || (command -v dig >/dev/null && dig +short "$domain" | grep -qE "^172\.|^104\."); then
-            echo -e "${ORANGE}👉 检测到 Cloudflare CDN 特征${NC}"
-            echo -e "   HTTP-01 验证无法穿透 CDN 防护模式。"
-            echo -e "   ${GREEN}建议:${NC} 请在 Cloudflare 控制台将小黄云 (Proxy) 关闭，改为 '仅DNS' (灰云)。"
+            echo -e "${ORANGE}检测到 Cloudflare CDN 特征${NC}"
+            echo -e "HTTP-01 验证无法穿透 CDN 防护模式。"
+            echo -e "建议: 请在 Cloudflare 控制台将小黄云 (Proxy) 关闭，改为 '仅DNS' (灰云)。"
             diag_found="true"
         fi
 
-        # 3. 具体错误日志分析
         if [[ "$err_log" == *"Connection refused"* ]]; then
-             echo -e "${RED}❌ 连接被拒绝 (Connection refused)${NC}"
-             echo -e "   ${GREEN}建议:${NC} 检查 80 端口是否开放 (ufw/安全组)，或 Nginx 是否正在运行。"
+             echo -e "${RED}连接被拒绝 (Connection refused)${NC}"
+             echo -e "建议: 检查 80 端口是否开放 (ufw/安全组)，或 Nginx 是否正在运行。"
              diag_found="true"
         elif [[ "$err_log" == *"Timeout"* ]]; then
-             echo -e "${RED}❌ 连接超时 (Timeout)${NC}"
-             echo -e "   ${GREEN}建议:${NC} 检查防火墙是否拦截了海外 IP (Let's Encrypt 服务器主要在海外)。"
+             echo -e "${RED}连接超时 (Timeout)${NC}"
+             echo -e "建议: 检查防火墙是否拦截了海外 IP (Let's Encrypt 服务器主要在海外)。"
              diag_found="true"
         elif [[ "$err_log" == *"404 Not Found"* ]]; then
-             echo -e "${RED}❌ 404 Not Found${NC}"
-             echo -e "   验证文件无法被访问。如果是 Standalone 模式，确保 80 端口未被其他服务占用。"
+             echo -e "${RED}404 Not Found${NC}"
+             echo -e "验证文件无法被访问。如果是 Standalone 模式，确保 80 端口未被其他服务占用。"
              diag_found="true"
         fi
 
@@ -645,7 +638,7 @@ _gather_project_details() {
 
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
-        domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
+        domain=$(_prompt_user_input_with_validation "主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
     
     local type="cert_only"
@@ -659,7 +652,7 @@ _gather_project_details() {
         [ "$name" == "证书" ] && name=""
         
         while true; do
-            local target=$(_prompt_user_input_with_validation "🔌 后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
+            local target=$(_prompt_user_input_with_validation "后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
             type="local_port"; port="$target"
             local is_docker="false"
             if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
@@ -669,7 +662,7 @@ _gather_project_details() {
                 exec 1>&2
                 is_docker="true"
                 if [ -z "$port" ]; then
-                    port=$(_prompt_user_input_with_validation "⚠️ 未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
+                    port=$(_prompt_user_input_with_validation "未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
                 fi
                 break
             fi
@@ -720,9 +713,9 @@ _gather_project_details() {
             1) method="http-01" 
                 if [ "$is_cert_only" == "false" ]; then log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2; fi ;;
             2) method="dns-01"; provider="dns_cf"
-                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
+                wildcard=$(_prompt_user_input_with_validation "申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
             3) method="dns-01"; provider="dns_ali"
-                wildcard=$(_prompt_user_input_with_validation "✨ 申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
+                wildcard=$(_prompt_user_input_with_validation "申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
             *) method="http-01" ;;
         esac
     fi
@@ -751,7 +744,12 @@ _gather_project_details() {
 
 _display_projects_list() {
     local json="${1:-}" 
-    if [ -z "$json" ]; then echo "暂无数据"; return; fi
+    if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
+    
+    # 打印表头
+    printf "${BOLD}%-4s | %-28s | %-22s | %-16s | %-12s${NC}\n" "ID" "Domain" "Target" "Status" "Renew"
+    echo "----------------------------------------------------------------------------------------------"
+    
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
         idx=$((idx + 1))
@@ -760,40 +758,44 @@ _display_projects_list() {
         local port=$(echo "$p" | jq -r '.resolved_port')
         local cert=$(echo "$p" | jq -r '.cert_file')
         
-        local info="本地端口: $port"
-        [ "$type" = "docker" ] && info="容器: $(echo "$p" | jq -r '.name') ($port)"
-        [ "$port" == "cert_only" ] && info="(纯证书模式)"
+        # 格式化目标列
+        local target_str="Port: $port"
+        [ "$type" = "docker" ] && target_str="Docker: $(echo "$p" | jq -r '.name')($port)"
+        [ "$port" == "cert_only" ] && target_str="Cert Only"
         
-        local status="${RED}缺失${NC}"
-        local details=""
-        local next_renew="自动/未知"
+        # 格式化状态与续期
+        local status_str="缺失"
+        local status_color="$RED"
+        local renew_date="-"
         
+        # 获取续期时间
         local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
         [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
         if [ -f "$conf_file" ]; then
             local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
             if [ -n "$next_ts" ]; then
-                next_renew=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
+                renew_date=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
             fi
         fi
 
+        # 获取证书状态
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (ts - $(date +%s)) / 86400 ))
             
-            if (( days < 0 )); then status="${RED}已过期${NC}";
-            elif (( days <= 30 )); then status="${YELLOW}即将到期${NC}";
-            else status="${GREEN}有效${NC}"; fi
-            details="(剩余 $days 天)"
+            if (( days < 0 )); then status_str="已过期($days)"; status_color="$RED"
+            elif (( days <= 30 )); then status_str="临期($days)"; status_color="$YELLOW"
+            else status_str="有效($days)"; status_color="$GREEN"
+            fi
         fi
         
-        printf "${GREEN}[ %d ] %s${NC}\n" "$idx" "$domain"
-        printf "  ├─ 🎯 目 标 : %s\n" "$info"
-        printf "  ├─ ⏱️ 续 期 : %s\n" "$next_renew"
-        echo -e "  └─ 📜 证 书 : ${status} ${details}"
-        echo -e "${CYAN}····························································${NC}"
+        # 打印行 (为防止颜色代码破坏对齐，状态列单独加色，其余纯文本)
+        # 截断过长字符串以保持表格整洁
+        printf "%-4d | %-28s | %-22s | ${status_color}%-16s${NC} | %-12s\n" \
+            "$idx" "${domain:0:28}" "${target_str:0:22}" "$status_str" "$renew_date"
     done
+    echo ""
 }
 
 _manage_cron_jobs() {
@@ -816,8 +818,8 @@ _manage_cron_jobs() {
     
     echo ""
     if [ "$is_installed" == "true" ]; then
-        echo -e "${YELLOW}ℹ️  检测到本脚本任务已存在。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否强制 🔄 重置/修复 定时任务配置?"; then
+        echo -e "${YELLOW}检测到本脚本任务已存在。${NC}"
+        if _confirm_action_or_exit_non_interactive "是否强制重置/修复定时任务配置?"; then
             crontab -l > /tmp/cron.bk 2>/dev/null || true
             grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
             echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
@@ -826,8 +828,8 @@ _manage_cron_jobs() {
             log_message SUCCESS "定时任务已重置。"
         fi
     else
-        echo -e "${YELLOW}💡 建议添加任务以确保证书自动续期 (<30天)。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否 ➕ 添加每日自动续期任务?"; then
+        echo -e "${YELLOW}建议添加任务以确保证书自动续期 (<30天)。${NC}"
+        if _confirm_action_or_exit_non_interactive "是否添加每日自动续期任务?"; then
             crontab -l > /tmp/cron.bk 2>/dev/null || true
             grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
             echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
@@ -859,15 +861,15 @@ manage_configs() {
         local selected_domain
         selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
         
-        _render_menu "Manage: $selected_domain" \
-            "1. 🔍 查看证书详情" \
-            "2. 🔄 手动续期" \
-            "3. 🗑️  删除项目" \
-            "4. 📝 查看配置" \
-            "5. 📊 查看日志" \
-            "6. ⚙️  重新配置" \
-            "7. ⚡ 设置上传大小限制 (Max Body Size)" \
-            "8. 🛠️  添加自定义 Nginx 配置 (Advanced)"
+        _render_menu "管理: $selected_domain" \
+            "1. 查看证书详情" \
+            "2. 手动续期" \
+            "3. 删除项目" \
+            "4. 查看配置" \
+            "5. 查看日志" \
+            "6. 重新配置" \
+            "7. 设置上传大小限制 (Max Body Size)" \
+            "8. 添加自定义 Nginx 配置 (Advanced)"
         
         case "$(_prompt_for_menu_choice_local "1-8")" in
             1) _handle_cert_details "$selected_domain" ;;
@@ -1037,19 +1039,19 @@ check_and_auto_renew_certs() {
         local d=$(echo "$p" | jq -r .domain)
         local f=$(echo "$p" | jq -r .cert_file)
         
-        echo -ne "🔎 检查: $d ... "
+        echo -ne "检查: $d ... "
         
         if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
-            echo -e "${YELLOW}⏳ 即将到期，开始续期...${NC}"
+            echo -e "${YELLOW}即将到期，开始续期...${NC}"
             if _issue_and_install_certificate "$p"; then 
                 success=$((success+1))
-                echo -e "   ${GREEN}✅ 续期成功${NC}"
+                echo -e "   ${GREEN}续期成功${NC}"
             else 
                 fail=$((fail+1))
-                echo -e "   ${RED}❌ 续期失败 (查看日志)${NC}"
+                echo -e "   ${RED}续期失败 (查看日志)${NC}"
             fi
         else
-            echo -e "${GREEN}✅ 有效期充足${NC}"
+            echo -e "${GREEN}有效期充足${NC}"
         fi
     done
     control_nginx reload
@@ -1061,7 +1063,7 @@ configure_nginx_projects() {
     local json
     
     echo ""
-    echo -e "${CYAN}🚀 开始配置新项目...${NC}"
+    echo -e "${CYAN}开始配置新项目...${NC}"
     
     if ! json=$(_gather_project_details "{}" "false" "$mode"); then
         log_message WARN "用户取消配置。"
@@ -1093,9 +1095,9 @@ configure_nginx_projects() {
     # 提示查看
     local domain=$(echo "$json" | jq -r .domain)
     if [ "$mode" != "cert_only" ]; then
-        echo -e "\n🎉 您的网站已上线: https://${domain}"
+        echo -e "\n您的网站已上线: https://${domain}"
     else
-        echo -e "\n🎉 证书已就绪: /etc/ssl/${domain}.cer"
+        echo -e "\n证书已就绪: /etc/ssl/${domain}.cer"
     fi
 }
 
@@ -1104,13 +1106,13 @@ main_menu() {
         local nginx_status="$(_get_nginx_status)"
         _render_menu "Nginx 证书与反代管理" \
             "1. ${nginx_status}" \
-            "2. 📝 仅申请证书 (Cert Only)" \
-            "3. 🚀 配置新项目 (New Project)" \
-            "4. 📂 项目管理 (Manage Projects)" \
-            "5. 🔄 批量续期 (Auto Renew All)" \
-            "6. 📜 查看 acme.sh 运行日志" \
-            "7. 📜 查看 Nginx 运行日志" \
-            "8. ⏰ 定时任务管理 (Cron)"
+            "2. 仅申请证书 (Cert Only)" \
+            "3. 配置新项目 (New Project)" \
+            "4. 项目管理 (Manage Projects)" \
+            "5. 批量续期 (Auto Renew All)" \
+            "6. 查看 acme.sh 运行日志" \
+            "7. 查看 Nginx 运行日志" \
+            "8. 定时任务管理 (Cron)"
             
         case "$(_prompt_for_menu_choice_local "1-8" "true")" in
             1) _restart_nginx_ui; press_enter_to_continue ;;
