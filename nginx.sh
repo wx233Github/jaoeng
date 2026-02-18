@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.2-完整最终版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.3-代码重构版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，UI 极致优化，功能全集
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复变量作用域与启动逻辑
 # 版本历史：
-#   v4.17.2 - 标题中文居中，移除清屏，补全所有核心函数
-#   v4.17.1 - 优化仪表盘 UI 为盒子风格，彻底移除 Emoji
+#   v4.17.3 - 修复变量污染，修正依赖检查顺序，优化居中算法
+#   v4.17.2 - 标题中文居中，移除清屏
 
 set -euo pipefail
 
@@ -52,6 +52,8 @@ log_message() {
         WARN)    echo -e "$(_log_prefix)${YELLOW}[WARN]${NC} ${message}" >&2;;
         ERROR)   echo -e "$(_log_prefix)${RED}[ERR]${NC}  ${message}" >&2;;
     esac
+    # 确保日志文件目录存在
+    mkdir -p "$(dirname "$LOG_FILE")"
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] [${level^^}] ${message}" >> "$LOG_FILE"
 }
 
@@ -73,8 +75,9 @@ _prompt_for_menu_choice_local() {
     done
 }
 
-generate_line() {
-    local len=${1:-40}; printf "%${len}s" "" | sed "s/ /─/g"
+_draw_line() {
+    local len="${1:-40}"
+    printf "%${len}s" "" | sed "s/ /─/g"
 }
 
 _strip_colors() {
@@ -91,6 +94,15 @@ _str_width() {
     fi
 }
 
+_center_text() {
+    local text="$1"
+    local width="$2"
+    local text_len=$(_str_width "$text")
+    local pad=$(( (width - text_len) / 2 ))
+    [[ $pad -lt 0 ]] && pad=0
+    printf "%${pad}s" ""
+}
+
 _render_menu() {
     local title="${1:-菜单}"; shift; 
     local title_vis_len=$(_str_width "$title")
@@ -101,12 +113,13 @@ _render_menu() {
     fi
 
     echo ""
-    echo -e "${GREEN}╭$(generate_line "$box_width")╮${NC}"
-    local pad_total=$((box_width - title_vis_len))
-    local pad_left=$((pad_total / 2))
-    local pad_right=$((pad_total - pad_left))
-    echo -e "${GREEN}│${NC}$(printf "%${pad_left}s" "")${BOLD}${title}${NC}$(printf "%${pad_right}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(generate_line "$box_width")╯${NC}"
+    echo -e "${GREEN}╭$(_draw_line "$box_width")╮${NC}"
+    local padding=$(_center_text "$title" "$box_width")
+    # 计算右侧补齐，确保对齐
+    local left_len=${#padding}
+    local right_len=$((box_width - left_len - title_vis_len))
+    echo -e "${GREEN}│${NC}${padding}${BOLD}${title}${NC}$(printf "%${right_len}s" "")${GREEN}│${NC}"
+    echo -e "${GREEN}╰$(_draw_line "$box_width")╯${NC}"
     
     for line in "$@"; do echo -e " ${line}"; done
 }
@@ -172,16 +185,8 @@ _detect_web_service() {
 }
 
 # ==============================================================================
-# SECTION: 环境初始化
+# SECTION: 环境初始化与依赖
 # ==============================================================================
-
-initialize_environment() {
-    ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
-    if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
-    export PATH="$(dirname "$ACME_BIN"):$PATH"
-    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR"
-    if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
-}
 
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
@@ -200,6 +205,19 @@ install_dependencies() {
     return 0
 }
 
+initialize_environment() {
+    # 依赖必须先于此函数满足，因为这里用到了 jq
+    ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
+    if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
+    export PATH="$(dirname "$ACME_BIN"):$PATH"
+    
+    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR"
+    
+    if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then 
+        echo "[]" > "$PROJECTS_METADATA_FILE"
+    fi
+}
+
 install_acme_sh() {
     if [ -f "$ACME_BIN" ]; then 
         "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
@@ -210,7 +228,10 @@ install_acme_sh() {
     local cmd="curl https://get.acme.sh | sh"
     [ -n "$email" ] && cmd+=" -s email=$email"
     if eval "$cmd"; then 
-        initialize_environment
+        # 安装后重新定位
+        ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
+        if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
+        
         "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
         crontab -l | sed "s| > /dev/null| >> $LOG_FILE 2>\&1|g" | crontab -
         log_message SUCCESS "acme.sh 安装成功 (已开启自动更新)。"
@@ -224,11 +245,6 @@ control_nginx() {
     if ! nginx -t >/dev/null 2>&1; then log_message ERROR "Nginx 配置错误"; nginx -t; return 1; fi
     systemctl "$action" nginx || { log_message ERROR "Nginx $action 失败"; return 1; }
     return 0
-}
-
-_restart_nginx_ui() {
-    log_message INFO "正在重启 Nginx..."
-    if control_nginx restart; then log_message SUCCESS "Nginx 重启成功。"; fi
 }
 
 _view_file_with_tail() {
@@ -891,18 +907,18 @@ _draw_dashboard() {
     fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
 
-    # 标题居中算法: 标题内容 "Nginx 管理面板 v4.17.2"
+    # 标题居中算法: 标题内容 "Nginx 管理面板 v4.17.3"
     # 中文占2宽，英文1宽。
-    # "Nginx "(6) + "管理面板"(8) + " v4.17.2"(8) = 22 display width
+    # "Nginx "(6) + "管理面板"(8) + " v4.17.3"(8) = 22 display width
     # 左右 padding = (72 - 22) / 2 = 25
-    local title="Nginx 管理面板 v4.17.2"
+    local title="Nginx 管理面板 v4.17.3"
     local pad_len=25
     
     echo ""
     # 标题盒子区
-    echo -e "${GREEN}╭$(printf "%${width}s" "" | sed "s/ /─/g")╮${NC}"
+    echo -e "${GREEN}╭$(_draw_line "$width")╮${NC}"
     echo -e "${GREEN}│${NC}$(printf "%${pad_len}s" "")${BOLD}${title}${NC}$(printf "%${pad_len}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(printf "%${width}s" "" | sed "s/ /─/g")╯${NC}"
+    echo -e "${GREEN}╰$(_draw_line "$width")╯${NC}"
     
     # 信息展示区 (不画左右竖线，防止对齐错乱)
     echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC}"
@@ -910,7 +926,7 @@ _draw_dashboard() {
     echo -e " 项目 : ${BOLD}${count}${NC} | 告警 : ${RED}${warn_count}${NC} | 路径 : ${NGINX_SITES_ENABLED_DIR}"
     
     # 底部长横线
-    echo -e "${GREEN}$(printf "%$((width + 2))s" "" | sed "s/ /─/g")${NC}"
+    echo -e "${GREEN}$(_draw_line "$((width + 2))")${NC}"
 }
 
 manage_configs() {
@@ -1220,9 +1236,12 @@ main_menu() {
 
 trap '_on_exit' INT TERM
 if ! check_root; then exit 1; fi
+
+# Fix: 先检查依赖，后初始化 (因为 initialize_environment 依赖 jq)
+install_dependencies 
 initialize_environment
 
 if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; exit $?; fi
 
-install_dependencies && install_acme_sh && main_menu
+install_acme_sh && main_menu
 exit $?
