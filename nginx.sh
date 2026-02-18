@@ -1,9 +1,10 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.0-高级配置版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.1-健壮性修复版)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持自定义上传限制
 # 版本历史：
+#   v4.15.1 - 修复严格模式下的 unbound variable 变量异常，增强数据校验
 #   v4.15.0 - 新增 client_max_body_size 持久化配置功能
 #   v4.14.0 - 新增 IPv6/CDN/防火墙 智能诊断
 
@@ -44,7 +45,8 @@ _log_prefix() {
 }
 
 log_message() {
-    local level="$1" message="$2"
+    local level="${1:-INFO}"
+    local message="${2:-}"
     case "$level" in
         INFO)    echo -e "$(_log_prefix)${CYAN}ℹ️  [信息]${NC} ${message}";;
         SUCCESS) echo -e "$(_log_prefix)${GREEN}✅ [成功]${NC} ${message}";;
@@ -57,7 +59,7 @@ log_message() {
 press_enter_to_continue() { read -r -p "$(echo -e "\n${YELLOW}⌨️  按 Enter 键继续...${NC}")" < /dev/tty; }
 
 _prompt_for_menu_choice_local() {
-    local range="$1"
+    local range="${1:-}"
     local allow_empty="${2:-false}"
     local prompt_text="${ORANGE}👉 选项 [${range}]${NC} (↩ 返回): "
     local choice
@@ -77,11 +79,11 @@ generate_line() {
 }
 
 _strip_colors() {
-    echo -e "$1" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
+    echo -e "${1:-}" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
 }
 
 _str_width() {
-    local str="$1"
+    local str="${1:-}"
     local clean="$(_strip_colors "$str")"
     if command -v wc >/dev/null 2>&1; then
         echo -n "$clean" | wc -L
@@ -91,7 +93,7 @@ _str_width() {
 }
 
 _render_menu() {
-    local title="$1"; shift; 
+    local title="${1:-}"; shift; 
     local title_vis_len=$(_str_width "$title")
     local min_width=42
     local box_width=$min_width
@@ -131,14 +133,14 @@ get_vps_ip() {
 }
 
 _prompt_user_input_with_validation() {
-    local prompt="$1" default="$2" regex="$3" error_msg="$4" allow_empty="${5:-false}" val=""
+    local prompt="${1:-}" default="${2:-}" regex="${3:-}" error_msg="${4:-}" allow_empty="${5:-false}" val=""
     while true; do
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
             local disp=""
             if [ -n "$default" ]; then disp=" [默认: ${default}]"
             fi
             echo -ne "${YELLOW}🔹 ${prompt}${NC}${disp}: " >&2
-            read -r val
+            read -r val || val=""
             val=${val:-$default}
         else
             val="$default"
@@ -156,10 +158,10 @@ _prompt_user_input_with_validation() {
 
 _confirm_action_or_exit_non_interactive() {
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        local c; read -r -p "$(echo -e "${YELLOW}❓ $1 ([y]/n): ${NC}")" c < /dev/tty
+        local c; read -r -p "$(echo -e "${YELLOW}❓ ${1:-} ([y]/n): ${NC}")" c < /dev/tty
         case "$c" in n|N) return 1;; *) return 0;; esac
     fi
-    log_message ERROR "非交互需确认: '$1'，已取消。"; return 1
+    log_message ERROR "非交互需确认: '${1:-}'，已取消。"; return 1
 }
 
 _detect_web_service() {
@@ -219,7 +221,7 @@ install_acme_sh() {
 }
 
 control_nginx() {
-    local action="$1"
+    local action="${1:-}"
     if ! nginx -t >/dev/null 2>&1; then log_message ERROR "Nginx 配置错误"; nginx -t; return 1; fi
     systemctl "$action" nginx || { log_message ERROR "Nginx $action 失败"; return 1; }
     return 0
@@ -239,7 +241,7 @@ _restart_nginx_ui() {
 }
 
 _view_file_with_tail() {
-    local file="$1"
+    local file="${1:-}"
     if [ ! -f "$file" ]; then
         log_message ERROR "文件不存在: $file"
         return
@@ -289,7 +291,7 @@ _view_nginx_global_log() {
 }
 
 _view_project_access_log() {
-    local domain="$1"
+    local domain="${1:-}"
     if [ ! -f "$NGINX_ACCESS_LOG" ]; then
         log_message ERROR "全局访问日志不存在: $NGINX_ACCESS_LOG"
         return
@@ -306,32 +308,54 @@ _view_project_access_log() {
 # SECTION: 数据与文件管理
 # ==============================================================================
 
-_get_project_json() { jq -c ".[] | select(.domain == \"$1\")" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""; }
+_get_project_json() { 
+    jq -c ".[] | select(.domain == \"${1:-}\")" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""
+}
 
 _save_project_json() {
-    local json="$1" domain=$(echo "$json" | jq -r .domain) temp=$(mktemp)
-    if [ -n "$(_get_project_json "$domain")" ]; then
-        jq "(.[] | select(.domain == \"$domain\")) = $json" "$PROJECTS_METADATA_FILE" > "$temp"
-    else
-        jq ". + [$json]" "$PROJECTS_METADATA_FILE" > "$temp"
+    local json="${1:-}"
+    if [ -z "$json" ] || [ "$json" == "null" ]; then
+        log_message ERROR "保存配置失败：JSON 数据为空。"
+        return 1
     fi
-    if [ $? -eq 0 ]; then mv "$temp" "$PROJECTS_METADATA_FILE"; return 0; else rm -f "$temp"; return 1; fi
+    local domain
+    domain=$(echo "$json" | jq -r '.domain // empty' 2>/dev/null || true)
+    if [ -z "$domain" ]; then
+        log_message ERROR "保存配置失败：无法从 JSON 中解析域名。"
+        return 1
+    fi
+
+    local temp
+    temp=$(mktemp)
+    if [ -n "$(_get_project_json "$domain")" ]; then
+        jq "(.[] | select(.domain == \"$domain\")) = $json" "$PROJECTS_METADATA_FILE" > "$temp" || { rm -f "$temp"; return 1; }
+    else
+        jq ". + [$json]" "$PROJECTS_METADATA_FILE" > "$temp" || { rm -f "$temp"; return 1; }
+    fi
+    mv "$temp" "$PROJECTS_METADATA_FILE"
+    return 0
 }
 
 _delete_project_json() {
     local temp=$(mktemp)
-    jq "del(.[] | select(.domain == \"$1\"))" "$PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$PROJECTS_METADATA_FILE"
+    jq "del(.[] | select(.domain == \"${1:-}\"))" "$PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$PROJECTS_METADATA_FILE"
 }
 
 _write_and_enable_nginx_config() {
-    local domain="$1" json="$2" conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
-    local port=$(echo "$json" | jq -r .resolved_port)
+    local domain="${1:-}" 
+    local json="${2:-}"
+    if [ -z "$domain" ] || [ -z "$json" ]; then
+        log_message ERROR "生成配置失败：缺少关键参数。"
+        return 1
+    fi
+    
+    local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
+    local port=$(echo "$json" | jq -r '.resolved_port // empty' 2>/dev/null || true)
     if [ "$port" == "cert_only" ]; then return 0; fi
 
-    local cert=$(echo "$json" | jq -r .cert_file)
-    local key=$(echo "$json" | jq -r .key_file)
-    # 新增: 读取上传大小限制
-    local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
+    local cert=$(echo "$json" | jq -r '.cert_file // empty' 2>/dev/null || true)
+    local key=$(echo "$json" | jq -r '.key_file // empty' 2>/dev/null || true)
+    local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty' 2>/dev/null || true)
 
     if [[ -z "$port" || "$port" == "null" ]]; then
         log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
@@ -339,11 +363,6 @@ _write_and_enable_nginx_config() {
     fi
 
     get_vps_ip
-
-    if [ -z "${domain:-}" ]; then
-        log_message ERROR "内部错误：生成配置时域名未定义。"
-        return 1
-    fi
 
     cat > "$conf" << EOF
 server {
@@ -386,11 +405,11 @@ EOF
 }
 
 _remove_and_disable_nginx_config() {
-    rm -f "$NGINX_SITES_AVAILABLE_DIR/$1.conf" "$NGINX_SITES_ENABLED_DIR/$1.conf"
+    rm -f "$NGINX_SITES_AVAILABLE_DIR/${1:-}.conf" "$NGINX_SITES_ENABLED_DIR/${1:-}.conf"
 }
 
 _view_nginx_config() {
-    local domain="$1"
+    local domain="${1:-}"
     local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     if [ ! -f "$conf" ]; then
         log_message WARN "此项目未生成 Nginx 配置文件 (可能是纯证书模式)。"
@@ -407,7 +426,7 @@ _view_nginx_config() {
 # ==============================================================================
 
 _get_cert_files() {
-    local domain="$1"
+    local domain="${1:-}"
     CERT_FILE="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
     CONF_FILE="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
     if [ ! -f "$CERT_FILE" ]; then
@@ -417,22 +436,22 @@ _get_cert_files() {
 }
 
 _issue_and_install_certificate() {
-    local json="$1"
+    local json="${1:-}"
     if [[ -z "$json" ]] || [[ "$json" == "null" ]]; then
         log_message WARN "未收到有效配置信息，流程中止。"
         return 1
     fi
 
-    local domain=$(echo "$json" | jq -r .domain)
+    local domain=$(echo "$json" | jq -r '.domain // empty' 2>/dev/null || true)
     if [[ -z "$domain" || "$domain" == "null" ]]; then
         log_message ERROR "内部错误: 域名为空。"
         return 1
     fi
 
-    local method=$(echo "$json" | jq -r .acme_validation_method)
-    local provider=$(echo "$json" | jq -r .dns_api_provider)
-    local wildcard=$(echo "$json" | jq -r .use_wildcard)
-    local ca=$(echo "$json" | jq -r .ca_server_url)
+    local method=$(echo "$json" | jq -r '.acme_validation_method // empty' 2>/dev/null || true)
+    local provider=$(echo "$json" | jq -r '.dns_api_provider // empty' 2>/dev/null || true)
+    local wildcard=$(echo "$json" | jq -r '.use_wildcard // empty' 2>/dev/null || true)
+    local ca=$(echo "$json" | jq -r '.ca_server_url // empty' 2>/dev/null || true)
     
     local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
     local key="$SSL_CERTS_BASE_DIR/$domain.key"
@@ -446,18 +465,18 @@ _issue_and_install_certificate() {
         if [ "$provider" = "dns_cf" ]; then
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
                 log_message INFO "🔐 请输入 Cloudflare Token (仅内存暂存)"
-                local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local def_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local t=$(_prompt_user_input_with_validation "CF_Token" "$def_t" "" "不能为空" "false")
-                local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local def_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local a=$(_prompt_user_input_with_validation "Account_ID" "$def_a" "" "不能为空" "false")
                 export CF_Token="$t" CF_Account_ID="$a"
             fi
         elif [ "$provider" = "dns_ali" ]; then
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
                 log_message INFO "🔐 请输入 Aliyun Key (仅内存暂存)"
-                local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local def_k=$(grep "^SAVED_Ali_Key=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local k=$(_prompt_user_input_with_validation "Ali_Key" "$def_k" "" "不能为空" "false")
-                local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"")
+                local def_s=$(grep "^SAVED_Ali_Secret=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local s=$(_prompt_user_input_with_validation "Ali_Secret" "$def_s" "" "不能为空" "false")
                 export Ali_Key="$k" Ali_Secret="$s"
             fi
@@ -527,7 +546,7 @@ _issue_and_install_certificate() {
             if _confirm_action_or_exit_non_interactive "是否切换 CA 到 Let's Encrypt 并重试?"; then
                 log_message INFO "正在切换默认 CA ..."
                 "$ACME_BIN" --set-default-ca --server letsencrypt
-                json=$(echo "$json" | jq '.ca_server_url = "https://acme-v02.api.letsencrypt.org/directory"')
+                json=$(echo "$json" | jq '.ca_server_url = "https://acme-v02.api.letsencrypt.org/directory"' 2>/dev/null || true)
                 log_message INFO "正在重试申请..."
                 _issue_and_install_certificate "$json"
                 return $?
@@ -538,7 +557,6 @@ _issue_and_install_certificate() {
         echo -e "\n${YELLOW}🔍 --- 智能故障诊断助手 ---${NC}"
         local diag_found="false"
 
-        # 1. 检测 IPv6 (AAAA) 干扰
         if command -v dig >/dev/null; then
             local aaaa_rec=$(dig AAAA +short "$domain" 2>/dev/null | head -n 1)
             if [ -n "$aaaa_rec" ]; then
@@ -549,7 +567,6 @@ _issue_and_install_certificate() {
             fi
         fi
 
-        # 2. 检测 CDN (Cloudflare)
         if [[ "$err_log" == *"Cloudflare"* ]] || (command -v dig >/dev/null && dig +short "$domain" | grep -qE "^172\.|^104\."); then
             echo -e "${ORANGE}👉 检测到 Cloudflare CDN 特征${NC}"
             echo -e "   HTTP-01 验证无法穿透 CDN 防护模式。"
@@ -557,7 +574,6 @@ _issue_and_install_certificate() {
             diag_found="true"
         fi
 
-        # 3. 具体错误日志分析
         if [[ "$err_log" == *"Connection refused"* ]]; then
              echo -e "${RED}❌ 连接被拒绝 (Connection refused)${NC}"
              echo -e "   ${GREEN}建议:${NC} 检查 80 端口是否开放 (ufw/安全组)，或 Nginx 是否正在运行。"
@@ -612,7 +628,7 @@ _gather_project_details() {
     local is_cert_only="false"
     if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
 
-    local domain=$(echo "$cur" | jq -r '.domain // ""')
+    local domain=$(echo "$cur" | jq -r '.domain // empty' 2>/dev/null || true)
     if [ -z "$domain" ]; then
         domain=$(_prompt_user_input_with_validation "🌐 主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
     fi
@@ -620,10 +636,10 @@ _gather_project_details() {
     local type="cert_only"
     local name="证书"
     local port="cert_only"
-    local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty')
+    local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty' 2>/dev/null || true)
 
     if [ "$is_cert_only" == "false" ]; then
-        name=$(echo "$cur" | jq -r '.name // ""')
+        name=$(echo "$cur" | jq -r '.name // empty' 2>/dev/null || true)
         [ "$name" == "证书" ] && name=""
         
         while true; do
@@ -653,11 +669,11 @@ _gather_project_details() {
     local ca_name="letsencrypt"
 
     if [ "$skip_cert" == "true" ]; then
-        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
-        provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
-        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
-        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
-        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
+        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"' 2>/dev/null || true)
+        provider=$(echo "$cur" | jq -r '.dns_api_provider // empty' 2>/dev/null || true)
+        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"' 2>/dev/null || true)
+        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"' 2>/dev/null || true)
+        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"' 2>/dev/null || true)
     else
         local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
         _render_menu "选择 CA 机构" "${ca_list[@]}"
@@ -717,16 +733,17 @@ _gather_project_details() {
 }
 
 _display_projects_list() {
-    local json="$1" idx=0
+    local json="${1:-}" 
+    local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
         idx=$((idx + 1))
-        local domain=$(echo "$p" | jq -r '.domain // "未知"')
-        local type=$(echo "$p" | jq -r '.type')
-        local port=$(echo "$p" | jq -r '.resolved_port')
-        local cert=$(echo "$p" | jq -r '.cert_file')
+        local domain=$(echo "$p" | jq -r '.domain // "未知"' 2>/dev/null || true)
+        local type=$(echo "$p" | jq -r '.type // empty' 2>/dev/null || true)
+        local port=$(echo "$p" | jq -r '.resolved_port // empty' 2>/dev/null || true)
+        local cert=$(echo "$p" | jq -r '.cert_file // empty' 2>/dev/null || true)
         
         local info="本地端口: $port"
-        [ "$type" = "docker" ] && info="容器: $(echo "$p" | jq -r '.name') ($port)"
+        [ "$type" = "docker" ] && info="容器: $(echo "$p" | jq -r '.name // empty' 2>/dev/null || true) ($port)"
         [ "$port" == "cert_only" ] && info="(纯证书模式)"
         
         local status="${RED}缺失${NC}"
@@ -736,14 +753,14 @@ _display_projects_list() {
         local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
         [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
         if [ -f "$conf_file" ]; then
-            local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
+            local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"" || true)
             if [ -n "$next_ts" ]; then
                 next_renew=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
             fi
         fi
 
         if [[ -f "$cert" ]]; then
-            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
+            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2 || true)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (ts - $(date +%s)) / 86400 ))
             
@@ -805,8 +822,8 @@ _manage_cron_jobs() {
 
 manage_configs() {
     while true; do
-        local all=$(jq . "$PROJECTS_METADATA_FILE")
-        local count=$(echo "$all" | jq 'length')
+        local all=$(jq . "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]")
+        local count=$(echo "$all" | jq 'length' 2>/dev/null || echo "0")
         if [ "$count" -eq 0 ]; then
             log_message WARN "暂无项目。"
             break
@@ -822,8 +839,13 @@ manage_configs() {
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         
         local selected_domain
-        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
+        selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain" 2>/dev/null || true)
         
+        if [ -z "$selected_domain" ] || [ "$selected_domain" == "null" ]; then
+            log_message ERROR "解析域名失败。"
+            continue
+        fi
+
         _render_menu "Manage: $selected_domain" \
             "1. 🔍 查看证书详情" \
             "2. 🔄 手动续期" \
@@ -849,17 +871,17 @@ manage_configs() {
 }
 
 _handle_renew_cert() {
-    local d="$1"
+    local d="${1:-}"
     local p=$(_get_project_json "$d")
     [ -z "$p" ] && { log_message ERROR "项目不存在"; return; }
     _issue_and_install_certificate "$p" && control_nginx reload
 }
 
 _handle_delete_project() {
-    local d="$1"
+    local d="${1:-}"
     if _confirm_action_or_exit_non_interactive "确认彻底删除 $d 及其证书？"; then
         _remove_and_disable_nginx_config "$d"
-        "$ACME_BIN" --remove -d "$d" --ecc >/dev/null 2>&1
+        "$ACME_BIN" --remove -d "$d" --ecc >/dev/null 2>&1 || true
         rm -f "$SSL_CERTS_BASE_DIR/$d.cer" "$SSL_CERTS_BASE_DIR/$d.key"
         _delete_project_json "$d"
         control_nginx reload
@@ -867,16 +889,16 @@ _handle_delete_project() {
 }
 
 _handle_view_config() {
-    local d="$1"
+    local d="${1:-}"
     _view_nginx_config "$d"
 }
 
 _handle_reconfigure_project() {
-    local d="$1"
+    local d="${1:-}"
     local cur=$(_get_project_json "$d")
     log_message INFO "正在重配 $d ..."
     
-    local port=$(echo "$cur" | jq -r .resolved_port)
+    local port=$(echo "$cur" | jq -r '.resolved_port // empty' 2>/dev/null || true)
     local mode=""
     [ "$port" == "cert_only" ] && mode="cert_only"
 
@@ -907,35 +929,51 @@ _handle_reconfigure_project() {
 }
 
 _handle_set_max_body_size() {
-    local d="$1"
-    local cur=$(_get_project_json "$d")
-    local current_val=$(echo "$cur" | jq -r '.client_max_body_size // "默认(1m)"')
+    local d="${1:-}"
+    local cur
+    cur=$(_get_project_json "$d")
+    
+    if [ -z "$cur" ] || [ "$cur" == "null" ]; then
+        log_message ERROR "未能读取项目配置元数据。"
+        return 1
+    fi
+
+    local current_val
+    current_val=$(echo "$cur" | jq -r '.client_max_body_size // "默认(1m)"' 2>/dev/null || true)
     
     echo ""
     echo -e "${CYAN}当前设置: $current_val${NC}"
     echo "请输入新的限制大小 (例如: 10m, 500m, 1g)。"
     echo "直接回车 = 不修改; 输入 'default' = 恢复 Nginx 默认(1m)"
     
-    local new_val=$(_prompt_user_input_with_validation "限制大小" "" "^[0-9]+[kKmMgG]$|^default$" "格式错误 (示例: 10m)" "true")
+    local new_val
+    new_val=$(_prompt_user_input_with_validation "限制大小" "" "^[0-9]+[kKmMgG]$|^default$" "格式错误 (示例: 10m)" "true")
     
-    if [ -z "$new_val" ]; then return; fi
+    if [ -z "$new_val" ]; then return 0; fi
     
-    local json_val="$new_val"
-    if [ "$new_val" == "default" ]; then json_val=""; fi
+    local new_json
+    if [ "$new_val" == "default" ]; then
+        new_json=$(echo "$cur" | jq -c 'del(.client_max_body_size)' 2>/dev/null || true)
+    else
+        new_json=$(echo "$cur" | jq -c --arg v "$new_val" '.client_max_body_size = $v' 2>/dev/null || true)
+    fi
     
-    local new_json=$(echo "$cur" | jq --arg v "$json_val" '.client_max_body_size = $v')
+    if [ -z "$new_json" ] || [ "$new_json" == "null" ]; then
+        log_message ERROR "处理 JSON 元数据失败，保存被拦截。"
+        return 1
+    fi
     
     if _save_project_json "$new_json"; then
         _write_and_enable_nginx_config "$d" "$new_json"
         control_nginx reload
-        log_message SUCCESS "已更新 $d 的上传限制 -> ${json_val:-默认}。"
+        log_message SUCCESS "已更新 $d 的上传限制 -> ${new_val}。"
     else
         log_message ERROR "保存配置失败。"
     fi
 }
 
 _handle_cert_details() {
-    local d="$1"
+    local d="${1:-}"
     local cert="$SSL_CERTS_BASE_DIR/$d.cer"
     if [ -f "$cert" ]; then
         echo -e "${CYAN}--- 证书详情 ($d) ---${NC}"
@@ -950,13 +988,14 @@ check_and_auto_renew_certs() {
     log_message INFO "正在检查所有证书..."
     local success=0 fail=0
     
-    jq -c '.[]' "$PROJECTS_METADATA_FILE" | while read -r p; do
-        local d=$(echo "$p" | jq -r .domain)
-        local f=$(echo "$p" | jq -r .cert_file)
+    jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null | while read -r p; do
+        local d=$(echo "$p" | jq -r '.domain // empty' 2>/dev/null || true)
+        local f=$(echo "$p" | jq -r '.cert_file // empty' 2>/dev/null || true)
         
+        if [ -z "$d" ]; then continue; fi
         echo -ne "🔎 检查: $d ... "
         
-        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f"; then
+        if [ ! -f "$f" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$f" 2>/dev/null; then
             echo -e "${YELLOW}⏳ 即将到期，开始续期...${NC}"
             if _issue_and_install_certificate "$p"; then 
                 success=$((success+1))
@@ -975,7 +1014,7 @@ check_and_auto_renew_certs() {
 
 configure_nginx_projects() {
     local mode="${1:-standard}" # standard or cert_only
-    local json
+    local json=""
     
     echo ""
     echo -e "${CYAN}🚀 开始配置新项目...${NC}"
@@ -985,15 +1024,13 @@ configure_nginx_projects() {
         return
     fi
     
-    # 申请证书
     if ! _issue_and_install_certificate "$json"; then
         log_message ERROR "证书申请失败，项目未保存。"
         return
     fi
     
-    # 如果不是纯证书模式，生成 Nginx 配置
     if [ "$mode" != "cert_only" ]; then
-        local domain=$(echo "$json" | jq -r .domain)
+        local domain=$(echo "$json" | jq -r '.domain // empty' 2>/dev/null || true)
         if _write_and_enable_nginx_config "$domain" "$json"; then
             control_nginx reload
             log_message SUCCESS "Nginx 配置已生成并加载。"
@@ -1003,12 +1040,10 @@ configure_nginx_projects() {
         fi
     fi
     
-    # 保存元数据
     _save_project_json "$json"
     log_message SUCCESS "项目配置已保存。"
     
-    # 提示查看
-    local domain=$(echo "$json" | jq -r .domain)
+    local domain=$(echo "$json" | jq -r '.domain // empty' 2>/dev/null || true)
     if [ "$mode" != "cert_only" ]; then
         echo -e "\n🎉 您的网站已上线: https://${domain}"
     else
