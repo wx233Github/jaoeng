@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.3-自动修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.5-精简修正版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，自动修复重复配置数据
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复配置写入失败问题
 # 版本历史：
-#   v4.15.3 - 新增 projects.json 自动去重修复功能
-#   v4.15.2 - 修复 save_json 函数中的 jq 语法错误
+#   v4.15.5 - 修复 Nginx 配置文件中上传限制参数缺失的问题，移除冗余
+#   v4.15.4 - 移除自动修复逻辑
 
 set -euo pipefail
 
@@ -174,38 +174,12 @@ _detect_web_service() {
 # SECTION: 环境初始化
 # ==============================================================================
 
-_fix_duplicate_projects() {
-    if [ ! -s "$PROJECTS_METADATA_FILE" ]; then return 0; fi
-    
-    # 检查是否有重复域名
-    local has_dup
-    has_dup=$(jq -r 'group_by(.domain) | map(select(length > 1)) | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "0")
-    
-    if [ "$has_dup" != "0" ]; then
-        log_message WARN "检测到配置文件存在重复项目，正在自动修复..."
-        cp "$PROJECTS_METADATA_FILE" "${PROJECTS_METADATA_FILE}.bak.$(date +%s)"
-        
-        local temp=$(mktemp)
-        # 按域名分组，取最后一个（最新的），然后重新输出为数组
-        if jq 'group_by(.domain) | map(last)' "$PROJECTS_METADATA_FILE" > "$temp"; then
-            mv "$temp" "$PROJECTS_METADATA_FILE"
-            log_message SUCCESS "重复项目已清理，保留了最新配置。"
-        else
-            log_message ERROR "自动修复失败，请手动检查 $PROJECTS_METADATA_FILE"
-            rm -f "$temp"
-        fi
-    fi
-}
-
 initialize_environment() {
     ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR"
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
-    
-    # 执行自动去重
-    _fix_duplicate_projects
 }
 
 install_dependencies() {
@@ -372,7 +346,15 @@ _write_and_enable_nginx_config() {
 
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
+    
+    # 修复: 明确提取 max_body，若为 null/空则置为空字符串
     local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
+    
+    # 修复: 预先计算配置字符串，防止 cat 块内逻辑失效
+    local body_cfg=""
+    if [[ -n "$max_body" && "$max_body" != "null" ]]; then
+        body_cfg="client_max_body_size ${max_body};"
+    fi
 
     if [[ -z "$port" || "$port" == "null" ]]; then
         log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
@@ -405,7 +387,7 @@ server {
     add_header Strict-Transport-Security "max-age=31536000;" always;
 
     # 用户自定义配置
-    $( [[ -n "$max_body" ]] && echo "client_max_body_size ${max_body};" )
+    ${body_cfg}
 
     location / {
         proxy_pass http://127.0.0.1:${port};
