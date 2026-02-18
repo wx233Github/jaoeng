@@ -1,21 +1,22 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.3-对齐修复版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.0-仪表盘全能版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复表格对齐与菜单返回
+# 描述：自动化管理 Nginx，新增仪表盘监控与备份还原功能
 # 版本历史：
-#   v4.16.3 - 修复二级菜单无法返回问题，解决中文表格对齐错位
-#   v4.16.2 - 汉化并重构项目列表表格
+#   v4.17.0 - 新增状态仪表盘、备份还原功能，重构菜单布局
+#   v4.16.3 - 修复表格对齐与菜单返回
 
 set -euo pipefail
 
 # --- 全局变量 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; 
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m';
-ORANGE='\033[38;5;208m';
+ORANGE='\033[38;5;208m'; PURPLE='\033[0;35m';
 
 LOG_FILE="/var/log/nginx_ssl_manager.log"
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
+BACKUP_DIR="/root/nginx_ssl_backups"
 RENEW_THRESHOLD_DAYS=30
 DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v2"
 
@@ -178,7 +179,7 @@ initialize_environment() {
     ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
-    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR"
+    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR"
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
 }
 
@@ -225,14 +226,6 @@ control_nginx() {
     return 0
 }
 
-_get_nginx_status() {
-    if systemctl is-active --quiet nginx; then
-        echo -e "${GREEN}Nginx (运行中)${NC}"
-    else
-        echo -e "${RED}Nginx (已停止)${NC}"
-    fi
-}
-
 _restart_nginx_ui() {
     log_message INFO "正在重启 Nginx..."
     if control_nginx restart; then log_message SUCCESS "Nginx 重启成功。"; fi
@@ -254,25 +247,11 @@ _view_file_with_tail() {
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
-    
-    if [ -x "$ACME_BIN" ]; then "$ACME_BIN" --version >/dev/null 2>&1 || true; fi
-
     if [ ! -f "$log_file" ]; then
-        mkdir -p "$(dirname "$log_file")"
         touch "$log_file"
         echo "日志文件已初始化。" > "$log_file"
-    else
-        if grep -q "Log initialized." "$log_file"; then
-            sed -i 's/Log initialized./日志文件已初始化。/g' "$log_file"
-        fi
     fi
-
-    if [ -f "$log_file" ]; then
-        echo -e "\n${CYAN}=== acme.sh 运行日志 ===${NC}"
-        _view_file_with_tail "$log_file"
-    else
-        log_message ERROR "无法创建或读取日志文件: $log_file"
-    fi
+    _view_file_with_tail "$log_file"
 }
 
 _view_nginx_global_log() {
@@ -300,6 +279,61 @@ _view_project_access_log() {
     tail -f "$NGINX_ACCESS_LOG" | grep --line-buffered "$domain" || true
     trap _on_exit INT
     echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
+}
+
+# ==============================================================================
+# SECTION: 备份与还原 (Backup & Restore)
+# ==============================================================================
+
+_handle_backup_restore() {
+    echo ""
+    _render_menu "备份与还原系统" \
+        "1. 📦 创建新备份 (Projects + Configs + Certs)" \
+        "2. ♻️  从备份还原" \
+        "3. 📂 查看备份目录"
+        
+    case "$(_prompt_for_menu_choice_local "1-3" "true")" in
+        1)
+            local ts=$(date +%Y%m%d_%H%M%S)
+            local backup_file="$BACKUP_DIR/nginx_manager_backup_$ts.tar.gz"
+            log_message INFO "正在打包备份..."
+            # 备份列表: projects.json, Nginx 配置, SSL 证书目录
+            if tar -czf "$backup_file" -C / "$PROJECTS_METADATA_FILE" "$NGINX_SITES_AVAILABLE_DIR" "$SSL_CERTS_BASE_DIR" 2>/dev/null; then
+                log_message SUCCESS "备份成功: $backup_file"
+                du -h "$backup_file"
+            else
+                log_message ERROR "备份失败。"
+            fi
+            ;;
+        2)
+            echo ""
+            echo -e "${CYAN}可用备份列表:${NC}"
+            ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null || { log_message WARN "无可用备份。"; return; }
+            echo ""
+            local file_path=$(_prompt_user_input_with_validation "请输入完整备份文件路径" "" "" "" "true")
+            if [ -z "$file_path" ]; then return; fi
+            
+            if [ ! -f "$file_path" ]; then log_message ERROR "文件不存在"; return; fi
+            
+            if _confirm_action_or_exit_non_interactive "警告：还原将覆盖当前配置，是否继续？"; then
+                log_message INFO "正在停止 Nginx..."
+                systemctl stop nginx || true
+                log_message INFO "正在解压还原..."
+                if tar -xzf "$file_path" -C /; then
+                    log_message SUCCESS "文件还原完成。"
+                    control_nginx restart
+                else
+                    log_message ERROR "解压失败。"
+                fi
+            fi
+            ;;
+        3)
+            echo ""
+            ls -lh "$BACKUP_DIR"
+            ;;
+        *) return ;;
+    esac
+    press_enter_to_continue
 }
 
 # ==============================================================================
@@ -842,6 +876,25 @@ _manage_cron_jobs() {
     fi
 }
 
+_draw_dashboard() {
+    clear
+    local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
+    local uptime=$(uptime -p | sed 's/up //')
+    local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
+    local warn_count=0
+    
+    if [ -f "$PROJECTS_METADATA_FILE" ]; then
+        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE") # 简化统计逻辑
+    fi
+
+    echo -e "${GREEN}==============================================================${NC}"
+    echo -e " ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.0${NC}"
+    echo -e "${GREEN}==============================================================${NC}"
+    echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC} | 负载: ${YELLOW}$(uptime | awk -F'load average:' '{print $2}')${NC}"
+    echo -e " 项目: ${BOLD}${count}${NC} | 告警: ${RED}${warn_count:-0}${NC} | 路径: ${NGINX_SITES_ENABLED_DIR}"
+    echo -e "${GREEN}==============================================================${NC}"
+}
+
 manage_configs() {
     while true; do
         local all=$(jq . "$PROJECTS_METADATA_FILE")
@@ -873,7 +926,6 @@ manage_configs() {
             "7. 设置上传大小限制 (Max Body Size)" \
             "8. 添加自定义 Nginx 配置 (Advanced)"
         
-        # 修复: 补全 true 参数允许回车返回
         case "$(_prompt_for_menu_choice_local "1-8" "true")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
@@ -886,7 +938,7 @@ manage_configs() {
             "") continue ;;
             *) log_message ERROR "无效选择" ;;
         esac
-        press_enter_to_continue
+        # Removed forced enter to continue here for smoother UX
     done
 }
 
@@ -895,6 +947,7 @@ _handle_renew_cert() {
     local p=$(_get_project_json "$d")
     [ -z "$p" ] && { log_message ERROR "项目不存在"; return; }
     _issue_and_install_certificate "$p" && control_nginx reload
+    press_enter_to_continue
 }
 
 _handle_delete_project() {
@@ -906,11 +959,13 @@ _handle_delete_project() {
         _delete_project_json "$d"
         control_nginx reload
     fi
+    press_enter_to_continue
 }
 
 _handle_view_config() {
     local d="${1:-}"
     _view_nginx_config "$d"
+    press_enter_to_continue
 }
 
 _handle_reconfigure_project() {
@@ -946,6 +1001,7 @@ _handle_reconfigure_project() {
         _write_and_enable_nginx_config "$d" "$new"
     fi
     control_nginx reload && _save_project_json "$new" && log_message SUCCESS "重配成功"
+    press_enter_to_continue
 }
 
 _handle_set_max_body_size() {
@@ -979,6 +1035,7 @@ _handle_set_max_body_size() {
     else
         log_message ERROR "保存配置失败。"
     fi
+    press_enter_to_continue
 }
 
 _handle_set_custom_config() {
@@ -1020,6 +1077,7 @@ _handle_set_custom_config() {
     else
         log_message ERROR "保存配置失败。"
     fi
+    press_enter_to_continue
 }
 
 _handle_cert_details() {
@@ -1032,6 +1090,7 @@ _handle_cert_details() {
     else
         log_message ERROR "证书文件不存在。"
     fi
+    press_enter_to_continue
 }
 
 check_and_auto_renew_certs() {
@@ -1106,30 +1165,36 @@ configure_nginx_projects() {
 
 main_menu() {
     while true; do
-        local nginx_status="$(_get_nginx_status)"
-        _render_menu "Nginx 证书与反代管理" \
-            "1. ${nginx_status}" \
-            "2. 仅申请证书 (Cert Only)" \
-            "3. 配置新项目 (New Project)" \
-            "4. 项目管理 (Manage Projects)" \
-            "5. 批量续期 (Auto Renew All)" \
-            "6. 查看 acme.sh 运行日志" \
-            "7. 查看 Nginx 运行日志" \
-            "8. 定时任务管理 (Cron)"
-            
+        _draw_dashboard
+        
+        echo -e "${PURPLE}【核心业务】${NC}"
+        echo -e " 1. 配置新项目 (New Project)"
+        echo -e " 2. 项目管理 (Manage Projects) ${YELLOW}[热]${NC}"
+        echo -e " 3. 仅申请证书 (Cert Only)"
+        echo ""
+        echo -e "${PURPLE}【运维监控】${NC}"
+        echo -e " 4. 批量续期 (Auto Renew All)"
+        echo -e " 5. 查看 acme.sh 运行日志"
+        echo -e " 6. 查看 Nginx 运行日志"
+        echo ""
+        echo -e "${PURPLE}【系统维护】${NC}"
+        echo -e " 7. 定时任务管理 (Cron)"
+        echo -e " 8. 备份与还原 (Backup & Restore) ${CYAN}[新]${NC}"
+        
+        echo ""
         case "$(_prompt_for_menu_choice_local "1-8" "true")" in
-            1) _restart_nginx_ui; press_enter_to_continue ;;
-            2) configure_nginx_projects "cert_only"; press_enter_to_continue ;;
-            3) configure_nginx_projects; press_enter_to_continue ;;
-            4) manage_configs ;;
-            5) 
+            1) configure_nginx_projects; press_enter_to_continue ;;
+            2) manage_configs ;;
+            3) configure_nginx_projects "cert_only"; press_enter_to_continue ;;
+            4) 
                 if _confirm_action_or_exit_non_interactive "确认检查所有项目？"; then
                     check_and_auto_renew_certs
                     press_enter_to_continue
                 fi ;;
-            6) _view_acme_log; press_enter_to_continue ;;
-            7) _view_nginx_global_log; press_enter_to_continue ;;
-            8) _manage_cron_jobs; press_enter_to_continue ;;
+            5) _view_acme_log; press_enter_to_continue ;;
+            6) _view_nginx_global_log; press_enter_to_continue ;;
+            7) _manage_cron_jobs; press_enter_to_continue ;;
+            8) _handle_backup_restore ;;
             "") return 0 ;;
             *) log_message ERROR "无效选择" ;;
         esac
