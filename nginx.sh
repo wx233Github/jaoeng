@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.3-代码重构版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.5-极速精简版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复变量作用域与启动逻辑
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，移除死代码，优化启动速度
 # 版本历史：
-#   v4.17.3 - 修复变量污染，修正依赖检查顺序，优化居中算法
-#   v4.17.2 - 标题中文居中，移除清屏
+#   v4.17.5 - 删除死函数，禁止启动时强制升级 Acme，全变量局部化
+#   v4.17.4 - 增加 OS 检测，优化 Uptime 显示
 
 set -euo pipefail
 
@@ -52,7 +52,6 @@ log_message() {
         WARN)    echo -e "$(_log_prefix)${YELLOW}[WARN]${NC} ${message}" >&2;;
         ERROR)   echo -e "$(_log_prefix)${RED}[ERR]${NC}  ${message}" >&2;;
     esac
-    # 确保日志文件目录存在
     mkdir -p "$(dirname "$LOG_FILE")"
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] [${level^^}] ${message}" >> "$LOG_FILE"
 }
@@ -115,7 +114,6 @@ _render_menu() {
     echo ""
     echo -e "${GREEN}╭$(_draw_line "$box_width")╮${NC}"
     local padding=$(_center_text "$title" "$box_width")
-    # 计算右侧补齐，确保对齐
     local left_len=${#padding}
     local right_len=$((box_width - left_len - title_vis_len))
     echo -e "${GREEN}│${NC}${padding}${BOLD}${title}${NC}$(printf "%${right_len}s" "")${GREEN}│${NC}"
@@ -135,6 +133,23 @@ trap _on_exit INT TERM
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then log_message ERROR "请使用 root 用户运行此操作。"; return 1; fi
     return 0
+}
+
+check_os_compatibility() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
+            echo -e "${RED}⚠️  警告: 检测到非 Debian/Ubuntu 系统 ($NAME)。${NC}"
+            echo -e "本脚本依赖 apt 包管理器。在 CentOS/Fedora/Alpine 等系统上可能无法自动安装依赖。"
+            if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+                if ! _confirm_action_or_exit_non_interactive "是否尝试继续 (可能会报错)?"; then
+                    exit 1
+                fi
+            else
+                log_message WARN "非 Debian 系统，尝试强制运行..."
+            fi
+        fi
+    fi
 }
 
 get_vps_ip() {
@@ -195,8 +210,8 @@ install_dependencies() {
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
             log_message WARN "缺失: $pkg，安装中..."
-            if [ "$missing" -eq 0 ]; then apt update -y >/dev/null 2>&1; fi
-            apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "安装 $pkg 失败"; return 1; }
+            if [ "$missing" -eq 0 ]; then apt update -y >/dev/null 2>&1 || true; fi
+            apt install -y "$pkg" >/dev/null 2>&1 || { log_message ERROR "安装 $pkg 失败 (请尝试手动安装)"; return 1; }
             missing=1
         fi
     done
@@ -206,7 +221,6 @@ install_dependencies() {
 }
 
 initialize_environment() {
-    # 依赖必须先于此函数满足，因为这里用到了 jq
     ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
@@ -219,16 +233,14 @@ initialize_environment() {
 }
 
 install_acme_sh() {
-    if [ -f "$ACME_BIN" ]; then 
-        "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
-        return 0
-    fi
+    # 优化: 只有当二进制文件不存在时才尝试安装/更新
+    if [ -f "$ACME_BIN" ]; then return 0; fi
+    
     log_message WARN "acme.sh 未安装，开始安装..."
     local email; email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "true")
     local cmd="curl https://get.acme.sh | sh"
     [ -n "$email" ] && cmd+=" -s email=$email"
     if eval "$cmd"; then 
-        # 安装后重新定位
         ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
         if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
         
@@ -263,10 +275,7 @@ _view_file_with_tail() {
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
-    if [ ! -f "$log_file" ]; then
-        touch "$log_file"
-        echo "日志文件已初始化。" > "$log_file"
-    fi
+    # 移除多余的 touch
     _view_file_with_tail "$log_file"
 }
 
@@ -481,16 +490,6 @@ _view_nginx_config() {
 # ==============================================================================
 # SECTION: 业务逻辑 (证书申请)
 # ==============================================================================
-
-_get_cert_files() {
-    local domain="${1:-}"
-    CERT_FILE="$HOME/.acme.sh/${domain}_ecc/fullchain.cer"
-    CONF_FILE="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
-    if [ ! -f "$CERT_FILE" ]; then
-        CERT_FILE="$HOME/.acme.sh/${domain}/fullchain.cer"
-        CONF_FILE="$HOME/.acme.sh/${domain}/${domain}.conf"
-    fi
-}
 
 _issue_and_install_certificate() {
     local json="${1:-}"
@@ -842,53 +841,10 @@ _display_projects_list() {
         fi
         
         # 打印行
-        # 状态列占用视觉宽度6 (3汉字)，printf %-10s 为 9byte+1pad，刚好对齐
         printf "%-4d ${status_color}%-10s${NC} %-12s %-20s %-s\n" \
             "$idx" "$status_str" "$renew_date" "${target_str:0:20}" "${domain}"
     done
     echo ""
-}
-
-_manage_cron_jobs() {
-    local acme_cron_status="${RED}未发现${NC}"
-    if crontab -l 2>/dev/null | grep -q "acme.sh --cron"; then
-        acme_cron_status="${GREEN}已存在${NC}"
-    fi
-
-    local script_cron_status="${RED}未发现${NC}"
-    local is_installed="false"
-    if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then
-        script_cron_status="${GREEN}已存在${NC}"
-        is_installed="true"
-    fi
-    
-    local line1="1. acme.sh 原生任务 : ${acme_cron_status}"
-    local line2="2. 本脚本续期任务   : ${script_cron_status}"
-    
-    _render_menu "定时任务 (Cron) 管理" "$line1" "$line2"
-    
-    echo ""
-    if [ "$is_installed" == "true" ]; then
-        echo -e "${YELLOW}检测到本脚本任务已存在。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否强制重置/修复定时任务配置?"; then
-            crontab -l > /tmp/cron.bk 2>/dev/null || true
-            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
-            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
-            crontab /tmp/cron.new
-            rm -f /tmp/cron.bk /tmp/cron.new
-            log_message SUCCESS "定时任务已重置。"
-        fi
-    else
-        echo -e "${YELLOW}建议添加任务以确保证书自动续期 (<30天)。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否添加每日自动续期任务?"; then
-            crontab -l > /tmp/cron.bk 2>/dev/null || true
-            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
-            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
-            crontab /tmp/cron.new
-            rm -f /tmp/cron.bk /tmp/cron.new
-            log_message SUCCESS "定时任务已添加: 每天 03:00 执行。"
-        fi
-    fi
 }
 
 _draw_dashboard() {
@@ -907,11 +863,7 @@ _draw_dashboard() {
     fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
 
-    # 标题居中算法: 标题内容 "Nginx 管理面板 v4.17.3"
-    # 中文占2宽，英文1宽。
-    # "Nginx "(6) + "管理面板"(8) + " v4.17.3"(8) = 22 display width
-    # 左右 padding = (72 - 22) / 2 = 25
-    local title="Nginx 管理面板 v4.17.3"
+    local title="Nginx 管理面板 v4.17.5"
     local pad_len=25
     
     echo ""
@@ -1237,7 +1189,8 @@ main_menu() {
 trap '_on_exit' INT TERM
 if ! check_root; then exit 1; fi
 
-# Fix: 先检查依赖，后初始化 (因为 initialize_environment 依赖 jq)
+# 优先检查 OS，再安装依赖，最后初始化
+check_os_compatibility
 install_dependencies 
 initialize_environment
 
