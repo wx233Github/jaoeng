@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.2-中文表格优化版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.3-对齐修复版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，优化中文表格显示
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复表格对齐与菜单返回
 # 版本历史：
-#   v4.16.2 - 汉化并重构项目列表表格，修复对齐问题
-#   v4.16.1 - 移除所有 Emoji，项目列表改为表格显示
+#   v4.16.3 - 修复二级菜单无法返回问题，解决中文表格对齐错位
+#   v4.16.2 - 汉化并重构项目列表表格
 
 set -euo pipefail
 
@@ -758,13 +758,13 @@ _display_projects_list() {
         local port=$(echo "$p" | jq -r '.resolved_port')
         local cert=$(echo "$p" | jq -r '.cert_file')
         
-        # 格式化目标列
-        local target_str="端口:$port"
+        # 格式化目标列 (强制英文前缀以保证对齐)
+        local target_str="Port:$port"
         [ "$type" = "docker" ] && target_str="Docker:$port"
-        [ "$port" == "cert_only" ] && target_str="纯证书"
+        [ "$port" == "cert_only" ] && target_str="CertOnly"
         
         # 格式化状态与续期
-        local status_str="缺失  " # 3个汉字宽度(6字节视觉)+2空 = 8? 不，按3汉字对齐
+        local status_str="缺失  " 
         local status_color="$RED"
         local renew_date="-"
         
@@ -792,10 +792,8 @@ _display_projects_list() {
             status_str="未安装"
         fi
         
-        # 打印行 (ID, 状态, 续期, 目标, 域名)
-        # 注意: 状态列使用 ${status_color} 但为了对齐，不能让 printf 计算颜色代码长度
-        # 汉字在 printf 中占 3 bytes (UTF-8)，显示占 2 char width。
-        # "运行中" = 9 bytes. 设为 %-10s (9 bytes + 1 space).
+        # 打印行
+        # 状态列占用视觉宽度6 (3汉字)，printf %-10s 为 9byte+1pad，刚好对齐
         printf "%-4d ${status_color}%-10s${NC} %-12s %-20s %-s\n" \
             "$idx" "$status_str" "$renew_date" "${target_str:0:20}" "${domain}"
     done
@@ -875,7 +873,8 @@ manage_configs() {
             "7. 设置上传大小限制 (Max Body Size)" \
             "8. 添加自定义 Nginx 配置 (Advanced)"
         
-        case "$(_prompt_for_menu_choice_local "1-8")" in
+        # 修复: 补全 true 参数允许回车返回
+        case "$(_prompt_for_menu_choice_local "1-8" "true")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
