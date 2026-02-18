@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.14.0-智能诊断增强版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.0-高级配置版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，集成故障自检功能
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持自定义上传限制
 # 版本历史：
-#   v4.14.0 - 新增 IPv6/CDN/防火墙 智能诊断，补全缺失的核心函数
-#   v4.13.14 - 优化 UI 交互与日志显示
+#   v4.15.0 - 新增 client_max_body_size 持久化配置功能
+#   v4.14.0 - 新增 IPv6/CDN/防火墙 智能诊断
 
 set -euo pipefail
 
@@ -330,6 +330,8 @@ _write_and_enable_nginx_config() {
 
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
+    # 新增: 读取上传大小限制
+    local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
 
     if [[ -z "$port" || "$port" == "null" ]]; then
         log_message ERROR "配置生成失败: 端口为空，请检查项目配置。"
@@ -361,6 +363,9 @@ server {
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';
     add_header Strict-Transport-Security "max-age=31536000;" always;
 
+    # 用户自定义配置
+    $( [[ -n "$max_body" ]] && echo "client_max_body_size ${max_body};" )
+
     location / {
         proxy_pass http://127.0.0.1:${port};
         proxy_set_header Host \$host;
@@ -370,6 +375,10 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        
+        # 确保 WebSocket 或大文件上传不会立即超时
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 EOF
@@ -611,6 +620,7 @@ _gather_project_details() {
     local type="cert_only"
     local name="证书"
     local port="cert_only"
+    local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty')
 
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""')
@@ -700,7 +710,8 @@ _gather_project_details() {
         --arg cn "${ca_name:-}" \
         --arg cf "${cf:-}" \
         --arg kf "${kf:-}" \
-        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf}' >&3
+        --arg mb "${max_body:-}" \
+        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb}' >&3
     
     exec 1>&3
 }
@@ -819,15 +830,17 @@ manage_configs() {
             "3. 🗑️  删除项目" \
             "4. 📝 查看配置" \
             "5. 📊 查看日志" \
-            "6. ⚙️  重新配置"
+            "6. ⚙️  重新配置" \
+            "7. ⚡ 设置上传大小限制 (Max Body Size)"
         
-        case "$(_prompt_for_menu_choice_local "1-6")" in
+        case "$(_prompt_for_menu_choice_local "1-7")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
             4) _handle_view_config "$selected_domain" ;;
             5) _view_project_access_log "$selected_domain" ;;
             6) _handle_reconfigure_project "$selected_domain" ;;
+            7) _handle_set_max_body_size "$selected_domain" ;;
             "") continue ;;
             *) log_message ERROR "无效选择" ;;
         esac
@@ -891,6 +904,34 @@ _handle_reconfigure_project() {
         _write_and_enable_nginx_config "$d" "$new"
     fi
     control_nginx reload && _save_project_json "$new" && log_message SUCCESS "重配成功"
+}
+
+_handle_set_max_body_size() {
+    local d="$1"
+    local cur=$(_get_project_json "$d")
+    local current_val=$(echo "$cur" | jq -r '.client_max_body_size // "默认(1m)"')
+    
+    echo ""
+    echo -e "${CYAN}当前设置: $current_val${NC}"
+    echo "请输入新的限制大小 (例如: 10m, 500m, 1g)。"
+    echo "直接回车 = 不修改; 输入 'default' = 恢复 Nginx 默认(1m)"
+    
+    local new_val=$(_prompt_user_input_with_validation "限制大小" "" "^[0-9]+[kKmMgG]$|^default$" "格式错误 (示例: 10m)" "true")
+    
+    if [ -z "$new_val" ]; then return; fi
+    
+    local json_val="$new_val"
+    if [ "$new_val" == "default" ]; then json_val=""; fi
+    
+    local new_json=$(echo "$cur" | jq --arg v "$json_val" '.client_max_body_size = $v')
+    
+    if _save_project_json "$new_json"; then
+        _write_and_enable_nginx_config "$d" "$new_json"
+        control_nginx reload
+        log_message SUCCESS "已更新 $d 的上传限制 -> ${json_val:-默认}。"
+    else
+        log_message ERROR "保存配置失败。"
+    fi
 }
 
 _handle_cert_details() {
