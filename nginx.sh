@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.5-精简修正版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.0-全能配置版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复配置写入失败问题
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持任意 Nginx 自定义指令
 # 版本历史：
-#   v4.15.5 - 修复 Nginx 配置文件中上传限制参数缺失的问题，移除冗余
-#   v4.15.4 - 移除自动修复逻辑
+#   v4.16.0 - 新增通用自定义配置功能 (custom_config)
+#   v4.15.5 - 修复 Nginx 配置文件中上传限制参数缺失的问题
 
 set -euo pipefail
 
@@ -316,6 +316,7 @@ _save_project_json() {
     local domain=$(echo "$json" | jq -r .domain)
     local temp=$(mktemp)
     
+    # 使用 --argjson 将 json 对象安全地作为参数传递给 jq
     if [ -n "$(_get_project_json "$domain")" ]; then
         jq --argjson new_val "$json" --arg d "$domain" \
            'map(if .domain == $d then $new_val else . end)' \
@@ -347,13 +348,19 @@ _write_and_enable_nginx_config() {
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
     
-    # 修复: 明确提取 max_body，若为 null/空则置为空字符串
+    # 提取配置参数
     local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
+    local custom_cfg=$(echo "$json" | jq -r '.custom_config // empty')
     
-    # 修复: 预先计算配置字符串，防止 cat 块内逻辑失效
+    # 预计算注入字符串
     local body_cfg=""
     if [[ -n "$max_body" && "$max_body" != "null" ]]; then
         body_cfg="client_max_body_size ${max_body};"
+    fi
+    
+    local extra_cfg=""
+    if [[ -n "$custom_cfg" && "$custom_cfg" != "null" ]]; then
+        extra_cfg="$custom_cfg"
     fi
 
     if [[ -z "$port" || "$port" == "null" ]]; then
@@ -386,8 +393,10 @@ server {
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';
     add_header Strict-Transport-Security "max-age=31536000;" always;
 
-    # 用户自定义配置
+    # --- 用户自定义配置区域 ---
     ${body_cfg}
+    ${extra_cfg}
+    # -----------------------
 
     location / {
         proxy_pass http://127.0.0.1:${port};
@@ -399,7 +408,6 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         
-        # 确保 WebSocket 或大文件上传不会立即超时
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
@@ -644,6 +652,7 @@ _gather_project_details() {
     local name="证书"
     local port="cert_only"
     local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty')
+    local custom_cfg=$(echo "$cur" | jq -r '.custom_config // empty')
 
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""')
@@ -734,7 +743,8 @@ _gather_project_details() {
         --arg cf "${cf:-}" \
         --arg kf "${kf:-}" \
         --arg mb "${max_body:-}" \
-        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb}' >&3
+        --arg cc "${custom_cfg:-}" \
+        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb, custom_config:$cc}' >&3
     
     exec 1>&3
 }
@@ -856,9 +866,10 @@ manage_configs() {
             "4. 📝 查看配置" \
             "5. 📊 查看日志" \
             "6. ⚙️  重新配置" \
-            "7. ⚡ 设置上传大小限制 (Max Body Size)"
+            "7. ⚡ 设置上传大小限制 (Max Body Size)" \
+            "8. 🛠️  添加自定义 Nginx 配置 (Advanced)"
         
-        case "$(_prompt_for_menu_choice_local "1-7")" in
+        case "$(_prompt_for_menu_choice_local "1-8")" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
@@ -866,6 +877,7 @@ manage_configs() {
             5) _view_project_access_log "$selected_domain" ;;
             6) _handle_reconfigure_project "$selected_domain" ;;
             7) _handle_set_max_body_size "$selected_domain" ;;
+            8) _handle_set_custom_config "$selected_domain" ;;
             "") continue ;;
             *) log_message ERROR "无效选择" ;;
         esac
@@ -959,6 +971,47 @@ _handle_set_max_body_size() {
         _write_and_enable_nginx_config "$d" "$new_json"
         control_nginx reload
         log_message SUCCESS "已更新 $d 的上传限制 -> ${json_val:-默认}。"
+    else
+        log_message ERROR "保存配置失败。"
+    fi
+}
+
+_handle_set_custom_config() {
+    local d="${1:-}"
+    local cur=$(_get_project_json "$d")
+    local current_val=$(echo "$cur" | jq -r '.custom_config // "无"')
+    
+    echo ""
+    echo -e "${CYAN}当前自定义配置:${NC}"
+    echo "$current_val"
+    echo -e "${YELLOW}请输入完整的 Nginx 指令 (需以分号结尾)。${NC}"
+    echo "例如: proxy_read_timeout 600s; add_header X-Custom 1;"
+    echo "直接回车 = 不修改; 输入 'clear' = 清空自定义配置"
+    
+    local new_val=$(_prompt_user_input_with_validation "指令内容" "" "" "" "true")
+    
+    if [ -z "$new_val" ]; then return; fi
+    
+    local json_val="$new_val"
+    if [ "$new_val" == "clear" ]; then json_val=""; fi
+    
+    local new_json=$(echo "$cur" | jq --arg v "$json_val" '.custom_config = $v')
+    
+    if [ -z "$new_json" ]; then
+        log_message ERROR "JSON 处理失败。"
+        return
+    fi
+
+    if _save_project_json "$new_json"; then
+        _write_and_enable_nginx_config "$d" "$new_json"
+        if control_nginx reload; then
+            log_message SUCCESS "自定义配置已应用。"
+        else
+            log_message ERROR "Nginx 重载失败！请检查指令语法是否正确。"
+            log_message WARN "正在回滚配置..."
+            _write_and_enable_nginx_config "$d" "$cur"
+            control_nginx reload
+        fi
     else
         log_message ERROR "保存配置失败。"
     fi
