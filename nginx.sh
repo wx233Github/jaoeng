@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.1-稳定性修复版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.15.3-自动修复版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，修复参数引用未绑定问题
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，自动修复重复配置数据
 # 版本历史：
-#   v4.15.1 - 修复 set -u 下 unbound variable 报错，增强参数健壮性
-#   v4.15.0 - 新增 client_max_body_size 持久化配置功能
+#   v4.15.3 - 新增 projects.json 自动去重修复功能
+#   v4.15.2 - 修复 save_json 函数中的 jq 语法错误
 
 set -euo pipefail
 
@@ -174,12 +174,38 @@ _detect_web_service() {
 # SECTION: 环境初始化
 # ==============================================================================
 
+_fix_duplicate_projects() {
+    if [ ! -s "$PROJECTS_METADATA_FILE" ]; then return 0; fi
+    
+    # 检查是否有重复域名
+    local has_dup
+    has_dup=$(jq -r 'group_by(.domain) | map(select(length > 1)) | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "0")
+    
+    if [ "$has_dup" != "0" ]; then
+        log_message WARN "检测到配置文件存在重复项目，正在自动修复..."
+        cp "$PROJECTS_METADATA_FILE" "${PROJECTS_METADATA_FILE}.bak.$(date +%s)"
+        
+        local temp=$(mktemp)
+        # 按域名分组，取最后一个（最新的），然后重新输出为数组
+        if jq 'group_by(.domain) | map(last)' "$PROJECTS_METADATA_FILE" > "$temp"; then
+            mv "$temp" "$PROJECTS_METADATA_FILE"
+            log_message SUCCESS "重复项目已清理，保留了最新配置。"
+        else
+            log_message ERROR "自动修复失败，请手动检查 $PROJECTS_METADATA_FILE"
+            rm -f "$temp"
+        fi
+    fi
+}
+
 initialize_environment() {
     ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR"
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
+    
+    # 执行自动去重
+    _fix_duplicate_projects
 }
 
 install_dependencies() {
@@ -306,7 +332,9 @@ _view_project_access_log() {
 # SECTION: 数据与文件管理
 # ==============================================================================
 
-_get_project_json() { jq -c ".[] | select(.domain == \"${1:-}\")" "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""; }
+_get_project_json() { 
+    jq -c --arg d "${1:-}" '.[] | select(.domain == $d)' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""
+}
 
 _save_project_json() {
     local json="${1:-}" 
@@ -315,16 +343,21 @@ _save_project_json() {
     local temp=$(mktemp)
     
     if [ -n "$(_get_project_json "$domain")" ]; then
-        jq "(.[] | select(.domain == \"$domain\")) = $json" "$PROJECTS_METADATA_FILE" > "$temp"
+        jq --argjson new_val "$json" --arg d "$domain" \
+           'map(if .domain == $d then $new_val else . end)' \
+           "$PROJECTS_METADATA_FILE" > "$temp"
     else
-        jq ". + [$json]" "$PROJECTS_METADATA_FILE" > "$temp"
+        jq --argjson new_val "$json" \
+           '. + [$new_val]' \
+           "$PROJECTS_METADATA_FILE" > "$temp"
     fi
+    
     if [ $? -eq 0 ]; then mv "$temp" "$PROJECTS_METADATA_FILE"; return 0; else rm -f "$temp"; return 1; fi
 }
 
 _delete_project_json() {
     local temp=$(mktemp)
-    jq "del(.[] | select(.domain == \"${1:-}\"))" "$PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$PROJECTS_METADATA_FILE"
+    jq --arg d "${1:-}" 'del(.[] | select(.domain == $d))' "$PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$PROJECTS_METADATA_FILE"
 }
 
 _write_and_enable_nginx_config() {
@@ -339,7 +372,6 @@ _write_and_enable_nginx_config() {
 
     local cert=$(echo "$json" | jq -r .cert_file)
     local key=$(echo "$json" | jq -r .key_file)
-    # 新增: 读取上传大小限制
     local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty')
 
     if [[ -z "$port" || "$port" == "null" ]]; then
