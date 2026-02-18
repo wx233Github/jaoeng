@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.1-专业版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.16.2-中文表格优化版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，界面简洁化
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，优化中文表格显示
 # 版本历史：
+#   v4.16.2 - 汉化并重构项目列表表格，修复对齐问题
 #   v4.16.1 - 移除所有 Emoji，项目列表改为表格显示
-#   v4.16.0 - 新增通用自定义配置功能
 
 set -euo pipefail
 
@@ -746,9 +746,9 @@ _display_projects_list() {
     local json="${1:-}" 
     if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
     
-    # 打印表头
-    printf "${BOLD}%-4s | %-28s | %-22s | %-16s | %-12s${NC}\n" "ID" "Domain" "Target" "Status" "Renew"
-    echo "----------------------------------------------------------------------------------------------"
+    # 汉化表头，调整顺序
+    printf "${BOLD}%-4s %-10s %-12s %-20s %-s${NC}\n" "ID" "状态" "续期" "目标" "域名"
+    echo "----------------------------------------------------------------------"
     
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
@@ -759,12 +759,12 @@ _display_projects_list() {
         local cert=$(echo "$p" | jq -r '.cert_file')
         
         # 格式化目标列
-        local target_str="Port: $port"
-        [ "$type" = "docker" ] && target_str="Docker: $(echo "$p" | jq -r '.name')($port)"
-        [ "$port" == "cert_only" ] && target_str="Cert Only"
+        local target_str="端口:$port"
+        [ "$type" = "docker" ] && target_str="Docker:$port"
+        [ "$port" == "cert_only" ] && target_str="纯证书"
         
         # 格式化状态与续期
-        local status_str="缺失"
+        local status_str="缺失  " # 3个汉字宽度(6字节视觉)+2空 = 8? 不，按3汉字对齐
         local status_color="$RED"
         local renew_date="-"
         
@@ -778,22 +778,26 @@ _display_projects_list() {
             fi
         fi
 
-        # 获取证书状态
+        # 获取证书状态 (统一使用3个汉字)
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
             local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (ts - $(date +%s)) / 86400 ))
             
-            if (( days < 0 )); then status_str="已过期($days)"; status_color="$RED"
-            elif (( days <= 30 )); then status_str="临期($days)"; status_color="$YELLOW"
-            else status_str="有效($days)"; status_color="$GREEN"
+            if (( days < 0 )); then status_str="已过期"; status_color="$RED"
+            elif (( days <= 30 )); then status_str="将过期"; status_color="$YELLOW"
+            else status_str="运行中"; status_color="$GREEN"
             fi
+        else
+            status_str="未安装"
         fi
         
-        # 打印行 (为防止颜色代码破坏对齐，状态列单独加色，其余纯文本)
-        # 截断过长字符串以保持表格整洁
-        printf "%-4d | %-28s | %-22s | ${status_color}%-16s${NC} | %-12s\n" \
-            "$idx" "${domain:0:28}" "${target_str:0:22}" "$status_str" "$renew_date"
+        # 打印行 (ID, 状态, 续期, 目标, 域名)
+        # 注意: 状态列使用 ${status_color} 但为了对齐，不能让 printf 计算颜色代码长度
+        # 汉字在 printf 中占 3 bytes (UTF-8)，显示占 2 char width。
+        # "运行中" = 9 bytes. 设为 %-10s (9 bytes + 1 space).
+        printf "%-4d ${status_color}%-10s${NC} %-12s %-20s %-s\n" \
+            "$idx" "$status_str" "$renew_date" "${target_str:0:20}" "${domain}"
     done
     echo ""
 }
