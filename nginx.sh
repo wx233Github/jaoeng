@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.0-仪表盘全能版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.1-精制UI版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx，新增仪表盘监控与备份还原功能
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，UI 风格现代化重构
 # 版本历史：
-#   v4.17.0 - 新增状态仪表盘、备份还原功能，重构菜单布局
-#   v4.16.3 - 修复表格对齐与菜单返回
+#   v4.17.1 - 优化仪表盘 UI 为盒子风格，彻底移除 Emoji
+#   v4.17.0 - 新增状态仪表盘、备份还原功能
 
 set -euo pipefail
 
@@ -226,6 +226,14 @@ control_nginx() {
     return 0
 }
 
+_get_nginx_status() {
+    if systemctl is-active --quiet nginx; then
+        echo -e "${GREEN}Nginx (运行中)${NC}"
+    else
+        echo -e "${RED}Nginx (已停止)${NC}"
+    fi
+}
+
 _restart_nginx_ui() {
     log_message INFO "正在重启 Nginx..."
     if control_nginx restart; then log_message SUCCESS "Nginx 重启成功。"; fi
@@ -288,9 +296,9 @@ _view_project_access_log() {
 _handle_backup_restore() {
     echo ""
     _render_menu "备份与还原系统" \
-        "1. 📦 创建新备份 (Projects + Configs + Certs)" \
-        "2. ♻️  从备份还原" \
-        "3. 📂 查看备份目录"
+        "1. 创建新备份 (Projects + Configs + Certs)" \
+        "2. 从备份还原" \
+        "3. 查看备份目录"
         
     case "$(_prompt_for_menu_choice_local "1-3" "true")" in
         1)
@@ -782,7 +790,7 @@ _display_projects_list() {
     
     # 汉化表头，调整顺序
     printf "${BOLD}%-4s %-10s %-12s %-20s %-s${NC}\n" "ID" "状态" "续期" "目标" "域名"
-    echo "----------------------------------------------------------------------"
+    echo "──────────────────────────────────────────────────────────────────────"
     
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
@@ -884,15 +892,44 @@ _draw_dashboard() {
     local warn_count=0
     
     if [ -f "$PROJECTS_METADATA_FILE" ]; then
-        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE") # 简化统计逻辑
+        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE")
     fi
 
-    echo -e "${GREEN}==============================================================${NC}"
-    echo -e " ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.0${NC}"
-    echo -e "${GREEN}==============================================================${NC}"
-    echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC} | 负载: ${YELLOW}$(uptime | awk -F'load average:' '{print $2}')${NC}"
-    echo -e " 项目: ${BOLD}${count}${NC} | 告警: ${RED}${warn_count:-0}${NC} | 路径: ${NGINX_SITES_ENABLED_DIR}"
-    echo -e "${GREEN}==============================================================${NC}"
+    # 计算最大宽度，根据系统 uptime 长度动态调整
+    local width=62
+    if [ ${#uptime} -gt 30 ]; then width=$((32 + ${#uptime})); fi
+    
+    local line=$(printf "%${width}s" "" | sed "s/ /─/g")
+    
+    echo -e "${GREEN}╭${line}╮${NC}"
+    echo -e "${GREEN}│${NC} ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.1${NC}$(printf "%$((width - 32))s" "")${GREEN}│${NC}"
+    echo -e "${GREEN}├${line}┤${NC}"
+    echo -e "${GREEN}│${NC} Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC}$(printf "%$((width - 15 - ${#nginx_v} - ${#uptime} - 8))s" "")${GREEN}│${NC}"
+    echo -e "${GREEN}│${NC} 负载 : ${YELLOW}$(uptime | awk -F'load average:' '{print $2}' | xargs)${NC}$(printf "%$((width - 8 - ${#uptime} ))s" "")${GREEN}│${NC}" 
+    # 注意：上面printf计算复杂，简化为两行显示更稳妥
+    
+    # 重新简化版，不再强求严格右边框对齐以免错乱
+    # 直接使用清爽的分隔线风格
+}
+
+_draw_dashboard_simple() {
+    clear
+    local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
+    local uptime=$(uptime -p | sed 's/up //')
+    local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
+    local warn_count=0
+    
+    if [ -f "$PROJECTS_METADATA_FILE" ]; then
+        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE")
+    fi
+
+    echo -e "${GREEN}╭──────────────────────────────────────────────────────────────╮${NC}"
+    echo -e "${GREEN}│${NC} ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.1${NC}                              ${GREEN}│${NC}"
+    echo -e "${GREEN}├──────────────────────────────────────────────────────────────┤${NC}"
+    echo -e "${GREEN}│${NC} Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC}"
+    echo -e "${GREEN}│${NC} 负载 : ${YELLOW}$(uptime | awk -F'load average:' '{print $2}' | xargs)${NC}"
+    echo -e "${GREEN}│${NC} 项目 : ${BOLD}${count}${NC} | 告警 : ${RED}${warn_count:-0}${NC} | 路径 : ${NGINX_SITES_ENABLED_DIR}"
+    echo -e "${GREEN}╰──────────────────────────────────────────────────────────────╯${NC}"
 }
 
 manage_configs() {
@@ -938,7 +975,6 @@ manage_configs() {
             "") continue ;;
             *) log_message ERROR "无效选择" ;;
         esac
-        # Removed forced enter to continue here for smoother UX
     done
 }
 
@@ -1165,11 +1201,11 @@ configure_nginx_projects() {
 
 main_menu() {
     while true; do
-        _draw_dashboard
+        _draw_dashboard_simple
         
         echo -e "${PURPLE}【核心业务】${NC}"
         echo -e " 1. 配置新项目 (New Project)"
-        echo -e " 2. 项目管理 (Manage Projects) ${YELLOW}[热]${NC}"
+        echo -e " 2. 项目管理 (Manage Projects)"
         echo -e " 3. 仅申请证书 (Cert Only)"
         echo ""
         echo -e "${PURPLE}【运维监控】${NC}"
@@ -1179,7 +1215,7 @@ main_menu() {
         echo ""
         echo -e "${PURPLE}【系统维护】${NC}"
         echo -e " 7. 定时任务管理 (Cron)"
-        echo -e " 8. 备份与还原 (Backup & Restore) ${CYAN}[新]${NC}"
+        echo -e " 8. 备份与还原 (Backup & Restore)"
         
         echo ""
         case "$(_prompt_for_menu_choice_local "1-8" "true")" in
