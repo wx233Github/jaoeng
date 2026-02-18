@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.1-精制UI版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.2-中文面板优化版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，UI 风格现代化重构
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，优化中文面板 UI
 # 版本历史：
+#   v4.17.2 - 汉化标题，优化盒子对齐，移除自动清屏
 #   v4.17.1 - 优化仪表盘 UI 为盒子风格，彻底移除 Emoji
-#   v4.17.0 - 新增状态仪表盘、备份还原功能
 
 set -euo pipefail
 
@@ -669,251 +669,8 @@ _issue_and_install_certificate() {
     return 0
 }
 
-_gather_project_details() {
-    exec 3>&1
-    exec 1>&2
-    
-    local cur="${1:-{\}}"
-    local skip_cert="${2:-false}"
-    local is_cert_only="false"
-    if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
-
-    local domain=$(echo "$cur" | jq -r '.domain // ""')
-    if [ -z "$domain" ]; then
-        domain=$(_prompt_user_input_with_validation "主域名" "" "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "格式无效" "false") || { exec 1>&3; return 1; }
-    fi
-    
-    local type="cert_only"
-    local name="证书"
-    local port="cert_only"
-    local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty')
-    local custom_cfg=$(echo "$cur" | jq -r '.custom_config // empty')
-
-    if [ "$is_cert_only" == "false" ]; then
-        name=$(echo "$cur" | jq -r '.name // ""')
-        [ "$name" == "证书" ] && name=""
-        
-        while true; do
-            local target=$(_prompt_user_input_with_validation "后端目标 (容器名/端口)" "$name" "" "" "false") || { exec 1>&3; return 1; }
-            type="local_port"; port="$target"
-            local is_docker="false"
-            if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
-                type="docker"
-                exec 1>&3
-                port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
-                exec 1>&2
-                is_docker="true"
-                if [ -z "$port" ]; then
-                    port=$(_prompt_user_input_with_validation "未检测到端口，手动输入" "80" "^[0-9]+$" "无效端口" "false") || { exec 1>&3; return 1; }
-                fi
-                break
-            fi
-            if [[ "$port" =~ ^[0-9]+$ ]]; then break; fi
-            log_message ERROR "错误: '$target' 既不是容器也不是端口，请重试。" >&2
-        done
-    fi
-
-    local method="http-01"
-    local provider=""
-    local wildcard="n"
-    local ca_server="https://acme-v02.api.letsencrypt.org/directory"
-    local ca_name="letsencrypt"
-
-    if [ "$skip_cert" == "true" ]; then
-        method=$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')
-        provider=$(echo "$cur" | jq -r '.dns_api_provider // ""')
-        wildcard=$(echo "$cur" | jq -r '.use_wildcard // "n"')
-        ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
-        ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
-    else
-        local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-        _render_menu "选择 CA 机构" "${ca_list[@]}"
-        local ca_choice
-        while true; do
-            ca_choice=$(_prompt_for_menu_choice_local "1-3")
-            [ -n "$ca_choice" ] && break
-        done
-        case "$ca_choice" in
-            1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
-            2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
-            3) ca_server="google"; ca_name="google" ;;
-            *) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
-        esac
-        if [[ "$ca_name" == "zerossl" ]] && ! "$ACME_BIN" --list | grep -q "ZeroSSL.com"; then
-             log_message INFO "检测到未注册 ZeroSSL，请输入邮箱注册..." >&2
-             local reg_email=$(_prompt_user_input_with_validation "注册邮箱" "" "" "" "false")
-             "$ACME_BIN" --register-account -m "$reg_email" --server zerossl >&2 || log_message WARN "ZeroSSL 注册跳过" >&2
-        fi
-        local -a method_display=("1. standalone (HTTP验证, 80端口)" "2. dns_cf (Cloudflare API)" "3. dns_ali (阿里云 API)")
-        _render_menu "验证方式" "${method_display[@]}" >&2
-        local v_choice
-        while true; do
-            v_choice=$(_prompt_for_menu_choice_local "1-3")
-            [ -n "$v_choice" ] && break
-        done
-        case "$v_choice" in
-            1) method="http-01" 
-                if [ "$is_cert_only" == "false" ]; then log_message WARN "注意: 稍后脚本将占用 80 端口，请确保无冲突。" >&2; fi ;;
-            2) method="dns-01"; provider="dns_cf"
-                wildcard=$(_prompt_user_input_with_validation "申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
-            3) method="dns-01"; provider="dns_ali"
-                wildcard=$(_prompt_user_input_with_validation "申请泛域名 (y/[n])" "n" "^[yYnN]$" "" "false") ;;
-            *) method="http-01" ;;
-        esac
-    fi
-
-    local cf="$SSL_CERTS_BASE_DIR/$domain.cer"
-    local kf="$SSL_CERTS_BASE_DIR/$domain.key"
-    
-    jq -n \
-        --arg d "${domain:-}" \
-        --arg t "${type:-local_port}" \
-        --arg n "${name:-}" \
-        --arg p "${port:-}" \
-        --arg m "${method:-http-01}" \
-        --arg dp "${provider:-}" \
-        --arg w "${wildcard:-n}" \
-        --arg cu "${ca_server:-}" \
-        --arg cn "${ca_name:-}" \
-        --arg cf "${cf:-}" \
-        --arg kf "${kf:-}" \
-        --arg mb "${max_body:-}" \
-        --arg cc "${custom_cfg:-}" \
-        '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb, custom_config:$cc}' >&3
-    
-    exec 1>&3
-}
-
-_display_projects_list() {
-    local json="${1:-}" 
-    if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
-    
-    # 汉化表头，调整顺序
-    printf "${BOLD}%-4s %-10s %-12s %-20s %-s${NC}\n" "ID" "状态" "续期" "目标" "域名"
-    echo "──────────────────────────────────────────────────────────────────────"
-    
-    local idx=0
-    echo "$json" | jq -c '.[]' | while read -r p; do
-        idx=$((idx + 1))
-        local domain=$(echo "$p" | jq -r '.domain // "未知"')
-        local type=$(echo "$p" | jq -r '.type')
-        local port=$(echo "$p" | jq -r '.resolved_port')
-        local cert=$(echo "$p" | jq -r '.cert_file')
-        
-        # 格式化目标列 (强制英文前缀以保证对齐)
-        local target_str="Port:$port"
-        [ "$type" = "docker" ] && target_str="Docker:$port"
-        [ "$port" == "cert_only" ] && target_str="CertOnly"
-        
-        # 格式化状态与续期
-        local status_str="缺失  " 
-        local status_color="$RED"
-        local renew_date="-"
-        
-        # 获取续期时间
-        local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
-        [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
-        if [ -f "$conf_file" ]; then
-            local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"")
-            if [ -n "$next_ts" ]; then
-                renew_date=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err")
-            fi
-        fi
-
-        # 获取证书状态 (统一使用3个汉字)
-        if [[ -f "$cert" ]]; then
-            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
-            local ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
-            local days=$(( (ts - $(date +%s)) / 86400 ))
-            
-            if (( days < 0 )); then status_str="已过期"; status_color="$RED"
-            elif (( days <= 30 )); then status_str="将过期"; status_color="$YELLOW"
-            else status_str="运行中"; status_color="$GREEN"
-            fi
-        else
-            status_str="未安装"
-        fi
-        
-        # 打印行
-        # 状态列占用视觉宽度6 (3汉字)，printf %-10s 为 9byte+1pad，刚好对齐
-        printf "%-4d ${status_color}%-10s${NC} %-12s %-20s %-s\n" \
-            "$idx" "$status_str" "$renew_date" "${target_str:0:20}" "${domain}"
-    done
-    echo ""
-}
-
-_manage_cron_jobs() {
-    local acme_cron_status="${RED}未发现${NC}"
-    if crontab -l 2>/dev/null | grep -q "acme.sh --cron"; then
-        acme_cron_status="${GREEN}已存在${NC}"
-    fi
-
-    local script_cron_status="${RED}未发现${NC}"
-    local is_installed="false"
-    if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then
-        script_cron_status="${GREEN}已存在${NC}"
-        is_installed="true"
-    fi
-    
-    local line1="1. acme.sh 原生任务 : ${acme_cron_status}"
-    local line2="2. 本脚本续期任务   : ${script_cron_status}"
-    
-    _render_menu "定时任务 (Cron) 管理" "$line1" "$line2"
-    
-    echo ""
-    if [ "$is_installed" == "true" ]; then
-        echo -e "${YELLOW}检测到本脚本任务已存在。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否强制重置/修复定时任务配置?"; then
-            crontab -l > /tmp/cron.bk 2>/dev/null || true
-            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
-            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
-            crontab /tmp/cron.new
-            rm -f /tmp/cron.bk /tmp/cron.new
-            log_message SUCCESS "定时任务已重置。"
-        fi
-    else
-        echo -e "${YELLOW}建议添加任务以确保证书自动续期 (<30天)。${NC}"
-        if _confirm_action_or_exit_non_interactive "是否添加每日自动续期任务?"; then
-            crontab -l > /tmp/cron.bk 2>/dev/null || true
-            grep -v "$SCRIPT_PATH --cron" /tmp/cron.bk > /tmp/cron.new || true
-            echo "0 3 * * * /bin/bash $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.new
-            crontab /tmp/cron.new
-            rm -f /tmp/cron.bk /tmp/cron.new
-            log_message SUCCESS "定时任务已添加: 每天 03:00 执行。"
-        fi
-    fi
-}
-
-_draw_dashboard() {
-    clear
-    local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
-    local uptime=$(uptime -p | sed 's/up //')
-    local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
-    local warn_count=0
-    
-    if [ -f "$PROJECTS_METADATA_FILE" ]; then
-        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE")
-    fi
-
-    # 计算最大宽度，根据系统 uptime 长度动态调整
-    local width=62
-    if [ ${#uptime} -gt 30 ]; then width=$((32 + ${#uptime})); fi
-    
-    local line=$(printf "%${width}s" "" | sed "s/ /─/g")
-    
-    echo -e "${GREEN}╭${line}╮${NC}"
-    echo -e "${GREEN}│${NC} ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.1${NC}$(printf "%$((width - 32))s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}├${line}┤${NC}"
-    echo -e "${GREEN}│${NC} Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC}$(printf "%$((width - 15 - ${#nginx_v} - ${#uptime} - 8))s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}│${NC} 负载 : ${YELLOW}$(uptime | awk -F'load average:' '{print $2}' | xargs)${NC}$(printf "%$((width - 8 - ${#uptime} ))s" "")${GREEN}│${NC}" 
-    # 注意：上面printf计算复杂，简化为两行显示更稳妥
-    
-    # 重新简化版，不再强求严格右边框对齐以免错乱
-    # 直接使用清爽的分隔线风格
-}
-
 _draw_dashboard_simple() {
-    clear
+    # 移除 clear，保留上下文
     local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
     local uptime=$(uptime -p | sed 's/up //')
     local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
@@ -923,12 +680,19 @@ _draw_dashboard_simple() {
         warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE")
     fi
 
+    # 计算负载字符串长度以动态调整
+    local load=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+    local path_len=${#NGINX_SITES_ENABLED_DIR}
+    
+    echo ""
     echo -e "${GREEN}╭──────────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${GREEN}│${NC} ${BOLD}Nginx Manager Dashboard${NC} ${CYAN}v4.17.1${NC}                              ${GREEN}│${NC}"
+    # 汉化标题，调整对齐
+    printf "${GREEN}│${NC} ${BOLD}%-56s${NC} ${GREEN}│${NC}\n" "Nginx 证书管理面板 v4.17.2"
     echo -e "${GREEN}├──────────────────────────────────────────────────────────────┤${NC}"
-    echo -e "${GREEN}│${NC} Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime}${NC}"
-    echo -e "${GREEN}│${NC} 负载 : ${YELLOW}$(uptime | awk -F'load average:' '{print $2}' | xargs)${NC}"
-    echo -e "${GREEN}│${NC} 项目 : ${BOLD}${count}${NC} | 告警 : ${RED}${warn_count:-0}${NC} | 路径 : ${NGINX_SITES_ENABLED_DIR}"
+    # 调整信息展示，使其在盒子里对齐
+    printf "${GREEN}│${NC} Nginx: %-15s | 运行: %-25s ${GREEN}│${NC}\n" "${GREEN}${nginx_v}${NC}" "${GREEN}${uptime}${NC}"
+    printf "${GREEN}│${NC} 负载 : %-50s ${GREEN}│${NC}\n" "${YELLOW}${load}${NC}"
+    printf "${GREEN}│${NC} 项目 : ${BOLD}%-2s${NC} | 告警 : ${RED}%-2s${NC} | 路径 : %-22s ${GREEN}│${NC}\n" "${count}" "${warn_count:-0}" "/etc/nginx/sites-enabled"
     echo -e "${GREEN}╰──────────────────────────────────────────────────────────────╯${NC}"
 }
 
