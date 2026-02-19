@@ -1,11 +1,11 @@
 # =============================================================
-# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.5-极速精简版)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.17.6-UI终极修复版)
 # =============================================================
 # 作者：Shell 脚本专家
-# 描述：自动化管理 Nginx 反代配置与 SSL 证书，移除死代码，优化启动速度
+# 描述：自动化管理 Nginx 反代配置与 SSL 证书，彻底修复仪表盘错位
 # 版本历史：
-#   v4.17.5 - 删除死函数，禁止启动时强制升级 Acme，全变量局部化
-#   v4.17.4 - 增加 OS 检测，优化 Uptime 显示
+#   v4.17.6 - 重构仪表盘绘图逻辑，修复 ASCII 边框错位
+#   v4.17.5 - 删除死代码，优化启动速度
 
 set -euo pipefail
 
@@ -74,11 +74,6 @@ _prompt_for_menu_choice_local() {
     done
 }
 
-_draw_line() {
-    local len="${1:-40}"
-    printf "%${len}s" "" | sed "s/ /─/g"
-}
-
 _strip_colors() {
     echo -e "${1:-}" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"
 }
@@ -91,6 +86,11 @@ _str_width() {
     else
         echo "${#clean}"
     fi
+}
+
+_draw_line() {
+    local len="${1:-40}"
+    printf "%${len}s" "" | sed "s/ /─/g"
 }
 
 _center_text() {
@@ -233,7 +233,6 @@ initialize_environment() {
 }
 
 install_acme_sh() {
-    # 优化: 只有当二进制文件不存在时才尝试安装/更新
     if [ -f "$ACME_BIN" ]; then return 0; fi
     
     log_message WARN "acme.sh 未安装，开始安装..."
@@ -275,7 +274,6 @@ _view_file_with_tail() {
 _view_acme_log() {
     local log_file="$HOME/.acme.sh/acme.sh.log"
     if [ ! -f "$log_file" ]; then log_file="/root/.acme.sh/acme.sh.log"; fi
-    # 移除多余的 touch
     _view_file_with_tail "$log_file"
 }
 
@@ -848,11 +846,8 @@ _display_projects_list() {
 }
 
 _draw_dashboard() {
-    # 移除 clear 命令，保留历史记录
-    local width=72 # 固定宽度以保证标题居中准确
+    local width=72 
     local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1) 
-    
-    # 优化 Uptime 显示，过长截断
     local uptime_raw=$(uptime -p | sed 's/up //')
     if [ ${#uptime_raw} -gt 45 ]; then uptime_raw="${uptime_raw:0:42}..."; fi
     
@@ -863,22 +858,22 @@ _draw_dashboard() {
     fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
 
-    local title="Nginx 管理面板 v4.17.5"
-    local pad_len=25
+    # 固定标题，硬编码填充，彻底解决颜色代码导致的对齐问题
+    local title="Nginx 管理面板 v4.17.6"
+    # "Nginx "(6) + "管理面板"(8, display=4*2=8?) no, printf treats chinese as chars. 
+    # Best way: manual padding. 
+    # Box width 72. Title ~22 visual width. Padding ~25.
     
     echo ""
-    # 标题盒子区
-    echo -e "${GREEN}╭$(_draw_line "$width")╮${NC}"
-    echo -e "${GREEN}│${NC}$(printf "%${pad_len}s" "")${BOLD}${title}${NC}$(printf "%${pad_len}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(_draw_line "$width")╯${NC}"
+    echo -e "${GREEN}╭────────────────────────────────────────────────────────────────────────╮${NC}"
+    echo -e "${GREEN}│${NC}                         ${BOLD}${title}${NC}                         ${GREEN}│${NC}"
+    echo -e "${GREEN}╰────────────────────────────────────────────────────────────────────────╯${NC}"
     
-    # 信息展示区 (不画左右竖线，防止对齐错乱)
     echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC}"
     echo -e " 负载 : ${YELLOW}${load}${NC}"
     echo -e " 项目 : ${BOLD}${count}${NC} | 告警 : ${RED}${warn_count}${NC} | 路径 : ${NGINX_SITES_ENABLED_DIR}"
     
-    # 底部长横线
-    echo -e "${GREEN}$(_draw_line "$((width + 2))")${NC}"
+    echo -e "${GREEN}──────────────────────────────────────────────────────────────────────────${NC}"
 }
 
 manage_configs() {
