@@ -1,11 +1,11 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v77.73-修复启动器临时文件错误)
+# 🚀 VPS 一键安装与管理脚本 (v77.74-优化菜单无图标显示)
 # - 修复: (关键) 将临时文件管理逻辑移至本脚本，并延迟 `trap` 设置，以解决启动器在 `exec` 过程中因过早清理临时文件而导致的 `No such file or directory` 致命错误。
-# - 更新: 脚本版本号。
+# - 优化: 菜单渲染逻辑现在完美兼容无图标（icon字段为空或缺失）的情况，自动移除多余空格。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v77.73"
+SCRIPT_VERSION="v77.74"
 
 # --- 严格模式与环境设定 ---
 set -eo pipefail
@@ -251,10 +251,12 @@ display_and_process_menu() {
         if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。" >&2; exit 1; fi
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
+        
+        # 优化: 使用 // "" 确保 jq 输出空字符串而非 null，避免解析错误
         while IFS=$'\t' read -r icon name type action; do
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
-        done < <(jq -r '.items[] | [.icon, .name, .type, .action] | @tsv' <<< "$menu_json" 2>/dev/null || true)
+        done < <(jq -r '.items[] | [.icon // "", .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a formatted_items_for_render=() first_cols_content=() second_cols_content=()
         local max_first_col_width=0
@@ -267,7 +269,16 @@ display_and_process_menu() {
                 case "$action" in "docker.sh") status_key="docker" ;; "nginx.sh") status_key="nginx" ;; "TOOLS_MENU") status_key="watchtower" ;; esac
             fi
             if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"; fi
-            local first_col_display_content="$(printf "%d. %s %s" "$(( ${#first_cols_content[@]} + 1 ))" "$icon" "$name")"
+            
+            # 优化: 兼容无图标显示，移除多余空格
+            local idx="$(( ${#first_cols_content[@]} + 1 ))"
+            local first_col_display_content
+            if [ -n "$icon" ]; then
+                first_col_display_content="$(printf "%d. %s %s" "$idx" "$icon" "$name")"
+            else
+                first_col_display_content="$(printf "%d. %s" "$idx" "$name")"
+            fi
+
             first_cols_content+=("$first_col_display_content"); second_cols_content+=("$status_text")
             if [ -n "$status_text" ]; then
                 local current_visual_width=$(_get_visual_width "$first_col_display_content")
@@ -284,7 +295,15 @@ display_and_process_menu() {
         done
 
         local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do IFS='|' read -r icon name type action <<< "${func_items[i]}"; formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")"); done
+        for i in "${!func_items[@]}"; do 
+            IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
+            # 优化: 功能键菜单项兼容无图标
+            if [ -n "$icon" ]; then
+                formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")")
+            else
+                formatted_items_for_render+=("$(printf "%s. %s" "${func_letters[i]}" "$name")")
+            fi
+        done
         
         _render_menu "$menu_title" "${formatted_items_for_render[@]}"
         
