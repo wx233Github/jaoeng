@@ -1,7 +1,7 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v2.0-修复空图标列错位)
-# - 修复: (关键) 解决 jq 导出 TSV 时首列为空导致 Bash read 列错位，进而导致菜单项消失的问题。
-# - 优化: 增加对纯空格图标的自动修剪。
+# 🚀 VPS 一键安装与管理脚本 (v2.0-修复空图标列漂移)
+# - 修复: (关键) 重写 jq 逻辑，强制处理空字符串为占位符，彻底解决菜单项因列漂移而消失的问题。
+# - 优化: 增强对纯空格图标的清洗，实现无图标时的完美对齐。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -252,15 +252,15 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
-        # 优化: 使用 "NO_ICON" 作为占位符，防止 jq 在空图标时输出空首列导致 bash read 错位
+        # 优化: 强制处理空字符串为 "NO_ICON"，防止 jq 输出空首列导致 bash read 列错位
         while IFS=$'\t' read -r icon name type action; do
-            # 兼容性修复: 处理占位符和纯空格
+            # 清洗占位符和纯空格
             if [[ "$icon" == "NO_ICON" ]]; then icon=""; fi
             if [[ "$icon" =~ ^[[:space:]]*$ ]]; then icon=""; fi
 
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
-        done < <(jq -r '.items[] | [.icon // "NO_ICON", .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
+        done < <(jq -r '.items[] | [(if (.icon == null or .icon == "") then "NO_ICON" else .icon end), .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a formatted_items_for_render=() first_cols_content=() second_cols_content=()
         local max_first_col_width=0
@@ -376,14 +376,14 @@ main() {
         local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
         printf "\r$(_log_prefix)${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
-        local restart_needed=false
+        local updated_core_files=false
         local update_messages=""
 
         if [ -n "$updated_files_list" ]; then
             for file in $updated_files_list; do
                 local filename; filename=$(basename "$file")
                 if [[ "$filename" == "install.sh" ]]; then
-                    restart_needed=true
+                    updated_core_files=true
                     update_messages+="主程序 (install.sh) 已更新\n"
                 else
                     update_messages+="${GREEN}${filename}${NC} 已更新\n"
@@ -402,7 +402,7 @@ main() {
                 done
             fi
 
-            if [ "$restart_needed" = true ]; then
+            if [ "$updated_core_files" = true ]; then
                 log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
                 flock -u 200 2>/dev/null || true; trap - EXIT
                 exec sudo -E JB_RESTARTED="true" bash "$FINAL_SCRIPT_PATH" "$@"
