@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v6.0.0 - 六边形战士 / 全栈极限重构版)
+# 🚀 tcp_optimizer.sh (v6.1.0 - 全维度内核掌控版)
 # =============================================================
 # 作者：System Admin
-# 描述：全景 Linux 网络调优引擎。彻底击穿全栈并发限制、消除 ARP 溢出、适配 eBPF/io_uring。
+# 描述：全景 Linux 网络调优引擎。集成 VM/IO 调优、熵池填充、立即生效机制与自定义日志路径。
 # 版本历史：
+#   v6.1.0 - 变更日志路径，新增 VM/IO 内存子系统调优，集成 rng-tools 熵池，修复当前会话 ulimit 延迟
 #   v6.0.0 - 重构 Systemd Drop-in，修复 apt 卡死，扩容 ARP 邻居表，动态计算 TW/Orphans，引入 eBPF 加速
 #   v5.9.0 - 修复后台服务并发瓶颈，UDP/QUIC 画像分级，抗 CC 扩容，补齐 IPv6 路由回收
-#   v5.8.0 - 移除低内存熔断，修复 Conntrack 哈希碰撞漏洞，新增 UDP/QUIC 加速，开启端口极速复用
 # =============================================================
 
 set -euo pipefail
@@ -15,6 +15,10 @@ set -euo pipefail
 # -------------------------------------------------------------
 # 全局变量与常量
 # -------------------------------------------------------------
+# 日志与目录配置
+readonly BASE_DIR="/opt/vps_install_modules"
+readonly LOG_FILE="${BASE_DIR}/tcp_optimizer.log"
+
 readonly SYSCTL_d_DIR="/etc/sysctl.d"
 readonly SYSCTL_CONF="${SYSCTL_d_DIR}/99-z-tcp-optimizer.conf"
 
@@ -27,11 +31,9 @@ readonly LIMITS_CONF="/etc/security/limits.d/99-z-tcp-optimizer.conf"
 readonly SYSTEMD_SYS_CONF="/etc/systemd/system.conf.d/99-z-tcp-optimizer.conf"
 readonly SYSTEMD_USR_CONF="/etc/systemd/user.conf.d/99-z-tcp-optimizer.conf"
 
-readonly LOG_FILE="/var/log/tcp_optimizer.log"
-readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-
 readonly NIC_OPT_SERVICE="/etc/systemd/system/nic-optimize.service"
 readonly GAI_CONF="/etc/gai.conf"
+readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
 IS_CONTAINER=0
 IS_CHINA_IP=0
@@ -53,8 +55,11 @@ readonly COLOR_CYAN='\033[0;36m'
 readonly COLOR_BLUE='\033[0;34m'
 
 # -------------------------------------------------------------
-# 基础工具与审计日志
+# 初始化检查与日志系统
 # -------------------------------------------------------------
+
+# 确保日志目录存在
+mkdir -p "${BASE_DIR}"
 
 log_info() { local msg="[$(date '+%F %T')] [INFO] $*"; printf "${COLOR_GREEN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
@@ -84,8 +89,8 @@ check_network_region() {
 
 install_dependencies() {
     local missing=("$@")
-    # 彻底封杀所有交互式窗口 (包括 debconf 确认)
     export DEBIAN_FRONTEND=noninteractive
+    # 强制静默安装参数
     local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
     
     if command -v apt-get &>/dev/null; then
@@ -100,16 +105,24 @@ install_dependencies() {
 }
 
 check_dependencies() {
-    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg ss)
+    # 增加 rng-tools 用于补充系统熵池
+    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg ss rngd)
     local missing=()
+    local install_list=()
+
+    # 特殊处理 rngd 命令，对应的包名通常是 rng-tools
     for cmd in "${deps[@]}"; do 
-        if ! command -v "${cmd}" &> /dev/null; then missing+=("${cmd}"); fi
+        if ! command -v "${cmd}" &> /dev/null; then 
+            missing+=("${cmd}")
+            if [[ "${cmd}" == "rngd" ]]; then install_list+=("rng-tools"); else install_list+=("${cmd}"); fi
+        fi
     done
+    
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${COLOR_YELLOW}缺失依赖: ${missing[*]}${COLOR_RESET}"
         check_network_region
         read -rp "自动安装缺失依赖? [y/N]: " ui_dep
-        if [[ "${ui_dep,,}" == "y" ]]; then install_dependencies "${missing[@]}"; else exit 1; fi
+        if [[ "${ui_dep,,}" == "y" ]]; then install_dependencies "${install_list[@]}"; else exit 1; fi
     fi
 }
 
@@ -129,24 +142,24 @@ check_environment() {
     fi
     
     TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
-    
-    # 检测 IPv6 协议栈是否可用
     if [[ -d "/proc/sys/net/ipv6" ]]; then HAS_IPV6_STACK=1; else HAS_IPV6_STACK=0; fi
-    
     check_systemd
 }
 
 version_ge() { local lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1); [[ "${lower}" == "$2" ]]; }
 
 # -------------------------------------------------------------
-# 模块：系统资源极限解封 (Drop-in 模式)
+# 模块：系统资源极限解封 (Drop-in + 当前会话)
 # -------------------------------------------------------------
 
 apply_system_limits() {
     if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
     log_step "配置全栈进程级极限句柄 (Drop-in 架构)..."
     
-    # 用户态
+    # 1. 立即为当前脚本及子进程解封，防止脚本内重启服务时继承旧限制
+    ulimit -SHn 1048576 2>/dev/null || true
+
+    # 2. 永久化配置 - 用户态
     mkdir -p "$(dirname "${LIMITS_CONF}")"
     cat <<EOF > "${LIMITS_CONF}"
 * soft nofile 1048576
@@ -155,10 +168,9 @@ root soft nofile 1048576
 root hard nofile 1048576
 EOF
 
-    # Systemd 守护进程层 (使用标准安全的 Drop-in 文件覆盖，绝不修改主配置)
+    # 3. 永久化配置 - Systemd 守护进程层 (使用标准安全的 Drop-in 文件覆盖)
     if [[ ${IS_SYSTEMD} -eq 1 ]]; then
         mkdir -p "$(dirname "${SYSTEMD_SYS_CONF}")" "$(dirname "${SYSTEMD_USR_CONF}")"
-        
         cat <<EOF > "${SYSTEMD_SYS_CONF}"
 [Manager]
 DefaultLimitNOFILE=1048576
@@ -287,12 +299,11 @@ generate_sysctl_content() {
     local is_aggressive="$3"
     local target_ecn="$4"
     
-    # --- 动态算力感知引擎 ---
     local buffer_size="134217728" # 无脑 128MB 全时激进
     local syn_backlog="16384"
     local udp_min="16384"
     
-    # 根据实际内存动态推演最佳连接桶
+    # 动态推演最佳连接桶
     local tw_buckets=$(( TOTAL_MEM_KB / 32 ))
     local max_orphans=$(( TOTAL_MEM_KB / 64 ))
     [[ ${tw_buckets} -lt 55000 ]] && tw_buckets=55000
@@ -304,7 +315,7 @@ generate_sysctl_content() {
     fi
 
     echo "# ============================================================="
-    echo "# TCP Optimizer Configuration (Auto-generated v6.0.0)"
+    echo "# TCP Optimizer Configuration (Auto-generated v6.1.0)"
     echo "# ============================================================="
 
     cat <<EOF
@@ -316,6 +327,12 @@ net.core.netdev_max_backlog = 16384
 net.ipv4.ip_local_port_range = 10000 65000
 net.ipv4.tcp_max_syn_backlog = ${syn_backlog}
 net.ipv4.tcp_syncookies = 1
+
+# --- VM/IO 内存子系统调优 (防卡死) ---
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
 
 # --- 单人狂暴缓冲区 (128MB) ---
 net.core.rmem_max = ${buffer_size}
@@ -349,6 +366,7 @@ net.ipv4.tcp_congestion_control = ${target_cc}
 net.ipv4.tcp_ecn = ${target_ecn}
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_frto = 2
 
 # --- 路由安全与 ARP 邻居表扩容 ---
 net.ipv4.route.gc_timeout = 100
@@ -362,7 +380,6 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 EOF
 
-    # IPv6 特化：仅在宿主机支持 IPv6 时注入，防止内核报错
     if [[ ${HAS_IPV6_STACK} -eq 1 ]]; then
         cat <<EOF
 net.ipv6.neigh.default.gc_stale_time = 60
@@ -471,7 +488,7 @@ show_menu() {
     [[ ${active_conn} -lt 0 ]] && active_conn=0
 
     echo "========================================================"
-    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.0.0 Hexagon Edition)${COLOR_RESET}"
+    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.1.0 Hexagon Edition)${COLOR_RESET}"
     echo "========================================================"
     echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    并发承载: ${COLOR_GREEN}${active_conn} 活跃连接${COLOR_RESET}"
     echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}"
