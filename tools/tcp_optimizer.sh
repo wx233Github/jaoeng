@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v5.4.0 - 终极画像调优引擎)
+# 🚀 tcp_optimizer.sh (v5.5.0 - 终极画像调优引擎 / 容错增强版)
 # =============================================================
 # 作者：System Admin
-# 描述：全景 Linux 网络调优引擎。集成 XanMod 向导、终极画像选择、BBRv3/CAKE 智能检测。
+# 描述：全景 Linux 网络调优引擎。集成 XanMod 向导、终极画像选择。
 # 版本历史：
-#   v5.4.0 - 重构菜单 UI，细化 Gaming/Streaming/Balanced 画像策略，增强 BBRv3 检测
-#   v5.3.0 - 新增 XanMod 内核向导、应用画像 (Profile) 系统、移除动态缓冲、加入激进抢占模式
-#   v5.2.0 - 迁移至 /etc/sysctl.d 独立文件
+#   v5.5.0 - 修复 sysctl/modprobe 失败导致脚本意外退出的 Bug，增强容器兼容性
+#   v5.4.0 - 重构菜单 UI，细化 Gaming/Streaming/Balanced 画像策略
+#   v5.3.0 - 新增 XanMod 内核向导、应用画像 (Profile) 系统
 # =============================================================
 
 set -euo pipefail
@@ -31,11 +31,6 @@ IS_CONTAINER=0
 IS_CHINA_IP=0
 IS_SYSTEMD=0
 TOTAL_MEM_KB=0
-
-# 内核版本基线 (参考)
-readonly MIN_KERNEL_BBR="4.9"
-readonly MIN_KERNEL_CAKE="4.19"
-readonly MIN_KERNEL_FQ_PIE="5.6"
 
 # 颜色定义
 readonly COLOR_RESET='\033[0m'
@@ -75,7 +70,6 @@ check_systemd() {
 }
 
 check_network_region() {
-    # 简单的连通性测试
     if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then
         IS_CHINA_IP=0
     else
@@ -86,7 +80,8 @@ check_network_region() {
 install_dependencies() {
     local missing=("$@")
     if command -v apt-get &>/dev/null; then
-        apt-get update -yq || true
+        # 容错：update 失败不应中断脚本
+        apt-get update -yq || true 
         apt-get install -yq "${missing[@]}"
     elif command -v yum &>/dev/null; then
         yum install -y "${missing[@]}"
@@ -123,8 +118,6 @@ check_environment() {
     check_systemd
 }
 
-version_ge() { local lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1); [[ "${lower}" == "$2" ]]; }
-
 # -------------------------------------------------------------
 # 模块：XanMod 内核向导
 # -------------------------------------------------------------
@@ -159,7 +152,7 @@ install_xanmod_kernel() {
     echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
 
     log_step "更新并安装..."
-    apt-get update -y
+    apt-get update -y || true
     if apt-get install -y linux-xanmod-x64v3; then
         echo -e "${COLOR_GREEN}XanMod 内核安装成功！${COLOR_RESET}"
         echo -e "${COLOR_YELLOW}请重启服务器以启用新内核。${COLOR_RESET}"
@@ -232,12 +225,9 @@ EOF
 inject_bbr_module_params() {
     [[ ${IS_CONTAINER} -eq 1 ]] && return 0
     local target_cc="$1"
-    # 若 BBRv3，模块名通常仍为 tcp_bbr，但检查是否需加载 bbr3
     [[ ! "${target_cc}" =~ ^bbr ]] && return 0
     
-    # 大多数内核模块名为 tcp_bbr，即使是 v3
     local mod_name="tcp_bbr"
-    # 部分专版内核可能分离
     if [[ "${target_cc}" == "bbr3" ]] && modprobe -n tcp_bbr3 &>/dev/null; then mod_name="tcp_bbr3"; fi
 
     local param_file="/sys/module/${mod_name}/parameters/min_rtt_win_sec"
@@ -246,7 +236,6 @@ inject_bbr_module_params() {
         echo 2 > "${param_file}" 2>/dev/null || true
         mkdir -p "$(dirname "${MODPROBE_D_CONF}")"
         echo "options ${mod_name} min_rtt_win_sec=2" > "${MODPROBE_D_CONF}"
-        log_info "注入 BBR 参数: min_rtt_win_sec=2"
     fi
 }
 
@@ -258,8 +247,6 @@ generate_sysctl_content() {
     local target_qdisc="$1"
     local target_cc="$2"
     local is_aggressive="$3"
-    
-    # 全时激进缓冲区 (128MB)
     local buffer_size="134217728" 
 
     echo "# ============================================================="
@@ -324,65 +311,79 @@ apply_profile() {
     local target_qdisc=""
     local target_cc="bbr"
     local is_aggressive=0
-    local kver=$(uname -r | cut -d- -f1)
 
-    # 检测可用算法
+    # 1. 检测可用算法
     local avail_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
     local has_bbr3=0
     if echo "${avail_cc}" | grep -qw "bbr3"; then has_bbr3=1; fi
 
+    # 2. 确定策略 (与 v5.4.0 逻辑一致)
     case "${profile_type}" in
         "gaming")
-            # 1. 极速网游: BBRv3 + CAKE (优先) > BBRv1 + FQ_PIE
+            # 极速网游: BBRv3 + CAKE (优先) > BBRv1 + FQ_PIE
             log_step "加载画像: [极速网游 / Gaming]"
             if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
             
-            if modprobe sch_cake &>/dev/null; then 
-                target_qdisc="cake"
-            elif modprobe sch_fq_pie &>/dev/null; then 
-                target_qdisc="fq_pie"
-            else 
-                target_qdisc="fq"
-            fi
+            # 使用 set +e 探测模块，避免脚本退出
+            set +e
+            if modprobe sch_cake >/dev/null 2>&1; then target_qdisc="cake"
+            elif modprobe sch_fq_pie >/dev/null 2>&1; then target_qdisc="fq_pie"
+            else target_qdisc="fq"; fi
+            set -e
+            
             is_aggressive=0
             ;;
         "streaming")
-            # 2. 流媒体: BBRv1 + FQ + 激进参数
+            # 流媒体: BBRv1 + FQ + 激进参数
             log_step "加载画像: [流媒体 / Streaming]"
-            target_cc="bbr" # 强制 v1
+            target_cc="bbr" 
             target_qdisc="fq"
             is_aggressive=1
             ;;
         "balanced")
-            # 3. 平衡模式: BBRv3 + FQ_PIE
+            # 平衡模式: BBRv3 + FQ_PIE
             log_step "加载画像: [平衡模式 / Balanced]"
             if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
             
-            if modprobe sch_fq_pie &>/dev/null; then
-                target_qdisc="fq_pie"
-            else
-                target_qdisc="fq"
-            fi
+            set +e
+            if modprobe sch_fq_pie >/dev/null 2>&1; then target_qdisc="fq_pie"
+            else target_qdisc="fq"; fi
+            set -e
+            
             is_aggressive=0
             ;;
     esac
 
-    # 加载模块
-    [[ ${IS_CONTAINER} -eq 0 ]] && {
+    # 3. 加载模块 (容错处理)
+    if [[ ${IS_CONTAINER} -eq 0 ]]; then
+        log_step "加载内核模块..."
+        set +e # 关闭严格模式，防止模块加载失败(如VPS锁定内核)导致退出
         [[ "${target_qdisc}" != "fq" ]] && modprobe "sch_${target_qdisc}" 2>/dev/null
         modprobe "tcp_${target_cc}" 2>/dev/null
-    }
+        set -e
+    fi
 
+    # 4. 硬件调优与参数注入
     optimize_nic_hardware
     inject_bbr_module_params "${target_cc}" "${is_aggressive}"
     
+    # 5. 写入与应用 Sysctl
     log_step "写入 Sysctl 配置..."
     mkdir -p "${SYSCTL_d_DIR}"
     generate_sysctl_content "${target_qdisc}" "${target_cc}" "${is_aggressive}" > "${SYSCTL_CONF}"
 
-    # 生效
-    modprobe nf_conntrack 2>/dev/null || true
-    sysctl -p "${SYSCTL_CONF}" 2>/dev/null || sysctl --system >/dev/null
+    # 生效 (关键修复：允许失败)
+    set +e
+    modprobe nf_conntrack >/dev/null 2>&1
+    log_step "应用内核参数 (可能出现部分参数报错，已自动忽略)..."
+    
+    if sysctl -p "${SYSCTL_CONF}" >/dev/null 2>&1; then
+        log_info "内核参数完整加载成功。"
+    else
+        log_warn "部分内核参数应用失败。原因可能是：1.容器环境权限不足 2.内核版本不支持特定参数(如CAKE/SlowStart)。"
+        log_warn "但这通常是无害的，有效参数已生效。"
+    fi
+    set -e
 
     log_info "✅ 优化完成！"
     if [[ "${is_aggressive}" == "1" ]]; then
@@ -423,7 +424,7 @@ show_menu() {
     clear
     local mem_mb=$((TOTAL_MEM_KB / 1024))
     echo "========================================================"
-    echo -e " 终极画像调优引擎 ${COLOR_YELLOW}(v5.4.0)${COLOR_RESET}"
+    echo -e " 终极画像调优引擎 ${COLOR_YELLOW}(v5.5.0 Stable)${COLOR_RESET}"
     echo "========================================================"
     get_current_status
     echo "--------------------------------------------------------"
