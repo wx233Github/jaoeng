@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v5.5.0 - 终极画像调优引擎 / 容错增强版)
+# 🚀 tcp_optimizer.sh (v5.6.0 - 终极修复版)
 # =============================================================
 # 作者：System Admin
 # 描述：全景 Linux 网络调优引擎。集成 XanMod 向导、终极画像选择。
 # 版本历史：
-#   v5.5.0 - 修复 sysctl/modprobe 失败导致脚本意外退出的 Bug，增强容器兼容性
+#   v5.6.0 - 修复 check_environment 中 grep 导致的脚本崩溃，增加行号报错追踪
+#   v5.5.0 - 修复 sysctl/modprobe 失败导致脚本意外退出的 Bug
 #   v5.4.0 - 重构菜单 UI，细化 Gaming/Streaming/Balanced 画像策略
-#   v5.3.0 - 新增 XanMod 内核向导、应用画像 (Profile) 系统
 # =============================================================
 
 set -euo pipefail
@@ -22,7 +22,6 @@ readonly MODULES_LOAD_DIR="/etc/modules-load.d"
 readonly MODULES_CONF="${MODULES_LOAD_DIR}/tcp_optimizer.conf"
 readonly MODPROBE_D_CONF="/etc/modprobe.d/tcp_optimizer_bbr.conf"
 readonly LOG_FILE="/var/log/tcp_optimizer.log"
-readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
 readonly NIC_OPT_SERVICE="/etc/systemd/system/nic-optimize.service"
 readonly GAI_CONF="/etc/gai.conf"
@@ -51,10 +50,15 @@ log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s$
 log_warn() { local msg="[$(date '+%F %T')] [WARN] $*"; printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 
+# 增强版 cleanup：支持打印出错行号
 cleanup() { 
     local exit_code=$?
+    # 获取出错的行号 (从 BASH_LINENO 数组中提取调用栈顶)
+    local err_line=${BASH_LINENO[0]}
+    
     if [[ $exit_code -ne 0 ]]; then 
-        log_warn "脚本异常退出 (Code: ${exit_code})。请检查日志 ${LOG_FILE}"
+        log_warn "脚本异常退出 (Code: ${exit_code})，错误发生在第 ${err_line} 行附近。"
+        log_warn "请检查日志文件: ${LOG_FILE}"
     fi
 }
 trap cleanup EXIT
@@ -80,7 +84,6 @@ check_network_region() {
 install_dependencies() {
     local missing=("$@")
     if command -v apt-get &>/dev/null; then
-        # 容错：update 失败不应中断脚本
         apt-get update -yq || true 
         apt-get install -yq "${missing[@]}"
     elif command -v yum &>/dev/null; then
@@ -107,10 +110,19 @@ check_dependencies() {
 
 check_environment() {
     local virt_type="none"
-    if command -v systemd-detect-virt &>/dev/null; then virt_type=$(systemd-detect-virt -c || echo none); else
-        grep -q "docker" /proc/1/cgroup 2>/dev/null && virt_type="docker"
-        [[ -f /proc/user_beancounters ]] && virt_type="openvz"
+    
+    # 修复：systemd-detect-virt 可能失败，必须处理
+    if command -v systemd-detect-virt &>/dev/null; then 
+        virt_type=$(systemd-detect-virt -c || echo "none")
+    else
+        # 修复：grep 在 set -e 下找不到匹配会导致退出，必须包裹在 if 中
+        if grep -q "docker" /proc/1/cgroup 2>/dev/null; then
+            virt_type="docker"
+        elif [[ -f /proc/user_beancounters ]]; then
+            virt_type="openvz"
+        fi
     fi
+
     if [[ "${virt_type}" != "none" && "${virt_type}" != "kvm" && "${virt_type}" != "vmware" && "${virt_type}" != "microsoft" ]]; then
         IS_CONTAINER=1
     fi
@@ -228,7 +240,10 @@ inject_bbr_module_params() {
     [[ ! "${target_cc}" =~ ^bbr ]] && return 0
     
     local mod_name="tcp_bbr"
-    if [[ "${target_cc}" == "bbr3" ]] && modprobe -n tcp_bbr3 &>/dev/null; then mod_name="tcp_bbr3"; fi
+    # 这里 modprobe -n 可能会失败，必须保护
+    if [[ "${target_cc}" == "bbr3" ]]; then
+        if modprobe -n tcp_bbr3 &>/dev/null; then mod_name="tcp_bbr3"; fi
+    fi
 
     local param_file="/sys/module/${mod_name}/parameters/min_rtt_win_sec"
     
@@ -317,31 +332,28 @@ apply_profile() {
     local has_bbr3=0
     if echo "${avail_cc}" | grep -qw "bbr3"; then has_bbr3=1; fi
 
-    # 2. 确定策略 (与 v5.4.0 逻辑一致)
     case "${profile_type}" in
         "gaming")
-            # 极速网游: BBRv3 + CAKE (优先) > BBRv1 + FQ_PIE
+            # 极速网游
             log_step "加载画像: [极速网游 / Gaming]"
             if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
             
-            # 使用 set +e 探测模块，避免脚本退出
             set +e
             if modprobe sch_cake >/dev/null 2>&1; then target_qdisc="cake"
             elif modprobe sch_fq_pie >/dev/null 2>&1; then target_qdisc="fq_pie"
             else target_qdisc="fq"; fi
             set -e
-            
             is_aggressive=0
             ;;
         "streaming")
-            # 流媒体: BBRv1 + FQ + 激进参数
+            # 流媒体
             log_step "加载画像: [流媒体 / Streaming]"
             target_cc="bbr" 
             target_qdisc="fq"
             is_aggressive=1
             ;;
         "balanced")
-            # 平衡模式: BBRv3 + FQ_PIE
+            # 平衡
             log_step "加载画像: [平衡模式 / Balanced]"
             if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
             
@@ -349,40 +361,32 @@ apply_profile() {
             if modprobe sch_fq_pie >/dev/null 2>&1; then target_qdisc="fq_pie"
             else target_qdisc="fq"; fi
             set -e
-            
             is_aggressive=0
             ;;
     esac
 
-    # 3. 加载模块 (容错处理)
+    # 3. 加载模块
     if [[ ${IS_CONTAINER} -eq 0 ]]; then
         log_step "加载内核模块..."
-        set +e # 关闭严格模式，防止模块加载失败(如VPS锁定内核)导致退出
+        set +e
         [[ "${target_qdisc}" != "fq" ]] && modprobe "sch_${target_qdisc}" 2>/dev/null
         modprobe "tcp_${target_cc}" 2>/dev/null
         set -e
     fi
 
-    # 4. 硬件调优与参数注入
+    # 4. 硬件与参数
     optimize_nic_hardware
     inject_bbr_module_params "${target_cc}" "${is_aggressive}"
     
-    # 5. 写入与应用 Sysctl
+    # 5. 写入与应用
     log_step "写入 Sysctl 配置..."
     mkdir -p "${SYSCTL_d_DIR}"
     generate_sysctl_content "${target_qdisc}" "${target_cc}" "${is_aggressive}" > "${SYSCTL_CONF}"
 
-    # 生效 (关键修复：允许失败)
     set +e
     modprobe nf_conntrack >/dev/null 2>&1
-    log_step "应用内核参数 (可能出现部分参数报错，已自动忽略)..."
-    
-    if sysctl -p "${SYSCTL_CONF}" >/dev/null 2>&1; then
-        log_info "内核参数完整加载成功。"
-    else
-        log_warn "部分内核参数应用失败。原因可能是：1.容器环境权限不足 2.内核版本不支持特定参数(如CAKE/SlowStart)。"
-        log_warn "但这通常是无害的，有效参数已生效。"
-    fi
+    log_step "应用内核参数 (忽略非致命错误)..."
+    sysctl -p "${SYSCTL_CONF}" >/dev/null 2>&1 || true
     set -e
 
     log_info "✅ 优化完成！"
@@ -424,7 +428,7 @@ show_menu() {
     clear
     local mem_mb=$((TOTAL_MEM_KB / 1024))
     echo "========================================================"
-    echo -e " 终极画像调优引擎 ${COLOR_YELLOW}(v5.5.0 Stable)${COLOR_RESET}"
+    echo -e " 终极画像调优引擎 ${COLOR_YELLOW}(v5.6.0 Stable)${COLOR_RESET}"
     echo "========================================================"
     get_current_status
     echo "--------------------------------------------------------"
