@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v6.2.0 - 自举修复与全栈掌控版)
+# 🚀 tcp_optimizer.sh (v6.2.1 - 致命逻辑修复版)
 # =============================================================
 # 作者：System Admin
-# 描述：全景 Linux 网络调优引擎。修复无 Curl 启动崩溃，集成 VM/IO 调优、熵池填充与全栈解封。
+# 描述：全景 Linux 网络调优引擎。修复 check_root 致命逻辑漏洞，优化错误报告与 ulimit 容错。
 # 版本历史：
+#   v6.2.1 - 修复 check_root 在 root 用户下因 set -e 崩溃的致命逻辑漏洞，优化 trap 提示
 #   v6.2.0 - 修复缺少 Curl 时的启动死锁，优化 rng-tools 容错，增加崩溃行号捕捉
 #   v6.1.0 - 变更日志路径，新增 VM/IO 内存子系统调优，集成 rng-tools 熵池
-#   v6.0.0 - 重构 Systemd Drop-in，修复 apt 卡死，扩容 ARP 邻居表，动态计算 TW/Orphans
 # =============================================================
 
 set -euo pipefail
@@ -15,7 +15,6 @@ set -euo pipefail
 # -------------------------------------------------------------
 # 全局变量与常量
 # -------------------------------------------------------------
-# 日志与目录配置
 readonly BASE_DIR="/opt/vps_install_modules"
 readonly LOG_FILE="${BASE_DIR}/tcp_optimizer.log"
 
@@ -58,7 +57,6 @@ readonly COLOR_BLUE='\033[0;34m'
 # 初始化检查与日志系统
 # -------------------------------------------------------------
 
-# 确保日志目录存在
 mkdir -p "${BASE_DIR}"
 
 log_info() { local msg="[$(date '+%F %T')] [INFO] $*"; printf "${COLOR_GREEN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
@@ -66,14 +64,14 @@ log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s$
 log_warn() { local msg="[$(date '+%F %T')] [WARN] $*"; printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 
-# 增强的错误捕获：打印出错行号
+# 增强的错误捕获
 error_handler() {
     local exit_code=$?
     local line_no=$1
     local command="${BASH_COMMAND}"
     if [[ $exit_code -ne 0 ]]; then
         log_error "脚本异常退出! (Line: ${line_no}, Command: '${command}', ExitCode: ${exit_code})"
-        echo -e "${COLOR_RED}提示：这通常是网络连接超时或依赖安装失败导致的。${COLOR_RESET}"
+        echo -e "${COLOR_RED}提示：一个命令执行失败导致脚本终止。请检查上方报告的行号与命令。${COLOR_RESET}"
     fi
 }
 trap 'error_handler ${LINENO}' EXIT
@@ -82,14 +80,19 @@ trap 'error_handler ${LINENO}' EXIT
 # 环境与内核检查
 # -------------------------------------------------------------
 
-check_root() { [[ "$(id -u)" -ne 0 ]] && { log_error "需要 root 权限。"; exit 1; } }
+check_root() {
+    # 修复：必须使用 if...fi 结构，否则 set -e 会在检查通过时（返回非零）中断脚本
+    if [[ "$(id -u)" -ne 0 ]]; then
+        log_error "需要 root 权限。"
+        exit 1
+    fi
+}
 
 check_systemd() {
     if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null || echo ""); then IS_SYSTEMD=1; else IS_SYSTEMD=0; fi
 }
 
 check_network_region() {
-    # 修复死锁：如果系统连 curl/wget 都没有，直接默认为国际网络，跳过检测，防止报错
     if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
         log_warn "未检测到 curl/wget，跳过网络区域检测 (默认: Global)。"
         IS_CHINA_IP=0
@@ -100,20 +103,13 @@ check_network_region() {
     local check_url="https://www.google.com"
     local status=1
     
-    # 优先尝试 curl
     if command -v curl &>/dev/null; then
         if curl -s --connect-timeout 2 -I "${check_url}" >/dev/null 2>&1; then status=0; fi
-    # 降级尝试 wget
     elif command -v wget &>/dev/null; then
         if wget -q --spider --timeout=2 "${check_url}" >/dev/null 2>&1; then status=0; fi
     fi
 
-    if [[ ${status} -eq 0 ]]; then
-        IS_CHINA_IP=0
-    else
-        log_info "连接 Google 失败，判定为国内网络或网络受限。"
-        IS_CHINA_IP=1
-    fi
+    if [[ ${status} -eq 0 ]]; then IS_CHINA_IP=0; else IS_CHINA_IP=1; fi
 }
 
 install_dependencies() {
@@ -140,23 +136,16 @@ check_dependencies() {
     for cmd in "${deps[@]}"; do 
         if ! command -v "${cmd}" &> /dev/null; then 
             missing+=("${cmd}")
-            # rngd 对应的包名通常是 rng-tools，做特殊映射
-            if [[ "${cmd}" == "rngd" ]]; then 
-                install_list+=("rng-tools")
-            else 
-                install_list+=("${cmd}")
-            fi
+            if [[ "${cmd}" == "rngd" ]]; then install_list+=("rng-tools"); else install_list+=("${cmd}"); fi
         fi
     done
     
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${COLOR_YELLOW}缺失依赖: ${missing[*]}${COLOR_RESET}"
-        check_network_region # 此时即使没有curl也不会崩，因为修复了check_network_region
+        check_network_region
         
-        # 自动安装，不再询问（防止脚本非交互时卡死），或者如果需要询问请保留 read
         read -rp "自动安装缺失依赖? [y/N]: " ui_dep
         if [[ "${ui_dep,,}" == "y" ]]; then 
-            # 尝试安装
             install_dependencies "${install_list[@]}" || log_warn "部分依赖安装失败，尝试继续运行..."
         else 
             exit 1
@@ -194,10 +183,8 @@ apply_system_limits() {
     if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
     log_step "配置全栈进程级极限句柄 (Drop-in 架构)..."
     
-    # 1. 立即为当前脚本及子进程解封
     ulimit -SHn 1048576 2>/dev/null || true
 
-    # 2. 永久化配置 - 用户态
     mkdir -p "$(dirname "${LIMITS_CONF}")"
     cat <<EOF > "${LIMITS_CONF}"
 * soft nofile 1048576
@@ -206,7 +193,6 @@ root soft nofile 1048576
 root hard nofile 1048576
 EOF
 
-    # 3. 永久化配置 - Systemd 守护进程层 (使用标准安全的 Drop-in 文件覆盖)
     if [[ ${IS_SYSTEMD} -eq 1 ]]; then
         mkdir -p "$(dirname "${SYSTEMD_SYS_CONF}")" "$(dirname "${SYSTEMD_USR_CONF}")"
         cat <<EOF > "${SYSTEMD_SYS_CONF}"
@@ -337,11 +323,10 @@ generate_sysctl_content() {
     local is_aggressive="$3"
     local target_ecn="$4"
     
-    local buffer_size="134217728" # 无脑 128MB 全时激进
+    local buffer_size="134217728" 
     local syn_backlog="16384"
     local udp_min="16384"
     
-    # 动态推演最佳连接桶
     local tw_buckets=$(( TOTAL_MEM_KB / 32 ))
     local max_orphans=$(( TOTAL_MEM_KB / 64 ))
     [[ ${tw_buckets} -lt 55000 ]] && tw_buckets=55000
@@ -353,11 +338,10 @@ generate_sysctl_content() {
     fi
 
     echo "# ============================================================="
-    echo "# TCP Optimizer Configuration (Auto-generated v6.2.0)"
+    echo "# TCP Optimizer Configuration (Auto-generated v6.2.1)"
     echo "# ============================================================="
 
     cat <<EOF
-# --- 系统级并发硬顶板 ---
 fs.file-max = 67108864
 fs.nr_open = 10485760
 net.core.somaxconn = 65535
@@ -365,28 +349,20 @@ net.core.netdev_max_backlog = 16384
 net.ipv4.ip_local_port_range = 10000 65000
 net.ipv4.tcp_max_syn_backlog = ${syn_backlog}
 net.ipv4.tcp_syncookies = 1
-
-# --- VM/IO 内存子系统调优 (防卡死) ---
 vm.swappiness = 10
 vm.vfs_cache_pressure = 50
 vm.dirty_ratio = 10
 vm.dirty_background_ratio = 5
-
-# --- 单人狂暴缓冲区 (128MB) ---
 net.core.rmem_max = ${buffer_size}
 net.core.wmem_max = ${buffer_size}
 net.core.rmem_default = ${buffer_size}
 net.core.wmem_default = ${buffer_size}
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_limit_output_bytes = 131072
-
-# --- 现代协议栈加速 (UDP/eBPF/io_uring) ---
 net.ipv4.udp_rmem_min = ${udp_min}
 net.ipv4.udp_wmem_min = ${udp_min}
 net.core.bpf_jit_enable = 1
 net.core.optmem_max = 131072
-
-# --- 极速连接复用与动态容量 ---
 net.netfilter.nf_conntrack_max = 2000000
 net.netfilter.nf_conntrack_tcp_timeout_established = 1200
 net.ipv4.tcp_keepalive_time = 60
@@ -397,16 +373,12 @@ net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_max_tw_buckets = ${tw_buckets}
 net.ipv4.tcp_orphan_retries = 1
 net.ipv4.tcp_max_orphans = ${max_orphans}
-
-# --- 调度算法 ---
 net.core.default_qdisc = ${target_qdisc}
 net.ipv4.tcp_congestion_control = ${target_cc}
 net.ipv4.tcp_ecn = ${target_ecn}
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_frto = 2
-
-# --- 路由安全与 ARP 邻居表扩容 ---
 net.ipv4.route.gc_timeout = 100
 net.ipv4.neigh.default.gc_stale_time = 60
 net.ipv4.neigh.default.gc_thresh1 = 1024
@@ -526,7 +498,7 @@ show_menu() {
     [[ ${active_conn} -lt 0 ]] && active_conn=0
 
     echo "========================================================"
-    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.2.0 Hexagon Edition)${COLOR_RESET}"
+    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.2.1 Hexagon Edition)${COLOR_RESET}"
     echo "========================================================"
     echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    并发承载: ${COLOR_GREEN}${active_conn} 活跃连接${COLOR_RESET}"
     echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}"
@@ -548,6 +520,9 @@ show_menu() {
 }
 
 main() {
+    # 脚本启动后立刻重置 trap，使用增强版 handler
+    trap 'error_handler ${LINENO}' EXIT
+    
     check_root
     check_dependencies
     check_environment
@@ -584,4 +559,8 @@ main() {
     done
 }
 
+# 脚本的主入口点，在执行前重置 trap
 main "${@}"
+
+# 正常退出时，清理 trap，防止 handler 误报
+trap - EXIT
