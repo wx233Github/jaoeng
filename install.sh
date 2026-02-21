@@ -1,7 +1,7 @@
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v2.0-优化菜单无图标显示)
-# - 修复: (关键) 将临时文件管理逻辑移至本脚本，并延迟 `trap` 设置，以解决启动器在 `exec` 过程中因过早清理临时文件而导致的 `No such file or directory` 致命错误。
-# - 优化: 菜单渲染逻辑现在完美兼容无图标（icon字段为空或缺失）的情况，自动移除多余空格。
+# 🚀 VPS 一键安装与管理脚本 (v2.0-修复空图标列错位)
+# - 修复: (关键) 解决 jq 导出 TSV 时首列为空导致 Bash read 列错位，进而导致菜单项消失的问题。
+# - 优化: 增加对纯空格图标的自动修剪。
 # =============================================================
 
 # --- 脚本元数据 ---
@@ -252,11 +252,15 @@ display_and_process_menu() {
 
         local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
         
-        # 优化: 使用 // "" 确保 jq 输出空字符串而非 null，避免解析错误
+        # 优化: 使用 "NO_ICON" 作为占位符，防止 jq 在空图标时输出空首列导致 bash read 错位
         while IFS=$'\t' read -r icon name type action; do
+            # 兼容性修复: 处理占位符和纯空格
+            if [[ "$icon" == "NO_ICON" ]]; then icon=""; fi
+            if [[ "$icon" =~ ^[[:space:]]*$ ]]; then icon=""; fi
+
             local item_data="$icon|$name|$type|$action"
             if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
-        done < <(jq -r '.items[] | [.icon // "", .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
+        done < <(jq -r '.items[] | [.icon // "NO_ICON", .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
         
         local -a formatted_items_for_render=() first_cols_content=() second_cols_content=()
         local max_first_col_width=0
