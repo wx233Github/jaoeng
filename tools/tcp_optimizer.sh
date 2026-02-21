@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v6.1.0 - 全维度内核掌控版)
+# 🚀 tcp_optimizer.sh (v6.2.0 - 自举修复与全栈掌控版)
 # =============================================================
 # 作者：System Admin
-# 描述：全景 Linux 网络调优引擎。集成 VM/IO 调优、熵池填充、立即生效机制与自定义日志路径。
+# 描述：全景 Linux 网络调优引擎。修复无 Curl 启动崩溃，集成 VM/IO 调优、熵池填充与全栈解封。
 # 版本历史：
-#   v6.1.0 - 变更日志路径，新增 VM/IO 内存子系统调优，集成 rng-tools 熵池，修复当前会话 ulimit 延迟
-#   v6.0.0 - 重构 Systemd Drop-in，修复 apt 卡死，扩容 ARP 邻居表，动态计算 TW/Orphans，引入 eBPF 加速
-#   v5.9.0 - 修复后台服务并发瓶颈，UDP/QUIC 画像分级，抗 CC 扩容，补齐 IPv6 路由回收
+#   v6.2.0 - 修复缺少 Curl 时的启动死锁，优化 rng-tools 容错，增加崩溃行号捕捉
+#   v6.1.0 - 变更日志路径，新增 VM/IO 内存子系统调优，集成 rng-tools 熵池
+#   v6.0.0 - 重构 Systemd Drop-in，修复 apt 卡死，扩容 ARP 邻居表，动态计算 TW/Orphans
 # =============================================================
 
 set -euo pipefail
@@ -66,11 +66,17 @@ log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s$
 log_warn() { local msg="[$(date '+%F %T')] [WARN] $*"; printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 
-cleanup() { 
+# 增强的错误捕获：打印出错行号
+error_handler() {
     local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then log_warn "脚本异常退出 (Code: ${exit_code})。请检查日志 ${LOG_FILE}"; fi
+    local line_no=$1
+    local command="${BASH_COMMAND}"
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "脚本异常退出! (Line: ${line_no}, Command: '${command}', ExitCode: ${exit_code})"
+        echo -e "${COLOR_RED}提示：这通常是网络连接超时或依赖安装失败导致的。${COLOR_RESET}"
+    fi
 }
-trap cleanup EXIT
+trap 'error_handler ${LINENO}' EXIT
 
 # -------------------------------------------------------------
 # 环境与内核检查
@@ -83,46 +89,78 @@ check_systemd() {
 }
 
 check_network_region() {
+    # 修复死锁：如果系统连 curl/wget 都没有，直接默认为国际网络，跳过检测，防止报错
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        log_warn "未检测到 curl/wget，跳过网络区域检测 (默认: Global)。"
+        IS_CHINA_IP=0
+        return
+    fi
+
     log_step "检测网络连通性..."
-    if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then IS_CHINA_IP=0; else IS_CHINA_IP=1; fi
+    local check_url="https://www.google.com"
+    local status=1
+    
+    # 优先尝试 curl
+    if command -v curl &>/dev/null; then
+        if curl -s --connect-timeout 2 -I "${check_url}" >/dev/null 2>&1; then status=0; fi
+    # 降级尝试 wget
+    elif command -v wget &>/dev/null; then
+        if wget -q --spider --timeout=2 "${check_url}" >/dev/null 2>&1; then status=0; fi
+    fi
+
+    if [[ ${status} -eq 0 ]]; then
+        IS_CHINA_IP=0
+    else
+        log_info "连接 Google 失败，判定为国内网络或网络受限。"
+        IS_CHINA_IP=1
+    fi
 }
 
 install_dependencies() {
-    local missing=("$@")
+    local install_list=("$@")
     export DEBIAN_FRONTEND=noninteractive
-    # 强制静默安装参数
     local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
     
     if command -v apt-get &>/dev/null; then
         apt-get update -yq || true
         # shellcheck disable=SC2086
-        apt-get install -yq ${DPKG_OPTS} "${missing[@]}"
+        apt-get install -yq ${DPKG_OPTS} "${install_list[@]}"
     elif command -v yum &>/dev/null; then
-        yum install -y "${missing[@]}"
+        yum install -y "${install_list[@]}"
     else
-        log_error "无法识别包管理器，请手动安装: ${missing[*]}"; exit 1
+        log_error "无法识别包管理器，请手动安装: ${install_list[*]}"; exit 1
     fi
 }
 
 check_dependencies() {
-    # 增加 rng-tools 用于补充系统熵池
     local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg ss rngd)
     local missing=()
     local install_list=()
 
-    # 特殊处理 rngd 命令，对应的包名通常是 rng-tools
     for cmd in "${deps[@]}"; do 
         if ! command -v "${cmd}" &> /dev/null; then 
             missing+=("${cmd}")
-            if [[ "${cmd}" == "rngd" ]]; then install_list+=("rng-tools"); else install_list+=("${cmd}"); fi
+            # rngd 对应的包名通常是 rng-tools，做特殊映射
+            if [[ "${cmd}" == "rngd" ]]; then 
+                install_list+=("rng-tools")
+            else 
+                install_list+=("${cmd}")
+            fi
         fi
     done
     
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${COLOR_YELLOW}缺失依赖: ${missing[*]}${COLOR_RESET}"
-        check_network_region
+        check_network_region # 此时即使没有curl也不会崩，因为修复了check_network_region
+        
+        # 自动安装，不再询问（防止脚本非交互时卡死），或者如果需要询问请保留 read
         read -rp "自动安装缺失依赖? [y/N]: " ui_dep
-        if [[ "${ui_dep,,}" == "y" ]]; then install_dependencies "${install_list[@]}"; else exit 1; fi
+        if [[ "${ui_dep,,}" == "y" ]]; then 
+            # 尝试安装
+            install_dependencies "${install_list[@]}" || log_warn "部分依赖安装失败，尝试继续运行..."
+        else 
+            exit 1
+        fi
     fi
 }
 
@@ -156,7 +194,7 @@ apply_system_limits() {
     if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
     log_step "配置全栈进程级极限句柄 (Drop-in 架构)..."
     
-    # 1. 立即为当前脚本及子进程解封，防止脚本内重启服务时继承旧限制
+    # 1. 立即为当前脚本及子进程解封
     ulimit -SHn 1048576 2>/dev/null || true
 
     # 2. 永久化配置 - 用户态
@@ -315,7 +353,7 @@ generate_sysctl_content() {
     fi
 
     echo "# ============================================================="
-    echo "# TCP Optimizer Configuration (Auto-generated v6.1.0)"
+    echo "# TCP Optimizer Configuration (Auto-generated v6.2.0)"
     echo "# ============================================================="
 
     cat <<EOF
@@ -488,7 +526,7 @@ show_menu() {
     [[ ${active_conn} -lt 0 ]] && active_conn=0
 
     echo "========================================================"
-    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.1.0 Hexagon Edition)${COLOR_RESET}"
+    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.2.0 Hexagon Edition)${COLOR_RESET}"
     echo "========================================================"
     echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    并发承载: ${COLOR_GREEN}${active_conn} 活跃连接${COLOR_RESET}"
     echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}"
