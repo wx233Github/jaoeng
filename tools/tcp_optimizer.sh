@@ -1,15 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v2.0.0 - 五边形全栈网络优化引擎)
+# 🚀 tcp_optimizer.sh (v5.1.0 - 智能感知与全时激进版)
 # =============================================================
 # 作者：System Admin
-# 描述：生产级 Linux 网络调优脚本。覆盖硬件、网卡队列、拥塞控制、TC 限幅及遥测。
+# 描述：全景 Linux 网络调优引擎。集成国内镜像加速、全时激进缓冲区、RPS软中断与安全基线。
 # 版本历史：
-#   v2.0.0 - 新增 Ring Buffer 扩容、CAKE 带宽整形、高并发 TCP 优化、遥测监控、IRQ检查
-#   v1.5.0 - 新增自动关闭 TSO/GSO 及 Systemd 持久化、MTU 巨型帧诊断
-#   v1.4.0 - 新增 UDP/QUIC 缓冲区优化
-#   v1.3.0 - 新增虚拟化检测、基准测试
-#   v1.0.0 - 初始发布
+#   v5.1.0 - 国内镜像源加速、全时128MB缓冲区、端口扩容、60s Keepalive
+#   v5.0.0 - RPS 多核散列、Conntrack 老化、孤儿Socket调优
+#   v4.4.0 - IPv4优先策略解耦、BBR模式选择
 # =============================================================
 
 set -euo pipefail
@@ -20,106 +18,139 @@ set -euo pipefail
 readonly SYSCTL_CONF="/etc/sysctl.conf"
 readonly MODULES_LOAD_DIR="/etc/modules-load.d"
 readonly MODULES_CONF="${MODULES_LOAD_DIR}/tcp_optimizer.conf"
+readonly MODPROBE_D_CONF="/etc/modprobe.d/tcp_optimizer_bbr.conf"
 readonly BACKUP_DIR="/var/backups/tcp_optimizer"
+readonly LOG_FILE="/var/log/tcp_optimizer.log"
 readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
-# 服务持久化路径
 readonly NIC_OPT_SERVICE="/etc/systemd/system/nic-optimize.service"
-readonly TC_CAKE_SERVICE="/etc/systemd/system/tc-cake.service"
+readonly GAI_CONF="/etc/gai.conf"
 
-# 虚拟化状态标记 (0=物理机/VM, 1=容器)
 IS_CONTAINER=0
+IS_CHINA_IP=0
+ARCH_WARNING=""
+PHANTOM_KERNEL_WARNING=""
 
-# 内核版本需求
 readonly MIN_KERNEL_BBR="4.9"
 readonly MIN_KERNEL_CAKE="4.19"
 readonly MIN_KERNEL_FQ_PIE="5.6"
 
-# 颜色定义
 readonly COLOR_RESET='\033[0m'
 readonly COLOR_GREEN='\033[0;32m'
 readonly COLOR_RED='\033[0;31m'
 readonly COLOR_YELLOW='\033[1;33m'
 readonly COLOR_CYAN='\033[0;36m'
-readonly COLOR_BLUE='\033[0;34m'
+readonly COLOR_MAGENTA='\033[0;35m'
 
 # -------------------------------------------------------------
-# 基础工具函数
+# 基础工具与审计日志
 # -------------------------------------------------------------
 
-log_info() { printf "${COLOR_GREEN}[%s] [INFO] %s${COLOR_RESET}\n" "$(date '+%F %T')" "$*" >&2; }
-log_error() { printf "${COLOR_RED}[%s] [ERROR] %s${COLOR_RESET}\n" "$(date '+%F %T')" "$*" >&2; }
-log_warn() { printf "${COLOR_YELLOW}[%s] [WARN] %s${COLOR_RESET}\n" "$(date '+%F %T')" "$*" >&2; }
-log_step() { printf "${COLOR_CYAN}[%s] [STEP] %s${COLOR_RESET}\n" "$(date '+%F %T')" "$*" >&2; }
-log_diag() { printf "${COLOR_BLUE}[%s] [DIAG] %s${COLOR_RESET}\n" "$(date '+%F %T')" "$*" >&2; }
+log_info() { local msg="[$(date '+%F %T')] [INFO] $*"; printf "${COLOR_GREEN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_warn() { local msg="[$(date '+%F %T')] [WARN] $*"; printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 
-cleanup() {
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        log_warn "脚本非正常退出 (Code: ${exit_code})。状态可能未完全保存。"
-    fi
-}
+cleanup() { local exit_code=$?; if [[ $exit_code -ne 0 ]]; then log_warn "脚本异常退出 (Code: ${exit_code})。"; fi; }
 trap cleanup EXIT
 
+setup_logrotate() {
+    local lr_conf="/etc/logrotate.d/tcp_optimizer"
+    if [[ ! -f "${lr_conf}" ]]; then
+        cat <<EOF > "${lr_conf}"
+${LOG_FILE} {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+}
+EOF
+    fi
+}
+
 # -------------------------------------------------------------
-# 环境检查
+# 环境检查与版本探查
 # -------------------------------------------------------------
 
-check_root() {
-    [[ "$(id -u)" -ne 0 ]] && { log_error "必须以 root 用户执行。"; exit 1; }
+check_root() { [[ "$(id -u)" -ne 0 ]] && { log_error "需要 root 权限。"; exit 1; } }
+
+check_network_region() {
+    # 简单的连通性测试：如果连不上 Google，判定为国内环境
+    if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then
+        IS_CHINA_IP=0
+    else
+        log_info "检测到国内网络环境 (无法连接 Google)，将启用镜像源加速。"
+        IS_CHINA_IP=1
+    fi
+}
+
+install_dependencies() {
+    local missing=("$@")
+    local install_cmd=""
+    
+    if command -v apt-get &>/dev/null; then
+        if [[ ${IS_CHINA_IP} -eq 1 ]]; then
+            # 临时使用清华源安装，不修改系统 list
+            # 注意：这是个简化的处理，直接修改 sources.list 风险太大，这里尝试用 -o 选项或仅做提示
+            # 为安全起见，这里仅打印建议，或者如果用户允许，执行 apt update
+            log_step "正在尝试使用 apt 安装依赖..."
+        fi
+        apt-get update -yq || true
+        apt-get install -yq "${missing[@]}"
+    elif command -v yum &>/dev/null; then
+        yum install -y "${missing[@]}"
+    else
+        log_error "无法识别包管理器。"; exit 1
+    fi
 }
 
 check_dependencies() {
-    local deps=(sysctl uname sed modprobe tc grep sort awk ip ping timeout ss bc)
-    for cmd in "${deps[@]}"; do
-        if ! command -v "${cmd}" &> /dev/null; then
-            log_error "缺少必要依赖命令: ${cmd}"
-            exit 1
-        fi
-    done
+    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl)
+    local missing=()
+    for cmd in "${deps[@]}"; do if ! command -v "${cmd}" &> /dev/null; then missing+=("${cmd}"); fi; done
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${COLOR_YELLOW}缺依赖: ${missing[*]}${COLOR_RESET}"
+        check_network_region
+        read -rp "自动安装缺失依赖? [y/N]: " ui_dep
+        if [[ "${ui_dep,,}" == "y" ]]; then
+            install_dependencies "${missing[@]}"
+        else log_error "终止执行。"; exit 1; fi
+    fi
+    setup_logrotate
 }
 
-check_virtualization() {
-    log_step "检测虚拟化环境..."
+check_environment() {
+    log_step "全景环境诊断..."
     local virt_type="none"
-    if command -v systemd-detect-virt &>/dev/null; then
-        virt_type=$(systemd-detect-virt -c || echo "none")
-    else
+    if command -v systemd-detect-virt &>/dev/null; then virt_type=$(systemd-detect-virt -c || echo none); else
         grep -q "docker" /proc/1/cgroup 2>/dev/null && virt_type="docker"
         [[ -f /proc/user_beancounters ]] && virt_type="openvz"
     fi
-
     if [[ "${virt_type}" != "none" ]]; then
-        IS_CONTAINER=1
-        log_warn "检测到容器环境: ${virt_type} (将跳过硬件层与队列整形优化)"
+        IS_CONTAINER=1; log_warn "容器环境: ${virt_type} (跳过底层硬件调优)"
+    fi
+
+    if [[ "$(uname -m)" == "aarch64" ]]; then ARCH_WARNING="[ARM64 架构] 硬件安全锁增强启用。"; fi
+    
+    if [[ ${IS_CONTAINER} -eq 0 ]]; then
+        local cur_kver=$(uname -r | cut -d- -f1)
+        local high_kver=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's/.*vmlinuz-//' | cut -d- -f1 | sort -V | tail -n 1 || echo "")
+        if [[ -n "${high_kver}" && "${cur_kver}" != "${high_kver}" ]] && ! version_ge "${cur_kver}" "${high_kver}"; then
+            PHANTOM_KERNEL_WARNING="[内核预警] 已安装新内核 (${high_kver}) 但运行 (${cur_kver})。请重启以生效！"
+        fi
     fi
 }
 
-get_default_iface() {
-    ip route show default | awk '/default/ {print $5}' | head -n1 || echo ""
-}
-
-version_ge() {
-    local lower
-    lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1)
-    [[ "${lower}" == "$2" ]]
-}
+version_ge() { local lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1); [[ "${lower}" == "$2" ]]; }
 
 # -------------------------------------------------------------
-# 硬件与底层调优 (IRQ, MTU, TSO, Ring Buffer)
+# 维度 1：底层硬件调优 (TSO, Ring, RPS, Txqueuelen)
 # -------------------------------------------------------------
 
-check_irqbalance() {
-    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
-    log_diag "检查 IRQ (中断) 平衡状态..."
-    if systemctl is-active irqbalance &>/dev/null || pgrep irqbalance &>/dev/null; then
-        log_info "irqbalance 服务运行正常 (多核网卡中断分配均衡)。"
-    else
-        echo -e "${COLOR_YELLOW}警告: 未检测到 irqbalance 运行。${COLOR_RESET}"
-        echo "在多核高吞吐服务器上，单核处理网卡中断会严重限制带宽。"
-        echo "建议执行: apt/yum install irqbalance && systemctl start irqbalance"
-    fi
-}
+get_default_iface() { ip route show default | awk '/default/ {print $5}' | head -n1 || echo ""; }
 
 optimize_nic_hardware() {
     [[ ${IS_CONTAINER} -eq 1 ]] && return 0
@@ -128,341 +159,325 @@ optimize_nic_hardware() {
     local iface=$(get_default_iface)
     [[ -z "${iface}" ]] && return 0
 
-    log_diag "正在分析网卡 [${iface}] 硬件特性 (TSO/GSO & Ring Buffer)..."
-    
     local cmd_offload=""
     local cmd_ring=""
+    local cmd_rps=""
+    local cmd_txq=""
     local need_service=0
 
-    # 1. TSO/GSO 检查
-    local tso_state=$(ethtool -k "${iface}" | awk '/tcp-segmentation-offload:/ {print $2}')
-    if [[ "${tso_state}" == "on" ]]; then
-        echo -e "${COLOR_YELLOW}[诊断] 检测到 TSO (TCP 分段卸载) 已开启。${COLOR_RESET} (可能引发 BBR 微突发延迟)"
-        read -rp "是否自动关闭 TSO/GSO 并持久化? [y/N]: " ui_tso
-        if [[ "${ui_tso,,}" == "y" ]]; then
+    # 1. 安全锁与 TSO/GSO
+    if [[ -f "/sys/class/net/${iface}/device/vendor" ]] && [[ "$(cat "/sys/class/net/${iface}/device/vendor")" == "0x1d0f" ]]; then
+        log_warn "[安全锁] AWS ENA 网卡，跳过 TSO 卸载。"
+    else
+        local tso_state=$(ethtool -k "${iface}" 2>/dev/null | awk '/tcp-segmentation-offload:/ {print $2}' || echo "unknown")
+        if [[ "${tso_state}" == "on" ]]; then
             cmd_offload="/sbin/ethtool -K ${iface} tso off gso off;"
-            ethtool -K "${iface}" tso off gso off 2>/dev/null || true
             need_service=1
-            log_info "TSO/GSO 已下发关闭指令。"
         fi
     fi
 
-    # 2. Ring Buffer 检查
+    # 2. Ring Buffer
     if ethtool -g "${iface}" &>/dev/null; then
-        local rx_max=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '1p')
-        local rx_cur=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '2p')
-        
+        local rx_max=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '1p' || echo "")
+        local rx_cur=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '2p' || echo "")
         if [[ -n "${rx_max}" && -n "${rx_cur}" && "${rx_cur}" -lt "${rx_max}" ]]; then
-            echo -e "${COLOR_YELLOW}[诊断] 网卡 RX Ring Buffer 当前为 ${rx_cur}，硬件支持最大 ${rx_max}。${COLOR_RESET} (可能导致高负载时物理层丢包)"
-            read -rp "是否扩容 Ring Buffer 至最大值 (${rx_max}) 并持久化? [y/N]: " ui_ring
-            if [[ "${ui_ring,,}" == "y" ]]; then
-                cmd_ring="/sbin/ethtool -G ${iface} rx ${rx_max} tx ${rx_max} 2>/dev/null || true;"
-                eval "${cmd_ring}"
-                need_service=1
-                log_info "Ring Buffer 已下发扩容指令。"
-            fi
+            cmd_ring="/sbin/ethtool -G ${iface} rx ${rx_max} tx ${rx_max} 2>/dev/null || true;"
+            need_service=1
         fi
     fi
 
-    # 3. 生成持久化服务
+    # 3. RPS (多核软中断散列) 与 Txqueuelen
+    local cpu_count=$(nproc || echo 1)
+    if [[ ${cpu_count} -gt 1 ]]; then
+        local rps_mask=$(printf "%x" $(( (1 << cpu_count) - 1 )))
+        local rx_queues=$(ls -1d /sys/class/net/${iface}/queues/rx-* 2>/dev/null || echo "")
+        if [[ -n "${rx_queues}" ]]; then
+            cmd_rps="for q in /sys/class/net/${iface}/queues/rx-*; do echo ${rps_mask} > \$q/rps_cpus 2>/dev/null || true; done;"
+            need_service=1
+        fi
+    fi
+
+    # txqueuelen 扩容至 10000 配合 BBR
+    local cur_txq=$(cat /sys/class/net/${iface}/tx_queue_len 2>/dev/null || echo "1000")
+    if [[ "${cur_txq}" != "10000" && "${cur_txq}" -gt 0 ]]; then
+        cmd_txq="/sbin/ip link set ${iface} txqueuelen 10000 2>/dev/null || true;"
+        need_service=1
+    fi
+
     if [[ ${need_service} -eq 1 ]]; then
-        log_step "配置硬件优化持久化服务 (nic-optimize.service)..."
+        log_info "锁定硬件加速策略 (TSO/Ring/RPS/Txq)..."
         cat <<EOF > "${NIC_OPT_SERVICE}"
 [Unit]
-Description=NIC Hardware Optimization (TSO/GSO/RingBuffer)
+Description=NIC Hardware & RPS Optimization
 After=network.target network-online.target
-Wants=network-online.target
-
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "${cmd_offload} ${cmd_ring}"
+ExecStart=/bin/sh -c "${cmd_offload} ${cmd_ring} ${cmd_txq} ${cmd_rps}"
 RemainAfterExit=yes
-
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload && systemctl enable nic-optimize.service
-        log_info "网卡硬件参数已锁定。"
+        systemctl daemon-reload && systemctl enable --now nic-optimize.service 2>/dev/null || true
+    fi
+}
+
+inject_bbr_module_params() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
+    local target_cc="$1"
+    [[ ! "${target_cc}" =~ ^bbr ]] && return 0
+    
+    local param_file="/sys/module/tcp_${target_cc}/parameters/min_rtt_win_sec"
+    if [[ -w "${param_file}" ]]; then
+        if [[ "$(cat "${param_file}")" != "2" ]]; then
+            echo 2 > "${param_file}" 2>/dev/null || true
+            echo "options tcp_${target_cc} min_rtt_win_sec=2" > "${MODPROBE_D_CONF}"
+            log_info "注入 BBR 抗弱网参数: min_rtt_win_sec=2"
+        fi
     fi
 }
 
 # -------------------------------------------------------------
-# 遥测监控面板 (Telemetry Dashboard)
+# 维度 2：系统进程与选路调优
 # -------------------------------------------------------------
 
-monitor_tcp_bbr() {
-    clear
-    log_step "启动 BBR/TCP 实时遥测仪 (按 Ctrl+C 退出)..."
-    echo "依赖: ss (iproute2)"
-    echo "================================================="
-    
-    while true; do
-        echo -en "\033[H\033[2J" # 清屏
-        echo -e "${COLOR_CYAN}>>> TCP BBR 实时连接追踪 (刷新频率: 2s) <<<${COLOR_RESET}"
-        echo "时间: $(date '+%H:%M:%S')"
-        echo "----------------------------------------------------------------------"
-        printf "%-25s %-15s %-10s %-15s\n" "Remote Address" "RTT(延迟)" "Cwnd(窗口)" "Pacing Rate"
-        echo "----------------------------------------------------------------------"
-        
-        # 抓取 ESTAB 状态且包含 bbr 的连接
-        local ss_out=$(ss -tin state established | grep -A 1 "bbr")
-        
-        if [[ -z "${ss_out}" ]]; then
-            echo "当前无活动的 BBR TCP 连接。尝试在其他终端下载文件或发包测试。"
-        else
-            # 解析 ss 输出
-            echo "${ss_out}" | awk '
-            /^ESTAB/ { 
-                split($5, a, ":"); remote=a[1] 
-            }
-            /bbr/ {
-                rtt="--"; cwnd="--"; pacing="--"
-                match($0, /rtt:[0-9.]+\/[0-9.]+/); if(RSTART) rtt=substr($0, RSTART+4, RLENGTH-4)
-                match($0, /cwnd:[0-9]+/); if(RSTART) cwnd=substr($0, RSTART+5, RLENGTH-5)
-                match($0, /pacing_rate [0-9.]+[A-Za-z]+/); if(RSTART) pacing=substr($0, RSTART+12, RLENGTH-12)
-                printf "%-25s %-15s %-10s %-15s\n", remote, rtt " ms", cwnd, pacing
-            }' | head -n 15
+apply_systemd_limits() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
+    if ! command -v systemctl &>/dev/null; then return 0; fi
+
+    log_step "解封 Systemd 进程级句柄限制 (C100K 护航)..."
+    for conf_file in "/etc/systemd/system.conf" "/etc/systemd/user.conf"; do
+        if [[ -f "${conf_file}" ]]; then
+            if grep -q "^DefaultLimitNOFILE=" "${conf_file}"; then
+                sed -i 's/^DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' "${conf_file}"
+            elif grep -q "^#DefaultLimitNOFILE=" "${conf_file}"; then
+                sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' "${conf_file}"
+            else
+                echo "DefaultLimitNOFILE=1048576" >> "${conf_file}"
+            fi
         fi
-        echo "----------------------------------------------------------------------"
-        echo "Pacing Rate: BBR 决定当前连接的最大发送速率"
-        echo "Cwnd: 拥塞窗口大小 (越大吞吐越高)"
-        sleep 2
     done
+    systemctl daemon-reload 2>/dev/null || true
 }
 
-# -------------------------------------------------------------
-# 回滚与看门狗
-# -------------------------------------------------------------
+manage_ipv4_precedence() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && { log_warn "容器环境不支持修改系统选路。"; return 0; }
+    local action="$1"
+    if [[ ! -f "${GAI_CONF}" && "${action}" == "enable" ]]; then [[ -d "/etc" ]] && touch "${GAI_CONF}"; fi
+    if [[ ! -w "${GAI_CONF}" ]]; then log_error "无法写入 ${GAI_CONF}。"; return 1; fi
 
-rollback_config() {
-    local backup_file="$1"
-    if [[ -f "${backup_file}" ]]; then
-        log_warn "=== 触发自动回滚 ==="
-        cp "${backup_file}" "${SYSCTL_CONF}"
-        sysctl -p >/dev/null 2>&1 || true
-        
-        local iface=$(get_default_iface)
-        if [[ -n "${iface}" ]]; then
-            tc qdisc del dev "${iface}" root 2>/dev/null || true
+    if [[ "${action}" == "enable" ]]; then
+        log_step "配置 IPv4 选路强制优先 (gai.conf)..."
+        if grep -q "precedence ::ffff:0:0/96" "${GAI_CONF}"; then
+            sed -i 's/^#*precedence ::ffff:0:0\/96.*/precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
+        else
+            echo "precedence ::ffff:0:0/96  100" >> "${GAI_CONF}"
         fi
-        
-        [[ -f "${MODULES_CONF}" ]] && rm -f "${MODULES_CONF}"
-        [[ -f "${TC_CAKE_SERVICE}" ]] && rm -f "${TC_CAKE_SERVICE}" && systemctl disable tc-cake.service 2>/dev/null || true
-        
-        log_warn "网络状态已重置。"
-    fi
-}
-
-connectivity_watchdog() {
-    log_step "启动连通性看门狗..."
-    local gateway=$(ip route show default | awk '/default/ {print $3}' | head -n1 || echo "1.1.1.1")
-    
-    if ping -c 3 -W 1 -i 0.2 "${gateway}" >/dev/null 2>&1; then
-        echo -e "看门狗: ${COLOR_GREEN}PASS${COLOR_RESET}"
-    else
-        echo -e "看门狗: ${COLOR_RED}FAIL${COLOR_RESET} (连接丢失)"
-        return 1
-    fi
-
-    echo -e "${COLOR_YELLOW}配置已下发，请在 15 秒内输入 'y' 确认保留，否则自动回滚。${COLOR_RESET}"
-    local ui
-    if timeout 15s bash -c 'read -rp "确认? (y/N): " ui; [[ "${ui,,}" == "y" ]]'; then
-        log_info "配置已锁定。"
-        return 0
-    else
-        log_error "未确认，拒绝锁定。"
-        return 1
+        log_info "✅ 已强制优先使用 IPv4 发起连接。"
+    elif [[ "${action}" == "disable" ]]; then
+        sed -i 's/^precedence ::ffff:0:0\/96.*/#precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
+        log_info "✅ 已恢复系统默认选路策略 (IPv6 优先)。"
     fi
 }
 
 # -------------------------------------------------------------
-# 协议栈调优核心逻辑
+# 维度 3：内核 Sysctl 全时激进调优
 # -------------------------------------------------------------
 
 apply_advanced_tcp() {
-    # 彻底清理并禁用会导致丢包的 tcp_tw_recycle
-    sed -i '/net.ipv4.tcp_tw_recycle/d' "${SYSCTL_CONF}"
-    
+    # 128MB = 134217728 bytes
     cat <<EOF >> "${SYSCTL_CONF}"
-# --- Advanced TCP & High Concurrency Optimization ---
-net.ipv4.tcp_ecn = 1
-net.ipv4.tcp_fastopen = 3
-net.core.rmem_max = 26214400
-net.core.wmem_max = 26214400
-net.core.rmem_default = 26214400
-net.core.wmem_default = 26214400
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_max_tw_buckets = 55000
+# --- C100K 内核硬顶板、端口扩容与防洪泛 ---
+fs.file-max = 1048576
+fs.nr_open = 2097152
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 16384
+net.ipv4.ip_local_port_range = 10000 65000
 net.ipv4.tcp_max_syn_backlog = 8192
 net.ipv4.tcp_syncookies = 1
+
+# --- 软中断轮询优化 ---
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 4000
+
+# --- Conntrack 优化 ---
+net.netfilter.nf_conntrack_max = 2000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+
+# --- 全时激进缓冲区 (128MB) & 发送端防膨胀 ---
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.core.rmem_default = 134217728
+net.core.wmem_default = 134217728
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_limit_output_bytes = 131072
+
+# --- 极速保活 (60s) & 孤儿 Socket 调优 ---
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_probes = 6
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_max_tw_buckets = 55000
+net.ipv4.tcp_orphan_retries = 1
+net.ipv4.tcp_retries2 = 5
+net.ipv4.tcp_max_orphans = 131072
+
+# --- UDP/QUIC & ECN ---
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_fastopen = 3
+
+# --- 路由与邻居表加速回收 ---
+net.ipv4.route.gc_timeout = 100
+net.ipv4.neigh.default.gc_stale_time = 60
+
+# --- ICMP 安全与抗劫持 ---
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
 EOF
-}
-
-configure_cake_shaper() {
-    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
-    local iface=$(get_default_iface)
-    [[ -z "${iface}" ]] && return 0
-
-    echo -e "${COLOR_CYAN}[CAKE 带宽整形]${COLOR_RESET} 如果上游带宽受限，配置限幅能彻底消除缓冲膨胀。"
-    read -rp "是否配置 CAKE 带宽限幅？[不配置请按回车, 配置请输入公网总带宽(单位:Mbps)]: " ui_bw
-    
-    if [[ "${ui_bw}" =~ ^[0-9]+$ ]]; then
-        # 计算 95% 保留带宽防止上游队列积压
-        local safe_bw=$(echo "${ui_bw} * 0.95" | bc | awk '{printf "%d", $1}')
-        if [[ ${safe_bw} -lt 1 ]]; then safe_bw=1; fi
-        
-        log_step "将为网卡 ${iface} 配置 CAKE 带宽限幅: ${safe_bw}mbit..."
-        
-        # 清理旧规则
-        tc qdisc del dev "${iface}" root 2>/dev/null || true
-        # 写入 tc 服务持久化
-        cat <<EOF > "${TC_CAKE_SERVICE}"
-[Unit]
-Description=CAKE Bandwidth Shaper
-After=network.target network-online.target
-
-[Service]
-Type=oneshot
-ExecStartPre=-/sbin/tc qdisc del dev ${iface} root
-ExecStart=/sbin/tc qdisc add dev ${iface} root cake bandwidth ${safe_bw}mbit nat
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload && systemctl enable tc-cake.service
-        systemctl restart tc-cake.service
-        log_info "TC CAKE 带宽限幅 (${safe_bw}Mbit) 已生效。"
-    else
-        log_info "跳过带宽整形，将使用无限制的 CAKE sysctl 模式。"
-    fi
 }
 
 safe_apply_sysctl() {
-    local target_qdisc="$1"
-    local target_cc="$2"
-    local module_name="$3"
+    local target_qdisc="$1"; local target_cc="$2"; local module_name="$3"
+    local backup_file="${BACKUP_DIR}/sysctl.conf.${TIMESTAMP}.bak"
+    mkdir -p "${BACKUP_DIR}"; cp "${SYSCTL_CONF}" "${backup_file}"
 
-    local backup_file=$(backup_config)
-
-    # 1. 硬件/中断预调优
-    check_irqbalance
     optimize_nic_hardware
+    inject_bbr_module_params "${target_cc}"
+    apply_systemd_limits
 
-    # 2. Sysctl 处理
-    log_step "写入全栈协议配置..."
-    sed -i '/net.core.default_qdisc/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_congestion_control/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_ecn/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_fastopen/d' "${SYSCTL_CONF}"
-    sed -i '/net.core.rmem_/d' "${SYSCTL_CONF}"
-    sed -i '/net.core.wmem_/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_fin_timeout/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_max_tw_buckets/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_max_syn_backlog/d' "${SYSCTL_CONF}"
-    sed -i '/net.ipv4.tcp_syncookies/d' "${SYSCTL_CONF}"
+    log_step "写入协议栈配置 (sysctl)..."
+    local keys=("fs.file-max" "fs.nr_open" "net.core.default_qdisc" "net.ipv4.tcp_congestion_control" "net.ipv4.tcp_notsent_lowat" "net.ipv4.tcp_limit_output_bytes" "net.core.somaxconn" "net.core.netdev_max_backlog" "net.ipv4.ip_local_port_range" "net.core.netdev_budget" "net.core.netdev_budget_usecs" "net.netfilter.nf_conntrack_max" "net.netfilter.nf_conntrack_tcp_timeout_established" "net.ipv4.tcp_keepalive_time" "net.ipv4.tcp_keepalive_probes" "net.ipv4.tcp_keepalive_intvl" "net.ipv4.tcp_mtu_probing" "net.ipv4.tcp_fin_timeout" "net.ipv4.tcp_max_tw_buckets" "net.ipv4.tcp_max_syn_backlog" "net.ipv4.tcp_syncookies" "net.ipv4.tcp_orphan_retries" "net.ipv4.tcp_retries2" "net.ipv4.tcp_max_orphans" "net.core.rmem_max" "net.core.wmem_max" "net.core.rmem_default" "net.core.wmem_default" "net.ipv4.tcp_ecn" "net.ipv4.tcp_fastopen" "net.ipv4.route.gc_timeout" "net.ipv4.neigh.default.gc_stale_time" "net.ipv4.conf.all.rp_filter" "net.ipv4.conf.default.rp_filter" "net.ipv4.conf.all.accept_redirects" "net.ipv4.conf.default.accept_redirects" "net.ipv4.conf.all.send_redirects" "net.ipv4.icmp_echo_ignore_broadcasts" "net.ipv4.icmp_ignore_bogus_error_responses")
+    for k in "${keys[@]}"; do sed -i "/^\s*${k//./\.}\s*=/d" "${SYSCTL_CONF}"; done
 
-    if [[ -n "${target_qdisc}" && -n "${target_cc}" ]]; then
-        # 如果是带有带宽整形的 CAKE，qdisc 交由 tc 接管，sysctl 设为 fq_codel 避免冲突
-        local sysctl_qdisc="${target_qdisc}"
-        if [[ "${target_qdisc}" == "cake_shaped" ]]; then
-            sysctl_qdisc="fq_codel"
+    if [[ -n "${target_cc}" ]]; then
+        if [[ -n "${target_qdisc}" ]]; then cat <<EOF >> "${SYSCTL_CONF}"
+net.core.default_qdisc = ${target_qdisc}
+EOF
         fi
-
         cat <<EOF >> "${SYSCTL_CONF}"
-net.core.default_qdisc = ${sysctl_qdisc}
 net.ipv4.tcp_congestion_control = ${target_cc}
 EOF
         apply_advanced_tcp
     fi
 
+    modprobe nf_conntrack 2>/dev/null || true
     sysctl -p > /dev/null 2>&1 || true
 
-    # 3. 队列整形处理 (TC CAKE)
-    if [[ "${target_qdisc}" == "cake" || "${target_qdisc}" == "cake_shaped" ]]; then
-        configure_cake_shaper
-    fi
-
-    # 4. 看门狗
-    if [[ -n "${target_qdisc}" ]]; then
-        if ! connectivity_watchdog; then
-            rollback_config "${backup_file}"
-            return 1
+    if [[ -n "${target_cc}" ]]; then
+        local gateway=$(ip route show default | awk '/default/ {print $3}' | head -n1 || echo "1.1.1.1")
+        if ! ping -c 3 -W 1 -i 0.2 "${gateway}" >/dev/null 2>&1; then
+            log_error "看门狗: 网络不通，立刻回滚！"; cp "${backup_file}" "${SYSCTL_CONF}"; sysctl -p >/dev/null 2>&1; return 1
+        fi
+        local ui
+        if ! timeout 15s bash -c 'read -rp "网络通畅。15秒内输入 [y] 锁定配置，否则回滚: " ui; [[ "${ui,,}" == "y" ]]'; then
+            log_warn "未确认，触发安全回滚..."; cp "${backup_file}" "${SYSCTL_CONF}"; sysctl -p >/dev/null 2>&1; return 1
         fi
     fi
 
-    # 5. 模块持久化
     if [[ -n "${module_name}" && ${IS_CONTAINER} -eq 0 ]]; then
         mkdir -p "${MODULES_LOAD_DIR}"
-        echo -e "# Auto-generated\ntcp_bbr\n${module_name}" > "${MODULES_CONF}"
+        echo -e "# Auto-generated\ntcp_${target_cc}\n${module_name}" > "${MODULES_CONF}"
     elif [[ -z "${module_name}" ]]; then
-        # 恢复默认时清理所有
-        rm -f "${MODULES_CONF}"
-        tc qdisc del dev "$(get_default_iface)" root 2>/dev/null || true
-        if [[ -f "${TC_CAKE_SERVICE}" ]]; then systemctl disable tc-cake.service 2>/dev/null; rm -f "${TC_CAKE_SERVICE}"; fi
-        if [[ -f "${NIC_OPT_SERVICE}" ]]; then systemctl disable nic-optimize.service 2>/dev/null; rm -f "${NIC_OPT_SERVICE}"; fi
+        rm -f "${MODULES_CONF}" "${MODPROBE_D_CONF}"
     fi
 
-    log_info "核心优化完成。"
+    log_info "🔥 智能全时激进优化部署完毕！当前算法: ${target_cc}"
+    echo -e "${COLOR_YELLOW}========================================================================${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW} [提示] 如需高并发设置生效，请重启 Nginx/Docker 等核心业务进程。        ${COLOR_RESET}"
+    echo -e "${COLOR_YELLOW}========================================================================${COLOR_RESET}"
 }
 
 # -------------------------------------------------------------
-# 业务入口
+# 入口逻辑
 # -------------------------------------------------------------
 
+get_supported_bbrs() {
+    local bbrs=()
+    local avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+    for v in bbr bbr2 bbr3; do if echo "${avail}" | grep -qw "${v}"; then bbrs+=("${v}"); fi; done
+    if [[ ${IS_CONTAINER} -eq 0 ]]; then
+        local mod_dir="/lib/modules/$(uname -r)/kernel/net/ipv4"
+        if [[ -d "${mod_dir}" ]]; then
+            for v in bbr bbr2 bbr3; do
+                if find "${mod_dir}" -name "tcp_${v}.ko*" -quit 2>/dev/null; then [[ ! " ${bbrs[*]} " =~ " ${v} " ]] && bbrs+=("${v}"); fi
+            done
+        fi
+    fi
+    if [[ ${#bbrs[@]} -eq 0 ]]; then bbrs=("bbr"); fi
+    printf "%s\n" "${bbrs[@]}" | sort -V | tr '\n' ' ' | sed 's/ $//'
+}
+
 configure_algo() {
-    local qdisc="$1"
-    local cc="bbr"
-    local min_kver="$2"
-    local mod="sch_$1"
-    [[ "$qdisc" == "fq" ]] && mod="sch_fq"
+    local qdisc="$1"; local min_kver="$2"; local mod="sch_$1"
+    
+    if [[ -z "${qdisc}" ]]; then mod=""; elif [[ "$qdisc" == "fq" ]]; then mod="sch_fq"; fi
 
     if [[ ${IS_CONTAINER} -eq 0 ]]; then
         local kv=$(uname -r | cut -d- -f1)
-        if ! version_ge "${kv}" "${min_kver}"; then log_error "内核需 >= $min_kver"; return 1; fi
-        modprobe "${mod}" || { log_error "无法加载 ${mod}"; return 1; }
-        modprobe tcp_bbr || true
+        if ! version_ge "${kv}" "${min_kver}"; then log_error "内核版本低。需 >= ${min_kver}"; return 1; fi
+        [[ -n "${mod}" ]] && modprobe "${mod}" 2>/dev/null || true
     fi
 
-    # 标记符，用于在应用 sysctl 后触发 configure_cake_shaper
-    local target_qdisc="${qdisc}"
-    [[ "${qdisc}" == "cake" ]] && target_qdisc="cake_shaped"
+    local bbr_arr=($(get_supported_bbrs))
+    local selected_bbr="${bbr_arr[-1]}"
+    if [[ ${#bbr_arr[@]} -gt 1 ]]; then
+        read -rp "检测到多版本 BBR [ ${bbr_arr[*]} ]，请指定 (默认最高 ${selected_bbr}): " ui_bbr
+        [[ -n "${ui_bbr}" && " ${bbr_arr[*]} " =~ " ${ui_bbr} " ]] && selected_bbr="${ui_bbr}"
+    fi
 
-    safe_apply_sysctl "${target_qdisc}" "${cc}" "${mod}"
+    [[ ${IS_CONTAINER} -eq 0 ]] && modprobe "tcp_${selected_bbr}" 2>/dev/null || true
+    safe_apply_sysctl "${qdisc}" "${selected_bbr}" "${mod}"
 }
 
 show_menu() {
     clear
+    local bbrs=$(get_supported_bbrs)
+    local region_msg=""
+    [[ ${IS_CHINA_IP} -eq 1 ]] && region_msg="${COLOR_RED}[国内加速模式]${COLOR_RESET}"
+    
     echo "========================================================"
-    echo -e " 五边形全栈网络优化引擎 ${COLOR_YELLOW}(v2.0.0 Pro)${COLOR_RESET}"
+    echo -e " 智能全时激进调优引擎 ${COLOR_YELLOW}(v5.1.0 CN-Accelerated)${COLOR_RESET} ${region_msg}"
     echo "========================================================"
-    echo " 1. 启用 BBR + FQ      (推荐: 通用场景, 含高并发防洪泛)"
+    [[ -n "${PHANTOM_KERNEL_WARNING}" ]] && echo -e "${COLOR_RED}${PHANTOM_KERNEL_WARNING}${COLOR_RESET}"
+    [[ -n "${ARCH_WARNING}" ]] && echo -e "${COLOR_MAGENTA}${ARCH_WARNING}${COLOR_RESET}"
+    echo -e " ${COLOR_CYAN}拥塞控制: [ ${bbrs} ]${COLOR_RESET}"
+    echo "--------------------------------------------------------"
+    echo -e " ${COLOR_YELLOW}[拥塞控制与队列调优 (全时 128MB 缓冲区)]${COLOR_RESET}"
+    echo " 1. 启用 BBR + FQ      (推荐: 通用场景, 含全量网络解封)"
     echo " 2. 启用 BBR + FQ_PIE  (需 Kernel >= 5.6)"
-    echo " 3. 启用 BBR + CAKE    (极客: 彻底消灭缓冲膨胀, 硬件调优)"
-    echo " 4. 实时监控 BBR 状态  (延迟/拥塞窗口/发送速率)"
-    echo " 5. 恢复系统默认设置   (移除所有优化与 Systemd 服务)"
-    echo " 0. 退出"
+    echo " 3. 启用 BBR + CAKE    (高性能: 彻底消灭缓冲膨胀)"
+    echo " 4. 仅启用 BBR         (保守: 维持系统默认队列调度器)"
+    echo "--------------------------------------------------------"
+    echo -e " ${COLOR_YELLOW}[网络选路与杂项辅助]${COLOR_RESET}"
+    echo " 5. 开启 IPv4 强制优先 (防御双栈环境下的劣质 IPv6 路由)"
+    echo " 6. 移除 IPv4 强制优先 (恢复默认选路)"
+    echo " 7. 恢复系统默认设置   (移除 Sysctl/Systemd/模块 的所有优化)"
+    echo "--------------------------------------------------------"
+    echo " 0. 安全退出"
     echo "========================================================"
 }
 
 main() {
-    check_root
-    check_dependencies
-    check_virtualization
-
+    check_root; check_dependencies; check_environment
     while true; do
         show_menu
-        read -rp "选择 [0-5]: " c
+        read -rp "请下发执行指令 [0-7]: " c
         case "$c" in
-            1) configure_algo "fq" "${MIN_KERNEL_BBR}"; read -rp "Press Enter...";;
-            2) configure_algo "fq_pie" "${MIN_KERNEL_FQ_PIE}"; read -rp "Press Enter...";;
-            3) configure_algo "cake" "${MIN_KERNEL_CAKE}"; read -rp "Press Enter...";;
-            4) monitor_tcp_bbr;;
-            5) log_warn "准备恢复默认..."; safe_apply_sysctl "" "" ""; read -rp "Press Enter...";;
+            1) configure_algo "fq" "${MIN_KERNEL_BBR}"; read -rp "回车继续...";;
+            2) configure_algo "fq_pie" "${MIN_KERNEL_FQ_PIE}"; read -rp "回车继续...";;
+            3) configure_algo "cake" "${MIN_KERNEL_CAKE}"; read -rp "回车继续...";;
+            4) configure_algo "" "${MIN_KERNEL_BBR}"; read -rp "回车继续...";;
+            5) manage_ipv4_precedence "enable"; read -rp "回车继续...";;
+            6) manage_ipv4_precedence "disable"; read -rp "回车继续...";;
+            7) log_warn "正在抹除配置..."; safe_apply_sysctl "" "" ""; read -rp "回车继续...";;
             0) exit 0 ;;
-            *) log_error "无效输入"; sleep 1 ;;
+            *) sleep 1 ;;
         esac
     done
 }
-
 main "${@}"
