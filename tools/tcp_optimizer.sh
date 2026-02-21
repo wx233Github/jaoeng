@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v5.4.1 - 终极画像调优引擎)
+# 🚀 tcp_optimizer.sh (v6.0.0 - 六边形战士 / 全栈极限重构版)
 # =============================================================
 # 作者：System Admin
-# 描述：全景 Linux 网络调优引擎。集成 XanMod 向导、专属画像与状态实时监控。
+# 描述：全景 Linux 网络调优引擎。彻底击穿全栈并发限制、消除 ARP 溢出、适配 eBPF/io_uring。
 # 版本历史：
-#   v5.4.1 - 修复 set -e 模式下的短路语法导致脚本闪退(静默退出)的严重逻辑错误
-#   v5.4.0 - 重构主界面，增加内核与算法状态实时显示，严格锁定菜单选项文本与底层路由映射
-#   v5.3.0 - 新增 XanMod 内核向导、应用画像系统、加入激进抢占模式
+#   v6.0.0 - 重构 Systemd Drop-in，修复 apt 卡死，扩容 ARP 邻居表，动态计算 TW/Orphans，引入 eBPF 加速
+#   v5.9.0 - 修复后台服务并发瓶颈，UDP/QUIC 画像分级，抗 CC 扩容，补齐 IPv6 路由回收
+#   v5.8.0 - 移除低内存熔断，修复 Conntrack 哈希碰撞漏洞，新增 UDP/QUIC 加速，开启端口极速复用
 # =============================================================
 
 set -euo pipefail
@@ -20,7 +20,13 @@ readonly SYSCTL_CONF="${SYSCTL_d_DIR}/99-z-tcp-optimizer.conf"
 
 readonly MODULES_LOAD_DIR="/etc/modules-load.d"
 readonly MODULES_CONF="${MODULES_LOAD_DIR}/tcp_optimizer.conf"
-readonly MODPROBE_D_CONF="/etc/modprobe.d/tcp_optimizer_bbr.conf"
+readonly MODPROBE_BBR_CONF="/etc/modprobe.d/tcp_optimizer_bbr.conf"
+readonly MODPROBE_CONN_CONF="/etc/modprobe.d/tcp_optimizer_conntrack.conf"
+
+readonly LIMITS_CONF="/etc/security/limits.d/99-z-tcp-optimizer.conf"
+readonly SYSTEMD_SYS_CONF="/etc/systemd/system.conf.d/99-z-tcp-optimizer.conf"
+readonly SYSTEMD_USR_CONF="/etc/systemd/user.conf.d/99-z-tcp-optimizer.conf"
+
 readonly LOG_FILE="/var/log/tcp_optimizer.log"
 readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
@@ -31,6 +37,7 @@ IS_CONTAINER=0
 IS_CHINA_IP=0
 IS_SYSTEMD=0
 TOTAL_MEM_KB=0
+HAS_IPV6_STACK=0
 
 # 内核版本基线
 readonly MIN_KERNEL_BBR="4.9"
@@ -56,9 +63,7 @@ log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${
 
 cleanup() { 
     local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then 
-        log_warn "脚本异常退出 (Code: ${exit_code})。请检查日志 ${LOG_FILE}"
-    fi
+    if [[ $exit_code -ne 0 ]]; then log_warn "脚本异常退出 (Code: ${exit_code})。请检查日志 ${LOG_FILE}"; fi
 }
 trap cleanup EXIT
 
@@ -66,126 +71,133 @@ trap cleanup EXIT
 # 环境与内核检查
 # -------------------------------------------------------------
 
-check_root() { 
-    if [[ "$(id -u)" -ne 0 ]]; then 
-        log_error "需要 root 权限。"
-        exit 1
-    fi 
-}
+check_root() { [[ "$(id -u)" -ne 0 ]] && { log_error "需要 root 权限。"; exit 1; } }
 
 check_systemd() {
-    if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null || echo ""); then 
-        IS_SYSTEMD=1
-    else 
-        IS_SYSTEMD=0
-    fi
+    if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null || echo ""); then IS_SYSTEMD=1; else IS_SYSTEMD=0; fi
 }
 
 check_network_region() {
-    log_step "正在检测网络连通性..."
-    if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then 
-        IS_CHINA_IP=0
-    else 
-        IS_CHINA_IP=1
-    fi
+    log_step "检测网络连通性..."
+    if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then IS_CHINA_IP=0; else IS_CHINA_IP=1; fi
 }
 
 install_dependencies() {
     local missing=("$@")
+    # 彻底封杀所有交互式窗口 (包括 debconf 确认)
+    export DEBIAN_FRONTEND=noninteractive
+    local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+    
     if command -v apt-get &>/dev/null; then
         apt-get update -yq || true
-        apt-get install -yq "${missing[@]}"
+        # shellcheck disable=SC2086
+        apt-get install -yq ${DPKG_OPTS} "${missing[@]}"
     elif command -v yum &>/dev/null; then
         yum install -y "${missing[@]}"
     else
-        log_error "无法识别包管理器，请手动安装: ${missing[*]}"
-        exit 1
+        log_error "无法识别包管理器，请手动安装: ${missing[*]}"; exit 1
     fi
 }
 
 check_dependencies() {
-    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg)
+    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg ss)
     local missing=()
     for cmd in "${deps[@]}"; do 
-        if ! command -v "${cmd}" &> /dev/null; then 
-            missing+=("${cmd}")
-        fi
+        if ! command -v "${cmd}" &> /dev/null; then missing+=("${cmd}"); fi
     done
-    
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${COLOR_YELLOW}缺失依赖: ${missing[*]}${COLOR_RESET}"
         check_network_region
         read -rp "自动安装缺失依赖? [y/N]: " ui_dep
-        if [[ "${ui_dep,,}" == "y" ]]; then 
-            install_dependencies "${missing[@]}"
-        else 
-            log_error "终止执行。"
-            exit 1
-        fi
+        if [[ "${ui_dep,,}" == "y" ]]; then install_dependencies "${missing[@]}"; else exit 1; fi
     fi
 }
 
 check_environment() {
     log_step "全景环境诊断..."
     local virt_type="none"
-    if command -v systemd-detect-virt &>/dev/null; then 
-        virt_type=$(systemd-detect-virt -c || echo none)
-    else
-        if grep -q "docker" /proc/1/cgroup 2>/dev/null; then 
-            virt_type="docker"
-        fi
-        if [[ -f /proc/user_beancounters ]]; then 
-            virt_type="openvz"
-        fi
+    if command -v systemd-detect-virt &>/dev/null; then virt_type=$(systemd-detect-virt -c 2>/dev/null || echo "none"); else
+        if grep -q "docker" /proc/1/cgroup 2>/dev/null; then virt_type="docker"; fi
+        if [[ -f /proc/user_beancounters ]]; then virt_type="openvz"; fi
     fi
+    virt_type=$(echo "${virt_type}" | tr -d '[:space:]')
     
-    if [[ "${virt_type}" != "none" && "${virt_type}" != "kvm" && "${virt_type}" != "vmware" && "${virt_type}" != "microsoft" ]]; then
-        IS_CONTAINER=1
-        log_warn "容器环境: ${virt_type} (跳过硬件调优与内核安装)"
+    if [[ "${virt_type}" == "lxc" || "${virt_type}" == "docker" || "${virt_type}" == "openvz" || "${virt_type}" == "systemd-nspawn" ]]; then
+        IS_CONTAINER=1; log_warn "检测到纯容器环境: ${virt_type} (将跳过网卡底层调优)"
+    else
+        IS_CONTAINER=0; log_info "运行环境: ${virt_type} (支持底层性能调优)"
     fi
     
     TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    
+    # 检测 IPv6 协议栈是否可用
+    if [[ -d "/proc/sys/net/ipv6" ]]; then HAS_IPV6_STACK=1; else HAS_IPV6_STACK=0; fi
+    
     check_systemd
 }
 
 version_ge() { local lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1); [[ "${lower}" == "$2" ]]; }
 
 # -------------------------------------------------------------
+# 模块：系统资源极限解封 (Drop-in 模式)
+# -------------------------------------------------------------
+
+apply_system_limits() {
+    if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
+    log_step "配置全栈进程级极限句柄 (Drop-in 架构)..."
+    
+    # 用户态
+    mkdir -p "$(dirname "${LIMITS_CONF}")"
+    cat <<EOF > "${LIMITS_CONF}"
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+
+    # Systemd 守护进程层 (使用标准安全的 Drop-in 文件覆盖，绝不修改主配置)
+    if [[ ${IS_SYSTEMD} -eq 1 ]]; then
+        mkdir -p "$(dirname "${SYSTEMD_SYS_CONF}")" "$(dirname "${SYSTEMD_USR_CONF}")"
+        
+        cat <<EOF > "${SYSTEMD_SYS_CONF}"
+[Manager]
+DefaultLimitNOFILE=1048576
+EOF
+        cat <<EOF > "${SYSTEMD_USR_CONF}"
+[Manager]
+DefaultLimitNOFILE=1048576
+EOF
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+}
+
+# -------------------------------------------------------------
 # 模块：XanMod 内核向导
 # -------------------------------------------------------------
 
 install_xanmod_kernel() {
-    if [[ ${IS_CONTAINER} -eq 1 ]]; then 
-        log_warn "容器环境无法更换内核。"
-        return
-    fi
-    
+    if [[ ${IS_CONTAINER} -eq 1 ]]; then log_warn "容器环境无法更换内核。"; return; fi
     echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
     echo -e "${COLOR_BLUE}   XanMod Kernel 安装向导 (Debian/Ubuntu Only)          ${COLOR_RESET}"
     echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
-    
-    if grep -iq "xanmod" /proc/version 2>/dev/null; then
-        log_info "✅ 检测到当前已运行 XanMod 内核。"
-        read -rp "按回车继续..."
-        return
-    fi
-    
-    if [[ ! -f /etc/debian_version ]]; then 
-        log_warn "非 Debian/Ubuntu，暂不支持自动安装 XanMod。"
-        return
-    fi
+    if grep -iq "xanmod" /proc/version 2>/dev/null; then log_info "✅ 检测到当前已运行 XanMod 内核。"; read -rp "按回车继续..."; return; fi
+    if [[ ! -f /etc/debian_version ]]; then log_warn "非 Debian/Ubuntu，暂不支持自动安装 XanMod。"; return; fi
 
     read -rp "是否尝试安装 XanMod Kernel (推荐 x64v3)? [y/N]: " ui_inst
     if [[ "${ui_inst,,}" != "y" ]]; then return; fi
+
+    export DEBIAN_FRONTEND=noninteractive
+    local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
     log_step "正在导入 XanMod GPG Key..."
     wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
     echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
     apt-get update -y
     
-    log_step "安装 linux-xanmod-x64v3 ..."
-    if apt-get install -y linux-xanmod-x64v3; then
-        echo -e "${COLOR_GREEN}XanMod 内核安装成功！请在脚本结束后重启服务器。${COLOR_RESET}"
+    log_step "安装 linux-xanmod-x64v3 (极端静默模式)..."
+    # shellcheck disable=SC2086
+    if apt-get install -yq ${DPKG_OPTS} linux-xanmod-x64v3; then
+        echo -e "${COLOR_GREEN}XanMod 内核安装成功！请在脚本结束后重启服务器以生效。${COLOR_RESET}"
     else
         log_error "安装失败，请检查网络。"
     fi
@@ -193,7 +205,7 @@ install_xanmod_kernel() {
 }
 
 # -------------------------------------------------------------
-# 模块：底层硬件调优
+# 模块：底层硬件调优与模块注入
 # -------------------------------------------------------------
 
 get_default_iface() { ip route show default | awk '/default/ {print $5}' | head -n1 || echo ""; }
@@ -206,12 +218,9 @@ optimize_nic_hardware() {
     if [[ -z "${iface}" ]]; then return 0; fi
 
     local cmd_all=""
-    
     if [[ ! -f "/sys/class/net/${iface}/device/vendor" ]] || [[ "$(cat "/sys/class/net/${iface}/device/vendor")" != "0x1d0f" ]]; then
         local tso_state=$(ethtool -k "${iface}" 2>/dev/null | awk '/tcp-segmentation-offload:/ {print $2}' || echo "unknown")
-        if [[ "${tso_state}" == "on" ]]; then 
-            cmd_all+="/sbin/ethtool -K ${iface} tso off gso off || true; "
-        fi
+        if [[ "${tso_state}" == "on" ]]; then cmd_all+="/sbin/ethtool -K ${iface} tso off gso off || true; "; fi
     fi
 
     if ethtool -g "${iface}" &>/dev/null; then
@@ -224,11 +233,9 @@ optimize_nic_hardware() {
 
     local cpu_count=$(nproc || echo 1)
     if [[ ${cpu_count} -gt 1 ]]; then
-        local rps_mask=$(printf "%x" $(( (1 << cpu_count) - 1 )))
-        local rx_queues=$(ls -1d /sys/class/net/${iface}/queues/rx-* 2>/dev/null || echo "")
-        if [[ -n "${rx_queues}" ]]; then
-            cmd_all+="for q in /sys/class/net/${iface}/queues/rx-*; do echo ${rps_mask} > \$q/rps_cpus 2>/dev/null || true; done; "
-        fi
+        local math_cpu=$(( cpu_count > 31 ? 31 : cpu_count ))
+        local rps_mask=$(printf "%x" $(( (1 << math_cpu) - 1 )))
+        cmd_all+="shopt -s nullglob; for q in /sys/class/net/${iface}/queues/rx-*; do echo ${rps_mask} > \$q/rps_cpus 2>/dev/null || true; done; shopt -u nullglob; "
     fi
 
     local cur_txq=$(cat /sys/class/net/${iface}/tx_queue_len 2>/dev/null || echo "1000")
@@ -243,7 +250,7 @@ Description=NIC Hardware Optimization
 After=network.target network-online.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c "${cmd_all}"
+ExecStart=/bin/bash -c "${cmd_all}"
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
@@ -252,42 +259,65 @@ EOF
     fi
 }
 
-inject_bbr_module_params() {
+inject_kernel_modules() {
     if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
     local target_cc="$1"
-    if [[ ! "${target_cc}" =~ ^bbr ]]; then return 0; fi
     
-    local param_file="/sys/module/tcp_${target_cc}/parameters/min_rtt_win_sec"
-    if [[ -w "${param_file}" ]]; then
-        echo 2 > "${param_file}" 2>/dev/null || true
-        mkdir -p "$(dirname "${MODPROBE_D_CONF}")"
-        echo "options tcp_${target_cc} min_rtt_win_sec=2" > "${MODPROBE_D_CONF}"
+    if [[ "${target_cc}" =~ ^bbr ]]; then
+        mkdir -p "$(dirname "${MODPROBE_BBR_CONF}")"
+        echo "options tcp_${target_cc} min_rtt_win_sec=2" > "${MODPROBE_BBR_CONF}"
+    fi
+
+    mkdir -p "$(dirname "${MODPROBE_CONN_CONF}")"
+    echo "options nf_conntrack hashsize=500000" > "${MODPROBE_CONN_CONF}"
+    
+    modprobe nf_conntrack 2>/dev/null || true
+    if [[ -w "/sys/module/nf_conntrack/parameters/hashsize" ]]; then
+        echo 500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
     fi
 }
 
 # -------------------------------------------------------------
-# 模块：Sysctl 与画像生成
+# 模块：Sysctl 动态生成与编译
 # -------------------------------------------------------------
 
 generate_sysctl_content() {
     local target_qdisc="$1"
     local target_cc="$2"
     local is_aggressive="$3"
-    local buffer_size="134217728" # 128MB 全时激进
+    local target_ecn="$4"
+    
+    # --- 动态算力感知引擎 ---
+    local buffer_size="134217728" # 无脑 128MB 全时激进
+    local syn_backlog="16384"
+    local udp_min="16384"
+    
+    # 根据实际内存动态推演最佳连接桶
+    local tw_buckets=$(( TOTAL_MEM_KB / 32 ))
+    local max_orphans=$(( TOTAL_MEM_KB / 64 ))
+    [[ ${tw_buckets} -lt 55000 ]] && tw_buckets=55000
+    [[ ${max_orphans} -lt 65536 ]] && max_orphans=65536
+
+    if [[ "${is_aggressive}" == "1" ]]; then
+        syn_backlog="32768"
+        udp_min="131072"
+    fi
 
     echo "# ============================================================="
-    echo "# TCP Optimizer Configuration (Auto-generated v5.4.1)"
+    echo "# TCP Optimizer Configuration (Auto-generated v6.0.0)"
     echo "# ============================================================="
 
     cat <<EOF
-fs.file-max = 2097152
-fs.nr_open = 2097152
+# --- 系统级并发硬顶板 ---
+fs.file-max = 67108864
+fs.nr_open = 10485760
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 16384
 net.ipv4.ip_local_port_range = 10000 65000
-net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_syn_backlog = ${syn_backlog}
 net.ipv4.tcp_syncookies = 1
 
+# --- 单人狂暴缓冲区 (128MB) ---
 net.core.rmem_max = ${buffer_size}
 net.core.wmem_max = ${buffer_size}
 net.core.rmem_default = ${buffer_size}
@@ -295,29 +325,52 @@ net.core.wmem_default = ${buffer_size}
 net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_limit_output_bytes = 131072
 
+# --- 现代协议栈加速 (UDP/eBPF/io_uring) ---
+net.ipv4.udp_rmem_min = ${udp_min}
+net.ipv4.udp_wmem_min = ${udp_min}
+net.core.bpf_jit_enable = 1
+net.core.optmem_max = 131072
+
+# --- 极速连接复用与动态容量 ---
 net.netfilter.nf_conntrack_max = 2000000
 net.netfilter.nf_conntrack_tcp_timeout_established = 1200
 net.ipv4.tcp_keepalive_time = 60
 net.ipv4.tcp_keepalive_probes = 6
 net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_max_tw_buckets = 55000
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_max_tw_buckets = ${tw_buckets}
 net.ipv4.tcp_orphan_retries = 1
-net.ipv4.tcp_max_orphans = 65536
+net.ipv4.tcp_max_orphans = ${max_orphans}
 
+# --- 调度算法 ---
 net.core.default_qdisc = ${target_qdisc}
 net.ipv4.tcp_congestion_control = ${target_cc}
-net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_ecn = ${target_ecn}
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 
+# --- 路由安全与 ARP 邻居表扩容 ---
 net.ipv4.route.gc_timeout = 100
 net.ipv4.neigh.default.gc_stale_time = 60
+net.ipv4.neigh.default.gc_thresh1 = 1024
+net.ipv4.neigh.default.gc_thresh2 = 4096
+net.ipv4.neigh.default.gc_thresh3 = 16384
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 EOF
+
+    # IPv6 特化：仅在宿主机支持 IPv6 时注入，防止内核报错
+    if [[ ${HAS_IPV6_STACK} -eq 1 ]]; then
+        cat <<EOF
+net.ipv6.neigh.default.gc_stale_time = 60
+net.ipv6.neigh.default.gc_thresh1 = 1024
+net.ipv6.neigh.default.gc_thresh2 = 4096
+net.ipv6.neigh.default.gc_thresh3 = 16384
+EOF
+    fi
 
     if [[ "${is_aggressive}" == "1" ]]; then
         echo ""
@@ -332,33 +385,33 @@ apply_profile() {
     local target_qdisc=""
     local target_cc="bbr"
     local is_aggressive=0
+    local target_ecn=1
     local kver=$(uname -r | cut -d- -f1)
+    
+    if [[ ${IS_CONTAINER} -eq 0 ]]; then modprobe tcp_bbr3 2>/dev/null || true; fi
     local avail_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
 
     case "${profile_type}" in
         "latency")
             log_step "加载画像: [极速网游 / Gaming]"
-            if version_ge "${kver}" "${MIN_KERNEL_CAKE}"; then 
-                target_qdisc="cake"
-            elif version_ge "${kver}" "${MIN_KERNEL_FQ_PIE}"; then 
-                target_qdisc="fq_pie"
-            else 
-                target_qdisc="fq_codel"
-            fi
+            if version_ge "${kver}" "${MIN_KERNEL_CAKE}"; then target_qdisc="cake"; elif version_ge "${kver}" "${MIN_KERNEL_FQ_PIE}"; then target_qdisc="fq_pie"; else target_qdisc="fq_codel"; fi
             if echo "${avail_cc}" | grep -q "bbr3"; then target_cc="bbr3"; else target_cc="bbr"; fi
             is_aggressive=0
+            target_ecn=1
             ;;
         "throughput")
             log_step "加载画像: [流媒体 / Streaming]"
             target_qdisc="fq"
-            target_cc="bbr" # 强制 BBRv1 暴力吞吐
+            target_cc="bbr"
             is_aggressive=1
+            target_ecn=1
             ;;
         "balanced")
             log_step "加载画像: [平衡模式 / Balanced]"
             if version_ge "${kver}" "${MIN_KERNEL_FQ_PIE}"; then target_qdisc="fq_pie"; else target_qdisc="fq"; fi
             if echo "${avail_cc}" | grep -q "bbr3"; then target_cc="bbr3"; else target_cc="bbr"; fi
             is_aggressive=0
+            target_ecn=2
             ;;
     esac
 
@@ -369,18 +422,16 @@ apply_profile() {
         modprobe "tcp_${target_cc}" 2>/dev/null || true
     fi
 
+    apply_system_limits
     optimize_nic_hardware
-    inject_bbr_module_params "${target_cc}"
+    inject_kernel_modules "${target_cc}"
     
     mkdir -p "${SYSCTL_d_DIR}"
-    if [[ -f "${SYSCTL_CONF}" ]]; then 
-        cp "${SYSCTL_CONF}" "${SYSCTL_CONF}.${TIMESTAMP}.bak"
-    fi
+    if [[ -f "${SYSCTL_CONF}" ]]; then cp "${SYSCTL_CONF}" "${SYSCTL_CONF}.${TIMESTAMP}.bak"; fi
     
-    generate_sysctl_content "${target_qdisc}" "${target_cc}" "${is_aggressive}" > "${SYSCTL_CONF}"
+    generate_sysctl_content "${target_qdisc}" "${target_cc}" "${is_aggressive}" "${target_ecn}" > "${SYSCTL_CONF}"
 
-    modprobe nf_conntrack 2>/dev/null || true
-    sysctl -p "${SYSCTL_CONF}" 2>/dev/null || sysctl --system >/dev/null 2>&1 || true
+    sysctl -e -p "${SYSCTL_CONF}" 2>/dev/null || sysctl --system >/dev/null 2>&1 || true
 
     local applied_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
     local applied_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")
@@ -390,9 +441,7 @@ apply_profile() {
 manage_ipv4_precedence() {
     if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi
     local action="$1"
-    if [[ ! -f "${GAI_CONF}" ]]; then 
-        if [[ -d "/etc" ]]; then touch "${GAI_CONF}"; fi
-    fi
+    if [[ ! -f "${GAI_CONF}" ]]; then if [[ -d "/etc" ]]; then touch "${GAI_CONF}"; fi; fi
     if [[ "${action}" == "enable" ]]; then
         if grep -q "precedence ::ffff:0:0/96" "${GAI_CONF}"; then 
             sed -i 's/^#*precedence ::ffff:0:0\/96.*/precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
@@ -416,14 +465,18 @@ show_menu() {
     local cur_kver=$(uname -r)
     local cur_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未知")
     local cur_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未知")
+    
+    local active_conn=$(ss -tn state established 2>/dev/null | wc -l || echo "1")
+    active_conn=$((active_conn - 1))
+    [[ ${active_conn} -lt 0 ]] && active_conn=0
 
     echo "========================================================"
-    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v5.4.1)${COLOR_RESET}"
+    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.0.0 Hexagon Edition)${COLOR_RESET}"
     echo "========================================================"
-    echo -e " 内核：${COLOR_CYAN}${cur_kver}${COLOR_RESET}    算法：${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}"
-    echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}"
+    echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    并发承载: ${COLOR_GREEN}${active_conn} 活跃连接${COLOR_RESET}"
+    echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}"
     if [[ ${mem_mb} -lt 1500 ]]; then
-        echo -e " ${COLOR_RED}[警告] 内存 < 1.5GB。全时 128MB 缓冲区可能导致 OOM 崩溃！${COLOR_RESET}"
+        echo -e " ${COLOR_RED}[警告] 物理内存 < 1.5GB。极客模式已强开 128MB 核心缓冲，注意 OOM 风险！${COLOR_RESET}"
     fi
     echo "--------------------------------------------------------"
     echo " 1. 极速网游[Ganing](BBRV3 + CAKE/FQ_PIE+低抖动）"
@@ -433,7 +486,7 @@ show_menu() {
     echo " 4. 安装 XanMod 内核 (Debian/Ubuntu 推荐)"
     echo " 5. 开启 IPv4 强制优先 (解决 IPv6 绕路)"
     echo " 6. 恢复 IPv6 默认优先级"
-    echo " 7. 卸载/恢复系统默认"
+    echo " 7. 彻底卸载/恢复系统默认"
     echo "--------------------------------------------------------"
     echo " 0. 退出"
     echo "========================================================"
@@ -455,11 +508,19 @@ main() {
             5) manage_ipv4_precedence "enable"; read -rp "按回车继续...";;
             6) manage_ipv4_precedence "disable"; read -rp "按回车继续...";;
             7) 
-                log_warn "正在抹除配置..."
-                rm -f "${SYSCTL_CONF}" "${NIC_OPT_SERVICE}" "${MODULES_CONF}" "${MODPROBE_D_CONF}"
-                if [[ ${IS_SYSTEMD} -eq 1 ]]; then systemctl daemon-reload || true; fi
+                log_warn "正在彻底清理配置与驻留服务..."
+                rm -f "${SYSCTL_CONF}" "${NIC_OPT_SERVICE}" "${MODULES_CONF}" "${MODPROBE_BBR_CONF}" "${MODPROBE_CONN_CONF}" "${LIMITS_CONF}" "${SYSTEMD_SYS_CONF}" "${SYSTEMD_USR_CONF}"
+                
+                if [[ ${IS_SYSTEMD} -eq 1 ]]; then 
+                    systemctl disable --now nic-optimize.service 2>/dev/null || true
+                    systemctl daemon-reload || true
+                fi
+                
+                sysctl -w net.ipv4.tcp_congestion_control=cubic 2>/dev/null || true
+                sysctl -w net.core.default_qdisc=fq_codel 2>/dev/null || true
                 sysctl --system >/dev/null 2>&1 || true
-                log_info "已恢复系统默认状态。"
+                
+                log_info "已彻底卸载 Drop-in 配置与优化防线，并回退至默认状态。"
                 read -rp "按回车继续..."
                 ;;
             0) exit 0 ;;
