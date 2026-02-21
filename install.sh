@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v2.1.0 - 新增环境预检与日志轮转)
+# 🚀 VPS 一键安装与管理脚本 (v2.2.0 - 恢复日志双写与生产级代码审计)
 # =============================================================
 # 作者：
 # 描述：自引导智能化 VPS 环境一键部署与管理菜单系统
 # 版本历史：
-#   v2.1.0 - 新增 x86_64/arm64 及主流 OS 预检，新增日志文件双写与 Logrotate 轮转
+#   v2.2.0 - 恢复日志持久化与轮转，全面审查防御网络假死及兼容性问题
+#   v2.1.1 - 修复空参数导致的 Headless 误触发漏洞
+#   v2.1.0 - 新增 x86_64/arm64 及主流 OS 预检
 #   v2.0.1 - 生产级重构：开启 set -u，重写依赖检查、标准日志及信号捕获
-#   v2.0   - 修复空图标列漂移问题，重写 jq 数据提取逻辑
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v2.1.0"
+SCRIPT_VERSION="v2.2.0"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -84,7 +85,6 @@ check_dependencies() {
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     
-    # 强制执行环境预检
     preflight_check
 
     if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -109,7 +109,10 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             file_path="${core_files[$name]}"
             echo_info "正在下载最新的 ${name} (${file_path})..."
             temp_file="$(mktemp "/tmp/jb_starter_XXXXXX")" || temp_file="/tmp/$(basename "${file_path}").$$"
-            if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
+            # 强化网络请求鲁棒性
+            if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then 
+                echo_error "下载 ${name} 失败，可能是网络问题或被阻断。"
+            fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
             sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
@@ -126,7 +129,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     exec sudo -E bash "$FINAL_SCRIPT_PATH" "${@:-}"
 fi
 
-# --- 主程序依赖加载与内置日志强化 (双写机制) ---
+# --- 主程序依赖加载 ---
 if [ -f "$UTILS_PATH" ]; then
     # shellcheck source=/dev/null
     source "$UTILS_PATH"
@@ -134,21 +137,23 @@ else
     echo_error "通用工具库 $UTILS_PATH 未找到！系统不完整。"
 fi
 
+# 恢复并强化的双写日志模块
 _write_log() {
     local level="$1"
     local msg="$2"
     local color="$3"
+    local timestamp
+    timestamp="$(_log_timestamp)"
     
-    # 控制台带颜色输出
-    printf "[%s] ${color}[%s]${NC} %s\n" "$(_log_timestamp)" "$level" "$msg" >&2
+    # 控制台带颜色输出 (stderr)
+    printf "[%s] ${color}[%s]${NC} %s\n" "$timestamp" "$level" "$msg" >&2
     
-    # 持久化文件无色输出 (仅在目录存在时尝试写入，兼容提权前的临时权限)
+    # 持久化文件无色输出 (仅当目录可用时安全追加写入)
     if [ -d "$INSTALL_DIR" ]; then
-        printf "[%s] [%s] %s\n" "$(_log_timestamp)" "$level" "$msg" >> "$GLOBAL_LOG_FILE" 2>/dev/null || true
+        printf "[%s] [%s] %s\n" "$timestamp" "$level" "$msg" >> "$GLOBAL_LOG_FILE" 2>/dev/null || true
     fi
 }
 
-# 覆盖并强化全局日志输出
 log_info() { _write_log "INFO" "$1" "$CYAN"; }
 log_warn() { _write_log "WARN" "$1" "$YELLOW"; }
 log_err()  { _write_log "ERROR" "$1" "$RED"; }
@@ -173,7 +178,7 @@ create_temp_file() {
 cleanup_temp_files() {
     log_debug "正在清理临时文件: ${TEMP_FILES[*]:-none}"
     if [ ${#TEMP_FILES[@]} -gt 0 ]; then
-        for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
+        for f in "${TEMP_FILES[@]:-}"; do [ -f "$f" ] && rm -f "$f"; done
     fi
     TEMP_FILES=()
 }
@@ -201,7 +206,7 @@ EOF
 setup_logrotate() {
     local logrotate_conf="/etc/logrotate.d/vps_install_modules"
     if [ -d "/etc/logrotate.d" ] && [ ! -f "$logrotate_conf" ]; then
-        log_info "正在配置 Logrotate 自动日志轮转..."
+        log_info "首次运行: 正在为脚本日志配置 Logrotate 自动轮转..."
         run_with_sudo bash -c "cat > '$logrotate_conf' << 'EOF'
 ${INSTALL_DIR}/*.log {
     daily
@@ -213,7 +218,8 @@ ${INSTALL_DIR}/*.log {
     create 0644 root root
 }
 EOF"
-        log_success "Logrotate 配置已生成: $logrotate_conf"
+        run_with_sudo chmod 644 "$logrotate_conf"
+        log_success "Logrotate 日志轮转配置已生成。"
     fi
 }
 
@@ -280,7 +286,9 @@ run_comprehensive_auto_update() {
     declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
-        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。"; continue; fi
+        if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then 
+            log_err "下载 ${file} 失败，跳过。"; continue
+        fi
         local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
         local local_hash="no_local_file"
         [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}' || echo "no_local_file")
@@ -307,7 +315,7 @@ download_module_to_cache() {
     local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
     if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}"; fi
     run_with_sudo mkdir -p "$(dirname "$local_file")"
-    if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
+    if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
         if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。"; fi
         return 1
     fi
@@ -349,7 +357,7 @@ confirm_and_force_update() {
         log_info "用户确认：开始强制更新所有组件..."
         flock -u 200 2>/dev/null || true; trap - EXIT
         local install_script
-        install_script=$(curl -fsSL "${BASE_URL}/install.sh?_=$(date +%s)") || { log_err "拉取核心脚本失败"; exit 1; }
+        install_script=$(curl -fsSL --connect-timeout 10 "${BASE_URL}/install.sh?_=$(date +%s)") || { log_err "拉取核心脚本失败"; exit 1; }
         FORCE_REFRESH=true bash -c "$install_script"
         log_success "强制更新完成！脚本将自动重启以应用所有更新..."
         sleep 2
@@ -405,7 +413,7 @@ _get_docker_status() {
 _get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
 _get_watchtower_status() {
     if systemctl is-active --quiet docker 2>/dev/null; then 
-        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower'; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi
+        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower' >/dev/null 2>&1; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi
     else 
         echo -e "${RED}Docker未运行${NC}"
     fi
@@ -530,22 +538,28 @@ main() {
     
     exec 200>"${LOCK_FILE:-/tmp/jb.lock}"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     
+    # 防护级别的 Headless 命令读取，规避空值引发全量匹配
     if [ $# -gt 0 ]; then
-        local command="$1"; shift
-        case "$command" in
-            -h|--help) usage; exit 0 ;;
-            update) log_info "正在以 Headless 模式更新所有脚本..."; run_comprehensive_auto_update "${@:-}"; exit 0 ;;
-            uninstall) log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0 ;;
-            *) 
-                local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1 || true)
-                if [ -n "${action_to_run:-}" ] && [ "$action_to_run" != "null" ]; then 
-                    local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1 || echo "Unknown")
-                    log_info "正在以 Headless 模式执行: ${display_name}"
-                    run_module "$action_to_run" "$display_name" "${@:-}"; exit $?
-                else 
-                    log_err "未知命令: $command"; usage; exit 1
-                fi ;;
-        esac
+        local command="${1:-}"
+        if [ -n "$command" ]; then
+            shift
+            case "$command" in
+                -h|--help) usage; exit 0 ;;
+                update) log_info "正在以 Headless 模式更新所有脚本..."; run_comprehensive_auto_update "${@:-}"; exit 0 ;;
+                uninstall) log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0 ;;
+                *) 
+                    local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1 || true)
+                    if [ -n "${action_to_run:-}" ] && [ "$action_to_run" != "null" ]; then 
+                        local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1 || echo "Unknown")
+                        log_info "正在以 Headless 模式执行: ${display_name}"
+                        run_module "$action_to_run" "$display_name" "${@:-}"; exit $?
+                    else 
+                        log_err "未知命令: $command"; usage; exit 1
+                    fi ;;
+            esac
+        else
+            shift
+        fi
     fi
     
     log_info "脚本启动 (${SCRIPT_VERSION})"
