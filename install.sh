@@ -1,418 +1,477 @@
+#!/bin/bash
 # =============================================================
-# 🚀 VPS 一键安装与管理脚本 (v2.0-修复空图标列漂移)
-# - 修复: (关键) 重写 jq 逻辑，强制处理空字符串为占位符，彻底解决菜单项因列漂移而消失的问题。
-# - 优化: 增强对纯空格图标的清洗，实现无图标时的完美对齐。
+# 🚀 tcp_optimizer.sh (v5.4.0 - 终极画像调优引擎)
+# =============================================================
+# 作者：System Admin
+# 描述：全景 Linux 网络调优引擎。集成 XanMod 向导、终极画像选择、BBRv3/CAKE 智能检测。
+# 版本历史：
+#   v5.4.0 - 重构菜单 UI，细化 Gaming/Streaming/Balanced 画像策略，增强 BBRv3 检测
+#   v5.3.0 - 新增 XanMod 内核向导、应用画像 (Profile) 系统、移除动态缓冲、加入激进抢占模式
+#   v5.2.0 - 迁移至 /etc/sysctl.d 独立文件
 # =============================================================
 
-# --- 脚本元数据 ---
-SCRIPT_VERSION="v2.0"
+set -euo pipefail
 
-# --- 严格模式与环境设定 ---
-set -eo pipefail
-export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C_UTF_8}
+# -------------------------------------------------------------
+# 全局变量与常量
+# -------------------------------------------------------------
+readonly SYSCTL_d_DIR="/etc/sysctl.d"
+readonly SYSCTL_CONF="${SYSCTL_d_DIR}/99-z-tcp-optimizer.conf"
 
-# --- [核心架构]: 智能自引导启动器 ---
-INSTALL_DIR="/opt/vps_install_modules"
-FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
-CONFIG_PATH="${INSTALL_DIR}/config.json"
-UTILS_PATH="${INSTALL_DIR}/utils.sh"
+readonly MODULES_LOAD_DIR="/etc/modules-load.d"
+readonly MODULES_CONF="${MODULES_LOAD_DIR}/tcp_optimizer.conf"
+readonly MODPROBE_D_CONF="/etc/modprobe.d/tcp_optimizer_bbr.conf"
+readonly LOG_FILE="/var/log/tcp_optimizer.log"
+readonly TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
-REAL_SCRIPT_PATH=""
-REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
+readonly NIC_OPT_SERVICE="/etc/systemd/system/nic-optimize.service"
+readonly GAI_CONF="/etc/gai.conf"
 
-if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
-    # --- 启动器环境 (最小化依赖) ---
-    STARTER_CYAN='\033[0;36m'; STARTER_GREEN='\033[0;32m'; STARTER_RED='\033[0;31m'; STARTER_NC='\033[0m'
-    
-    _starter_log_prefix() {
-        if [ "${JB_LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
-            echo -n "$(date '+%Y-%m-%d %H:%M:%S') "
-        fi
-    }
-    echo_info() { echo -e "$(_starter_log_prefix)${STARTER_CYAN}[启动器]${STARTER_NC} $1" >&2; }
-    echo_success() { echo -e "$(_starter_log_prefix)${STARTER_GREEN}[启动器]${STARTER_NC} $1" >&2; }
-    echo_error() { echo -e "$(_starter_log_prefix)${STARTER_RED}[启动器错误]${STARTER_NC} $1" >&2; exit 1; }
+IS_CONTAINER=0
+IS_CHINA_IP=0
+IS_SYSTEMD=0
+TOTAL_MEM_KB=0
 
-    if [ -f "$CONFIG_PATH" ] && command -v jq &>/dev/null; then
-        JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$CONFIG_PATH" 2>/dev/null || echo "false")
-    fi
+# 内核版本基线 (参考)
+readonly MIN_KERNEL_BBR="4.9"
+readonly MIN_KERNEL_CAKE="4.19"
+readonly MIN_KERNEL_FQ_PIE="5.6"
 
-    if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
-        echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
-        if command -v apt-get &>/dev/null; then
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq >&2
-        elif command -v yum &>/dev/null; then
-            sudo yum install -y curl jq >&2
-        else
-            echo_error "无法自动安装 curl 和 jq。请手动安装后再试。"
-        fi
-        echo_success "核心依赖安装完成。"
-    fi
+# 颜色定义
+readonly COLOR_RESET='\033[0m'
+readonly COLOR_GREEN='\033[0;32m'
+readonly COLOR_RED='\033[0;31m'
+readonly COLOR_YELLOW='\033[1;33m'
+readonly COLOR_CYAN='\033[0;36m'
+readonly COLOR_MAGENTA='\033[0;35m'
+readonly COLOR_BLUE='\033[0;34m'
+readonly COLOR_WHITE='\033[1;37m'
 
-    if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH}" = "true" ]; then
-        echo_info "正在执行首次安装或强制刷新..."
-        sudo mkdir -p "$INSTALL_DIR"
-        BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
-        
-        declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
-        for name in "${!core_files[@]}"; do
-            file_path="${core_files[$name]}"
-            echo_info "正在下载最新的 ${name} (${file_path})..."
-            temp_file="$(mktemp "/tmp/jb_starter_XXXXXX")" || temp_file="/tmp/$(basename "${file_path}").$$"
-            if ! curl -fsSL "${BASE_URL}/${file_path}?_=$(date +%s)" -o "$temp_file"; then echo_error "下载 ${name} 失败。"; fi
-            sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
-            sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
-            rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
-        done
+# -------------------------------------------------------------
+# 基础工具与审计日志
+# -------------------------------------------------------------
 
-        sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
-        echo_info "正在创建/更新快捷指令 'jb'..."
-        BIN_DIR="/usr/local/bin"
-        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
-        echo_success "安装/更新完成。"
-    fi
-    
-    echo -e "${STARTER_CYAN}────────────────────────────────────────────────────────────${STARTER_NC}" >&2
-    exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
-fi
+log_info() { local msg="[$(date '+%F %T')] [INFO] $*"; printf "${COLOR_GREEN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_error() { local msg="[$(date '+%F %T')] [ERROR] $*"; printf "${COLOR_RED}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_warn() { local msg="[$(date '+%F %T')] [WARN] $*"; printf "${COLOR_YELLOW}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
+log_step() { local msg="[$(date '+%F %T')] [STEP] $*"; printf "${COLOR_CYAN}%s${COLOR_RESET}\n" "${msg}" >&2; echo "${msg}" >> "${LOG_FILE}"; }
 
-# --- 主程序逻辑 ---
-if [ -f "$UTILS_PATH" ]; then
-    # shellcheck source=/dev/null
-    source "$UTILS_PATH"
-else
-    echo "致命错误: 通用工具库 $UTILS_PATH 未找到！" >&2; exit 1
-fi
-
-# --- 临时文件管理 (移至主脚本) ---
-TEMP_FILES=()
-create_temp_file() {
-    local tmpfile
-    tmpfile=$(mktemp "/tmp/jb_temp_XXXXXX") || {
-        log_err "无法创建临时文件"
-        return 1
-    }
-    TEMP_FILES+=("$tmpfile")
-    echo "$tmpfile"
-}
-cleanup_temp_files() {
-    log_debug "正在清理临时文件: ${TEMP_FILES[*]}"
-    for f in "${TEMP_FILES[@]}"; do [ -f "$f" ] && rm -f "$f"; done
-    TEMP_FILES=()
-}
-
-# --- 变量与函数定义 ---
-CURRENT_MENU_NAME="MAIN_MENU"
-
-check_sudo_privileges() {
-    if [ "$(id -u)" -eq 0 ]; then 
-        JB_HAS_PASSWORDLESS_SUDO=true; 
-        log_info "以 root 用户运行（拥有完整权限）。" >&2;
-        return 0; 
-    fi
-    
-    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then 
-        JB_HAS_PASSWORDLESS_SUDO=true; 
-        log_info "检测到免密 sudo 权限。" >&2;
-    else 
-        JB_HAS_PASSWORDLESS_SUDO=false; 
-        log_warn "未检测到免密 sudo 权限。部分操作可能需要您输入密码。" >&2;
+cleanup() { 
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then 
+        log_warn "脚本异常退出 (Code: ${exit_code})。请检查日志 ${LOG_FILE}"
     fi
 }
-run_with_sudo() {
-    if [ "$(id -u)" -eq 0 ]; then "$@"; else
-        if [ "${JB_SUDO_LOG_QUIET:-}" != "true" ]; then log_debug "Executing with sudo: sudo $*" >&2; fi
-        sudo "$@"
-    fi
+trap cleanup EXIT
+
+# -------------------------------------------------------------
+# 环境与内核检查
+# -------------------------------------------------------------
+
+check_root() { [[ "$(id -u)" -ne 0 ]] && { log_error "需要 root 权限。"; exit 1; } }
+
+check_systemd() {
+    if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null); then IS_SYSTEMD=1; else IS_SYSTEMD=0; fi
 }
-export -f run_with_sudo
 
-check_and_install_dependencies() {
-    local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
-    local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || echo "$default_deps")
-    if [ -z "$deps" ]; then deps="$default_deps"; fi
-
-    local missing_pkgs=""
-    declare -A pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
-    for dep in $deps; do if ! command -v "$dep" &>/dev/null; then local pkg="${pkg_apt_map[$dep]:-$dep}"; missing_pkgs="${missing_pkgs} ${pkg}"; fi; done
-    
-    if [ -n "$missing_pkgs" ]; then
-        missing_pkgs=$(echo "$missing_pkgs" | xargs)
-        log_info "检查附加依赖..." >&2
-        log_warn "缺失依赖: ${missing_pkgs}" >&2
-        if confirm_action "是否尝试自动安装?"; then
-            if command -v apt-get &>/dev/null; then run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get update >&2; run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing_pkgs >&2
-            elif command -v yum &>/dev/null; then run_with_sudo yum install -y $missing_pkgs >&2
-            else log_err "不支持的包管理器。请手动安装: ${missing_pkgs}" >&2; exit 1; fi
-        else log_err "用户取消安装，脚本无法继续。" >&2; exit 1; fi
+check_network_region() {
+    # 简单的连通性测试
+    if curl -s --connect-timeout 2 -I https://www.google.com >/dev/null 2>&1; then
+        IS_CHINA_IP=0
     else
-        log_debug "所有依赖均已满足。" >&2
+        IS_CHINA_IP=1
     fi
 }
 
-run_comprehensive_auto_update() {
-    local updated_files=()
-    declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
-    for file in "${!core_files[@]}"; do
-        local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
-        if ! curl -fsSL "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then log_err "下载 ${file} 失败。" >&2; continue; fi
-        local remote_hash; remote_hash=$(sed 's/\r$//' < "$temp_file" | sha256sum | awk '{print $1}')
-        local local_hash="no_local_file"; [ -f "$local_path" ] && local_hash=$(sed 's/\r$//' < "$local_path" | sha256sum | awk '{print $1}')
-        if [ "$local_hash" != "$remote_hash" ]; then
-            updated_files+=("$file"); sudo mv "$temp_file" "$local_path"
-            if [[ "$file" == *".sh" ]]; then sudo chmod +x "$local_path"; fi
-        else rm -f "$temp_file"; fi
-    done
-    local scripts_to_update; scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
-    for script_name in $scripts_to_update; do if download_module_to_cache "$script_name" "auto"; then updated_files+=("$script_name"); fi; done
-    echo "${updated_files[@]}"
-}
-
-download_module_to_cache() {
-    local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
-    if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}" >&2; fi
-    sudo mkdir -p "$(dirname "$local_file")"
-    if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
-        if [ "$mode" != "auto" ]; then log_err "     模块 (${script_name}) 下载失败。" >&2; fi
-        return 1
+install_dependencies() {
+    local missing=("$@")
+    if command -v apt-get &>/dev/null; then
+        apt-get update -yq || true
+        apt-get install -yq "${missing[@]}"
+    elif command -v yum &>/dev/null; then
+        yum install -y "${missing[@]}"
+    else
+        log_error "无法识别包管理器，请手动安装: ${missing[*]}"; exit 1
     fi
-    local remote_hash; remote_hash=$(sed 's/\r$//' < "$tmp_file" | sha256sum | awk '{print $1}')
-    local local_hash="no_local_file"; [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' < "$local_file" | sha256sum | awk '{print $1}')
-    if [ "$local_hash" != "$remote_hash" ]; then
-        if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。" >&2; fi
-        sudo mv "$tmp_file" "$local_file"; sudo chmod +x "$local_file"; return 0
-    else rm -f "$tmp_file"; return 1; fi
 }
 
-uninstall_script() {
-    log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！" >&2; log_warn "  - 安装目录: ${INSTALL_DIR}" >&2; log_warn "  - 快捷方式: ${BIN_DIR}/jb" >&2
-    local choice; read -r -p "$(echo -e "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
-    if [ "$choice" = "yes" ]; then log_info "开始卸载..." >&2; run_with_sudo rm -f "${BIN_DIR}/jb" || true; run_with_sudo rm -rf "$INSTALL_DIR" || true; log_success "脚本已成功卸载。再见！" >&2; exit 0; else log_info "卸载操作已取消。" >&2; fi
-}
-
-confirm_and_force_update() {
-    log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和【主配置文件 config.json】。" >&2; log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。" >&2
-    local choice; read -r -p "$(echo -e "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
-    if [ "$choice" = "yes" ]; then
-        log_info "用户确认：开始强制更新所有组件..." >&2; 
-        flock -u 200 2>/dev/null || true; trap - EXIT
-        FORCE_REFRESH=true bash -c "$(curl -fsSL ${BASE_URL}/install.sh?_=$(date +%s))"
-        log_success "强制更新完成！脚本将自动重启以应用所有更新..." >&2; sleep 2
-        exec sudo -E bash "$FINAL_SCRIPT_PATH" "$@"
-    else log_info "用户取消了强制更新。" >&2; fi
-}
-
-run_module(){
-    local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}";
-    if [ ! -f "$module_path" ]; then log_info "模块首次运行，正在下载..." >&2; download_module_to_cache "$module_script"; fi
+check_dependencies() {
+    local deps=(sysctl uname sed modprobe grep awk ip ping timeout ethtool bc curl wget gpg)
+    local missing=()
+    for cmd in "${deps[@]}"; do if ! command -v "${cmd}" &> /dev/null; then missing+=("${cmd}"); fi; done
     
-    local filename_only="${module_script##*/}"; local key_base="${filename_only%.sh}"; local module_key="${key_base,,}"
-    
-    if command -v jq >/dev/null 2>&1 && jq -e --arg key "$module_key" '.module_configs | has($key)' "$CONFIG_PATH" >/dev/null 2>&1; then
-        local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
-        local prefix_base="${module_key^^}"
-
-        echo "$module_config_json" | jq -r 'keys[]' | while IFS= read -r key; do
-            if [[ "$key" == "comment_"* ]]; then continue; fi
-            local value; value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
-            local upper_key="${key^^}"
-            export "${prefix_base}_CONF_${upper_key}"="$value"
-        done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${COLOR_YELLOW}缺失依赖: ${missing[*]}${COLOR_RESET}"
+        check_network_region
+        read -rp "自动安装缺失依赖? [y/N]: " ui_dep
+        if [[ "${ui_dep,,}" == "y" ]]; then
+            install_dependencies "${missing[@]}"
+        else log_error "终止执行。"; exit 1; fi
     fi
-    
-    set +e; bash "$module_path"; local exit_code=$?; set -e
-    
-    if [ "$exit_code" -eq 0 ]; then 
-        log_success "模块 [${module_name}] 执行完毕。" >&2;
-    elif [ "$exit_code" -eq 10 ]; then 
-        log_info "已从 [${module_name}] 返回。" >&2;
-    else 
-        log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。" >&2;
+}
+
+check_environment() {
+    local virt_type="none"
+    if command -v systemd-detect-virt &>/dev/null; then virt_type=$(systemd-detect-virt -c || echo none); else
+        grep -q "docker" /proc/1/cgroup 2>/dev/null && virt_type="docker"
+        [[ -f /proc/user_beancounters ]] && virt_type="openvz"
     fi
-    return $exit_code
+    if [[ "${virt_type}" != "none" && "${virt_type}" != "kvm" && "${virt_type}" != "vmware" && "${virt_type}" != "microsoft" ]]; then
+        IS_CONTAINER=1
+    fi
+    TOTAL_MEM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    check_systemd
 }
 
-_get_docker_status() {
-    local docker_ok=false compose_ok=false status_str=""; if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi; if command -v docker-compose &>/dev/null || docker compose version &>/dev/null 2>&1; then compose_ok=true; fi
-    if $docker_ok && $compose_ok; then echo -e "${GREEN}已运行${NC}"; else if ! $docker_ok; then status_str+="Docker${RED}未运行${NC} "; fi; if ! $compose_ok; then status_str+="Compose${RED}未找到${NC}"; fi; echo -e "$status_str"; fi
+version_ge() { local lower=$(printf '%s\n%s' "$1" "$2" | sort -V | head -n 1); [[ "${lower}" == "$2" ]]; }
+
+# -------------------------------------------------------------
+# 模块：XanMod 内核向导
+# -------------------------------------------------------------
+
+install_xanmod_kernel() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && { log_warn "容器环境无法更换内核。"; return; }
+    
+    echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}   XanMod Kernel 安装向导 (Debian/Ubuntu Only)          ${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
+    
+    if grep -iq "xanmod" /proc/version; then
+        log_info "✅ 检测到当前已运行 XanMod 内核。"
+        read -rp "按回车返回..."
+        return
+    fi
+
+    if [[ ! -f /etc/debian_version ]]; then
+        log_warn "非 Debian/Ubuntu 系统，暂不支持自动安装 XanMod。"
+        read -rp "按回车返回..."
+        return
+    fi
+
+    echo "即将安装 XanMod x64v3 内核 (原生支持 BBRv3 + CAKE)。"
+    read -rp "确认安装? [y/N]: " ui_inst
+    if [[ "${ui_inst,,}" != "y" ]]; then return; fi
+
+    log_step "导入 GPG Key..."
+    wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
+    
+    log_step "添加源列表..."
+    echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
+
+    log_step "更新并安装..."
+    apt-get update -y
+    if apt-get install -y linux-xanmod-x64v3; then
+        echo -e "${COLOR_GREEN}XanMod 内核安装成功！${COLOR_RESET}"
+        echo -e "${COLOR_YELLOW}请重启服务器以启用新内核。${COLOR_RESET}"
+    else
+        log_error "安装失败，请检查网络。"
+    fi
+    read -rp "按回车继续..."
 }
-_get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
-_get_watchtower_status() {
-    if systemctl is-active --quiet docker 2>/dev/null; then if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower'; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi; else echo -e "${RED}Docker未运行${NC}"; fi
+
+# -------------------------------------------------------------
+# 模块：底层硬件调优
+# -------------------------------------------------------------
+
+get_default_iface() { ip route show default | awk '/default/ {print $5}' | head -n1 || echo ""; }
+
+optimize_nic_hardware() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
+    if ! command -v ethtool &>/dev/null; then return 0; fi
+
+    local iface=$(get_default_iface)
+    [[ -z "${iface}" ]] && return 0
+    local cmd_all=""
+    
+    # TSO/GSO (Skip AWS ENA)
+    if [[ ! -f "/sys/class/net/${iface}/device/vendor" ]] || [[ "$(cat "/sys/class/net/${iface}/device/vendor")" != "0x1d0f" ]]; then
+        local tso_state=$(ethtool -k "${iface}" 2>/dev/null | awk '/tcp-segmentation-offload:/ {print $2}' || echo "unknown")
+        [[ "${tso_state}" == "on" ]] && cmd_all+="/sbin/ethtool -K ${iface} tso off gso off; "
+    fi
+
+    # Ring Buffer
+    if ethtool -g "${iface}" &>/dev/null; then
+        local rx_max=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '1p' || echo "")
+        local rx_cur=$(ethtool -g "${iface}" | awk '/RX:/ {print $2}' | sed -n '2p' || echo "")
+        if [[ -n "${rx_max}" && -n "${rx_cur}" && "${rx_cur}" -lt "${rx_max}" ]]; then
+            cmd_all+="/sbin/ethtool -G ${iface} rx ${rx_max} tx ${rx_max} 2>/dev/null || true; "
+        fi
+    fi
+
+    # RPS & Txqueuelen
+    local cpu_count=$(nproc || echo 1)
+    if [[ ${cpu_count} -gt 1 ]]; then
+        local rps_mask=$(printf "%x" $(( (1 << cpu_count) - 1 )))
+        local rx_queues=$(ls -1d /sys/class/net/${iface}/queues/rx-* 2>/dev/null || echo "")
+        if [[ -n "${rx_queues}" ]]; then
+            cmd_all+="for q in /sys/class/net/${iface}/queues/rx-*; do echo ${rps_mask} > \$q/rps_cpus 2>/dev/null || true; done; "
+        fi
+    fi
+
+    local cur_txq=$(cat /sys/class/net/${iface}/tx_queue_len 2>/dev/null || echo "1000")
+    if [[ "${cur_txq}" != "10000" && "${cur_txq}" -gt 0 ]]; then
+        cmd_all+="/sbin/ip link set ${iface} txqueuelen 10000 2>/dev/null || true; "
+    fi
+
+    if [[ -n "${cmd_all}" && ${IS_SYSTEMD} -eq 1 ]]; then
+        cat <<EOF > "${NIC_OPT_SERVICE}"
+[Unit]
+Description=NIC Hardware & RPS Optimization
+After=network.target network-online.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "${cmd_all}"
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable --now nic-optimize.service 2>/dev/null || true
+    fi
 }
 
-display_and_process_menu() {
-    while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || "")
-        if [ -z "$menu_json" ]; then log_warn "菜单配置 '$CURRENT_MENU_NAME' 读取失败，回退到主菜单." >&2; CURRENT_MENU_NAME="MAIN_MENU"; menu_json=$(jq -r --arg menu "MAIN_MENU" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || ""); fi
-        if [ -z "$menu_json" ]; then log_err "致命错误：无法加载任何菜单。" >&2; exit 1; fi
+inject_bbr_module_params() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
+    local target_cc="$1"
+    # 若 BBRv3，模块名通常仍为 tcp_bbr，但检查是否需加载 bbr3
+    [[ ! "${target_cc}" =~ ^bbr ]] && return 0
+    
+    # 大多数内核模块名为 tcp_bbr，即使是 v3
+    local mod_name="tcp_bbr"
+    # 部分专版内核可能分离
+    if [[ "${target_cc}" == "bbr3" ]] && modprobe -n tcp_bbr3 &>/dev/null; then mod_name="tcp_bbr3"; fi
 
-        local menu_title; menu_title=$(jq -r '.title' <<< "$menu_json"); local -a primary_items=() func_items=()
-        
-        # 优化: 强制处理空字符串为 "NO_ICON"，防止 jq 输出空首列导致 bash read 列错位
-        while IFS=$'\t' read -r icon name type action; do
-            # 清洗占位符和纯空格
-            if [[ "$icon" == "NO_ICON" ]]; then icon=""; fi
-            if [[ "$icon" =~ ^[[:space:]]*$ ]]; then icon=""; fi
+    local param_file="/sys/module/${mod_name}/parameters/min_rtt_win_sec"
+    
+    if [[ -w "${param_file}" ]]; then
+        echo 2 > "${param_file}" 2>/dev/null || true
+        mkdir -p "$(dirname "${MODPROBE_D_CONF}")"
+        echo "options ${mod_name} min_rtt_win_sec=2" > "${MODPROBE_D_CONF}"
+        log_info "注入 BBR 参数: min_rtt_win_sec=2"
+    fi
+}
 
-            local item_data="$icon|$name|$type|$action"
-            if [[ "$type" == "item" || "$type" == "submenu" ]]; then primary_items+=("$item_data"); elif [[ "$type" == "func" ]]; then func_items+=("$item_data"); fi
-        done < <(jq -r '.items[] | [(if (.icon == null or .icon == "") then "NO_ICON" else .icon end), .name // "", .type // "", .action // ""] | @tsv' <<< "$menu_json" 2>/dev/null || true)
-        
-        local -a formatted_items_for_render=() first_cols_content=() second_cols_content=()
-        local max_first_col_width=0
-        local -A status_map=( ["docker"]="$(_get_docker_status)" ["nginx"]="$(_get_nginx_status)" ["watchtower"]="$(_get_watchtower_status)" )
-        local -A status_label_map=( ["docker"]="Docker:" ["nginx"]="Nginx:" ["watchtower"]="Watchtower:" )
+# -------------------------------------------------------------
+# 模块：Sysctl 与画像生成
+# -------------------------------------------------------------
 
-        for item_data in "${primary_items[@]}"; do
-            IFS='|' read -r icon name type action <<< "$item_data"; local status_text="" status_key=""
-            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-                case "$action" in "docker.sh") status_key="docker" ;; "nginx.sh") status_key="nginx" ;; "TOOLS_MENU") status_key="watchtower" ;; esac
-            fi
-            if [ -n "$status_key" ] && [ -n "${status_map[$status_key]}" ]; then status_text="${status_label_map[$status_key]} ${status_map[$status_key]}"; fi
+generate_sysctl_content() {
+    local target_qdisc="$1"
+    local target_cc="$2"
+    local is_aggressive="$3"
+    
+    # 全时激进缓冲区 (128MB)
+    local buffer_size="134217728" 
+
+    echo "# ============================================================="
+    echo "# TCP Optimizer (Profile: ${target_cc} + ${target_qdisc} | Aggressive: ${is_aggressive})"
+    echo "# ============================================================="
+
+    cat <<EOF
+# --- C100K 核心 ---
+fs.file-max = 2097152
+fs.nr_open = 2097152
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 16384
+net.ipv4.ip_local_port_range = 10000 65000
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_syncookies = 1
+
+# --- 全时激进缓冲区 (128MB) ---
+net.core.rmem_max = ${buffer_size}
+net.core.wmem_max = ${buffer_size}
+net.core.rmem_default = ${buffer_size}
+net.core.wmem_default = ${buffer_size}
+net.ipv4.tcp_notsent_lowat = 16384
+net.ipv4.tcp_limit_output_bytes = 131072
+
+# --- 连接追踪与保活 ---
+net.netfilter.nf_conntrack_max = 2000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_probes = 6
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_max_tw_buckets = 55000
+net.ipv4.tcp_orphan_retries = 1
+net.ipv4.tcp_max_orphans = 65536
+
+# --- 算法与队列 ---
+net.core.default_qdisc = ${target_qdisc}
+net.ipv4.tcp_congestion_control = ${target_cc}
+net.ipv4.tcp_ecn = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+
+# --- 路由 ---
+net.ipv4.route.gc_timeout = 100
+net.ipv4.neigh.default.gc_stale_time = 60
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+EOF
+
+    if [[ "${is_aggressive}" == "1" ]]; then
+        echo ""
+        echo "# --- 暴力吞吐模式 (Aggressive) ---"
+        echo "net.ipv4.tcp_slow_start_after_idle = 0"
+        echo "net.ipv4.tcp_retries2 = 8"
+    fi
+}
+
+apply_profile() {
+    local profile_type="$1"
+    local target_qdisc=""
+    local target_cc="bbr"
+    local is_aggressive=0
+    local kver=$(uname -r | cut -d- -f1)
+
+    # 检测可用算法
+    local avail_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo "")
+    local has_bbr3=0
+    if echo "${avail_cc}" | grep -qw "bbr3"; then has_bbr3=1; fi
+
+    case "${profile_type}" in
+        "gaming")
+            # 1. 极速网游: BBRv3 + CAKE (优先) > BBRv1 + FQ_PIE
+            log_step "加载画像: [极速网游 / Gaming]"
+            if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
             
-            # 优化: 兼容无图标显示，移除多余空格
-            local idx="$(( ${#first_cols_content[@]} + 1 ))"
-            local first_col_display_content
-            if [ -n "$icon" ]; then
-                first_col_display_content="$(printf "%d. %s %s" "$idx" "$icon" "$name")"
+            if modprobe sch_cake &>/dev/null; then 
+                target_qdisc="cake"
+            elif modprobe sch_fq_pie &>/dev/null; then 
+                target_qdisc="fq_pie"
+            else 
+                target_qdisc="fq"
+            fi
+            is_aggressive=0
+            ;;
+        "streaming")
+            # 2. 流媒体: BBRv1 + FQ + 激进参数
+            log_step "加载画像: [流媒体 / Streaming]"
+            target_cc="bbr" # 强制 v1
+            target_qdisc="fq"
+            is_aggressive=1
+            ;;
+        "balanced")
+            # 3. 平衡模式: BBRv3 + FQ_PIE
+            log_step "加载画像: [平衡模式 / Balanced]"
+            if [[ ${has_bbr3} -eq 1 ]]; then target_cc="bbr3"; else target_cc="bbr"; fi
+            
+            if modprobe sch_fq_pie &>/dev/null; then
+                target_qdisc="fq_pie"
             else
-                first_col_display_content="$(printf "%d. %s" "$idx" "$name")"
+                target_qdisc="fq"
             fi
+            is_aggressive=0
+            ;;
+    esac
 
-            first_cols_content+=("$first_col_display_content"); second_cols_content+=("$status_text")
-            if [ -n "$status_text" ]; then
-                local current_visual_width=$(_get_visual_width "$first_col_display_content")
-                if [ "$current_visual_width" -gt "$max_first_col_width" ]; then max_first_col_width="$current_visual_width"; fi
-            fi
-        done
+    # 加载模块
+    [[ ${IS_CONTAINER} -eq 0 ]] && {
+        [[ "${target_qdisc}" != "fq" ]] && modprobe "sch_${target_qdisc}" 2>/dev/null
+        modprobe "tcp_${target_cc}" 2>/dev/null
+    }
 
-        for i in "${!first_cols_content[@]}"; do
-            local first_col="${first_cols_content[i]}"; local second_col="${second_cols_content[i]}"
-            if [ -n "$second_col" ]; then
-                local padding=$((max_first_col_width - $(_get_visual_width "$first_col")))
-                formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding") ${CYAN}- ${NC}${second_col}")
-            else formatted_items_for_render+=("${first_col}"); fi
-        done
+    optimize_nic_hardware
+    inject_bbr_module_params "${target_cc}" "${is_aggressive}"
+    
+    log_step "写入 Sysctl 配置..."
+    mkdir -p "${SYSCTL_d_DIR}"
+    generate_sysctl_content "${target_qdisc}" "${target_cc}" "${is_aggressive}" > "${SYSCTL_CONF}"
 
-        local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
-        for i in "${!func_items[@]}"; do 
-            IFS='|' read -r icon name type action <<< "${func_items[i]}"; 
-            # 优化: 功能键菜单项兼容无图标
-            if [ -n "$icon" ]; then
-                formatted_items_for_render+=("$(printf "%s. %s %s" "${func_letters[i]}" "$icon" "$name")")
-            else
-                formatted_items_for_render+=("$(printf "%s. %s" "${func_letters[i]}" "$name")")
-            fi
-        done
-        
-        _render_menu "$menu_title" "${formatted_items_for_render[@]}"
-        
-        local num_choices=${#primary_items[@]}
-        local numeric_range_str=""
-        if [ "$num_choices" -gt 0 ]; then
-            numeric_range_str="1-$num_choices"
+    # 生效
+    modprobe nf_conntrack 2>/dev/null || true
+    sysctl -p "${SYSCTL_CONF}" 2>/dev/null || sysctl --system >/dev/null
+
+    log_info "✅ 优化完成！"
+    if [[ "${is_aggressive}" == "1" ]]; then
+        echo -e "${COLOR_RED}🔥 已启用激进抢占 (No Slow-Start)${COLOR_RESET}"
+    fi
+}
+
+manage_ipv4_precedence() {
+    [[ ${IS_CONTAINER} -eq 1 ]] && return 0
+    local action="$1"
+    if [[ ! -f "${GAI_CONF}" ]]; then [[ -d "/etc" ]] && touch "${GAI_CONF}"; fi
+    if [[ "${action}" == "enable" ]]; then
+        if grep -q "precedence ::ffff:0:0/96" "${GAI_CONF}"; then
+            sed -i 's/^#*precedence ::ffff:0:0\/96.*/precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
+        else
+            echo "precedence ::ffff:0:0/96  100" >> "${GAI_CONF}"
         fi
-        
-        local func_choices_str=""
-        if [ ${#func_items[@]} -gt 0 ]; then
-            local temp_func_str=""
-            for ((i=0; i<${#func_items[@]}; i++)); do temp_func_str+="${func_letters[i]},"; done
-            func_choices_str="${temp_func_str%,}"
-        fi
-        
-        local choice
-        choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
+        log_info "IPv4 优先策略已启用。"
+    else
+        sed -i 's/^precedence ::ffff:0:0\/96.*/#precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
+        log_info "IPv4 优先策略已禁用。"
+    fi
+}
 
-        if [ -z "$choice" ]; then 
-            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。" >&2; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
-        fi
-        
-        local item_json=""
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$num_choices" ]; then item_json=$(jq -r --argjson idx "$((choice-1))" '.items | map(select(.type == "item" or .type == "submenu")) | .[$idx]' <<< "$menu_json")
-        else for ((i=0; i<${#func_items[@]}; i++)); do if [ "$choice" = "${func_letters[i]}" ]; then item_json=$(jq -r --argjson idx "$i" '.items | map(select(.type == "func")) | .[$idx]' <<< "$menu_json"); break; fi; done; fi
-        if [ -z "$item_json" ]; then log_warn "无效选项。" >&2; sleep 1; continue; fi
-        
-        local type name action exit_code=0
-        type=$(jq -r .type <<< "$item_json"); name=$(jq -r .name <<< "$item_json"); action=$(jq -r .action <<< "$item_json")
-        
-        case "$type" in 
-            item) 
-                run_module "$action" "$name" || exit_code=$? 
-                ;; 
-            submenu) CURRENT_MENU_NAME="$action" ;; 
-            func) "$action" "$@"; exit_code=$? ;; 
-        esac
-        
-        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then press_enter_to_continue; fi
-    done
+# -------------------------------------------------------------
+# 交互菜单
+# -------------------------------------------------------------
+
+get_current_status() {
+    local kver=$(uname -r)
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")
+    echo -e " 内核: ${COLOR_WHITE}${kver}${COLOR_RESET}"
+    echo -e " 算法: ${COLOR_CYAN}${cc}${COLOR_RESET} + ${COLOR_CYAN}${qdisc}${COLOR_RESET}"
+}
+
+show_menu() {
+    clear
+    local mem_mb=$((TOTAL_MEM_KB / 1024))
+    echo "========================================================"
+    echo -e " 终极画像调优引擎 ${COLOR_YELLOW}(v5.4.0)${COLOR_RESET}"
+    echo "========================================================"
+    get_current_status
+    echo "--------------------------------------------------------"
+    if [[ ${mem_mb} -lt 1500 ]]; then
+        echo -e " ${COLOR_RED}[警告] 内存 < 1.5GB。流媒体模式(128MB缓冲)可能导致崩溃！${COLOR_RESET}"
+        echo "--------------------------------------------------------"
+    fi
+    echo -e " 1. 极速网游 ${COLOR_GREEN}[Gaming]${COLOR_RESET}"
+    echo -e "    -> ${COLOR_WHITE}BBRv3 + CAKE/FQ_PIE + 低抖动${COLOR_RESET} (推荐 XanMod)"
+    echo ""
+    echo -e " 2. 流媒体   ${COLOR_RED}[Streaming]${COLOR_RESET}"
+    echo -e "    -> ${COLOR_WHITE}BBRv1 + FQ + 激进128MB缓冲${COLOR_RESET} (暴力吞吐)"
+    echo ""
+    echo -e " 3. 平衡模式 ${COLOR_BLUE}[Balanced]${COLOR_RESET}"
+    echo -e "    -> ${COLOR_WHITE}BBRv3 + FQ_PIE${COLOR_RESET} (通用场景)"
+    echo "--------------------------------------------------------"
+    echo " 4. 安装 XanMod 内核 (Debian/Ubuntu Only)"
+    echo " 5. 开启 IPv4 强制优先"
+    echo " 6. 恢复 IPv6 默认优先级"
+    echo " 7. 卸载/恢复系统默认"
+    echo "--------------------------------------------------------"
+    echo " 0. 退出"
+    echo "========================================================"
 }
 
 main() {
-    load_config "$CONFIG_PATH"; check_and_install_dependencies
-    
-    # 显式设置 trap，在主程序逻辑开始时
-    trap 'exit_code=$?; cleanup_temp_files; flock -u 200; rm -f "$LOCK_FILE" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})" >&2' EXIT INT TERM
-    
-    exec 200>"$LOCK_FILE"; if ! flock -n 200; then log_err "脚本已在运行。" >&2; exit 1; fi
-    
-    if [ $# -gt 0 ]; then
-        local command="$1"; shift
-        case "$command" in
-            update) log_info "正在以 Headless 模式更新所有脚本..." >&2; run_comprehensive_auto_update "$@"; exit 0 ;;
-            uninstall) log_info "正在以 Headless 模式执行卸载..." >&2; uninstall_script; exit 0 ;;
-            *) local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1)
-                if [ -n "$action_to_run" ]; then local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1); log_info "正在以 Headless 模式执行: ${display_name}" >&2; run_module "$action_to_run" "$display_name" "$@"; exit $?; else log_err "未知命令: $command" >&2; exit 1; fi ;;
+    check_root; check_dependencies; check_environment
+    while true; do
+        show_menu
+        read -rp "请选择画像或指令 [0-7]: " c
+        case "$c" in
+            1) apply_profile "gaming"; read -rp "按回车继续...";;
+            2) apply_profile "streaming"; read -rp "按回车继续...";;
+            3) apply_profile "balanced"; read -rp "按回车继续...";;
+            4) install_xanmod_kernel;;
+            5) manage_ipv4_precedence "enable"; read -rp "按回车继续...";;
+            6) manage_ipv4_precedence "disable"; read -rp "按回车继续...";;
+            7) 
+                log_warn "正在卸载..."
+                rm -f "${SYSCTL_CONF}" "${NIC_OPT_SERVICE}" "${MODULES_CONF}" "${MODPROBE_D_CONF}"
+                [[ ${IS_SYSTEMD} -eq 1 ]] && systemctl daemon-reload
+                sysctl --system >/dev/null 2>&1
+                log_info "已恢复系统默认状态。"
+                read -rp "按回车继续..."
+                ;;
+            0) exit 0 ;;
+            *) sleep 0.5 ;;
         esac
-    fi
-    
-    log_info "脚本启动 (${SCRIPT_VERSION})" >&2
-
-    if [ "${JB_RESTARTED:-false}" != "true" ]; then
-        printf "$(_log_prefix)${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
-        local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "$@")
-        printf "\r$(_log_prefix)${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
-
-        local updated_core_files=false
-        local update_messages=""
-
-        if [ -n "$updated_files_list" ]; then
-            for file in $updated_files_list; do
-                local filename; filename=$(basename "$file")
-                if [[ "$filename" == "install.sh" ]]; then
-                    updated_core_files=true
-                    update_messages+="主程序 (install.sh) 已更新\n"
-                else
-                    update_messages+="${GREEN}${filename}${NC} 已更新\n"
-                fi
-            done
-            if [[ " ${updated_files_list} " == *"config.json"* ]]; then
-                update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
-            fi
-
-            if [ -n "$update_messages" ]; then
-                log_info "发现以下更新:" >&2
-                echo -e "$update_messages" | while IFS= read -r line; do
-                    if [ -n "$line" ]; then
-                        log_success "$line" >&2
-                    fi
-                done
-            fi
-
-            if [ "$updated_core_files" = true ]; then
-                log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
-                flock -u 200 2>/dev/null || true; trap - EXIT
-                exec sudo -E JB_RESTARTED="true" bash "$FINAL_SCRIPT_PATH" "$@"
-            fi
-        fi
-    else
-        log_info "脚本已由自身重启，跳过初始更新检查。" >&2
-    fi
-    
-    check_sudo_privileges; display_and_process_menu "$@"
+    done
 }
-
-main "$@"
+main "${@}"
