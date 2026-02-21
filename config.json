@@ -34,7 +34,7 @@
     "TOOLS_MENU": {
       "title": "🛠️ 常用工具",
       "items": [
-        { "type": "item", "name": "Watchtower (Docker 更新)", "icon": "🔄", "action": "tools/Watchtower.sh" }
+        { "type": "item", "name": "Watchtower (Docker 更新)", "icon": "🔄", "action": "tools/Watchtower.sh" },
         { "type": "item", "name": "bbr", "action": "tools/tcp_optimizer.sh" }  
       ]
     }
