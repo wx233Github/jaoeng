@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.4-交互与通知修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.5-稳定版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
-#   v6.5.4 - 交互修复：运行模式选择确认、通知遮蔽显示、timeout 语法修复
-#   v6.5.3 - 健壮性修复：IFS 变量错误、通知发送失败、日志去时间戳
+#   v6.5.5 - 稳定性修复：回车清空问题、只读变量错误、移除冗余功能
+#   v6.5.4 - 交互修复：运行模式选择确认、通知遮蔽显示
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -23,7 +23,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.4"
+readonly SCRIPT_VERSION="v6.5.5"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -67,7 +67,7 @@ validate_args() {
     esac
 }
 
-# --- 日志函数封装 (移除时间戳) ---
+# --- 日志函数封装 ---
 log_info() { echo "[INFO] $*" >&2; }
 log_error() { echo "[ERROR] $*" >&2; }
 log_warn() { echo "[WARN] $*" >&2; }
@@ -129,7 +129,6 @@ WATCHTOWER_ENABLED=""
 WATCHTOWER_HOST_ALIAS=""
 WATCHTOWER_RUN_MODE=""
 WATCHTOWER_SCHEDULE_CRON=""
-WATCHTOWER_TEMPLATE_STYLE=""
 WATCHTOWER_IPV4_INTERFACE=""
 WATCHTOWER_IPV6_INTERFACE=""
 
@@ -154,7 +153,6 @@ load_config(){
         [ "${#WATCHTOWER_HOST_ALIAS}" -gt 15 ] && WATCHTOWER_HOST_ALIAS="DockerNode"
         WATCHTOWER_RUN_MODE="interval"
         WATCHTOWER_DEBUG_ENABLED="false"
-        WATCHTOWER_TEMPLATE_STYLE="professional"
         return
     fi
 
@@ -188,10 +186,9 @@ load_config(){
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-21600}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
     [ -z "$WATCHTOWER_HOST_ALIAS" ] && WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
-    [ ${#WATCHTOWER_HOST_ALIAS} -gt 15 ] && WATCHTOWER_HOST_ALIAS="DockerNode"
+    [ ${#WATCHTOWER_HOST_ALIAS} -gt TOWER_HOST_AL15 ] && WATCHIAS="DockerNode"
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
-    WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE:-professional}"
     WATCHTOWER_IPV4_INTERFACE="${WATCHTOWER_IPV4_INTERFACE:-}"
     WATCHTOWER_IPV6_INTERFACE="${WATCHTOWER_IPV6_INTERFACE:-}"
 }
@@ -227,7 +224,6 @@ WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED}"
 WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS}"
 WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE}"
 WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON}"
-WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE}"
 WATCHTOWER_IPV4_INTERFACE="${WATCHTOWER_IPV4_INTERFACE}"
 WATCHTOWER_IPV6_INTERFACE="${WATCHTOWER_IPV6_INTERFACE}"
 EOF
@@ -274,7 +270,7 @@ _print_header() { echo -e "\n${BLUE}--- ${1} ---${NC}"; }
 _format_seconds_to_human(){ local total_seconds="$1"; if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi; local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 )); local result=""; [ "$days" -gt 0 ] && result+="${days}天"; [ "$hours" -gt 0 ] && result+="${hours}小时"; [ "$minutes" -gt 0 ] && result+="${minutes}分钟"; [ "$seconds" -gt 0 ] && result+="${seconds}秒"; echo "${result:-0秒}"; }
 _escape_markdown() { local input="${1:-}"; if [ -z "$input" ]; then echo ""; return; fi; echo "$input" | sed 's/_/\\_/g; s/\*/\\*/g; s/`/\\`/g; s/\[/\\[/g'; }
 
-# --- 修复: 通知发送函数 (修复 timeout 语法) ---
+# --- 通知发送函数 ---
 send_test_notify() { 
     local message="$1"; 
     if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then 
@@ -289,7 +285,6 @@ send_test_notify() {
     local data
     data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
     
-    # 使用正确的 timeout 语法
     local curl_result
     curl_result=$(timeout 10s curl -s -w "\n%{http_code}" -X POST -H 'Content-Type: application/json' -d "$data" "$url" 2>&1) || {
         log_error "curl 执行失败或超时: $curl_result"
@@ -430,6 +425,7 @@ _start_watchtower_container_logic(){
     fi
 }
 
+# --- 移除重建通知 ---
 _rebuild_watchtower() {
     log_info "正在重建 Watchtower 容器..."
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null || true
@@ -441,35 +437,41 @@ _rebuild_watchtower() {
         return "${ERR_RUNTIME}"
     fi
     
-    local alias_name="${WATCHTOWER_HOST_ALIAS:-DockerNode}"
-    local msg="🔔 *Watchtower 配置更新*
-🏷 节点: \`$(_escape_markdown "$alias_name")\`
-⏱ 时间: \`$(_escape_markdown "$(date '+%Y-%m-%d %H:%M:%S')")\`
-⚙️ *状态*: 服务已通过健康检查并成功重启。"
-    send_test_notify "$msg"
+    log_success "Watchtower 重建成功！"
+    return "${ERR_OK}"
 }
 
+# --- 修复: 使用临时变量替代只读变量 ---
 _prompt_rebuild_if_needed() { 
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi
     if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi
+    
+    # 使用临时变量而非修改 ENV_FILE
     local temp_env; temp_env=$(mktemp)
     TEMP_FILES+=("$temp_env")
-    local original_env_file="$ENV_FILE"
-    ENV_FILE="$temp_env"
-    _generate_env_file
-    ENV_FILE="$original_env_file"
+    
+    # 临时修改路径进行对比
+    local original_env_path="$ENV_FILE"
+    local temp_env_path="$temp_env"
+    
+    # 生成新配置到临时文件
+    local old_env_file="$ENV_FILE"
+    ENV_FILE="$temp_env" _generate_env_file 2>/dev/null || true
+    ENV_FILE="$old_env_file"
+    
     local current_hash new_hash
     current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""
     new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}') || new_hash=""
+    
     if [ "$current_hash" != "$new_hash" ]; then 
         echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"
     fi
 }
+
 run_watchtower_once(){ if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return "${ERR_OK}"; fi; _start_watchtower_container_logic "" "" true; }
 
 # --- 菜单函数 ---
 _configure_telegram() {
-    # 遮蔽显示已存在的配置
     local masked_token="[未设置]"
     local masked_chat_id="[未设置]"
     
@@ -532,7 +534,6 @@ notification_menu() {
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         
-        # 遮蔽显示状态
         local tg_status="${RED}未配置${NC}"
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then 
             tg_status="${GREEN}已配置${NC}"; 
@@ -584,7 +585,6 @@ notification_menu() {
     done
 }
 
-# --- 修复: 调度配置函数 (添加选择确认) ---
 _configure_schedule() {
     local valid_choice=false
     local mode_choice=""
@@ -597,7 +597,6 @@ _configure_schedule() {
         mode_choice=$(_prompt_for_menu_choice "1-2")
         
         if [ "$mode_choice" = "1" ] || [ "$mode_choice" = "2" ]; then
-            # 确认选择
             local confirm
             if [ "$mode_choice" = "1" ]; then
                 confirm=$(_prompt_user_input "确认选择 [1] 间隔循环? (y/N): " "")
@@ -664,7 +663,6 @@ _configure_schedule() {
     fi
 }
 
-# --- 修复: 排除列表配置 (修复 IFS unbound variable) ---
 configure_exclusion_list() {
     declare -A excluded_map
     local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST:-}"
@@ -819,7 +817,6 @@ configure_watchtower(){
         "忽略名单: ${final_exclude_list_display//,/, }" 
         "额外参数: ${temp_extra_args:-无}" 
         "调试模式: $temp_debug_enabled" 
-        "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-professional}"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
@@ -837,10 +834,14 @@ configure_watchtower(){
 manage_tasks(){
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
-        local -a items_array=("1. 停止并移除服务 (卸载)" "2. 重建服务 (应用新配置)" "3. 生成 systemd 服务文件")
+        local -a items_array=(
+            "1. 停止并移除服务 (uninstall) - 删除容器并清除配置"
+            "2. 重建服务 (redeploy) - 应用新配置，重启 Watchtower"
+        )
         _render_menu "⚙️ 服务运维 ⚙️" "${items_array[@]}"
+        
         local choice
-        choice=$(_prompt_for_menu_choice "1-3")
+        choice=$(_prompt_for_menu_choice "1-2")
         case "$choice" in
             1) 
                 if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps -a --format '{{.Names}}' | grep -qFx 'watchtower'; then 
@@ -859,45 +860,10 @@ manage_tasks(){
                 else echo -e "${YELLOW}ℹ️ Watchtower 未运行，将执行首次部署。${NC}"; _rebuild_watchtower; fi
                 press_enter_to_continue
                 ;;
-            3) 
-                _generate_systemd_service; press_enter_to_continue
-                ;;
             "") return ;; 
             *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
-}
-
-_generate_systemd_service() {
-    local service_file="/etc/systemd/system/watchtower.service"
-    log_info "即将创建 systemd 服务文件于: ${service_file}"
-    if [ -f "$service_file" ]; then
-        if ! confirm_action "服务文件已存在，是否覆盖？"; then log_info "操作取消。"; return; fi
-    fi
-    local service_content
-    service_content=$(cat <<EOF
-[Unit]
-Description=Watchtower (via Shell Script)
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=forking
-ExecStart=${SCRIPT_FULL_PATH} --systemd-start
-ExecStop=${SCRIPT_FULL_PATH} --systemd-stop
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-)
-    echo "$service_content" | run_with_sudo tee "$service_file" > /dev/null
-    log_success "服务文件已创建！"
-    log_info "请执行以下命令来启用并启动服务:"
-    echo "  sudo systemctl daemon-reload"
-    echo "  sudo systemctl enable watchtower.service"
-    echo "  sudo systemctl start watchtower.service"
 }
 
 # --- 辅助函数：解析日志时间戳 ---
@@ -1062,6 +1028,7 @@ show_watchtower_details(){
     if [ -n "$original_trap" ]; then eval "$original_trap"; else trap - INT; fi
 }
 
+# --- 修复: 高级参数编辑器 (移除通知风格，修复空值处理) ---
 view_and_edit_config(){
     local -a config_items=(
         "TG Chat ID|TG_CHAT_ID|string"
@@ -1071,7 +1038,6 @@ view_and_edit_config(){
         "调试模式|WATCHTOWER_DEBUG_ENABLED|bool"
         "运行模式|WATCHTOWER_RUN_MODE|schedule"
         "检测频率|WATCHTOWER_CONFIG_INTERVAL|interval"
-        "通知风格|WATCHTOWER_TEMPLATE_STYLE|string"
         "IPv4 接口|WATCHTOWER_IPV4_INTERFACE|string"
         "IPv6 接口|WATCHTOWER_IPV6_INTERFACE|string"
     )
@@ -1093,7 +1059,6 @@ view_and_edit_config(){
             case "$type" in
                 string) 
                     if [ -n "$current_value" ]; then 
-                        # 遮蔽显示敏感信息
                         if [[ "$var_name" == "TG_BOT_TOKEN" || "$var_name" == "TG_CHAT_ID" ]]; then
                             display_text=$(_mask_string "$current_value" 6)
                             color="${GREEN}"
@@ -1143,16 +1108,10 @@ view_and_edit_config(){
         local var_name; var_name=$(echo "$selected_item" | cut -d'|' -f2)
         local type; type=$(echo "$selected_item" | cut -d'|' -f3)
         local current_value="${!var_name}"
-        local new_value=""
         
         case "$type" in
             string|string_list) 
                 if [ "$var_name" = "WATCHTOWER_EXCLUDE_LIST" ]; then configure_exclusion_list
-                elif [ "$var_name" = "WATCHTOWER_TEMPLATE_STYLE" ]; then
-                    echo "1. professional, 2. friendly"
-                    local style_pick; style_pick=$(_prompt_for_menu_choice "1-2")
-                    case "$style_pick" in 1) new_value="professional" ;; 2) new_value="friendly" ;; *) new_value="professional" ;; esac
-                    declare "$var_name"="$new_value"
                 else
                     local masked_value="[未设置]"
                     if [ -n "$current_value" ]; then
@@ -1163,10 +1122,23 @@ view_and_edit_config(){
                         fi
                     fi
                     echo -e "当前 ${label}: ${GREEN}${masked_value}${NC}"
+                    echo -e "${YELLOW}提示: 直接回车保持不变，输入空格并回车清空${NC}"
                     local val
-                    read -r -p "请输入新值 (回车保持, 空格清空): " val
-                    if [[ "$val" =~ ^\ +$ ]]; then declare "$var_name"=""; log_info "'$label' 已清空。"
-                    elif [ -n "$val" ]; then declare "$var_name"="$val"; fi
+                    read -r -p "请输入新值: " val
+                    
+                    # 修复：只有空格才清空，回车保持原值
+                    if [[ "$val" =~ ^[[:space:]]+$ ]]; then
+                        # 全是空格 -> 清空
+                        declare "$var_name"=""
+                        log_info "'$label' 已清空。"
+                    elif [ -n "$val" ]; then
+                        # 有实际输入 -> 更新
+                        declare "$var_name"="$val"
+                        log_info "'$label' 已更新。"
+                    else
+                        # 回车 -> 保持不变
+                        log_info "'$label' 保持不变。"
+                    fi
                 fi
                 ;;
             bool) 
@@ -1178,6 +1150,7 @@ view_and_edit_config(){
                 if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]]; then
                     log_warn "当前处于定时任务模式，设置间隔不会生效。请修改 '运行模式'。"; sleep 2
                 else
+                    local new_value
                     new_value=$(_prompt_for_interval "${current_value:-300}" "为 '$label' 设置新间隔")
                     if [ -n "$new_value" ]; then declare "$var_name"="$new_value"; fi 
                 fi
@@ -1185,7 +1158,6 @@ view_and_edit_config(){
             schedule) _configure_schedule ;;
         esac
         save_config
-        log_info "'$label' 已更新。" 
         _prompt_rebuild_if_needed
         sleep 1
     done
@@ -1243,7 +1215,7 @@ main_menu(){
             "主菜单：" 
             "1. 部署/重新配置服务 (核心设置)" 
             "2. 通知与安全设置 (Token/别名/加密)" 
-            "3. 服务运维与卸载 (含 systemd 集成)" 
+            "3. 服务运维 (停止/重建)" 
             "4. 高级参数编辑器" 
             "5. 实时日志与容器看板"
         )
@@ -1289,13 +1261,12 @@ main(){
             exit "${ERR_OK}"
             ;;
         --generate-systemd-service)
-            _generate_systemd_service
-            exit $?
+            log_warn "此功能已移除，请使用 Docker 的 --restart unless-stopped 参数实现开机自启"
+            exit "${ERR_OK}"
             ;;
     esac
 
     trap 'echo -e "\n操作被中断。"; exit '"${ERR_RUNTIME}"'' INT TERM
-    log_info "欢迎使用 Watchtower 模块 ${SCRIPT_VERSION}" >&2
     main_menu
     exit "${ERR_OK}"
 }
