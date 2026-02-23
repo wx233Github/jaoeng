@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.1-网络增强版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.2-修复版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.5.2 - 修复函数命名不匹配导致的运行时错误
 #   v6.5.1 - 增强 IP 地址获取健壮性，支持指定网络接口
 #   v6.5.0 - 新增图文通知模板、健康检查、systemd集成、敏感信息加密
 #   v6.4.66 - 安全加固：修复变量引用、退出码规范、临时文件清理
@@ -24,7 +25,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.1"
+readonly SCRIPT_VERSION="v6.5.2"
 
 # --- 全局会话密码变量 ---
 SESSION_ENCRYPTION_PASSWORD=""
@@ -106,8 +107,8 @@ WATCHTOWER_HOST_ALIAS=""
 WATCHTOWER_RUN_MODE=""
 WATCHTOWER_SCHEDULE_CRON=""
 WATCHTOWER_TEMPLATE_STYLE=""
-WATCHTOWER_IPV4_INTERFACE=""  # 新增：指定 IPv4 接口
-WATCHTOWER_IPV6_INTERFACE=""  # 新增：指定 IPv6 接口
+WATCHTOWER_IPV4_INTERFACE=""
+WATCHTOWER_IPV6_INTERFACE=""
 
 # --- 加密相关函数 ---
 _get_encryption_password() {
@@ -214,7 +215,6 @@ _get_ip_address() {
     
     # 1. 尝试使用用户指定的接口
     if [ -n "$iface_override" ]; then
-        # awk 提取 IP，兼容性优于 grep -P
         ip=$($ip_cmd addr show dev "$iface_override" 2>/dev/null | awk -v v="inet$ver?" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
     fi
 
@@ -230,10 +230,8 @@ _get_ip_address() {
     # 3. 回退方案
     if [ -z "$ip" ]; then
         if [ "$ver" = "4" ]; then
-            # 使用 hostname -I 获取第一个 IP
             ip=$(hostname -I 2>/dev/null | awk '{print $1}')
         else
-            # IPv6 回退：获取任意一个全局地址
             ip=$($ip_cmd addr show 2>/dev/null | awk -v v="inet6" '/scope global/ {print $2}' | cut -d'/' -f1 | head -n1)
         fi
     fi
@@ -253,7 +251,6 @@ _generate_env_file() {
     local alias_name
     alias_name=$(echo "${WATCHTOWER_HOST_ALIAS:-DockerNode}" | tr -d '\n\r')
     
-    # 使用增强的 IP 获取函数
     local ipv4_address ipv6_address
     ipv4_address=$(_get_ip_address 4 "${WATCHTOWER_IPV4_INTERFACE}")
     ipv6_address=$(_get_ip_address 6 "${WATCHTOWER_IPV6_INTERFACE}")
@@ -268,12 +265,9 @@ _generate_env_file() {
             echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=Markdown&preview=false&channels=${TG_CHAT_ID}"
             echo "WATCHTOWER_NO_STARTUP_MESSAGE=true"
             
-            # 仅在有更新时通知
-            
             local br='{{ "\n" }}'
             local time_format='{{ .Time.Format "2006-01-02 15:04:05 (MST)" }}'
             
-            # 使用 heredoc 构建新模板
             cat <<EOF | tr -d '\n' >> "$ENV_FILE"
 WATCHTOWER_NOTIFICATION_TEMPLATE={{ if .Entries }}✅ *容器自动更新成功*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* ✅ 更新完成${br}📦 *数量:* \`{{ len .Entries }} 个\`${br}⌚ *时间:* \`${time_format}\`${br}${br}🧾 *更新详情:*${br}{{ range .Entries }}• \`{{ .Name }}\` 从 \`{{ .Image.Name.Short }}\` 更新至 \`{{ .Latest.Short }}\` [详情]({{ .Image.HubLink }})${br}{{ end }}{{ end }}
 EOF
@@ -462,8 +456,8 @@ notification_menu() {
     done
 }
 
-# --- 其他菜单与逻辑函数 (保持 v6.5.0 逻辑) ---
-configure_schedule() {
+# --- 调度配置函数 (修复命名) ---
+_configure_schedule() {
     echo -e "${CYAN}请选择运行模式:${NC}"
     echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
     echo "2. 自定义 Cron 表达式 (高级)"
