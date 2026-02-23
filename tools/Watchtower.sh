@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.2-安全加固版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.3-健壮性修复版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.5.3 - 健壮性修复：IFS 变量错误、通知发送失败、日志去时间戳
 #   v6.5.2 - 安全加固：修复配置加载漏洞、优化临时文件管理
-#   v6.5.1 - 增强 IP 地址获取健壮性
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -23,7 +23,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.2"
+readonly SCRIPT_VERSION="v6.5.3"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -67,11 +67,11 @@ validate_args() {
     esac
 }
 
-# --- 日志函数封装 ---
-log_info() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $*" >&2; }
-log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2; }
-log_warn() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARN] $*" >&2; }
-log_success() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SUCCESS] $*" >&2; }
+# --- 日志函数封装 (移除时间戳) ---
+log_info() { echo "[INFO] $*" >&2; }
+log_error() { echo "[ERROR] $*" >&2; }
+log_warn() { echo "[WARN] $*" >&2; }
+log_success() { echo "[SUCCESS] $*" >&2; }
 
 # --- 颜色变量 ---
 GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
@@ -130,7 +130,6 @@ _get_encryption_password() {
 # --- 配置加载与保存 ---
 load_config(){
     if [ ! -f "$CONFIG_FILE" ]; then
-        # 设置默认值
         WATCHTOWER_EXCLUDE_LIST="portainer,portainer_agent"
         WATCHTOWER_CONFIG_INTERVAL="21600"
         WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
@@ -141,12 +140,9 @@ load_config(){
         return
     fi
 
-    # 安全改进：仅解析符合变量命名规范的行，防止注入
     local valid_var_regex="^(CONFIG_ENCRYPTED|ENCRYPTED_TG_BOT_TOKEN|TG_BOT_TOKEN|TG_CHAT_ID|WATCHTOWER_[A-Za-z0-9_]+)="
     while IFS= read -r line || [ -n "$line" ]; do
-        # 跳过空行和注释
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # 仅执行包含允许变量名的行
         if [[ "$line" =~ $valid_var_regex ]]; then
             eval "$line" 2>/dev/null || true
         fi
@@ -168,7 +164,6 @@ load_config(){
         TG_BOT_TOKEN="$decrypted_token"
     fi
 
-    # 应用默认值
     WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-portainer,portainer_agent}"
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
@@ -187,7 +182,7 @@ save_config(){
     mkdir -p "$(dirname "$CONFIG_FILE")"
     
     local temp_config; temp_config=$(mktemp)
-    TEMP_FILES+=("$temp_config") # 注册到全局管理
+    TEMP_FILES+=("$temp_config")
     
     local final_encrypted_token="${ENCRYPTED_TG_BOT_TOKEN}"
     if [ "${CONFIG_ENCRYPTED}" = "true" ]; then
@@ -221,26 +216,22 @@ EOF
     
     chmod 600 "$temp_config"
     mv "$temp_config" "$CONFIG_FILE" || log_warn "移动配置文件失败"
-    # 注意：不再在此处解除 trap，由全局 trap 统一管理
 }
 
 # --- 增强的 IP 地址获取函数 ---
 _get_ip_address() {
-    local ver="$1" # 4 or 6
+    local ver="$1"
     local iface_override="$2"
     local ip=""
     local ip_cmd="ip -$ver"
     
-    # 构造匹配模式：IPv4 匹配 "inet " (注意空格避免匹配 inet6), IPv6 匹配 "inet6"
     local match_pattern="inet"
     [ "$ver" = "6" ] && match_pattern="inet6"
 
-    # 1. 尝试使用用户指定的接口
     if [ -n "$iface_override" ]; then
         ip=$($ip_cmd addr show dev "$iface_override" 2>/dev/null | awk -v v="$match_pattern" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
     fi
 
-    # 2. 如果没有指定接口或获取失败，尝试通过默认路由获取
     if [ -z "$ip" ]; then
         local default_iface
         default_iface=$($ip_cmd route show default 2>/dev/null | awk '{print $5}' | head -n1)
@@ -249,7 +240,6 @@ _get_ip_address() {
         fi
     fi
 
-    # 3. 回退方案
     if [ -z "$ip" ]; then
         if [ "$ver" = "4" ]; then
             ip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -265,8 +255,53 @@ _get_ip_address() {
 _print_header() { echo -e "\n${BLUE}--- ${1} ---${NC}"; }
 _format_seconds_to_human(){ local total_seconds="$1"; if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi; local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 )); local result=""; [ "$days" -gt 0 ] && result+="${days}天"; [ "$hours" -gt 0 ] && result+="${hours}小时"; [ "$minutes" -gt 0 ] && result+="${minutes}分钟"; [ "$seconds" -gt 0 ] && result+="${seconds}秒"; echo "${result:-0秒}"; }
 _escape_markdown() { local input="${1:-}"; if [ -z "$input" ]; then echo ""; return; fi; echo "$input" | sed 's/_/\\_/g; s/\*/\\*/g; s/`/\\`/g; s/\[/\\[/g'; }
-send_test_notify() { local message="$1"; if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then if ! command -v jq &>/dev/null; then log_error "缺少 jq，无法发送测试通知。"; return "${ERR_DEPENDENCY}"; fi; local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"; local data; data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}'); timeout 10s curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d "$data" || { log_warn "发送测试通知失败"; return "${ERR_RUNTIME}"; }; fi; }
-_prompt_for_interval() { local default_interval_seconds="$1"; local prompt_message="$2"; local input_value; local current_display_value; current_display_value="$(_format_seconds_to_human "$default_interval_seconds")"; while true; do input_value=$(_prompt_user_input "${prompt_message} (例如: 3600, 1h, 30m, 1d, 当前: ${current_display_value}): " ""); if [ -z "$input_value" ]; then echo "$default_interval_seconds"; return "${ERR_OK}"; fi; local seconds=0; if [[ "$input_value" =~ ^[0-9]+$ ]]; then seconds="$input_value"; elif [[ "$input_value" =~ ^([0-9]+)s$ ]]; then seconds="${BASH_REMATCH[1]}"; elif [[ "$input_value" =~ ^([0-9]+)m$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 60 )); elif [[ "$input_value" =~ ^([0-9]+)h$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 3600 )); elif [[ "$input_value" =~ ^([0-9]+)d$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 86400 )); else log_warn "无效格式。"; continue; fi; if [ "$seconds" -gt 0 ]; then echo "$seconds"; return "${ERR_OK}"; else log_warn "间隔必须是正数。"; fi; done; }
+
+# --- 修复: 通知发送函数 ---
+send_test_notify() { 
+    local message="$1"; 
+    if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then 
+        log_warn "Telegram 配置不完整，跳过通知。"
+        return "${ERR_CONFIG}"
+    fi
+    if ! command -v jq &>/dev/null; then 
+        log_error "缺少 jq，无法发送测试通知。"; 
+        return "${ERR_DEPENDENCY}"; 
+    fi
+    local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+    local data
+    data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+    local curl_result
+    curl_result=$(timeout -s -o /dev/null - 10s curlw "%{http_code}" -X POST -H 'Content-Type: application/json' -d "$data" "$url" 2>&1) || {
+        log_error "curl 执行失败: $curl_result"
+        return "${ERR_RUNTIME}"
+    }
+    if [ "$curl_result" != "200" ]; then
+        log_error "Telegram API 返回错误: $curl_result"
+        return "${ERR_RUNTIME}"
+    fi
+    log_success "通知发送成功！"
+    return "${ERR_OK}"
+}
+
+_prompt_for_interval() { 
+    local default_interval_seconds="$1"; 
+    local prompt_message="$2"; 
+    local input_value; 
+    local current_display_value; 
+    current_display_value="$(_format_seconds_to_human "$default_interval_seconds")"; 
+    while true; do 
+        input_value=$(_prompt_user_input "${prompt_message} (例如: 3600, 1h, 30m, 1d, 当前: ${current_display_value}): " ""); 
+        if [ -z "$input_value" ]; then echo "$default_interval_seconds"; return "${ERR_OK}"; fi; 
+        local seconds=0; 
+        if [[ "$input_value" =~ ^[0-9]+$ ]]; then seconds="$input_value"; 
+        elif [[ "$input_value" =~ ^([0-9]+)s$ ]]; then seconds="${BASH_REMATCH[1]}"; 
+        elif [[ "$input_value" =~ ^([0-9]+)m$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 60 )); 
+        elif [[ "$input_value" =~ ^([0-9]+)h$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 3600 )); 
+        elif [[ "$input_value" =~ ^([0-9]+)d$ ]]; then seconds=$(( "${BASH_REMATCH[1]}" * 86400 )); 
+        else log_warn "无效格式。"; continue; fi; 
+        if [ "$seconds" -gt 0 ]; then echo "$seconds"; return "${ERR_OK}"; else log_warn "间隔必须是正数。"; fi; 
+    done; 
+}
 
 # --- 核心：生成环境文件 ---
 _generate_env_file() {
@@ -388,7 +423,22 @@ _rebuild_watchtower() {
     send_test_notify "$msg"
 }
 
-_prompt_rebuild_if_needed() { if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi; if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi; local temp_env; temp_env=$(mktemp); TEMP_FILES+=("$temp_env"); local original_env_file="$ENV_FILE"; ENV_FILE="$temp_env"; _generate_env_file; ENV_FILE="$original_env_file"; local current_hash new_hash; current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""; new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}') || new_hash=""; if [ "$current_hash" != "$new_hash" ]; then echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"; fi; }
+_prompt_rebuild_if_needed() { 
+    if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi
+    if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi
+    local temp_env; temp_env=$(mktemp)
+    TEMP_FILES+=("$temp_env")
+    local original_env_file="$ENV_FILE"
+    ENV_FILE="$temp_env"
+    _generate_env_file
+    ENV_FILE="$original_env_file"
+    local current_hash new_hash
+    current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""
+    new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}') || new_hash=""
+    if [ "$current_hash" != "$new_hash" ]; then 
+        echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"
+    fi
+}
 run_watchtower_once(){ if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return "${ERR_OK}"; fi; _start_watchtower_container_logic "" "" true; }
 
 # --- 菜单函数 ---
@@ -425,7 +475,17 @@ _configure_encryption() {
     fi
     save_config
 }
-_configure_alias() { echo -e "当前别名: ${GREEN}${WATCHTOWER_HOST_ALIAS:-DockerNode}${NC}"; local val; read -r -p "设置服务器别名 (回车保持, 空格恢复默认): " val; if [[ "$val" =~ ^\ +$ ]]; then WATCHTOWER_HOST_ALIAS="DockerNode"; log_info "已恢复默认别名。"; elif [ -n "$val" ]; then WATCHTOWER_HOST_ALIAS="$val"; fi; save_config; log_info "服务器别名已设置为: $WATCHTOWER_HOST_ALIAS"; _prompt_rebuild_if_needed; }
+_configure_alias() { 
+    echo -e "当前别名: ${GREEN}${WATCHTOWER_HOST_ALIAS:-DockerNode}${NC}"; 
+    local val; 
+    read -r -p "设置服务器别名 (回车保持, 空格恢复默认): " val; 
+    if [[ "$val" =~ ^\ +$ ]]; then WATCHTOWER_HOST_ALIAS="DockerNode"; log_info "已恢复默认别名。"; 
+    elif [ -n "$val" ]; then WATCHTOWER_HOST_ALIAS="$val"; 
+    fi
+    save_config; 
+    log_info "服务器别名已设置为: $WATCHTOWER_HOST_ALIAS"; 
+    _prompt_rebuild_if_needed; 
+}
 
 notification_menu() { 
     while true; do
@@ -452,13 +512,13 @@ notification_menu() {
             2) _configure_alias; press_enter_to_continue ;;
             3) _configure_encryption; press_enter_to_continue ;;
             4) 
-                if [ -z "$TG_BOT_TOKEN" ]; then log_warn "请先配置 Telegram。"; 
+                if [ -z "$TG_BOT_TOKEN" ]; then 
+                    log_warn "请先配置 Telegram。" 
                 else 
-                    log_info "正在发送..."; 
+                    log_info "正在发送测试通知..."; 
                     send_test_notify "*🔔 手动测试消息*
 来自 Docker 助手 \`$(_escape_markdown "$SCRIPT_VERSION")\` 的测试。
-*状态:* ✅ 成功连接"; 
-                    log_success "已发送。"
+*状态:* ✅ 成功连接"
                 fi
                 press_enter_to_continue 
                 ;;
@@ -478,7 +538,7 @@ notification_menu() {
     done
 }
 
-# --- 调度配置函数 (修复命名) ---
+# --- 调度配置函数 ---
 _configure_schedule() {
     echo -e "${CYAN}请选择运行模式:${NC}"
     echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
@@ -534,34 +594,59 @@ _configure_schedule() {
     fi
 }
 
+# --- 修复: 排除列表配置 (修复 IFS unbound variable) ---
 configure_exclusion_list() {
     declare -A excluded_map
-    local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"
+    local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST:-}"
+    
+    # 安全处理空字符串
     if [ -n "$initial_exclude_list" ]; then 
-        local IFS=','; 
+        local old_ifs="${IFS:-}"
+        IFS=','
         for container_name in $initial_exclude_list; do 
-            container_name=$(echo "$container_name" | xargs); 
-            if [ -n "$container_name" ]; then excluded_map["$container_name"]=1; fi; 
-        done; 
-        unset IFS; 
+            container_name=$(echo "$container_name" | xargs) 
+            if [ -n "$container_name" ]; then 
+                excluded_map["$container_name"]=1
+            fi
+        done 
+        IFS="${old_ifs}"
     fi
+    
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
-        local -a all_containers_array=(); 
-        while IFS= read -r line; do all_containers_array+=("$line"); done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}'); 
-        local -a items_array=(); local i=0
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        
+        local -a all_containers_array=()
+        while IFS= read -r line; do 
+            all_containers_array+=("$line")
+        done < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null || echo "")
+        
+        local -a items_array=()
+        local i=0
         while [ $i -lt ${#all_containers_array[@]} ]; do 
-            local container="${all_containers_array[$i]}"; 
-            local is_excluded=" "; 
-            if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi; 
-            items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container"); 
-            i=$((i + 1)); 
+            local container="${all_containers_array[$i]}"
+            local is_excluded=" "
+            if [ -n "${excluded_map[$container]+_}" ]; then is_excluded="✔"; fi
+            items_array+=("$((i + 1)). [${GREEN}${is_excluded}${NC}] $container")
+            i=$((i + 1))
         done
+        
         items_array+=("")
+        
+        # 修复: 安全的数组键获取
         local current_excluded_display="无"
         if [ ${#excluded_map[@]} -gt 0 ]; then
-            local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; current_excluded_display="${keys[*]}"; IFS="$old_ifs"
+            local keys=()
+            for key in "${!excluded_map[@]}"; do
+                keys+=("$key")
+            done
+            if [ ${#keys[@]} -gt 0 ]; then
+                local old_ifs="${IFS:-}"
+                IFS=','
+                current_excluded_display="${keys[*]}"
+                IFS="${old_ifs}"
+            fi
         fi
+        
         items_array+=("${CYAN}当前忽略: ${current_excluded_display}${NC}")
         _render_menu "配置忽略更新的容器" "${items_array[@]}"
         
@@ -571,22 +656,67 @@ configure_exclusion_list() {
         case "$choice" in
             c|C) break ;;
             "") 
-                if [ ${#excluded_map[@]} -eq 0 ]; then log_info "当前列表已为空。"; sleep 1; continue; fi
-                if confirm_action "确定要清空忽略名单吗？"; then excluded_map=(); log_info "已清空。"; else log_info "取消。"; fi
-                sleep 1; continue
+                if [ ${#excluded_map[@]} -eq 0 ]; then 
+                    log_info "当前列表已为空。"; 
+                    sleep 1; 
+                    continue; 
+                fi
+                if confirm_action "确定要清空忽略名单吗？"; then 
+                    excluded_map=(); 
+                    log_info "已清空。"; 
+                else 
+                    log_info "取消。"; 
+                fi
+                sleep 1; 
+                continue
                 ;;
             *)
-                local clean_choice; clean_choice=$(echo "$choice" | tr -d ' '); IFS=',' read -r -a selected_indices <<< "$clean_choice"; local has_invalid_input=false
+                local clean_choice
+                clean_choice=$(echo "$choice" | tr -d ' ')
+                if [ -z "$clean_choice" ]; then 
+                    log_warn "输入无效。"; 
+                    sleep 1
+                    continue
+                fi
+                
+                local -a selected_indices=()
+                IFS=',' read -r -a selected_indices <<< "$clean_choice"
+                local has_invalid_input=false
+                
                 for index in "${selected_indices[@]}"; do
                     if [[ "$index" =~ ^[0-9]+$ ]] && [ "$index" -ge 1 ] && [ "$index" -le ${#all_containers_array[@]} ]; then
-                        local target_container="${all_containers_array[$((index - 1))]}"; if [ -n "${excluded_map[$target_container]+_}" ]; then unset excluded_map["$target_container"]; else excluded_map["$target_container"]=1; fi
-                    elif [ -n "$index" ]; then has_invalid_input=true; fi
+                        local target_container="${all_containers_array[$((index - 1))]}"
+                        if [ -n "${excluded_map[$target_container]+_}" ]; then 
+                            unset excluded_map["$target_container"]
+                        else 
+                            excluded_map["$target_container"]=1
+                        fi
+                    elif [ -n "$index" ]; then 
+                        has_invalid_input=true
+                    fi
                 done
-                if [ "$has_invalid_input" = "true" ]; then log_warn "输入无效。"; sleep 1.5; fi
+                
+                if [ "$has_invalid_input" = "true" ]; then 
+                    log_warn "输入无效。"; 
+                    sleep 1.5
+                fi
                 ;;
         esac
     done
-    local final_excluded_list=""; if [ ${#excluded_map[@]} -gt 0 ]; then local keys=("${!excluded_map[@]}"); local old_ifs="$IFS"; IFS=,; final_excluded_list="${keys[*]}"; IFS="$old_ifs"; fi
+    
+    local final_excluded_list=""
+    if [ ${#excluded_map[@]} -gt 0 ]; then
+        local keys=()
+        for key in "${!excluded_map[@]}"; do
+            keys+=("$key")
+        done
+        if [ ${#keys[@]} -gt 0 ]; then
+            local old_ifs="${IFS:-}"
+            IFS=','
+            final_excluded_list="${keys[*]}"
+            IFS="${old_ifs}"
+        fi
+    fi
     WATCHTOWER_EXCLUDE_LIST="$final_excluded_list"
 }
 
@@ -617,8 +747,11 @@ configure_watchtower(){
         mode_display="Cron调度 ($WATCHTOWER_SCHEDULE_CRON)"
     fi
     local -a confirm_array=(
-        "运行模式: $mode_display" "忽略名单: ${final_exclude_list_display//,/, }" 
-        "额外参数: ${temp_extra_args:-无}" "调试模式: $temp_debug_enabled" "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-professional}"
+        "运行模式: $mode_display" 
+        "忽略名单: ${final_exclude_list_display//,/, }" 
+        "额外参数: ${temp_extra_args:-无}" 
+        "调试模式: $temp_debug_enabled" 
+        "通知风格: ${WATCHTOWER_TEMPLATE_STYLE:-professional}"
     )
     _render_menu "配置确认" "${confirm_array[@]}"
     local confirm_choice
@@ -635,7 +768,7 @@ configure_watchtower(){
 
 manage_tasks(){
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi; 
+        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
         local -a items_array=("1. 停止并移除服务 (卸载)" "2. 重建服务 (应用新配置)" "3. 生成 systemd 服务文件")
         _render_menu "⚙️ 服务运维 ⚙️" "${items_array[@]}"
         local choice
