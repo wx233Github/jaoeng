@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.3-健壮性修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.4-交互与通知修复版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.5.4 - 交互修复：运行模式选择确认、通知遮蔽显示、timeout 语法修复
 #   v6.5.3 - 健壮性修复：IFS 变量错误、通知发送失败、日志去时间戳
-#   v6.5.2 - 安全加固：修复配置加载漏洞、优化临时文件管理
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -23,7 +23,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.3"
+readonly SCRIPT_VERSION="v6.5.4"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -80,7 +80,7 @@ if [ -t 1 ] && command -v tput &>/dev/null; then
     CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); ORANGE=$(tput setaf 166); NC=$(tput sgr0)
 fi
 
-# --- 加载通用工具函数库 (兜底) ---
+# --- 通用工具函数 ---
 _render_menu() { local title="$1"; shift; echo -e "\n${BLUE}--- $title ---${NC}"; printf " %s\n" "$@"; }
 press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
 confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
@@ -97,6 +97,24 @@ if ! declare -f run_with_sudo &>/dev/null; then
         fi
     }
 fi
+
+# --- 辅助函数：遮蔽字符串 ---
+_mask_string() {
+    local str="$1"
+    local visible="$2"
+    if [ -z "$str" ]; then
+        echo ""
+        return
+    fi
+    local len=${#str}
+    if [ "$len" -le "$visible" ]; then
+        echo "$str"
+    else
+        local start=$(echo "$str" | cut -c1-"$visible")
+        local end=$(echo "$str" | tail -c 4)
+        echo "${start}...${end}"
+    fi
+}
 
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
@@ -256,7 +274,7 @@ _print_header() { echo -e "\n${BLUE}--- ${1} ---${NC}"; }
 _format_seconds_to_human(){ local total_seconds="$1"; if ! [[ "$total_seconds" =~ ^[0-9]+$ ]] || [ "$total_seconds" -le 0 ]; then echo "N/A"; return; fi; local days=$((total_seconds / 86400)); local hours=$(( (total_seconds % 86400) / 3600 )); local minutes=$(( (total_seconds % 3600) / 60 )); local seconds=$(( total_seconds % 60 )); local result=""; [ "$days" -gt 0 ] && result+="${days}天"; [ "$hours" -gt 0 ] && result+="${hours}小时"; [ "$minutes" -gt 0 ] && result+="${minutes}分钟"; [ "$seconds" -gt 0 ] && result+="${seconds}秒"; echo "${result:-0秒}"; }
 _escape_markdown() { local input="${1:-}"; if [ -z "$input" ]; then echo ""; return; fi; echo "$input" | sed 's/_/\\_/g; s/\*/\\*/g; s/`/\\`/g; s/\[/\\[/g'; }
 
-# --- 修复: 通知发送函数 ---
+# --- 修复: 通知发送函数 (修复 timeout 语法) ---
 send_test_notify() { 
     local message="$1"; 
     if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then 
@@ -270,15 +288,23 @@ send_test_notify() {
     local url="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
     local data
     data=$(jq -n --arg chat_id "$TG_CHAT_ID" --arg text "$message" '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+    
+    # 使用正确的 timeout 语法
     local curl_result
-    curl_result=$(timeout -s -o /dev/null - 10s curlw "%{http_code}" -X POST -H 'Content-Type: application/json' -d "$data" "$url" 2>&1) || {
-        log_error "curl 执行失败: $curl_result"
+    curl_result=$(timeout 10s curl -s -w "\n%{http_code}" -X POST -H 'Content-Type: application/json' -d "$data" "$url" 2>&1) || {
+        log_error "curl 执行失败或超时: $curl_result"
         return "${ERR_RUNTIME}"
     }
-    if [ "$curl_result" != "200" ]; then
-        log_error "Telegram API 返回错误: $curl_result"
+    
+    local http_code
+    http_code=$(echo "$curl_result" | tail -n1)
+    local body=$(echo "$curl_result" | sed '$d')
+    
+    if [ "$http_code" != "200" ]; then
+        log_error "Telegram API 返回错误 (HTTP $http_code): $body"
         return "${ERR_RUNTIME}"
     fi
+    
     log_success "通知发送成功！"
     return "${ERR_OK}"
 }
@@ -443,17 +469,31 @@ run_watchtower_once(){ if ! confirm_action "确定要运行一次 Watchtower 来
 
 # --- 菜单函数 ---
 _configure_telegram() {
-    echo -e "当前 Token: ${GREEN}${TG_BOT_TOKEN:0:8}...${NC}"
+    # 遮蔽显示已存在的配置
+    local masked_token="[未设置]"
+    local masked_chat_id="[未设置]"
+    
+    if [ -n "$TG_BOT_TOKEN" ]; then
+        masked_token=$(_mask_string "$TG_BOT_TOKEN" 8)
+    fi
+    if [ -n "$TG_CHAT_ID" ]; then
+        masked_chat_id=$(_mask_string "$TG_CHAT_ID" 6)
+    fi
+    
+    echo -e "当前 Token: ${GREEN}${masked_token}${NC}"
     local val
     read -r -p "请输入 Telegram Bot Token (回车保持, 空格清空): " val
     if [[ "$val" =~ ^\ +$ ]]; then TG_BOT_TOKEN=""; log_info "Token 已清空。"; elif [ -n "$val" ]; then TG_BOT_TOKEN="$val"; fi
-    echo -e "当前 Chat ID: ${GREEN}${TG_CHAT_ID:-[未设置]}${NC}"
+    
+    echo -e "当前 Chat ID: ${GREEN}${masked_chat_id}${NC}"
     read -r -p "请输入 Chat ID (回车保持, 空格清空): " val
     if [[ "$val" =~ ^\ +$ ]]; then TG_CHAT_ID=""; log_info "Chat ID 已清空。"; elif [ -n "$val" ]; then TG_CHAT_ID="$val"; fi
+    
     save_config
     log_info "通知配置已保存。"
     _prompt_rebuild_if_needed
 }
+
 _configure_encryption() {
     if ! command -v openssl &>/dev/null; then log_error "此功能需要 openssl，请先安装。"; return; fi
     local choice
@@ -475,6 +515,7 @@ _configure_encryption() {
     fi
     save_config
 }
+
 _configure_alias() { 
     echo -e "当前别名: ${GREEN}${WATCHTOWER_HOST_ALIAS:-DockerNode}${NC}"; 
     local val; 
@@ -490,8 +531,13 @@ _configure_alias() {
 notification_menu() { 
     while true; do
         if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        
+        # 遮蔽显示状态
         local tg_status="${RED}未配置${NC}"
-        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then tg_status="${GREEN}已配置${NC}"; fi
+        if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then 
+            tg_status="${GREEN}已配置${NC}"; 
+        fi
+        
         local alias_status="${CYAN}${WATCHTOWER_HOST_ALIAS:-默认}${NC}"
         local crypto_status="${RED}禁用${NC}"
         [ "$CONFIG_ENCRYPTED" = "true" ] && crypto_status="${GREEN}启用${NC}"
@@ -538,13 +584,37 @@ notification_menu() {
     done
 }
 
-# --- 调度配置函数 ---
+# --- 修复: 调度配置函数 (添加选择确认) ---
 _configure_schedule() {
-    echo -e "${CYAN}请选择运行模式:${NC}"
-    echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
-    echo "2. 自定义 Cron 表达式 (高级)"
-    local mode_choice
-    mode_choice=$(_prompt_for_menu_choice "1-2")
+    local valid_choice=false
+    local mode_choice=""
+    
+    while [ "$valid_choice" = "false" ]; do
+        echo -e "${CYAN}请选择运行模式:${NC}"
+        echo "1. 间隔循环 (每隔 X 小时/分钟，可选择对齐整点)"
+        echo "2. 自定义 Cron 表达式 (高级)"
+        
+        mode_choice=$(_prompt_for_menu_choice "1-2")
+        
+        if [ "$mode_choice" = "1" ] || [ "$mode_choice" = "2" ]; then
+            # 确认选择
+            local confirm
+            if [ "$mode_choice" = "1" ]; then
+                confirm=$(_prompt_user_input "确认选择 [1] 间隔循环? (y/N): " "")
+            else
+                confirm=$(_prompt_user_input "确认选择 [2] 自定义 Cron? (y/N): " "")
+            fi
+            
+            if echo "$confirm" | grep -qE '^[Yy]$'; then
+                valid_choice=true
+            else
+                log_info "请重新选择。"
+            fi
+        else
+            log_warn "无效选项，请输入 1 或 2。"
+        fi
+    done
+    
     if [ "$mode_choice" = "1" ]; then
         local interval_hour=""
         while true; do
@@ -599,7 +669,6 @@ configure_exclusion_list() {
     declare -A excluded_map
     local initial_exclude_list="${WATCHTOWER_EXCLUDE_LIST:-}"
     
-    # 安全处理空字符串
     if [ -n "$initial_exclude_list" ]; then 
         local old_ifs="${IFS:-}"
         IFS=','
@@ -632,7 +701,6 @@ configure_exclusion_list() {
         
         items_array+=("")
         
-        # 修复: 安全的数组键获取
         local current_excluded_display="无"
         if [ ${#excluded_map[@]} -gt 0 ]; then
             local keys=()
@@ -1024,7 +1092,14 @@ view_and_edit_config(){
             
             case "$type" in
                 string) 
-                    if [ -n "$current_value" ]; then color="${GREEN}"; display_text="$current_value"
+                    if [ -n "$current_value" ]; then 
+                        # 遮蔽显示敏感信息
+                        if [[ "$var_name" == "TG_BOT_TOKEN" || "$var_name" == "TG_CHAT_ID" ]]; then
+                            display_text=$(_mask_string "$current_value" 6)
+                            color="${GREEN}"
+                        else
+                            color="${GREEN}"; display_text="$current_value"
+                        fi
                     else color="${RED}"; display_text="未设置"; fi 
                     ;;
                 string_list) 
@@ -1079,7 +1154,15 @@ view_and_edit_config(){
                     case "$style_pick" in 1) new_value="professional" ;; 2) new_value="friendly" ;; *) new_value="professional" ;; esac
                     declare "$var_name"="$new_value"
                 else
-                    echo -e "当前 ${label}: ${GREEN}${current_value:-[未设置]}${NC}"
+                    local masked_value="[未设置]"
+                    if [ -n "$current_value" ]; then
+                        if [[ "$var_name" == "TG_BOT_TOKEN" || "$var_name" == "TG_CHAT_ID" ]]; then
+                            masked_value=$(_mask_string "$current_value" 6)
+                        else
+                            masked_value="$current_value"
+                        fi
+                    fi
+                    echo -e "当前 ${label}: ${GREEN}${masked_value}${NC}"
                     local val
                     read -r -p "请输入新值 (回车保持, 空格清空): " val
                     if [[ "$val" =~ ^\ +$ ]]; then declare "$var_name"=""; log_info "'$label' 已清空。"
