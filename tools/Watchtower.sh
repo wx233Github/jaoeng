@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.5-稳定版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.6-修复版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.5.6 - 紧急修复：修复代码乱码、只读变量写入错误
 #   v6.5.5 - 稳定性修复：回车清空问题、只读变量错误、移除冗余功能
-#   v6.5.4 - 交互修复：运行模式选择确认、通知遮蔽显示
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -23,7 +23,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.5"
+readonly SCRIPT_VERSION="v6.5.6"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -186,7 +186,12 @@ load_config(){
     WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-21600}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
     [ -z "$WATCHTOWER_HOST_ALIAS" ] && WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
-    [ ${#WATCHTOWER_HOST_ALIAS} -gt TOWER_HOST_AL15 ] && WATCHIAS="DockerNode"
+    
+    # 修复：之前的代码乱码问题
+    if [ "${#WATCHTOWER_HOST_ALIAS}" -gt 15 ]; then 
+        WATCHTOWER_HOST_ALIAS="DockerNode"
+    fi
+    
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
     WATCHTOWER_IPV4_INTERFACE="${WATCHTOWER_IPV4_INTERFACE:-}"
@@ -325,7 +330,9 @@ _prompt_for_interval() {
 }
 
 # --- 核心：生成环境文件 ---
+# 修复：支持传入输出文件路径，避免修改只读变量 ENV_FILE
 _generate_env_file() {
+    local target_file="${1:-$ENV_FILE}"
     local alias_name
     alias_name=$(echo "${WATCHTOWER_HOST_ALIAS:-DockerNode}" | tr -d '\n\r')
     
@@ -333,7 +340,7 @@ _generate_env_file() {
     ipv4_address=$(_get_ip_address 4 "${WATCHTOWER_IPV4_INTERFACE}")
     ipv6_address=$(_get_ip_address 6 "${WATCHTOWER_IPV6_INTERFACE}")
 
-    rm -f "$ENV_FILE"
+    rm -f "$target_file"
 
     {
         echo "TZ=${JB_TIMEZONE:-Asia/Shanghai}"
@@ -346,7 +353,7 @@ _generate_env_file() {
             local br='{{ "\n" }}'
             local time_format='{{ .Time.Format "2006-01-02 15:04:05 (MST)" }}'
             
-            cat <<EOF | tr -d '\n' >> "$ENV_FILE"
+            cat <<EOF | tr -d '\n' >> "$target_file"
 WATCHTOWER_NOTIFICATION_TEMPLATE={{ if .Entries }}✅ *容器自动更新成功*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* ✅ 更新完成${br}📦 *数量:* \`{{ len .Entries }} 个\`${br}⌚ *时间:* \`${time_format}\`${br}${br}🧾 *更新详情:*${br}{{ range .Entries }}• \`{{ .Name }}\` 从 \`{{ .Image.Name.Short }}\` 更新至 \`{{ .Latest.Short }}\` [详情]({{ .Image.HubLink }})${br}{{ end }}{{ end }}
 EOF
         fi
@@ -354,9 +361,9 @@ EOF
         if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]] && [ -n "$WATCHTOWER_SCHEDULE_CRON" ]; then
             echo "WATCHTOWER_SCHEDULE=$WATCHTOWER_SCHEDULE_CRON"
         fi
-    } >> "$ENV_FILE"
+    } >> "$target_file"
     
-    chmod 600 "$ENV_FILE" || log_warn "⚠️ 无法设置环境文件权限。"
+    chmod 600 "$target_file" || log_warn "⚠️ 无法设置环境文件权限。"
 }
 
 # --- 健康检查与核心启动逻辑 ---
@@ -397,7 +404,7 @@ _wait_for_container_healthy() {
 }
 
 _start_watchtower_container_logic(){
-    load_config; local wt_interval="$1"; local mode_description="$2"; local interactive_mode="${3:-false}"; local wt_image="containrrr/watchtower"; local container_names=(); local run_hostname="${WATCHTOWER_HOST_ALIAS:-DockerNode}"; _generate_env_file; local docker_run_args=(-h "${run_hostname}"); docker_run_args+=(--env-file "$ENV_FILE"); local wt_args=("--cleanup"); local run_container_name="watchtower"; if [ "$interactive_mode" = "true" ]; then run_container_name="watchtower-once"; docker_run_args+=(--rm --name "$run_container_name"); wt_args+=(--run-once); else docker_run_args+=(-d --name "$run_container_name" --restart unless-stopped); if [[ "$WATCHTOWER_RUN_MODE" != "cron" && "$WATCHTOWER_RUN_MODE" != "aligned" ]]; then log_info "⏳ 启用间隔循环模式: ${wt_interval:-300}秒"; wt_args+=(--interval "${wt_interval:-300}"); else log_info "⏰ 启用 Cron 调度模式: $WATCHTOWER_SCHEDULE_CRON"; fi; fi; docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock); [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && wt_args+=("--debug"); if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<< "$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi; local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; if [ -n "$final_exclude_list" ]; then local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g'); mapfile -t container_names < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true); if [ ${#container_names[@]} -eq 0 ] && [ "$interactive_mode" = "false" ]; then log_error "忽略名单导致监控范围为空，服务无法启动。"; return "${ERR_CONFIG}"; fi; [ "$interactive_mode" = "false" ] && log_info "计算后的监控范围: ${container_names[*]}"; else [ "$interactive_mode" = "false" ] && log_info "未发现忽略名单，将监控所有容器。"; fi; if [ "$interactive_mode" = "false" ]; then echo "⬇️ 正在拉取 Watchtower 镜像..."; fi; if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1; then log_warn "镜像拉取可能使用了缓存或遇到网络问题，继续尝试启动..."; fi; [ "$interactive_mode" = "false" ] && _print_header "正在启动 $mode_description";
+    load_config; local wt_interval="$1"; local mode_description="$2"; local interactive_mode="${3:-false}"; local wt_image="containrrr/watchtower"; local container_names=(); local run_hostname="${WATCHTOWER_HOST_ALIAS:-DockerNode}"; _generate_env_file "$ENV_FILE"; local docker_run_args=(-h "${run_hostname}"); docker_run_args+=(--env-file "$ENV_FILE"); local wt_args=("--cleanup"); local run_container_name="watchtower"; if [ "$interactive_mode" = "true" ]; then run_container_name="watchtower-once"; docker_run_args+=(--rm --name "$run_container_name"); wt_args+=(--run-once); else docker_run_args+=(-d --name "$run_container_name" --restart unless-stopped); if [[ "$WATCHTOWER_RUN_MODE" != "cron" && "$WATCHTOWER_RUN_MODE" != "aligned" ]]; then log_info "⏳ 启用间隔循环模式: ${wt_interval:-300}秒"; wt_args+=(--interval "${wt_interval:-300}"); else log_info "⏰ 启用 Cron 调度模式: $WATCHTOWER_SCHEDULE_CRON"; fi; fi; docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock); [ "$WATCHTOWER_DEBUG_ENABLED" = "true" ] && wt_args+=("--debug"); if [ -n "$WATCHTOWER_EXTRA_ARGS" ]; then read -r -a extra_tokens <<< "$WATCHTOWER_EXTRA_ARGS"; wt_args+=("${extra_tokens[@]}"); fi; local final_exclude_list="${WATCHTOWER_EXCLUDE_LIST}"; if [ -n "$final_exclude_list" ]; then local exclude_pattern; exclude_pattern=$(echo "$final_exclude_list" | sed 's/,/\\|/g'); mapfile -t container_names < <(JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -vE "^(${exclude_pattern}|watchtower|watchtower-once)$" || true); if [ ${#container_names[@]} -eq 0 ] && [ "$interactive_mode" = "false" ]; then log_error "忽略名单导致监控范围为空，服务无法启动。"; return "${ERR_CONFIG}"; fi; [ "$interactive_mode" = "false" ] && log_info "计算后的监控范围: ${container_names[*]}"; else [ "$interactive_mode" = "false" ] && log_info "未发现忽略名单，将监控所有容器。"; fi; if [ "$interactive_mode" = "false" ]; then echo "⬇️ 正在拉取 Watchtower 镜像..."; fi; if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker pull "$wt_image" >/dev/null 2>&1; then log_warn "镜像拉取可能使用了缓存或遇到网络问题，继续尝试启动..."; fi; [ "$interactive_mode" = "false" ] && _print_header "正在启动 $mode_description";
     
     local final_command_to_run=(docker run "${docker_run_args[@]}" "$wt_image" "${wt_args[@]}" "${container_names[@]}")
     
@@ -425,7 +432,6 @@ _start_watchtower_container_logic(){
     fi
 }
 
-# --- 移除重建通知 ---
 _rebuild_watchtower() {
     log_info "正在重建 Watchtower 容器..."
     JB_SUDO_LOG_QUIET="true" run_with_sudo docker rm -f watchtower &>/dev/null || true
@@ -446,18 +452,11 @@ _prompt_rebuild_if_needed() {
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi
     if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi
     
-    # 使用临时变量而非修改 ENV_FILE
     local temp_env; temp_env=$(mktemp)
     TEMP_FILES+=("$temp_env")
     
-    # 临时修改路径进行对比
-    local original_env_path="$ENV_FILE"
-    local temp_env_path="$temp_env"
-    
-    # 生成新配置到临时文件
-    local old_env_file="$ENV_FILE"
-    ENV_FILE="$temp_env" _generate_env_file 2>/dev/null || true
-    ENV_FILE="$old_env_file"
+    # 直接调用新版生成函数，传入临时文件路径
+    _generate_env_file "$temp_env" 2>/dev/null || true
     
     local current_hash new_hash
     current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""
@@ -1028,7 +1027,6 @@ show_watchtower_details(){
     if [ -n "$original_trap" ]; then eval "$original_trap"; else trap - INT; fi
 }
 
-# --- 修复: 高级参数编辑器 (移除通知风格，修复空值处理) ---
 view_and_edit_config(){
     local -a config_items=(
         "TG Chat ID|TG_CHAT_ID|string"
@@ -1126,17 +1124,13 @@ view_and_edit_config(){
                     local val
                     read -r -p "请输入新值: " val
                     
-                    # 修复：只有空格才清空，回车保持原值
                     if [[ "$val" =~ ^[[:space:]]+$ ]]; then
-                        # 全是空格 -> 清空
                         declare "$var_name"=""
                         log_info "'$label' 已清空。"
                     elif [ -n "$val" ]; then
-                        # 有实际输入 -> 更新
                         declare "$var_name"="$val"
                         log_info "'$label' 已更新。"
                     else
-                        # 回车 -> 保持不变
                         log_info "'$label' 保持不变。"
                     fi
                 fi
