@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.0 - 安全增强与通知优化)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.1 - 交互逻辑优化与隐私增强)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持 TCP 负载均衡、TLS卸载与泛域名智能复用
@@ -132,10 +132,15 @@ get_vps_ip() {
 }
 
 _prompt_user_input_with_validation() {
-    local prompt="${1:-}" default="${2:-}" regex="${3:-}" error_msg="${4:-}" allow_empty="${5:-false}" val=""
+    local prompt="${1:-}" default="${2:-}" regex="${3:-}" error_msg="${4:-}" allow_empty="${5:-false}" visual_default="${6:-}"
     while true; do
         if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-            local disp=""; if [ -n "$default" ]; then disp=" [默认: ${default}]"; fi
+            local disp=""
+            if [ -n "$visual_default" ]; then
+                disp=" [默认: ${visual_default}]"
+            elif [ -n "$default" ]; then
+                disp=" [默认: ${default}]"
+            fi
             echo -ne "${YELLOW}${prompt}${NC}${disp}: " >&2
             read -r val < /dev/tty || return 1
             val=${val:-$default}
@@ -167,7 +172,6 @@ _mask_ip() {
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "$ip" | awk -F. '{print $1"."$2".*.*"}'
     elif [[ "$ip" =~ .*:.* ]]; then
-        # 简单遮掩 IPv6，保留前两段
         echo "$ip" | awk -F: '{print $1":"$2"::***"}'
     else
         echo "***"
@@ -256,14 +260,32 @@ setup_tg_notifier() {
         return
     fi
 
-    # 默认值逻辑：如果已有配置则使用已有配置（回显时遮掩），否则使用 86888 作为默认值
-    local token_default="${curr_token:-86888}"
-    # 注意：prompt 文本固定显示 [默认: 86888] 以符合用户要求，但实际回填逻辑遵循安全优先
-    local prompt_text="请输入 Bot Token (如 1234:ABC...) [默认: 86888]"
+    # Token 输入：真实值用于回填，视觉值用于显示遮掩
+    local real_tk_default="${curr_token:-}"
+    local vis_tk_default=""
+    if [ -n "$curr_token" ]; then 
+        vis_tk_default="$(_mask_string "$curr_token")"
+    else 
+        vis_tk_default="86888"
+    fi
     
-    local tk; if ! tk=$(_prompt_user_input_with_validation "$prompt_text" "$token_default" "" "" "false"); then return; fi
-    local cid; if ! cid=$(_prompt_user_input_with_validation "请输入 Chat ID (如 123456789 或 -100123...)" "$curr_chat" "^-?[0-9]+$" "格式错误，只能包含数字或负号" "false"); then return; fi
-    local sname; if ! sname=$(_prompt_user_input_with_validation "请输入这台服务器的备注 (如 日本主机)" "$curr_name" "" "" "false"); then return; fi
+    local tk
+    if ! tk=$(_prompt_user_input_with_validation "请输入 Bot Token (如 1234:ABC...)" "$real_tk_default" "" "" "false" "$vis_tk_default"); then return; fi
+    
+    # Chat ID 输入：遮掩显示
+    local real_cid_default="${curr_chat:-}"
+    local vis_cid_default=""
+    if [ -n "$curr_chat" ]; then 
+        vis_cid_default="$(_mask_string "$curr_chat")"
+    else 
+        vis_cid_default="无"
+    fi
+    
+    local cid
+    if ! cid=$(_prompt_user_input_with_validation "请输入 Chat ID (如 123456789 或 -100123...)" "$real_cid_default" "^-?[0-9]+$" "格式错误，只能包含数字或负号" "false" "$vis_cid_default"); then return; fi
+    
+    local sname
+    if ! sname=$(_prompt_user_input_with_validation "请输入这台服务器的备注 (如 日本主机)" "$curr_name" "" "" "false"); then return; fi
 
     cat > "$TG_CONF_FILE" << EOF
 TG_BOT_TOKEN="${tk}"
@@ -880,7 +902,7 @@ _issue_and_install_certificate() {
     
     if [ "$method" == "reuse" ]; then return 0; fi
 
-    # DNS 预检 (强制执行，确保域名解析正确)
+    # DNS 预检 (在配置阶段已执行，此处为兜底，仅对 http-01 再次检查)
     if [ "$method" == "http-01" ]; then
         if ! _check_dns_resolution "$domain"; then return 1; fi
     fi
@@ -1005,6 +1027,15 @@ _gather_project_details() {
     local domain=$(echo "$cur" | jq -r '.domain // ""')
     if [ -z "$domain" ]; then
         if ! domain=$(_prompt_user_input_with_validation "主域名" "" "^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" "格式无效" "false"); then exec 1>&3; return 1; fi
+    fi
+
+    # 新增：在输入域名后立即进行 DNS 预检
+    if [ "$skip_cert" == "false" ]; then
+        if ! _check_dns_resolution "$domain"; then
+            # 如果 DNS 检查失败（用户取消），则退出配置流程
+            echo -e "${RED}域名配置已取消。${NC}"
+            exec 1>&3; return 1
+        fi
     fi
 
     local wc_match=""
@@ -1330,7 +1361,7 @@ _draw_dashboard() {
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
 
     echo -e "\n${GREEN}╭────────────────────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.0${NC}                   ${GREEN}│${NC}"
+    echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.1${NC}                   ${GREEN}│${NC}"
     echo -e "${GREEN}╰────────────────────────────────────────────────────────────────────────╯${NC}"
     echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC} | 负载: ${YELLOW}${load}${NC}"
     echo -e " HTTP : ${BOLD}${count}${NC} 个 | TCP : ${BOLD}${tcp_count}${NC} 个 | 告警 : ${RED}${warn_count}${NC}"
@@ -1352,9 +1383,9 @@ main_menu() {
         echo -e "${PURPLE}【运维监控与系统维护】${NC}"
         echo -e " 6. 批量续期 (Auto Renew All)"
         echo -e " 7. 查看日志 (Logs - Nginx/acme)"
-        echo -e " 8. 更新 Cloudflare 防御 IP 库 (强烈建议防源站被扫配置)"
+        echo -e " 8. ${ORANGE}${BOLD}更新 Cloudflare 防御 IP 库 (强烈建议防源站被扫配置)${NC}"
         echo -e " 9. 备份/还原与配置重建 (灾备数据与 Nginx 恢复组合技)"
-        echo -e "10. ${ORANGE}${BOLD}设置 Telegram 机器人通知 (TG Bot Notify)${NC}"
+        echo -e "10. 设置 Telegram 机器人通知 (TG Bot Notify)"
         echo ""
         
         local c; if ! c=$(_prompt_for_menu_choice_local "1-10" "true"); then break; fi
