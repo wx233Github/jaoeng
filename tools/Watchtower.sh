@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.2-修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.2-安全加固版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
-#   v6.5.2 - 修复函数命名不匹配导致的运行时错误
-#   v6.5.1 - 增强 IP 地址获取健壮性，支持指定网络接口
-#   v6.5.0 - 新增图文通知模板、健康检查、systemd集成、敏感信息加密
-#   v6.4.66 - 安全加固：修复变量引用、退出码规范、临时文件清理
+#   v6.5.2 - 安全加固：修复配置加载漏洞、优化临时文件管理
+#   v6.5.1 - 增强 IP 地址获取健壮性
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -26,9 +24,23 @@ readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
 readonly SCRIPT_VERSION="v6.5.2"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
+readonly ENV_FILE="${SCRIPT_DIR}/watchtower.env"
+readonly ENV_FILE_LAST_RUN="${SCRIPT_DIR}/watchtower.env.last_run"
 
 # --- 全局会话密码变量 ---
 SESSION_ENCRYPTION_PASSWORD=""
+
+# --- 全局临时文件管理 ---
+declare -a TEMP_FILES=()
+_cleanup_temp_files() {
+    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+        rm -f "${TEMP_FILES[@]}" 2>/dev/null || true
+    fi
+}
+trap _cleanup_temp_files EXIT INT TERM
 
 # --- 参数验证函数 ---
 validate_args() {
@@ -86,13 +98,6 @@ if ! declare -f run_with_sudo &>/dev/null; then
     }
 fi
 
-# --- 脚本与配置路径 ---
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
-readonly ENV_FILE="${SCRIPT_DIR}/watchtower.env"
-readonly ENV_FILE_LAST_RUN="${SCRIPT_DIR}/watchtower.env.last_run"
-
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
 ENCRYPTED_TG_BOT_TOKEN=""
@@ -124,9 +129,28 @@ _get_encryption_password() {
 
 # --- 配置加载与保存 ---
 load_config(){
-    [ ! -f "$CONFIG_FILE" ] && return
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE" &>/dev/null || true
+    if [ ! -f "$CONFIG_FILE" ]; then
+        # 设置默认值
+        WATCHTOWER_EXCLUDE_LIST="portainer,portainer_agent"
+        WATCHTOWER_CONFIG_INTERVAL="21600"
+        WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
+        [ "${#WATCHTOWER_HOST_ALIAS}" -gt 15 ] && WATCHTOWER_HOST_ALIAS="DockerNode"
+        WATCHTOWER_RUN_MODE="interval"
+        WATCHTOWER_DEBUG_ENABLED="false"
+        WATCHTOWER_TEMPLATE_STYLE="professional"
+        return
+    fi
+
+    # 安全改进：仅解析符合变量命名规范的行，防止注入
+    local valid_var_regex="^(CONFIG_ENCRYPTED|ENCRYPTED_TG_BOT_TOKEN|TG_BOT_TOKEN|TG_CHAT_ID|WATCHTOWER_[A-Za-z0-9_]+)="
+    while IFS= read -r line || [ -n "$line" ]; do
+        # 跳过空行和注释
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # 仅执行包含允许变量名的行
+        if [[ "$line" =~ $valid_var_regex ]]; then
+            eval "$line" 2>/dev/null || true
+        fi
+    done < "$CONFIG_FILE"
 
     if [ "${CONFIG_ENCRYPTED}" = "true" ] && [ -n "${ENCRYPTED_TG_BOT_TOKEN}" ]; then
         if ! command -v openssl &>/dev/null; then
@@ -144,19 +168,14 @@ load_config(){
         TG_BOT_TOKEN="$decrypted_token"
     fi
 
-    local default_interval="21600"
-    local default_exclude_list="portainer,portainer_agent"
-    local default_alias
-    local sys_hostname; sys_hostname=$(hostname | tr -d '\n')
-    if [ "${#sys_hostname}" -gt 15 ]; then default_alias="DockerNode"; else default_alias="$sys_hostname"; fi
-
-    TG_CHAT_ID="${TG_CHAT_ID:-}"
-    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-$default_exclude_list}"
+    # 应用默认值
+    WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-portainer,portainer_agent}"
     WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
     WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
-    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-$default_interval}"
+    WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-21600}"
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
-    WATCHTOWER_HOST_ALIAS="${WATCHTOWER_HOST_ALIAS:-$default_alias}"
+    [ -z "$WATCHTOWER_HOST_ALIAS" ] && WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
+    [ ${#WATCHTOWER_HOST_ALIAS} -gt 15 ] && WATCHTOWER_HOST_ALIAS="DockerNode"
     WATCHTOWER_RUN_MODE="${WATCHTOWER_RUN_MODE:-interval}"
     WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
     WATCHTOWER_TEMPLATE_STYLE="${WATCHTOWER_TEMPLATE_STYLE:-professional}"
@@ -168,7 +187,7 @@ save_config(){
     mkdir -p "$(dirname "$CONFIG_FILE")"
     
     local temp_config; temp_config=$(mktemp)
-    trap 'rm -f "$temp_config"' EXIT INT TERM
+    TEMP_FILES+=("$temp_config") # 注册到全局管理
     
     local final_encrypted_token="${ENCRYPTED_TG_BOT_TOKEN}"
     if [ "${CONFIG_ENCRYPTED}" = "true" ]; then
@@ -201,9 +220,8 @@ WATCHTOWER_IPV6_INTERFACE="${WATCHTOWER_IPV6_INTERFACE}"
 EOF
     
     chmod 600 "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
-    trap - EXIT INT TERM
-    chmod 600 "$CONFIG_FILE" || log_warn "无法设置配置文件权限。"
+    mv "$temp_config" "$CONFIG_FILE" || log_warn "移动配置文件失败"
+    # 注意：不再在此处解除 trap，由全局 trap 统一管理
 }
 
 # --- 增强的 IP 地址获取函数 ---
@@ -213,9 +231,13 @@ _get_ip_address() {
     local ip=""
     local ip_cmd="ip -$ver"
     
+    # 构造匹配模式：IPv4 匹配 "inet " (注意空格避免匹配 inet6), IPv6 匹配 "inet6"
+    local match_pattern="inet"
+    [ "$ver" = "6" ] && match_pattern="inet6"
+
     # 1. 尝试使用用户指定的接口
     if [ -n "$iface_override" ]; then
-        ip=$($ip_cmd addr show dev "$iface_override" 2>/dev/null | awk -v v="inet$ver?" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
+        ip=$($ip_cmd addr show dev "$iface_override" 2>/dev/null | awk -v v="$match_pattern" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
     fi
 
     # 2. 如果没有指定接口或获取失败，尝试通过默认路由获取
@@ -223,7 +245,7 @@ _get_ip_address() {
         local default_iface
         default_iface=$($ip_cmd route show default 2>/dev/null | awk '{print $5}' | head -n1)
         if [ -n "$default_iface" ]; then
-            ip=$($ip_cmd addr show dev "$default_iface" 2>/dev/null | awk -v v="inet$ver?" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
+            ip=$($ip_cmd addr show dev "$default_iface" 2>/dev/null | awk -v v="$match_pattern" '$1 ~ v {print $2}' | cut -d'/' -f1 | head -n1)
         fi
     fi
 
@@ -232,7 +254,7 @@ _get_ip_address() {
         if [ "$ver" = "4" ]; then
             ip=$(hostname -I 2>/dev/null | awk '{print $1}')
         else
-            ip=$($ip_cmd addr show 2>/dev/null | awk -v v="inet6" '/scope global/ {print $2}' | cut -d'/' -f1 | head -n1)
+            ip=$($ip_cmd addr show 2>/dev/null | awk -v v="$match_pattern" '/scope global/ {print $2}' | cut -d'/' -f1 | head -n1)
         fi
     fi
 
@@ -366,7 +388,7 @@ _rebuild_watchtower() {
     send_test_notify "$msg"
 }
 
-_prompt_rebuild_if_needed() { if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi; if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi; local temp_env; temp_env=$(mktemp); trap 'rm -f "$temp_env"' EXIT INT TERM; local original_env_file="$ENV_FILE"; ENV_FILE="$temp_env"; _generate_env_file; ENV_FILE="$original_env_file"; local current_hash new_hash; current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""; new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}') || new_hash=""; rm -f "$temp_env"; trap - EXIT INT TERM; if [ "$current_hash" != "$new_hash" ]; then echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"; fi; }
+_prompt_rebuild_if_needed() { if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi; if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi; local temp_env; temp_env=$(mktemp); TEMP_FILES+=("$temp_env"); local original_env_file="$ENV_FILE"; ENV_FILE="$temp_env"; _generate_env_file; ENV_FILE="$original_env_file"; local current_hash new_hash; current_hash=$(md5sum "$ENV_FILE_LAST_RUN" 2>/dev/null | awk '{print $1}') || current_hash=""; new_hash=$(md5sum "$temp_env" 2>/dev/null | awk '{print $1}') || new_hash=""; if [ "$current_hash" != "$new_hash" ]; then echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"; fi; }
 run_watchtower_once(){ if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then log_info "操作已取消。"; return "${ERR_OK}"; fi; _start_watchtower_container_logic "" "" true; }
 
 # --- 菜单函数 ---
@@ -1061,15 +1083,6 @@ main(){
     main_menu
     exit "${ERR_OK}"
 }
-
-# --- Stub 函数定义 (防止 sourcing 报错) ---
-declare -f configure_watchtower &>/dev/null || configure_watchtower() { log_warn "Function stub"; }
-declare -f view_and_edit_config &>/dev/null || view_and_edit_config() { log_warn "Function stub"; }
-declare -f show_watchtower_details &>/dev/null || show_watchtower_details() { log_warn "Function stub"; }
-declare -f get_watchtower_inspect_summary &>/dev/null || get_watchtower_inspect_summary() { echo ""; }
-declare -f get_watchtower_all_raw_logs &>/dev/null || get_watchtower_all_raw_logs() { echo ""; }
-declare -f _extract_schedule_from_env &>/dev/null || _extract_schedule_from_env() { echo ""; }
-declare -f _get_watchtower_next_run_time &>/dev/null || _get_watchtower_next_run_time() { echo "N/A"; }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
