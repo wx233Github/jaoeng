@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Watchtower 自动更新管理器 (v6.5.6-修复版)
+# 🚀 Watchtower 自动更新管理器 (v6.5.7-精简交互版)
 # =============================================================
 # 作者：系统运维组
 # 描述：Docker 容器自动更新管理 (Watchtower) 封装脚本
 # 版本历史：
+#   v6.5.7 - 交互优化：移除高级编辑器中的冗余选项
 #   v6.5.6 - 紧急修复：修复代码乱码、只读变量写入错误
-#   v6.5.5 - 稳定性修复：回车清空问题、只读变量错误、移除冗余功能
 #   ...
 
 # --- 严格模式与环境设定 ---
@@ -23,7 +23,7 @@ readonly ERR_RUNTIME=10
 readonly ERR_INVALID_INPUT=11
 
 # --- 脚本元数据 ---
-readonly SCRIPT_VERSION="v6.5.6"
+readonly SCRIPT_VERSION="v6.5.7"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_FULL_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 readonly CONFIG_FILE="$HOME/.docker-auto-update-watchtower.conf"
@@ -187,7 +187,6 @@ load_config(){
     WATCHTOWER_ENABLED="${WATCHTOWER_ENABLED:-false}"
     [ -z "$WATCHTOWER_HOST_ALIAS" ] && WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
     
-    # 修复：之前的代码乱码问题
     if [ "${#WATCHTOWER_HOST_ALIAS}" -gt 15 ]; then 
         WATCHTOWER_HOST_ALIAS="DockerNode"
     fi
@@ -330,7 +329,6 @@ _prompt_for_interval() {
 }
 
 # --- 核心：生成环境文件 ---
-# 修复：支持传入输出文件路径，避免修改只读变量 ENV_FILE
 _generate_env_file() {
     local target_file="${1:-$ENV_FILE}"
     local alias_name
@@ -447,7 +445,6 @@ _rebuild_watchtower() {
     return "${ERR_OK}"
 }
 
-# --- 修复: 使用临时变量替代只读变量 ---
 _prompt_rebuild_if_needed() { 
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi
     if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi
@@ -455,7 +452,6 @@ _prompt_rebuild_if_needed() {
     local temp_env; temp_env=$(mktemp)
     TEMP_FILES+=("$temp_env")
     
-    # 直接调用新版生成函数，传入临时文件路径
     _generate_env_file "$temp_env" 2>/dev/null || true
     
     local current_hash new_hash
@@ -1027,11 +1023,10 @@ show_watchtower_details(){
     if [ -n "$original_trap" ]; then eval "$original_trap"; else trap - INT; fi
 }
 
+# --- 修复: 高级参数编辑器 (移除冗余选项) ---
 view_and_edit_config(){
     local -a config_items=(
-        "TG Chat ID|TG_CHAT_ID|string"
         "忽略名单|WATCHTOWER_EXCLUDE_LIST|string_list"
-        "服务器别名|WATCHTOWER_HOST_ALIAS|string"
         "额外参数|WATCHTOWER_EXTRA_ARGS|string"
         "调试模式|WATCHTOWER_DEBUG_ENABLED|bool"
         "运行模式|WATCHTOWER_RUN_MODE|schedule"
