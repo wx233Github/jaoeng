@@ -1256,27 +1256,58 @@ _gather_project_details() {
     exec 1>&3
 }
 
+# ==========================================
+# 辅助函数：文本居中
+# ==========================================
+_center_text() {
+    local text="$1"
+    local width="${2:-10}"
+  
+  
+    local len=${#text}
+    if [ $len -ge $width ]; then
+        printf "%-${width}.${width}s" "$text"
+    else
+        local pad=$(( width - len ))
+        local left=$(( pad / 2 ))
+        local right=$(( pad - left ))
+        printf "%${left}s%s%${right}s" "" "$text" ""
+    fi
+}
+
 _display_projects_list() {
     local json="${1:-}"; if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
-    
-    # 优化布局，紧凑显示：ID(4) | 域名(20) | 目标(14) | 状态(10) | 续期(10)
-    printf "${BOLD}%-4s %-20s %-14s %-10s %-10s${NC}\n" "ID" "域名" "目标" "状态" "续期"
-    # 动生成分割线 (总长约 61 字符)
-    echo "─────────────────────────────────────────────────────────────────"
-    
+  
+    # 定义列宽：ID(4) | 域名(22) | 目标(16) | 状态(12) | 续期(16)
+    # 增加了整体宽度和间距
+    local w_id=4 w_domain=22 w_target=16 w_status=12 w_renew=16
+  
+    # 打印表头（居中）
+    echo -n "$(_center_text "ID" $w_id) "
+    echo -n "$(_center_text "域名" $w_domain) "
+    echo -n "$(_center_text "目标" $w_target) "
+    echo -n "$(_center_text "状态" $w_status) "
+    echo    "$(_center_text "续期" $w_renew)"
+  
+    # 打印分割线
+    local total_width=$((w_id + w_domain + w_target + w_status + w_renew + 4)) # +4 是空格
+    generate_line "$total_width"
+  
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
-        idx=$((idx + 1)); local domain=$(echo "$p" | jq -r '.domain // "未知"'); local type=$(echo "$p" | jq -r '.type')
-        local port=$(echo "$p" | jq -r '.resolved_port'); local cert=$(echo "$p" | jq -r '.cert_file')
+        idx=$((idx + 1))
+        local domain=$(echo "$p" | jq -r '.domain // "未知"')
+        local type=$(echo "$p" | jq -r '.type')
+        local port=$(echo "$p" | jq -r '.resolved_port')
+        local cert=$(echo "$p" | jq -r '.cert_file')
         local method=$(echo "$p" | jq -r '.acme_validation_method')
+      
         target_str="Port:$port"; [ "$type" = "docker" ] && target_str="Docker:$port"; [ "$port" == "cert_only" ] && target_str="CertOnly"
-        local display_target="${target_str:0:14}" # 限制为 14 字符
-        
-        local status_str="缺失"
-        local status_color="$RED"; local renew_date="-"
-        
+        display_target=$(echo "$target_str" | cut -c 1-$w_target)
+      
+        renew_date="-"
         if [ "$method" == "reuse" ]; then
-            renew_date="跟随主域" # 缩短显示
+            renew_date="跟随主域"
         else
             local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"; [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
             if [ -f "$conf_file" ]; then
@@ -1285,15 +1316,35 @@ _display_projects_list() {
             fi
         fi
 
+        # 构建状态文字（先纯文本，后带颜色）
+        status_text=""
+        status_color="$RED"
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); local end_ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (end_ts - $(date +%s)) / 86400 ))
-            if (( days < 0 )); then status_str="过期${days#-}天"; status_color="$RED"
-            elif (( days <= 30 )); then status_str="${days}天续期"; status_color="$YELLOW"
-            else status_str="正常${days}天"; status_color="$GREEN"; fi
-        else status_str="未安装"; fi
-        
-        printf "%-4d %-20s %-14s ${status_color}%-10s${NC} %-10s\n" "$idx" "$domain" "$display_target" "$status_str" "$renew_date"
+            if (( days < 0 )); then status_text="过期${days#-}天"; status_color="$RED"
+            elif (( days <= 30 )); then status_text="${days}天续期"; status_color="$YELLOW"
+            else status_text="正常${days}天"; status_color="$GREEN"; fi
+        else status_text="未安装"; fi
+      
+        # 手动构建居中行以确保颜色不影响长度计算太严重
+        # 1. ID
+        line="$(_center_text "$idx" $w_id) "
+        # 2. 域名
+        line+="$(_center_text "$domain" $w_domain) "
+        # 3. 目标
+        line+="$(_center_text "$display_target" $w_target) "
+        # 4. 状态 (手动居中纯文本，然后加颜色)
+        local status_len=${#status_text}
+        local status_pad=$(( w_status - status_len ))
+        local status_left=$(( status_pad / 2 ))
+        local status_right=$(( status_pad - status_left ))
+        line+="%${status_left}s${status_color}${status_text}${NC}%${status_right}s "
+        # 5. 续期
+        line+="$(_center_text "$renew_date" $w_renew)"
+      
+        # 执行打印
+        printf "$line\n" "" "" # 两个空用于状态列的前后补位
     done; echo ""
 }
 
