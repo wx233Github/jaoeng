@@ -149,6 +149,34 @@ _detect_web_service() {
 }
 
 # ==============================================================================
+# SECTION: 权限与系统检查
+# ==============================================================================
+
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        log_message ERROR "请使用 root 用户运行此操作。"
+        return 1
+    fi
+    return 0
+}
+
+check_os_compatibility() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
+            echo -e "${RED}⚠️ 警告: 检测到非 Debian/Ubuntu 系统 ($NAME)。${NC}"
+            if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+                if ! _confirm_action_or_exit_non_interactive "是否尝试继续?"; then
+                    exit 1
+                fi
+            else
+                log_message WARN "非 Debian 系统，尝试强制运行..."
+            fi
+        fi
+    fi
+}
+
+# ==============================================================================
 # SECTION: UI 渲染函数 (兼容中文宽度)
 # ==============================================================================
 
