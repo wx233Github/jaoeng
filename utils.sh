@@ -1,7 +1,8 @@
 # =============================================================
-# 🚀 通用工具函数库 (v2.42-修复启动器临时文件错误)
-# - 修复: (关键) 移除了全局的 `trap cleanup_temp_files EXIT`，以解决启动器在 `exec` 过程中因过早清理临时文件而导致的 `No such file or directory` 致命错误。临时文件管理现在由主脚本 `install.sh` 负责。
-# - 更新: 脚本版本号。
+# 🚀 通用工具函数库 (v2.43-修复 stdout 沉默问题)
+# - 修复: 强制将 _render_menu 和 generate_line 的输出重定向到 stderr (&>2)
+#         以解决在 stdout 被重定向或抑制的终端环境下无法显示菜单的问题。
+# - 确保日志、提示框和菜单都使用同一个可视流。
 # =============================================================
 
 # --- 严格模式 ---
@@ -123,10 +124,11 @@ load_config() {
 }
 
 # --- UI 渲染 & 字符串处理 ---
+# 修复：确保输出到 stderr
 generate_line() {
     local len=${1:-40}; local char=${2:-"─"}
     if [ "$len" -le 0 ]; then echo ""; return; fi
-    printf "%${len}s" "" | sed "s/ /$char/g"
+    printf "%${len}s" "" | sed "s/ /$char/g" >&2
 }
 
 _get_visual_width() {
@@ -154,18 +156,20 @@ _render_menu() {
     done
     local box_inner_width=$max_content_width
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
-    echo ""
-    echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    
+    # 修复：所有输出强制写到 stderr
+    echo "" >&2
+    echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}" >&2
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
-        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}" >&2
     fi
-    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}" >&2
     for line in "${lines[@]}"; do
-        echo -e "${line}"
+        echo -e "${line}" >&2
     done
     local box_total_physical_width=$(( box_inner_width + 2 ))
-    echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
+    echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}" >&2
 }
