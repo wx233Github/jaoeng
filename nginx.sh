@@ -1258,21 +1258,25 @@ _gather_project_details() {
 
 _display_projects_list() {
     local json="${1:-}"; if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
-    printf "${BOLD}%-4s %-26s %-18s %-14s %-12s${NC}\n" "ID" "域名" "目标" "状态(余天)" "下期计划"
-    echo "────────────────────────────────────────────────────────────────────────"
+    
+    # 优化布局，紧凑显示：ID(4) | 域名(20) | 目标(14) | 状态(10) | 续期(10)
+    printf "${BOLD}%-4s %-20s %-14s %-10s %-10s${NC}\n" "ID" "域名" "目标" "状态" "续期"
+    # 动生成分割线 (总长约 61 字符)
+    echo "─────────────────────────────────────────────────────────────────"
+    
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
         idx=$((idx + 1)); local domain=$(echo "$p" | jq -r '.domain // "未知"'); local type=$(echo "$p" | jq -r '.type')
         local port=$(echo "$p" | jq -r '.resolved_port'); local cert=$(echo "$p" | jq -r '.cert_file')
         local method=$(echo "$p" | jq -r '.acme_validation_method')
-        local target_str="Port:$port"; [ "$type" = "docker" ] && target_str="Docker:$port"; [ "$port" == "cert_only" ] && target_str="CertOnly"
-        local display_target="${target_str:0:18}" # 限制目标显示长度
+        target_str="Port:$port"; [ "$type" = "docker" ] && target_str="Docker:$port"; [ "$port" == "cert_only" ] && target_str="CertOnly"
+        local display_target="${target_str:0:14}" # 限制为 14 字符
         
         local status_str="缺失"
         local status_color="$RED"; local renew_date="-"
         
         if [ "$method" == "reuse" ]; then
-            renew_date="(跟随主域)"
+            renew_date="跟随主域" # 缩短显示
         else
             local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"; [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
             if [ -f "$conf_file" ]; then
@@ -1284,12 +1288,12 @@ _display_projects_list() {
         if [[ -f "$cert" ]]; then
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); local end_ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (end_ts - $(date +%s)) / 86400 ))
-            if (( days < 0 )); then status_str="过期(${days}天)"; status_color="$RED"
-            elif (( days <= 30 )); then status_str="急需(${days}天)"; status_color="$YELLOW"
-            else status_str="正常(${days}天)"; status_color="$GREEN"; fi
-        else status_str="未安装    "; fi
+            if (( days < 0 )); then status_str="过期${days#-}天"; status_color="$RED"
+            elif (( days <= 30 )); then status_str="${days}天续期"; status_color="$YELLOW"
+            else status_str="正常${days}天"; status_color="$GREEN"; fi
+        else status_str="未安装"; fi
         
-        printf "%-4d %-26s %-18s ${status_color}%-14s${NC} %-12s\n" "$idx" "$domain" "$display_target" "$status_str" "$renew_date"
+        printf "%-4d %-20s %-14s ${status_color}%-10s${NC} %-10s\n" "$idx" "$domain" "$display_target" "$status_str" "$renew_date"
     done; echo ""
 }
 
