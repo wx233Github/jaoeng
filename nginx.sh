@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.3 - 完美对齐 UI 与 Python 计算引擎)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.31.2 - UI对齐与功能精简)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持 TCP 负载均衡、TLS卸载与泛域名智能复用
@@ -86,76 +86,6 @@ _prompt_for_menu_choice_local() {
     done
 }
 
-_strip_colors() { echo -e "${1:-}" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"; }
-
-# --- 核心视觉宽度计算 ---
-_get_visual_len() {
-    local text="$1"; local clean_text; clean_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    if [ -z "$clean_text" ]; then echo 0; return; fi
-    
-    # 优先使用 Python3 进行精准宽字符计算 (移植自 utils.sh)
-    if command -v python3 &>/dev/null; then
-        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$clean_text" 2>/dev/null || echo "${#clean_text}"
-    else
-        # 回退到简单的 ASCII 计数 (不够精准但可用)
-        echo "${#clean_text}"
-    fi
-}
-
-_draw_line() { local len="${1:-40}"; printf "%${len}s" "" | sed "s/ /─/g"; }
-
-_center_text() {
-    local text="$1"; local width="$2"; local text_len=$(_get_visual_len "$text"); local pad=$(( (width - text_len) / 2 ))
-    [[ $pad -lt 0 ]] && pad=0; printf "%${pad}s" ""
-}
-
-_render_menu() {
-    local title="${1:-菜单}"; shift; local title_vis_len=$(_get_visual_len "$title")
-    local min_width=50; local box_width=$min_width
-    # 确保内容能装下
-    if [ "$title_vis_len" -gt "$((min_width - 4))" ]; then box_width=$((title_vis_len + 6)); fi
-    
-    echo ""; 
-    # ─────╮
-    printf "─%s╮\n" "$(_draw_line "$((box_width - 1))")"
-    
-    # │ Title │
-    local total_text_len=$(_get_visual_len "${BOLD}${title}${NC}")
-    # 修正：计算 padding 时要考虑颜色码被 _get_visual_len 忽略了，
-    # 但在 printf 填充时我们需要用空格补位。
-    # _center_text 返回空格字符串，长度正好。
-    local padding="$(_center_text "${title}" "$box_width")"
-    local left_len=${#padding}; local right_len=$((box_width - text_len - left_len))
-    
-    echo -e "${GREEN}│${NC}${padding}${BOLD}${title}${NC}$(printf "%${right_len}s" "")${GREEN}│${NC}"
-    
-    # ╰────╯
-    printf "╰%s╯\n" "$(_draw_line "$((box_width - 1))")"
-    
-    for line in "$@"; do echo -e " ${line}"; done
-}
-
-check_root() { if [ "$(id -u)" -ne 0 ]; then log_message ERROR "请使用 root 用户运行此操作。"; return 1; fi; return 0; }
-
-check_os_compatibility() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
-            echo -e "${RED}⚠️  警告: 检测到非 Debian/Ubuntu 系统 ($NAME)。${NC}"
-            if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-                if ! _confirm_action_or_exit_non_interactive "是否尝试继续?"; then exit 1; fi
-            else log_message WARN "非 Debian 系统，尝试强制运行..."; fi
-        fi
-    fi
-}
-
-get_vps_ip() {
-    if [ -z "$VPS_IP" ]; then
-        VPS_IP=$(curl -s --connect-timeout 3 https://api.ipify.org || echo "")
-        VPS_IPV6=$(curl -s -6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null || echo "")
-    fi
-}
-
 _prompt_user_input_with_validation() {
     local prompt="${1:-}" default="${2:-}" regex="${3:-}" error_msg="${4:-}" allow_empty="${5:-false}" visual_default="${6:-}"
     while true; do
@@ -216,6 +146,100 @@ _detect_web_service() {
     local svc; for svc in nginx apache2 httpd caddy; do
         if systemctl is-active --quiet "$svc"; then echo "$svc"; return; fi
     done
+}
+
+# ==============================================================================
+# SECTION: UI 渲染函数 (兼容中文宽度)
+# ==============================================================================
+
+generate_line() {
+    local len=${1:-40}; local char=${2:-"─"}
+    if [ "$len" -le 0 ]; then echo ""; return; fi
+    printf "%${len}s" "" | sed "s/ /$char/g"
+}
+
+_get_visual_width() {
+    local text="$1"; local plain_text; plain_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -z "$plain_text" ]; then echo 0; return; fi
+    if command -v python3 &>/dev/null; then
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$plain_text" 2>/dev/null || echo "${#plain_text}"
+    elif command -v wc &>/dev/null && wc --help 2>&1 | grep -q -- "-m"; then
+        echo -n "$plain_text" | wc -m
+    else
+        echo "${#plain_text}"
+    fi
+}
+
+_render_menu() {
+    local title="$1"; shift; local -a lines=("$@")
+    local max_content_width=0
+    local title_width=$(_get_visual_width "$title")
+    max_content_width=$title_width
+    for line in "${lines[@]}"; do
+        local current_line_visual_width=$(_get_visual_width "$line")
+        if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
+            max_content_width="$current_line_visual_width"
+        fi
+    done
+    local box_inner_width=$max_content_width
+    if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
+    echo ""
+    echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    if [ -n "$title" ]; then
+        local padding_total=$((box_inner_width - title_width))
+        local padding_left=$((padding_total / 2))
+        local padding_right=$((padding_total - padding_left))
+        echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
+    fi
+    echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
+    for line in "${lines[@]}"; do
+        echo -e "${line}"
+    done
+    local box_total_physical_width=$(( box_inner_width + 2 ))
+    echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
+}
+
+_draw_dashboard() {
+    local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)
+    local uptime_raw=$(uptime -p | sed 's/up //')
+    local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
+    local tcp_count=$(jq '. | length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
+    local warn_count=0
+    if [ -f "$PROJECTS_METADATA_FILE" ]; then
+        warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
+    fi
+    local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || echo "unknown")
+    
+    local title="Nginx 管理面板 v4.31.2"
+    local line1="Nginx: ${nginx_v} | 运行: ${uptime_raw} | 负载: ${load}"
+    local line2="HTTP : ${count} 个 | TCP : ${tcp_count} 个 | 告警 : ${warn_count}"
+    
+    local max_width=$(_get_visual_width "$title")
+    local w1=$(_get_visual_width "$line1")
+    local w2=$(_get_visual_width "$line2")
+    [ "$w1" -gt "$max_width" ] && max_width=$w1
+    [ "$w2" -gt "$max_width" ] && max_width=$w2
+    [ "$max_width" -lt 50 ] && max_width=50
+    
+    local inner_width=$max_width
+    
+    echo ""
+    echo -e "${GREEN}╭$(generate_line "$inner_width" "─")╮${NC}"
+    
+    local title_vis_width=$(_get_visual_width "$title")
+    local title_pad_total=$((inner_width - title_vis_width))
+    local title_pad_left=$((title_pad_total / 2))
+    local title_pad_right=$((title_pad_total - title_pad_left))
+    echo -e "${GREEN}│${NC}$(printf '%*s' "$title_pad_left")${BOLD}${title}${NC}$(printf '%*s' "$title_pad_right")${GREEN}│${NC}"
+    
+    echo -e "${GREEN}╰$(generate_line "$inner_width" "─")╯${NC}"
+    
+    local pad1=$((inner_width - w1))
+    local pad2=$((inner_width - w2))
+    echo -e " ${line1}$(printf '%*s' "$pad1")"
+    echo -e " ${line2}$(printf '%*s' "$pad2")"
+    
+    echo -e "${GREEN}$(generate_line $((inner_width + 2)) "─")${NC}"
 }
 
 # ==============================================================================
@@ -285,7 +309,6 @@ setup_tg_notifier() {
         return
     fi
 
-    # Token 输入：真实值用于回填，视觉值用于显示遮掩
     local real_tk_default="${curr_token:-}"
     local vis_tk_default=""
     if [ -n "$curr_token" ]; then 
@@ -297,7 +320,6 @@ setup_tg_notifier() {
     local tk
     if ! tk=$(_prompt_user_input_with_validation "请输入 Bot Token (如 1234:ABC...)" "$real_tk_default" "" "" "false" "$vis_tk_default"); then return; fi
     
-    # Chat ID 输入：遮掩显示
     local real_cid_default="${curr_chat:-}"
     local vis_cid_default=""
     if [ -n "$curr_chat" ]; then 
@@ -341,7 +363,6 @@ _send_tg_notify() {
 
     get_vps_ip
 
-    # 遮掩 IP
     local display_ip=$(_mask_ip "$VPS_IP")
     local display_ipv6=$(_mask_ip "$VPS_IPV6")
 
@@ -358,7 +379,6 @@ _send_tg_notify() {
 
     local current_time=$(date "+%Y-%m-%d %H:%M:%S (%Z)")
     
-    # 调整顺序：域名在时间之前，移除状态中的英文
     local text_body="<b>${emoji} ${title}</b>
 
 🖥<b>服务器:</b> ${sname:-未知主机}
@@ -410,7 +430,7 @@ _send_tg_notify() {
 
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
-    local deps="nginx curl socat openssl jq idn dnsutils nano wc dnsutils python3"
+    local deps="nginx curl socat openssl jq idn dnsutils nano wc dnsutils"
     local missing=0
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
@@ -585,11 +605,11 @@ _snapshot_projects_json() {
 }
 
 _handle_backup_restore() {
-    echo ""; _render_menu "维护选项与灾备工具" "1. 备份与恢复面板 (数据层)" "2. 重建所有 HTTP 配置 (应用层)" "3. 修复定时任务 (系统层)"
+    _render_menu "维护选项与灾备工具" "1. 备份与恢复面板 (数据层)" "2. 重建所有 HTTP 配置 (应用层)" "3. 修复定时任务 (系统层)"
     local c; if ! c=$(_prompt_for_menu_choice_local "1-3" "true"); then return; fi
     case "$c" in
         1)
-            echo ""; _render_menu "备份与恢复系统" "1. 创建新备份 (打包所有配置与证书)" "2. 从完整备份包还原" "3. 从 本地快照 回滚元数据"
+            _render_menu "备份与恢复系统" "1. 创建新备份 (打包所有配置与证书)" "2. 从完整备份包还原" "3. 从 本地快照 回滚元数据"
             local bc; if ! bc=$(_prompt_for_menu_choice_local "1-3" "true"); then return; fi
             case "$bc" in
                 1)
@@ -758,7 +778,7 @@ _view_nginx_config() {
 }
 
 _rebuild_all_nginx_configs() {
-    echo ""; log_message INFO "准备基于现有记录从零重建所有 Nginx HTTP 代理文件..."
+    log_message INFO "准备基于现有记录从零重建所有 Nginx HTTP 代理文件..."
     if ! _confirm_action_or_exit_non_interactive "这将会覆盖当前所有 Nginx HTTP 代理配置文件，是否继续？"; then return; fi
     local all_projects=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "")
     if [ -z "$all_projects" ]; then log_message WARN "没有任何项目记录可供重建。"; return; fi
@@ -831,7 +851,7 @@ EOF
 }
 
 configure_tcp_proxy() {
-    echo -e "\n${CYAN}--- 配置 TCP 代理与负载均衡 ---${NC}"
+    _render_menu "配置 TCP 代理与负载均衡"
     local name; if ! name=$(_prompt_user_input_with_validation "项目备注名称" "MyTCP" "" "" "false"); then return; fi
     local l_port; if ! l_port=$(_prompt_user_input_with_validation "本机监听端口" "" "^[0-9]+$" "无效端口" "false"); then return; fi
     local target; if ! target=$(_prompt_user_input_with_validation "目标地址 (单节点如 1.1.1.1:80，多节点负载用逗号分隔如 1.1:80,2.2:80)" "" "^[a-zA-Z0-9.-]+:[0-9]+(,[a-zA-Z0-9.-]+:[0-9]+)*$" "格式错误 (必须包含端口，多个用英文逗号)" "false"); then return; fi
@@ -880,7 +900,7 @@ manage_tcp_configs() {
         local all=$(jq . "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]"); local count=$(echo "$all" | jq 'length')
         if [ "$count" -eq 0 ]; then log_message WARN "暂无 TCP 项目。"; break; fi
         
-        echo ""; printf "${BOLD}%-4s %-10s %-5s %-12s %-22s${NC}\n" "ID" "端口" "TLS" "备注" "目标地址"; echo "──────────────────────────────────────────────────────────"
+        printf "${BOLD}%-4s %-10s %-5s %-12s %-22s${NC}\n" "ID" "端口" "TLS" "备注" "目标地址"; echo "──────────────────────────────────────────────────────────"
         local idx=0
         echo "$all" | jq -c '.[]' | while read -r p; do
             idx=$((idx + 1)); local port=$(echo "$p" | jq -r '.listen_port'); local name=$(echo "$p" | jq -r '.name // "-"')
@@ -922,7 +942,6 @@ _issue_and_install_certificate() {
     
     if [ "$method" == "reuse" ]; then return 0; fi
 
-    # DNS 预检 (在配置阶段已执行，此处为兜底，仅对 http-01 再次检查)
     if [ "$method" == "http-01" ]; then
         if ! _check_dns_resolution "$domain"; then return 1; fi
     fi
@@ -991,7 +1010,6 @@ EOF
     done
     printf "    \b\b\b\b"; wait $pid; local ret=$?
 
-    # 清理 HTTP-01 临时状态
     if [ "$temp_conf_created" == "true" ]; then rm -f "$temp_conf" "$NGINX_SITES_ENABLED_DIR/temp_acme_${domain}.conf"; systemctl reload nginx || true; fi
     if [ -n "$stopped_svc" ]; then systemctl start "$stopped_svc"; trap '_on_int' INT TERM; fi
 
@@ -1004,7 +1022,6 @@ EOF
     fi
     rm -f "$log_temp"
 
-    # 2. 安装证书
     local rcmd=$(echo "$json" | jq -r '.reload_cmd // empty')
     local resolved_port=$(echo "$json" | jq -r '.resolved_port // empty')
     local install_reload_cmd=""
@@ -1019,8 +1036,6 @@ EOF
     [ -n "$install_reload_cmd" ] && inst+=("--reloadcmd" "$install_reload_cmd")
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
     
-    # 关键修复：软重启逻辑
-    # 即使 acme.sh 报错 (如 reloadcmd 失败)，只要证书文件存在，就视为成功
     "${inst[@]}" >/dev/null 2>&1
     local acme_ret=$?
 
@@ -1049,10 +1064,8 @@ _gather_project_details() {
         if ! domain=$(_prompt_user_input_with_validation "主域名" "" "^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" "格式无效" "false"); then exec 1>&3; return 1; fi
     fi
 
-    # 新增：在输入域名后立即进行 DNS 预检
     if [ "$skip_cert" == "false" ]; then
         if ! _check_dns_resolution "$domain"; then
-            # 如果 DNS 检查失败（用户取消），则退出配置流程
             echo -e "${RED}域名配置已取消。${NC}"
             exec 1>&3; return 1
         fi
@@ -1142,7 +1155,6 @@ _gather_project_details() {
         if [ "$skip_cert" == "false" ]; then
             echo -e "\n${CYAN}--- 配置外部重载组件 (Reload Hook) ---${NC}" >&2
             
-            # 智能探测 S-UI
             local auto_sui_cmd=""
             if systemctl list-units --type=service | grep -q "s-ui.service"; then auto_sui_cmd="systemctl restart s-ui"
             elif systemctl list-units --type=service | grep -q "x-ui.service"; then auto_sui_cmd="systemctl restart x-ui"; fi
@@ -1227,18 +1239,16 @@ manage_configs() {
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
         
-        # 移除了第5项：查看访问日志
-        _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "6. 重新配置 (目标/防御/Hook等)" "7. 修改证书申请与续期设置 (不立即续期)" "8. 添加自定义指令"
-        local cc; if ! cc=$(_prompt_for_menu_choice_local "1-8" "true"); then continue; fi
+        _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置 (不立即续期)" "7. 添加自定义指令"
+        local cc; if ! cc=$(_prompt_for_menu_choice_local "1-7" "true"); then continue; fi
         case "$cc" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
             4) _handle_view_config "$selected_domain" ;;
-            # 5 has been removed
-            6) _handle_reconfigure_project "$selected_domain" ;;
-            7) _handle_modify_renew_settings "$selected_domain" ;;
-            8) _handle_set_custom_config "$selected_domain" ;;
+            5) _handle_reconfigure_project "$selected_domain" ;;
+            6) _handle_modify_renew_settings "$selected_domain" ;;
+            7) _handle_set_custom_config "$selected_domain" ;;
             "") continue ;;
         esac
     done
@@ -1351,7 +1361,6 @@ configure_nginx_projects() {
     echo -e "\n${CYAN}开始配置新项目...${NC}"
     if ! json=$(_gather_project_details "{}" "false" "$mode"); then log_message WARN "用户取消配置。"; return; fi
     
-    # 关键修复：即使安装/重启失败，只要证书生成成功，就保存 JSON
     _issue_and_install_certificate "$json"
     local ret=$?
     local domain=$(echo "$json" | jq -r .domain)
@@ -1373,26 +1382,6 @@ configure_nginx_projects() {
 # ==============================================================================
 # SECTION: 主流程 UI
 # ==============================================================================
-
-_draw_dashboard() {
-    local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1); local uptime_raw=$(uptime -p | sed 's/up //')
-    local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
-    local tcp_count=$(jq '. | length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
-    local warn_count=0; if [ -f "$PROJECTS_METADATA_FILE" ]; then warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE"); fi
-    local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
-    # 生成横线内容
-    local line_content="$(_draw_line "69")"
-    
-    echo "" 
-    # 修正：使用 printf 替换 %s，并正确拼接 Unicode 边框
-    printf "${GREEN}─%s╮${NC}\n" "$line_content"
-    echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.3${NC}                   ${GREEN}│${NC}"
-    printf "${GREEN}╰%s╯${NC}\n" "$line_content"
-    
-    echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC} | 负载: ${YELLOW}${load}${NC}"
-    echo -e " HTTP : ${BOLD}${count}${NC} 个 | TCP : ${BOLD}${tcp_count}${NC} 个 | 告警 : ${RED}${warn_count}${NC}"
-    echo -e "${GREEN}──────────────────────────────────────────────────────────────────────────${NC}"
-}
 
 main_menu() {
     while true; do
