@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.32.0 - 统一UI规范版)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.32.1 - UI布局优化)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持 TCP 负载均衡、TLS卸载与泛域名智能复用
@@ -205,18 +205,26 @@ _render_menu() {
     done
     local box_inner_width=$max_content_width
     if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
+    
     echo ""
+    # 打印上边框
     echo -e "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}"
+    # 打印标题
     if [ -n "$title" ]; then
         local padding_total=$((box_inner_width - title_width))
         local padding_left=$((padding_total / 2))
         local padding_right=$((padding_total - padding_left))
         echo -e "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}"
     fi
+    # 打印下边框
     echo -e "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}"
+    
+    # 打印内容行
     for line in "${lines[@]}"; do
         echo -e "${line}"
     done
+    
+    # 打印底部分割线（紧跟内容）
     local box_total_physical_width=$(( box_inner_width + 2 ))
     echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
@@ -232,7 +240,7 @@ _draw_dashboard() {
     fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || echo "unknown")
     
-    local title="Nginx 管理面板 v4.32.0"
+    local title="Nginx 管理面板 v4.32.1"
     local line1="Nginx: ${nginx_v} | 运行: ${uptime_raw} | 负载: ${load}"
     local line2="HTTP : ${count} 个 | TCP : ${tcp_count} 个 | 告警 : ${warn_count}"
     
@@ -314,22 +322,29 @@ _check_dns_resolution() {
 # ==============================================================================
 
 setup_tg_notifier() {
-    _render_menu "Telegram 机器人通知设置"
+    local -a menu_lines=()
     local curr_token="" curr_chat="" curr_name=""
+    
     if [ -f "$TG_CONF_FILE" ]; then
         source "$TG_CONF_FILE"
         curr_token="${TG_BOT_TOKEN:-}"
         curr_chat="${TG_CHAT_ID:-}"
         curr_name="${SERVER_NAME:-}"
-        echo -e "\n${GREEN}当前已配置:${NC}"
-        echo -e " 机器人 Token : $(_mask_string "$curr_token")"
-        echo -e " 会话 ID      : $(_mask_string "$curr_chat")"
-        echo -e " 服务器备注   : $curr_name"
+        
+        menu_lines+=("${GREEN}当前已配置:${NC}")
+        menu_lines+=(" 机器人 Token : $(_mask_string "$curr_token")")
+        menu_lines+=(" 会话 ID      : $(_mask_string "$curr_chat")")
+        menu_lines+=(" 服务器备注   : $curr_name")
+        menu_lines+=("")
+    fi
+    
+    _render_menu "Telegram 机器人通知设置" "${menu_lines[@]}"
+    
+    if [ -f "$TG_CONF_FILE" ]; then
         if ! _confirm_action_or_exit_non_interactive "是否要重新配置或关闭通知？"; then return; fi
     fi
 
     local action
-    echo ""
     echo "1. 开启/修改通知配置"
     echo "2. 清除配置 (关闭通知)"
     echo ""
@@ -695,19 +710,24 @@ _view_nginx_global_log() {
 }
 
 _manage_cron_jobs() {
-    _render_menu "系统定时任务 (Cron) 诊断与修复"
     local has_acme=0 has_manager=0
     if crontab -l 2>/dev/null | grep -q "\.acme\.sh/acme\.sh"; then has_acme=1; fi
     if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then has_manager=1; fi
     
-    echo -e " 1. acme.sh 原生续期进程 : $( [ $has_acme -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )"
-    echo -e " 2. 本面板接管守护进程   : $( [ $has_manager -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )"
-    echo ""
+    local -a lines=()
+    lines+=(" 1. acme.sh 原生续期进程 : $( [ $has_acme -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )")
+    lines+=(" 2. 本面板接管守护进程   : $( [ $has_manager -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )")
+    lines+=("")
     
     if [ $has_acme -eq 1 ] && [ $has_manager -eq 1 ]; then
-        echo -e "${GREEN}系统定时任务状态完全健康，无需干预。${NC}"
+        lines+=("${GREEN}系统定时任务状态完全健康，无需干预。${NC}")
     else
-        echo -e "${YELLOW}检测到必需的定时任务不完整，正在自动执行修复...${NC}"
+        lines+=("${YELLOW}检测到必需的定时任务不完整，正在自动执行修复...${NC}")
+    fi
+    
+    _render_menu "系统定时任务 (Cron) 诊断与修复" "${lines[@]}"
+    
+    if [ $has_acme -eq 0 ] || [ $has_manager -eq 0 ]; then
         "$ACME_BIN" --install-cronjob >/dev/null 2>&1 || true
         crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH" > /tmp/cron.bak || true
         echo "0 3 * * * $SCRIPT_PATH --cron >> $LOG_FILE 2>&1" >> /tmp/cron.bak
@@ -808,11 +828,14 @@ _remove_and_disable_nginx_config() { rm -f "$NGINX_SITES_AVAILABLE_DIR/${1:-}.co
 _view_nginx_config() {
     local domain="${1:-}"; local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     if [ ! -f "$conf" ]; then log_message WARN "此项目未生成配置文件。"; return; fi
-    _render_menu "配置文件: $domain"
-    echo ""
-    cat "$conf"
-    echo ""
-    echo -e "${GREEN}$(generate_line 50)${NC}"
+    
+    local -a lines=()
+    while IFS= read -r line; do
+        lines+=("$line")
+    done < "$conf"
+    
+    _render_menu "配置文件: $domain" "${lines[@]}"
+    press_enter_to_continue
 }
 
 _rebuild_all_nginx_configs() {
@@ -1191,9 +1214,7 @@ _gather_project_details() {
         if _confirm_action_or_exit_non_interactive "是否开启 Cloudflare 严格安全防御?"; then cf_strict="y"; else cf_strict="n"; fi
     else
         if [ "$skip_cert" == "false" ]; then
-            _render_menu "配置外部重载组件 (Reload Hook)" >&2
-            echo "" >&2
-            
+            local -a hook_lines=()
             local auto_sui_cmd=""
             if systemctl list-units --type=service | grep -q "s-ui.service"; then auto_sui_cmd="systemctl restart s-ui"
             elif systemctl list-units --type=service | grep -q "x-ui.service"; then auto_sui_cmd="systemctl restart x-ui"; fi
@@ -1201,16 +1222,15 @@ _gather_project_details() {
             local opt1_text="S-UI / 3x-ui / x-ui"
             if [ -n "$auto_sui_cmd" ]; then opt1_text="${opt1_text} (自动识别: ${auto_sui_cmd##* })"; fi
 
-            local -a hook_opts=(
-                "1. ${opt1_text}" 
-                "2. V2Ray 原生服务 (systemctl restart v2ray)" 
-                "3. Xray 原生服务 (systemctl restart xray)" 
-                "4. Nginx 服务 (systemctl reload nginx)" 
-                "5. 手动输入自定义 Shell 命令" 
-                "6. 跳过"
-            )
-            echo -e "${CYAN}自动重启预设方案:${NC}" >&2
-            for opt in "${hook_opts[@]}"; do echo " $opt" >&2; done
+            hook_lines+=("${CYAN}自动重启预设方案:${NC}")
+            hook_lines+=("1. ${opt1_text}")
+            hook_lines+=("2. V2Ray 原生服务 (systemctl restart v2ray)")
+            hook_lines+=("3. Xray 原生服务 (systemctl restart xray)")
+            hook_lines+=("4. Nginx 服务 (systemctl reload nginx)")
+            hook_lines+=("5. 手动输入自定义 Shell 命令")
+            hook_lines+=("6. 跳过")
+            
+            _render_menu "配置外部重载组件 (Reload Hook)" "${hook_lines[@]}" >&2
             echo "" >&2
             local hk; while true; do hk=$(_prompt_for_menu_choice_local "1-6"); [ -n "$hk" ] && break; done
             case "$hk" in
@@ -1310,7 +1330,7 @@ _handle_delete_project() {
     fi
     press_enter_to_continue
 }
-_handle_view_config() { _view_nginx_config "${1:-}"; press_enter_to_continue; }
+_handle_view_config() { _view_nginx_config "${1:-}"; }
 _handle_reconfigure_project() {
     local d="${1:-}"; local cur=$(_get_project_json "$d"); log_message INFO "正在重配 $d ..."
     local port=$(echo "$cur" | jq -r .resolved_port); local mode=""; [ "$port" == "cert_only" ] && mode="cert_only"
@@ -1328,11 +1348,16 @@ _handle_modify_renew_settings() {
         press_enter_to_continue; return
     fi
 
-    _render_menu "修改证书续期设置: $d"
-    local -a ca_list=("1. Let's Encrypt" "2. ZeroSSL" "3. Google Public CA" "4. 保持不变")
-    echo -e "${CYAN}选择新的 CA 机构:${NC}"
-    for item in "${ca_list[@]}"; do echo " $item"; done
-    echo ""
+    local -a lines=()
+    lines+=("${CYAN}选择新的 CA 机构:${NC}")
+    lines+=("1. Let's Encrypt")
+    lines+=("2. ZeroSSL")
+    lines+=("3. Google Public CA")
+    lines+=("4. 保持不变")
+    lines+=("")
+    
+    _render_menu "修改证书续期设置: $d" "${lines[@]}"
+    
     local ca_choice; if ! ca_choice=$(_prompt_for_menu_choice_local "1-4" "false"); then return; fi
     local ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
     local ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
@@ -1387,7 +1412,7 @@ _handle_set_custom_config() {
 _handle_cert_details() { 
     local d="${1:-}"; local cur=$(_get_project_json "$d"); local cert="$SSL_CERTS_BASE_DIR/$d.cer"
     if [ -f "$cert" ]; then 
-        _render_menu "证书详细诊断信息: $d"
+        local -a lines=()
         local issuer=$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null | sed -n 's/.*O = \([^,]*\).*/\1/p' || echo "未知")
         [ -z "$issuer" ] && issuer=$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null | sed -n 's/.*CN = \([^,]*\).*/\1/p' || echo "未知")
         local subject=$(openssl x509 -in "$cert" -noout -subject 2>/dev/null | sed -n 's/.*CN = \([^,]*\).*/\1/p' || echo "未知")
@@ -1401,18 +1426,19 @@ _handle_cert_details() {
             "reuse") method_zh="泛域名智能复用" ;;
         esac
 
-        echo -e "${BOLD}颁发机构 (CA) :${NC} $issuer"
-        echo -e "${BOLD}证书主域名 :${NC} $subject"
-        echo -e "${BOLD}包含子域名 :${NC} $dns_names"
+        lines+=("${BOLD}颁发机构 (CA) :${NC} $issuer")
+        lines+=("${BOLD}证书主域名     :${NC} $subject")
+        lines+=("${BOLD}包含子域名     :${NC} $dns_names")
         if (( days < 0 )); then
-            echo -e "${BOLD}到期时间 :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${RED}(已过期 ${days#-} 天)${NC}"
+            lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${RED}(已过期 ${days#-} 天)${NC}")
         elif (( days <= 30 )); then
-            echo -e "${BOLD}到期时间 :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${YELLOW}(剩余 $days 天 - 急需续期)${NC}"
+            lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${YELLOW}(剩余 $days 天 - 急需续期)${NC}")
         else
-            echo -e "${BOLD}到期时间 :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${GREEN}(剩余 $days 天)${NC}"
+            lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${GREEN}(剩余 $days 天)${NC}")
         fi
-        echo -e "${BOLD}配置的验证方式 :${NC} $method_zh"
-        echo -e "${GREEN}$(generate_line 50)${NC}"
+        lines+=("${BOLD}配置的验证方式 :${NC} $method_zh")
+        
+        _render_menu "证书详细诊断信息: $d" "${lines[@]}"
     else
         log_message ERROR "证书文件不存在: $cert"
     fi
