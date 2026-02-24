@@ -1258,7 +1258,7 @@ _gather_project_details() {
 
 _display_projects_list() {
     local json="${1:-}"; if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
-    printf "${BOLD}%-4s %-26s %-15s %-12s %-s${NC}\n" "ID" "域名" "状态(余天)" "下期计划" "目标"
+    printf "${BOLD}%-4s %-26s %-18s %-14s %-12s${NC}\n" "ID" "域名" "目标" "状态(余天)" "下期计划"
     echo "────────────────────────────────────────────────────────────────────────"
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
@@ -1266,6 +1266,8 @@ _display_projects_list() {
         local port=$(echo "$p" | jq -r '.resolved_port'); local cert=$(echo "$p" | jq -r '.cert_file')
         local method=$(echo "$p" | jq -r '.acme_validation_method')
         local target_str="Port:$port"; [ "$type" = "docker" ] && target_str="Docker:$port"; [ "$port" == "cert_only" ] && target_str="CertOnly"
+        local display_target="${target_str:0:18}" # 限制目标显示长度
+        
         local status_str="缺失"
         local status_color="$RED"; local renew_date="-"
         
@@ -1287,7 +1289,7 @@ _display_projects_list() {
             else status_str="正常(${days}天)"; status_color="$GREEN"; fi
         else status_str="未安装    "; fi
         
-        printf "%-4d %-26s ${status_color}%-14s${NC} %-12s %-s\n" "$idx" "$domain" "$status_str" "$renew_date" "${target_str:0:18}"
+        printf "%-4d %-26s %-18s ${status_color}%-14s${NC} %-12s\n" "$idx" "$domain" "$display_target" "$status_str" "$renew_date"
     done; echo ""
 }
 
