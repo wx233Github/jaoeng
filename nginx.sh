@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.32.1 - UI布局优化)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.32.2 - UI紧凑布局)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持 TCP 负载均衡、TLS卸载与泛域名智能复用
@@ -224,7 +224,7 @@ _render_menu() {
         echo -e "${line}"
     done
     
-    # 打印底部分割线（紧跟内容）
+    # 打印底部分割线（紧跟内容，无空行）
     local box_total_physical_width=$(( box_inner_width + 2 ))
     echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
@@ -240,7 +240,7 @@ _draw_dashboard() {
     fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || echo "unknown")
     
-    local title="Nginx 管理面板 v4.32.1"
+    local title="Nginx 管理面板 v4.32.2"
     local line1="Nginx: ${nginx_v} | 运行: ${uptime_raw} | 负载: ${load}"
     local line2="HTTP : ${count} 个 | TCP : ${tcp_count} 个 | 告警 : ${warn_count}"
     
@@ -335,7 +335,7 @@ setup_tg_notifier() {
         menu_lines+=(" 机器人 Token : $(_mask_string "$curr_token")")
         menu_lines+=(" 会话 ID      : $(_mask_string "$curr_chat")")
         menu_lines+=(" 服务器备注   : $curr_name")
-        menu_lines+=("")
+        # 移除多余的空行，确保分割线紧跟内容
     fi
     
     _render_menu "Telegram 机器人通知设置" "${menu_lines[@]}"
@@ -717,7 +717,7 @@ _manage_cron_jobs() {
     local -a lines=()
     lines+=(" 1. acme.sh 原生续期进程 : $( [ $has_acme -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )")
     lines+=(" 2. 本面板接管守护进程   : $( [ $has_manager -eq 1 ] && echo -e "${GREEN}正常运行${NC}" || echo -e "${RED}缺失${NC}" )")
-    lines+=("")
+    # 移除空行，确保分割线紧跟内容
     
     if [ $has_acme -eq 1 ] && [ $has_manager -eq 1 ]; then
         lines+=("${GREEN}系统定时任务状态完全健康，无需干预。${NC}")
@@ -1231,7 +1231,8 @@ _gather_project_details() {
             hook_lines+=("6. 跳过")
             
             _render_menu "配置外部重载组件 (Reload Hook)" "${hook_lines[@]}" >&2
-            echo "" >&2
+            # 移除 echo "" >&2，确保分割线后直接跟输入提示
+            
             local hk; while true; do hk=$(_prompt_for_menu_choice_local "1-6"); [ -n "$hk" ] && break; done
             case "$hk" in
                 1) reload_cmd="$auto_sui_cmd" ;;
@@ -1354,10 +1355,11 @@ _handle_modify_renew_settings() {
     lines+=("2. ZeroSSL")
     lines+=("3. Google Public CA")
     lines+=("4. 保持不变")
-    lines+=("")
+    # 移除空行，确保分割线紧跟内容
     
     _render_menu "修改证书续期设置: $d" "${lines[@]}"
     
+    # 移除 echo ""，紧凑布局
     local ca_choice; if ! ca_choice=$(_prompt_for_menu_choice_local "1-4" "false"); then return; fi
     local ca_server=$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')
     local ca_name=$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')
