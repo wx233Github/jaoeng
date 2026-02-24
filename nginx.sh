@@ -1380,10 +1380,14 @@ _draw_dashboard() {
     local tcp_count=$(jq '. | length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)
     local warn_count=0; if [ -f "$PROJECTS_METADATA_FILE" ]; then warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE"); fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
-
-    echo -e "\n${GREEN}─%s╮\n" "$(_draw_line "69")"
+    # 生成横线内容
+    local line_content="$(_draw_line "69")"
+    
+    echo "" 
+    # 修正：使用 printf 替换 %s，并正确拼接 Unicode 边框
+    printf "${GREEN}─%s╮${NC}\n" "$line_content"
     echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.3${NC}                   ${GREEN}│${NC}"
-    echo -e "${GREEN}╰%s╯${NC}" "$(_draw_line "69")"
+    printf "${GREEN}╰%s╯${NC}\n" "$line_content"
     
     echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC} | 负载: ${YELLOW}${load}${NC}"
     echo -e " HTTP : ${BOLD}${count}${NC} 个 | TCP : ${BOLD}${tcp_count}${NC} 个 | 告警 : ${RED}${warn_count}${NC}"
