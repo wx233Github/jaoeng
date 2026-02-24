@@ -1256,43 +1256,36 @@ _gather_project_details() {
     exec 1>&3
 }
 
-# ==========================================
-# 辅助函数：文本居中
-# ==========================================
-_center_text() {
-    local text="$1"
-    local width="${2:-10}"
-  
-  
-    local len=${#text}
-    if [ $len -ge $width ]; then
-        printf "%-${width}.${width}s" "$text"
-    else
-        local pad=$(( width - len ))
-        local left=$(( pad / 2 ))
-        local right=$(( pad - left ))
-        printf "%${left}s%s%${right}s" "" "$text" ""
-    fi
-}
-
 _display_projects_list() {
     local json="${1:-}"; if [ -z "$json" ] || [ "$json" == "[]" ]; then echo "暂无数据"; return; fi
-  
-    # 定义列宽：ID(4) | 域名(22) | 目标(16) | 状态(12) | 续期(16)
-    # 增加了整体宽度和间距
+    
+    # 定义列宽
     local w_id=4 w_domain=22 w_target=16 w_status=12 w_renew=16
-  
-    # 打印表头（居中）
-    echo -n "$(_center_text "ID" $w_id) "
-    echo -n "$(_center_text "域名" $w_domain) "
-    echo -n "$(_center_text "目标" $w_target) "
-    echo -n "$(_center_text "状态" $w_status) "
-    echo    "$(_center_text "续期" $w_renew)"
-  
-    # 打印分割线
-    local total_width=$((w_id + w_domain + w_target + w_status + w_renew + 4)) # +4 是空格
-    generate_line "$total_width"
-  
+    
+    # --- 1. 打印表头 (居中) ---
+    local header=""
+    # ID
+    header+="$(_center_text "ID" $w_id) "
+    # 域名
+    header+="$(_center_text "域名" $w_domain) "
+    # 目标
+    header+="$(_center_text "目标" $w_target) "
+    # 状态
+    header+="$(_center_text "状态" $w_status) "
+    # 续期
+    header+="$(_center_text "续期" $w_renew)"
+    echo -e "${GREEN}${header}${NC}"
+    
+    # --- 2. 打印分割线 ---
+    # 显式计算总长度并打印
+    # sed 命令可能输出末尾不带换行，所以这里加 echo 补上 \n
+    printf "%${w_id}s " | sed "s/ /─/g"
+    printf "%${w_domain}s " | sed "s/ /─/g"
+    printf "%${w_target}s " | sed "s/ /─/g"
+    printf "%${w_status}s " | sed "s/ /─/g"
+    printf "%${w_renew}s\n" | sed "s/ /─/g"
+    
+    # --- 3. 打印内容行 ---
     local idx=0
     echo "$json" | jq -c '.[]' | while read -r p; do
         idx=$((idx + 1))
@@ -1301,51 +1294,92 @@ _display_projects_list() {
         local port=$(echo "$p" | jq -r '.resolved_port')
         local cert=$(echo "$p" | jq -r '.cert_file')
         local method=$(echo "$p" | jq -r '.acme_validation_method')
-      
-        target_str="Port:$port"; [ "$type" = "docker" ] && target_str="Docker:$port"; [ "$port" == "cert_only" ] && target_str="CertOnly"
-        display_target=$(echo "$target_str" | cut -c 1-$w_target)
-      
-        renew_date="-"
+        
+        local target_str="Port:$port"; 
+        [ "$type" = "docker" ] && target_str="Docker:$port"; 
+        [ "$port" == "cert_only" ] && target_str="CertOnly"
+        # 截断目标显示
+        local display_target=$(printf "%-${w_target}s" "$target_str")
+        
+        # 续期时间解析
+        local renew_date="-"
         if [ "$method" == "reuse" ]; then
             renew_date="跟随主域"
         else
-            local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"; [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
+            local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"; 
+            [ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
             if [ -f "$conf_file" ]; then
                 local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"" || true)
                 if [ -n "$next_ts" ]; then renew_date=$(date -d "@$next_ts" +%F 2>/dev/null || echo "Err"); fi
             fi
         fi
 
-        # 构建状态文字（先纯文本，后带颜色）
-        status_text=""
-        status_color="$RED"
+        # 状态文字构建 (先构建纯文字，计算位置，最后上色)
+        local status_text=""
+        local status_color_code="$RED"
         if [[ -f "$cert" ]]; then
-            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); local end_ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
+            local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); 
+            local end_ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local days=$(( (end_ts - $(date +%s)) / 86400 ))
-            if (( days < 0 )); then status_text="过期${days#-}天"; status_color="$RED"
-            elif (( days <= 30 )); then status_text="${days}天续期"; status_color="$YELLOW"
-            else status_text="正常${days}天"; status_color="$GREEN"; fi
+            if (( days < 0 )); then status_text="过期${days#-}天"; status_color_code="$RED"
+            elif (( days <= 30 )); then status_text="${days}天续期"; status_color_code="$YELLOW"
+            else status_text="正常${days}天"; status_color_code="$GREEN"; fi
         else status_text="未安装"; fi
-      
-        # 手动构建居中行以确保颜色不影响长度计算太严重
-        # 1. ID
-        line="$(_center_text "$idx" $w_id) "
+        
+        # 生成一行内容
+        local line=""
+        
+        # 1. ID (直接居中函数)
+        line+="$(_center_text "$idx" $w_id) "
+        
         # 2. 域名
         line+="$(_center_text "$domain" $w_domain) "
+        
         # 3. 目标
         line+="$(_center_text "$display_target" $w_target) "
-        # 4. 状态 (手动居中纯文本，然后加颜色)
+        
+        # 4. 状态 (手动计算居中并上色，防止颜色代码影响宽度)
         local status_len=${#status_text}
-        local status_pad=$(( w_status - status_len ))
-        local status_left=$(( status_pad / 2 ))
-        local status_right=$(( status_pad - status_left ))
-        line+="%${status_left}s${status_color}${status_text}${NC}%${status_right}s "
+        if (( status_len > w_status )); then
+             # 过长截断
+             status_text="${status_text:0:$w_status}"
+             line+="${status_color_code}${status_text}${NC} "
+        else
+             local s_pad=$(( w_status - status_len ))
+             local s_left=$(( s_pad / 2 ))
+             local s_right=$(( s_pad - s_left ))
+             # printf 占位
+             line+="%${s_left}s${status_color_code}${status_text}${NC}%${s_right}s "
+        fi
+        
         # 5. 续期
         line+="$(_center_text "$renew_date" $w_renew)"
-      
-        # 执行打印
-        printf "$line\n" "" "" # 两个空用于状态列的前后补位
-    done; echo ""
+        
+        # 打印结果，传入空字符串填充 printf 占位
+        printf "$line\n" "" ""
+    done
+    
+    echo "" # 底部空行
+}
+
+# ==========================================
+# 辅助函数：文本居中 (放在 _display_projects_list 后面或者脚本头部都可以)
+# ==========================================
+_center_text() {
+    local text="$1"
+    local width="${2:-10}"
+    # 计算文本视觉长度 (不含颜色代码，仅做简单ASCII长度计算以保证速度和稳定性)
+    # 注意：此函数主要用于无颜色文本。带颜色的文本建议手动处理。
+    local text_len=${#text}
+    
+    if (( text_len >= width )); then
+        printf "%-${width}.${width}s" "$text"
+    else
+        local pad=$(( width - text_len ))
+        local left=$(( pad / 2 ))
+        local right=$(( pad - left ))
+        printf "%${left}s%s%${right}s" "" "$text" ""
+    fi
 }
 
 manage_configs() {
