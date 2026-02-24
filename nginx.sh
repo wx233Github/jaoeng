@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.1 - 交互逻辑优化与隐私增强)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v3.1.3 - 完美对齐 UI 与 Python 计算引擎)
 # =============================================================
 # 作者：Shell 脚本专家
 # 描述：自动化管理 Nginx 反代配置与 SSL 证书，支持 TCP 负载均衡、TLS卸载与泛域名智能复用
@@ -88,25 +88,50 @@ _prompt_for_menu_choice_local() {
 
 _strip_colors() { echo -e "${1:-}" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"; }
 
-_str_width() {
-    local str="${1:-}"; local clean="$(_strip_colors "$str")"
-    if command -v wc >/dev/null 2>&1; then echo -n "$clean" | wc -L; else echo "${#clean}"; fi
+# --- 核心视觉宽度计算 ---
+_get_visual_len() {
+    local text="$1"; local clean_text; clean_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -z "$clean_text" ]; then echo 0; return; fi
+    
+    # 优先使用 Python3 进行精准宽字符计算 (移植自 utils.sh)
+    if command -v python3 &>/dev/null; then
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "$clean_text" 2>/dev/null || echo "${#clean_text}"
+    else
+        # 回退到简单的 ASCII 计数 (不够精准但可用)
+        echo "${#clean_text}"
+    fi
 }
 
 _draw_line() { local len="${1:-40}"; printf "%${len}s" "" | sed "s/ /─/g"; }
 
 _center_text() {
-    local text="$1"; local width="$2"; local text_len=$(_str_width "$text"); local pad=$(( (width - text_len) / 2 ))
+    local text="$1"; local width="$2"; local text_len=$(_get_visual_len "$text"); local pad=$(( (width - text_len) / 2 ))
     [[ $pad -lt 0 ]] && pad=0; printf "%${pad}s" ""
 }
 
 _render_menu() {
-    local title="${1:-菜单}"; shift; local title_vis_len=$(_str_width "$title"); local min_width=50; local box_width=$min_width
+    local title="${1:-菜单}"; shift; local title_vis_len=$(_get_visual_len "$title")
+    local min_width=50; local box_width=$min_width
+    # 确保内容能装下
     if [ "$title_vis_len" -gt "$((min_width - 4))" ]; then box_width=$((title_vis_len + 6)); fi
-    echo ""; echo -e "${GREEN}╭$(_draw_line "$box_width")╮${NC}"
-    local padding=$(_center_text "$title" "$box_width"); local left_len=${#padding}; local right_len=$((box_width - left_len - title_vis_len))
+    
+    echo ""; 
+    # ─────╮
+    printf "─%s╮\n" "$(_draw_line "$((box_width - 1))")"
+    
+    # │ Title │
+    local total_text_len=$(_get_visual_len "${BOLD}${title}${NC}")
+    # 修正：计算 padding 时要考虑颜色码被 _get_visual_len 忽略了，
+    # 但在 printf 填充时我们需要用空格补位。
+    # _center_text 返回空格字符串，长度正好。
+    local padding="$(_center_text "${title}" "$box_width")"
+    local left_len=${#padding}; local right_len=$((box_width - text_len - left_len))
+    
     echo -e "${GREEN}│${NC}${padding}${BOLD}${title}${NC}$(printf "%${right_len}s" "")${GREEN}│${NC}"
-    echo -e "${GREEN}╰$(_draw_line "$box_width")╯${NC}"
+    
+    # ╰────╯
+    printf "╰%s╯\n" "$(_draw_line "$((box_width - 1))")"
+    
     for line in "$@"; do echo -e " ${line}"; done
 }
 
@@ -385,7 +410,7 @@ _send_tg_notify() {
 
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
-    local deps="nginx curl socat openssl jq idn dnsutils nano wc dnsutils"
+    local deps="nginx curl socat openssl jq idn dnsutils nano wc dnsutils python3"
     local missing=0
     for pkg in $deps; do
         if ! command -v "$pkg" &>/dev/null && ! dpkg -s "$pkg" &>/dev/null; then
@@ -614,11 +639,6 @@ _view_nginx_global_log() {
     _render_menu "Nginx 全局日志" "1. 访问日志" "2. 错误日志"
     local c; if ! c=$(_prompt_for_menu_choice_local "1-2" "true"); then return; fi
     case "$c" in 1) _view_file_with_tail "$NGINX_ACCESS_LOG" ;; 2) _view_file_with_tail "$NGINX_ERROR_LOG" ;; esac
-}
-_view_project_access_log() {
-    local domain="${1:-}"; if [ ! -f "$NGINX_ACCESS_LOG" ]; then log_message ERROR "无访问日志"; return; fi
-    echo -e "${CYAN}--- 实时访问日志: $domain (Ctrl+C 退出) ---${NC}"
-    tail -f "$NGINX_ACCESS_LOG" | grep --line-buffered "$domain" || true; echo -e "\n${CYAN}--- 日志查看结束 ---${NC}"
 }
 
 _manage_cron_jobs() {
@@ -1207,14 +1227,15 @@ manage_configs() {
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
         
-        _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 查看访问日志" "6. 重新配置 (目标/防御/Hook等)" "7. 修改证书申请与续期设置 (不立即续期)" "8. 添加自定义指令"
+        # 移除了第5项：查看访问日志
+        _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "6. 重新配置 (目标/防御/Hook等)" "7. 修改证书申请与续期设置 (不立即续期)" "8. 添加自定义指令"
         local cc; if ! cc=$(_prompt_for_menu_choice_local "1-8" "true"); then continue; fi
         case "$cc" in
             1) _handle_cert_details "$selected_domain" ;;
             2) _handle_renew_cert "$selected_domain" ;;
             3) _handle_delete_project "$selected_domain"; break ;; 
             4) _handle_view_config "$selected_domain" ;;
-            5) _view_project_access_log "$selected_domain" ;;
+            # 5 has been removed
             6) _handle_reconfigure_project "$selected_domain" ;;
             7) _handle_modify_renew_settings "$selected_domain" ;;
             8) _handle_set_custom_config "$selected_domain" ;;
@@ -1360,9 +1381,10 @@ _draw_dashboard() {
     local warn_count=0; if [ -f "$PROJECTS_METADATA_FILE" ]; then warn_count=$(jq '[.[] | select(.cert_file) | select(.cert_file | test(".cer$"))] | length' "$PROJECTS_METADATA_FILE"); fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3)
 
-    echo -e "\n${GREEN}╭────────────────────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.1${NC}                   ${GREEN}│${NC}"
-    echo -e "${GREEN}╰────────────────────────────────────────────────────────────────────────╯${NC}"
+    echo -e "\n${GREEN}─%s╮\n" "$(_draw_line "69")"
+    echo -e "${GREEN}│${NC}                   ${BOLD}Nginx 管理面板 v4.31.3${NC}                   ${GREEN}│${NC}"
+    echo -e "${GREEN}╰%s╯${NC}" "$(_draw_line "69")"
+    
     echo -e " Nginx: ${GREEN}${nginx_v}${NC} | 运行: ${GREEN}${uptime_raw}${NC} | 负载: ${YELLOW}${load}${NC}"
     echo -e " HTTP : ${BOLD}${count}${NC} 个 | TCP : ${BOLD}${tcp_count}${NC} 个 | 告警 : ${RED}${warn_count}${NC}"
     echo -e "${GREEN}──────────────────────────────────────────────────────────────────────────${NC}"
