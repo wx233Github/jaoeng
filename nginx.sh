@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.35.0 - Security & Performance)
+# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.35.0 - Ultimate)
 # =============================================================
 # 作者:Shell 脚本专家
-# 描述:自动化管理 Nginx 反代配置与 SSL 证书,支持 TCP 负载均衡、泛域名无代理模式、性能优化与安全日志遮掩
+# 描述:自动化管理 Nginx 反代配置与 SSL 证书
+# 特性:
+#   1. 性能优化: 流式 JSON 解析,批量依赖安装
+#   2. 泛域名支持: 支持主域名免代理模式
+#   3. 安全增强: 敏感日志自动脱敏
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -182,7 +186,24 @@ check_os_compatibility() {
 }
 
 # ==============================================================================
-# SECTION: UI 渲染函数 (兼容中文宽度)
+# SECTION: 敏感信息遮掩 (安全增强)
+# ==============================================================================
+
+_mask_sensitive_data() {
+    local input_stream
+    input_stream=$(cat)
+    # 使用 sed 正则替换常见的敏感 Key 和 Token
+    echo "$input_stream" | sed -E \
+        -e "s/(CF_Token(=|': '|='))([^ '\"]+)/\1***MASKED***/g" \
+        -e "s/(CF_Account_ID(=|': '|='))([^ '\"]+)/\1***MASKED***/g" \
+        -e "s/(CF_Zone_ID(=|': '|='))([^ '\"]+)/\1***MASKED***/g" \
+        -e "s/(Ali_Key(=|': '|='))([^ '\"]+)/\1***MASKED***/g" \
+        -e "s/(Ali_Secret(=|': '|='))([^ '\"]+)/\1***MASKED***/g" \
+        -e "s/(SAVED_[^ ]+)(=)([^ ]+)/\1\2***MASKED***/g"
+}
+
+# ==============================================================================
+# SECTION: UI 渲染函数
 # ==============================================================================
 
 generate_line() {
@@ -360,7 +381,7 @@ _send_tg_notify() {
 }
 
 # ==============================================================================
-# SECTION: 环境初始化与依赖 (优化版)
+# SECTION: 环境初始化与依赖
 # ==============================================================================
 
 install_dependencies() {
@@ -695,11 +716,11 @@ configure_tcp_proxy() {
         tls_enabled="y"
         local http_projects=$(jq -c '.[] | select(.cert_file != null and .cert_file != "")' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "")
         if [ -z "$http_projects" ]; then log_message ERROR "未发现可用证书。"; return 1; fi
-        echo -e "\n${CYAN}请选择要用于加密流量的证书:${NC}"; local idx=0; declare -A domain_map cert_map key_map
-        while read -r p; do [ -z "$p" ] && continue; idx=$((idx+1)); domain_map[$idx]=$(echo "$p" | jq -r .domain); cert_map[$idx]=$(echo "$p" | jq -r .cert_file); key_map[$idx]=$(echo "$p" | jq -r .key_file); echo -e " ${GREEN}${idx}.${NC} ${domain_map[$idx]}"; done <<< "$http_projects"
+        echo -e "\n${CYAN}请选择要用于加密流量的证书:${NC}"; local idx=0; declare -a domain_list cert_list key_list
+        while read -r p; do [ -z "$p" ] && continue; idx=$((idx+1)); domain_list[$idx]=$(echo "$p" | jq -r .domain); cert_list[$idx]=$(echo "$p" | jq -r .cert_file); key_list[$idx]=$(echo "$p" | jq -r .key_file); echo -e " ${GREEN}${idx}.${NC} ${domain_list[$idx]}"; done <<< "$http_projects"
         local c_idx; while true; do
             if ! c_idx=$(_prompt_user_input_with_validation "请输入序号" "" "^[0-9]+$" "无效序号" "false"); then return; fi
-            if [ "$c_idx" -ge 1 ] && [ "$c_idx" -le "$idx" ]; then ssl_cert="${cert_map[$c_idx]}"; ssl_key="${key_map[$c_idx]}"; break; else log_message ERROR "序号越界"; fi
+            if [ "$c_idx" -ge 1 ] && [ "$c_idx" -le "$idx" ]; then ssl_cert="${cert_list[$c_idx]}"; ssl_key="${key_list[$c_idx]}"; break; else log_message ERROR "序号越界"; fi
         done
     fi
     local json=$(jq -n --arg n "$name" --arg lp "$l_port" --arg t "$target" --arg te "$tls_enabled" --arg sc "$ssl_cert" --arg sk "$ssl_key" '{name:$n, listen_port:$lp, target:$t, tls_enabled:$te, ssl_cert:$sc, ssl_key:$sk}')
@@ -740,24 +761,8 @@ manage_tcp_configs() {
 }
 
 # ==============================================================================
-# SECTION: 业务逻辑 (证书申请与主流程) - 优化与安全增强版
+# SECTION: 业务逻辑 (证书申请与主流程) - 优化版
 # ==============================================================================
-
-# 敏感信息遮掩过滤器
-# 用法: cat log.txt | _mask_sensitive_data
-_mask_sensitive_data() {
-    local input_stream
-    input_stream=$(cat)
-    # 使用 sed 正则替换常见的敏感 Key 和 Token
-    # 匹配模式: Key='value', Key="value", Key=value, Key: 'value'
-    echo "$input_stream" | sed -E \
-        -e "s/(CF_Token(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
-        -e "s/(CF_Account_ID(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
-        -e "s/(CF_Zone_ID(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
-        -e "s/(Ali_Key(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
-        -e "s/(Ali_Secret(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
-        -e "s/(SAVED_[^ ]+)(=)([^ ]+)/\1\2***MASKED***/g"
-}
 
 _issue_and_install_certificate() {
     local json="${1:-}"; local domain=$(echo "$json" | jq -r .domain); local method=$(echo "$json" | jq -r .acme_validation_method)
@@ -777,11 +782,12 @@ _issue_and_install_certificate() {
                 local saved_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local saved_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
                 local use_saved="false"
-                if [[ -n "$saved_t" && -n "$saved_a" ]]; then
+                if [[ -n "$saved_t" && -n "$saved_a" ]]; then 
+                    # 安全输出遮掩后的凭证
                     echo -e "${CYAN}检测到已保存的 Cloudflare 凭证:${NC}"
                     echo -e "  Token : $(_mask_string "$saved_t")"
                     echo -e "  AccID : $(_mask_string "$saved_a")"
-                    if _confirm_action_or_exit_non_interactive "是否复用该凭证?"; then use_saved="true"; fi
+                    if _confirm_action_or_exit_non_interactive "是否复用已保存的 Cloudflare 凭证?"; then use_saved="true"; fi; 
                 fi
                 if [ "$use_saved" = "false" ]; then
                     local t; if ! t=$(_prompt_secret "请输入新的 CF_Token"); then return 1; fi
@@ -820,10 +826,12 @@ EOF
     if [ -n "$stopped_svc" ]; then systemctl start "$stopped_svc"; trap '_on_int' INT TERM; fi
 
     if [ $ret -ne 0 ]; then echo -e "\n"; log_message ERROR "申请失败: $domain"
-        echo -e "${CYAN}--- 错误详情 (已脱敏) ---${NC}"
-        cat "$log_temp" | _mask_sensitive_data
-        echo -e "${CYAN}------------------------${NC}"
-        rm -f "$log_temp"; _send_tg_notify "fail" "$domain" "acme.sh 申请证书失败。" ""; unset CF_Token CF_Account_ID Ali_Key Ali_Secret; return 1; fi
+    # 【核心修复】使用遮掩函数输出日志
+    echo -e "${CYAN}--- 错误详情 (已脱敏) ---${NC}"
+    cat "$log_temp" | _mask_sensitive_data
+    echo -e "${CYAN}------------------------${NC}"
+    rm -f "$log_temp"
+    _send_tg_notify "fail" "$domain" "acme.sh 申请证书失败。" ""; unset CF_Token CF_Account_ID Ali_Key Ali_Secret; return 1; fi
     rm -f "$log_temp"
     local rcmd=$(echo "$json" | jq -r '.reload_cmd // empty'); local resolved_port=$(echo "$json" | jq -r '.resolved_port // empty'); local install_reload_cmd=""
     if [ "$resolved_port" == "cert_only" ]; then install_reload_cmd="$rcmd"; else install_reload_cmd="systemctl reload nginx"; fi
