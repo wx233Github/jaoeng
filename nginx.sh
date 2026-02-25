@@ -362,7 +362,7 @@ _load_tg_config() {
         value="${value#\"}"
         value="${value%\"}"
         case "$value" in
-            *"$"*|*"`"*|*"("*|*")"*|*";"*|*"|"*|*"&"*|*"<"*|*">"*|*"\\"*|*$'\n'*|*$'\r'*|*$'\t'* ) continue ;;
+            *'$'*|*'`'*|*'('*|*')'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'\'*|*$'\n'*|*$'\r'*|*$'\t'* ) continue ;;
         esac
         case "$key" in
             TG_BOT_TOKEN) TG_BOT_TOKEN="$value" ;;
