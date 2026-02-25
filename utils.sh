@@ -1,4 +1,3 @@
-cat > /opt/vps_install_modules/utils.sh << 'SCRIPT_EOF'
 # =============================================================
 # 🚀 通用工具函数库 (v2.44-标准版 & 性能优化)
 # - 优化: generate_line 移除 sed 依赖，使用 Bash 原生字符串替换，提升性能。
@@ -178,4 +177,3 @@ _render_menu() {
     local box_total_physical_width=$(( box_inner_width + 2 ))
     echo -e "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}"
 }
-SCRIPT_EOF
