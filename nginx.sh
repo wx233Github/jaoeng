@@ -359,8 +359,8 @@ _load_tg_config() {
             TG_BOT_TOKEN|TG_CHAT_ID|SERVER_NAME) ;;
             *) continue ;;
         esac
-        value=${value#"}
-        value=${value%"}
+        value=${value#\"}
+        value=${value%\"}
         case "$value" in
             *"$"*|*"`"*|*"("*|*")"*|*";"*|*"|"*|*"&"*|*"<"*|*">"*|*"\\"*|*$'\n'*|*$'\r'*|*$'\t'* ) continue ;;
         esac
