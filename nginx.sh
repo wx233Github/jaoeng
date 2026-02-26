@@ -120,24 +120,10 @@ trap '_on_int' INT TERM
 
 _log_emit() {
     local level="${1:-INFO}" message="${2:-}" stream="${3:-stdout}"
-    local ts op_tag color reset
+    local ts op_tag
     ts="$(date +"%Y-%m-%d %H:%M:%S")"
     op_tag="${OP_ID:-NA}"
-    reset="${NC}"
-    case "$level" in
-        INFO) color="${CYAN}";;
-        SUCCESS) color="${GREEN}";;
-        WARN) color="${YELLOW}";;
-        ERROR) color="${RED}";;
-        *) color="${NC}";;
-    esac
     local plain_line="[${ts}] [${level}] [op:${op_tag}] ${message}"
-    local colored_line="${color}${plain_line}${reset}"
-    if [ "$stream" = "stderr" ]; then
-        echo -e "$colored_line" >&2
-    else
-        echo -e "$colored_line"
-    fi
     _resolve_log_file
     echo "$plain_line" >> "$LOG_FILE"
 }
@@ -1440,7 +1426,7 @@ main_menu() {
         echo -e " 5. 管理 TCP 反向代理"
         echo ""
         echo -e "${PURPLE}【运维监控与系统维护】${NC}"
-        echo -e " 6. ${BRIGHT_RED}${BOLD}批量续期${NC}"
+        echo -e " 6. 批量续期"
         echo -e " 7. 查看日志 (Logs - Nginx/acme)"
         echo -e " 8. ${BRIGHT_RED}${BOLD}更新 Cloudflare 防御 IP 库${NC}"
         echo -e " 9. 备份/还原与配置重建"
