@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 Nginx 反向代理 + HTTPS 证书管理助手 (v4.33.1 - Stable Simplified)
+# Nginx 反向代理 + HTTPS 证书管理助手 (v4.33.1 stable)
 # =============================================================
 
 set -eEuo pipefail
@@ -15,11 +15,10 @@ readonly NC="\033[0m"
 readonly RED="\033[31m"
 readonly GREEN="\033[32m"
 readonly YELLOW="\033[33m"
-readonly PURPLE="\033[35m"
 readonly CYAN="\033[36m"
+readonly PURPLE="\033[35m"
 readonly BRIGHT_RED="\033[91m"
 readonly BRIGHT_YELLOW="\033[93m"
-readonly GRAY="\033[2m"
 readonly BOLD="\033[1m"
 
 readonly SCRIPT_PATH="$(realpath "$0")"
@@ -32,45 +31,41 @@ JSON_BACKUP_DIR="/etc/nginx/projects_backups"
 BACKUP_DIR="/root/nginx_ssl_backups"
 TG_CONF_FILE="/etc/nginx/tg_notifier.conf"
 
-RENEW_THRESHOLD_DAYS=30
-DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v2"
-
 NGINX_SITES_AVAILABLE_DIR="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED_DIR="/etc/nginx/sites-enabled"
 NGINX_STREAM_AVAILABLE_DIR="/etc/nginx/stream-available"
 NGINX_STREAM_ENABLED_DIR="/etc/nginx/stream-enabled"
 NGINX_WEBROOT_DIR="/var/www/html"
 SSL_CERTS_BASE_DIR="/etc/ssl"
+
 NGINX_ACCESS_LOG="/var/log/nginx/access.log"
 NGINX_ERROR_LOG="/var/log/nginx/error.log"
 
 LOCK_FILE="/var/lock/nginx_ssl_manager.lock"
+DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v2"
+
+RENEW_THRESHOLD_DAYS=30
 
 IS_INTERACTIVE_MODE="true"
 VPS_IP=""
 VPS_IPV6=""
 ACME_BIN=""
 STOPPED_SERVICE=""
-LOCK_FD=""
 
-# ========================= 通用工具 =========================
+# ------------------ 日志/陷阱 ------------------
 
-_timestamp() {
-    date '+%Y-%m-%d %H:%M:%S'
-}
+_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 _log_write() {
     local level="${1:-INFO}"
     shift
-    local message="$*"
-    local line="[$(_timestamp)] [${level}] [op:${OP_ID}] ${message}"
-
+    local msg="$*"
+    local line="[$(_timestamp)] [${level}] [op:${OP_ID}] ${msg}"
     if [ "$level" = "ERROR" ]; then
         printf '%s\n' "$line" >&2
     else
         printf '%s\n' "$line"
     fi
-
     mkdir -p "$(dirname "$LOG_FILE")"
     printf '%s\n' "$line" >> "$LOG_FILE"
 }
@@ -81,59 +76,32 @@ log_error() { _log_write "ERROR" "$*"; }
 log_success() { _log_write "INFO" "$*"; }
 
 cleanup() {
-    local exit_code=$?
+    local code=$?
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
     rm -f /tmp/tg_payload_*.json 2>/dev/null || true
-
     if [ -n "${STOPPED_SERVICE:-}" ]; then
         systemctl start "$STOPPED_SERVICE" >/dev/null 2>&1 || true
         STOPPED_SERVICE=""
     fi
-
-    if [ "$exit_code" -ne 0 ]; then
-        log_error "Script aborted with error code ${exit_code}"
+    if [ "$code" -ne 0 ]; then
+        log_error "Script aborted with error code ${code}"
     fi
 }
 
 report_err() {
     local code="${1:-$ERR_RUNTIME}"
-    local line_no="${2:-0}"
-    log_error "Error at line ${line_no}, exit code ${code}"
+    local line="${2:-0}"
+    log_error "Error at line ${line}, exit code ${code}"
 }
 
 trap cleanup EXIT
 trap 'report_err $? $LINENO' ERR
-trap 'log_warn "收到中断信号，退出"; exit '"$ERR_RUNTIME" INT TERM
+trap 'log_warn "Interrupted"; exit '"$ERR_RUNTIME" INT TERM
+
+# ------------------ 基础交互 ------------------
 
 press_enter_to_continue() {
     read -r -p "$(echo -e "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty || true
-}
-
-render_menu() {
-    local title="${1:-}"
-    shift
-    local -a lines=("$@")
-    echo ""
-    echo -e "${GREEN}========== ${title} ==========${NC}"
-    local line=""
-    for line in "${lines[@]}"; do
-        echo -e "$line"
-    done
-    echo -e "${GREEN}================================${NC}"
-}
-
-prompt_menu_choice() {
-    local range="${1:-}"
-    local allow_empty="${2:-false}"
-    local c=""
-    while true; do
-        read -r -p "$(echo -e "${BRIGHT_YELLOW}选项 [${range}]${NC} (Enter 返回): ")" c < /dev/tty || return 1
-        if [ -z "$c" ] && [ "$allow_empty" = "true" ]; then
-            echo ""
-            return        fi if"[-z]+ then echo "$"
-            return 0
-        fi
-    done
 }
 
 prompt_input() {
@@ -161,11 +129,13 @@ prompt_input() {
             echo ""
             return 0
         fi
+
         if [ -z "$val" ]; then
             log_error "输入不能为空"
             [ "$IS_INTERACTIVE_MODE" = "false" ] && return 1
             continue
         fi
+
         if [ -n "$regex" ] && [[ ! "$val" =~ $regex ]]; then
             log_error "$err_msg"
             [ "$IS_INTERACTIVE_MODE" = "false" ] && return 1
@@ -180,10 +150,27 @@ prompt_input() {
 prompt_secret() {
     local prompt="${1:-}"
     local val=""
-    echo -ne "${BRIGHT_YELLOW}${prompt} (无屏幕回显): ${NC}" >&2
+    echo -ne "${BRIGHT_YELLOW}${prompt} (无回显): ${NC}" >&2
     read -rs val < /dev/tty || return 1
     echo "" >&2
     echo "$val"
+}
+
+prompt_menu_choice() {
+    local range="${1:-}"
+    local allow_empty="${2:-false}"
+    local c=""
+    while true; do
+        read -r -p "$(echo -e "${BRIGHT_YELLOW}选项 [${range}]${NC} (Enter 返回): ")" c < /dev/tty || return 1
+        if [ -z "$c" ] && [ "$allow_empty" = "true" ]; then
+            echo ""
+            return 0
+        fi
+        if [[ "$c" =~ ^[0-9A-Za-z]+$ ]]; then
+            echo "$c"
+            return 0
+        fi
+    done
 }
 
 confirm_or_cancel() {
@@ -200,20 +187,16 @@ confirm_or_cancel() {
     return 1
 }
 
-# ========================= 参数/依赖/启动 =========================
+# ------------------ 校验 ------------------
 
 validate_args() {
     local arg=""
     for arg in "$@"; do
         case "$arg" in
             --cron|--non-interactive) ;;
-            *)
-                log_error "未知参数: ${arg}"
-                return "$ERR_INVALID_ARGS"
-                ;;
+            *) log_error "未知参数: ${arg}"; return "$ERR_INVALID_ARGS" ;;
         esac
     done
-    return 0
 }
 
 parse_args() {
@@ -231,62 +214,55 @@ check_root() {
         log_error "请使用 root 用户运行"
         return 1
     fi
-    return 0
 }
 
 check_os_compatibility() {
-    if [ -f "/etc/os-release" ]; then
+    if [ -f /etc/os-release ]; then
         # shellcheck disable=SC1091
-        . "/etc/os-release"
+        . /etc/os-release
         if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
-            log_warn "检测到非 Debian/Ubuntu 系统: ${NAME:-unknown}"
+            log_warn "非 Debian/Ubuntu 系统: ${NAME:-unknown}"
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
                 confirm_or_cancel "是否继续?" || return "$ERR_GENERAL"
             fi
         fi
     fi
-    return 0
+}
+
+check_dependencies() {
+    local -a req=(nginx curl socat openssl jq idn sed awk grep date uptime find mktemp tar systemctl realpath flock crontab ss)
+    local -a miss=()
+    local cmd=""
+    for cmd in "${req[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || miss+=("$cmd")
+    done
+    if [ "${#miss[@]}" -gt 0 ]; then
+        log_error "缺失依赖命令: ${miss[*]}"
+        return "$ERR_MISSING_DEPS"
+    fi
 }
 
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then
         return 0
     fi
-
     local -a pkgs=(nginx curl socat openssl jq idn dnsutils nano)
     local -a missing=()
-    local pkg=""
-    for pkg in "${pkgs[@]}"; do
-        if ! command -v "$pkg" >/dev/null 2>&1 && ! dpkg -s "$pkg" >/dev/null 2>&1; then
-            missing+=("$pkg")
+    local p=""
+    for p in "${pkgs[@]}"; do
+        if ! command -v "$p" >/dev/null 2>&1 && ! dpkg -s "$p" >/dev/null 2>&1; then
+            missing+=("$p")
         fi
     done
-
     if [ "${#missing[@]}" -gt 0 ]; then
         log_info "安装依赖: ${missing[*]}"
         apt update -y >/dev/null 2>&1 || true
-        if ! apt install -y "${missing[@]}" >/dev/null 2>&1; then
-            log_error "依赖安装失败: ${missing[*]}"
+        apt install -y "${missing[@]}" >/dev/null 2>&1 || {
+            log_error "依赖安装失败"
             return 1
-        fi
+        }
     fi
-
     touch "$DEPS_MARK_FILE"
-    return 0
-}
-
-check_dependencies() {
-    local -a required=(nginx curl socat openssl jq idn sed awk grep date uptime find mktemp tar systemctl realpath flock crontab ss)
-    local -a missing=()
-    local cmd=""
-    for cmd in "${required[@]}"; do
-        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
-    done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        log_error "缺失必要命令: ${missing[*]}"
-        return "$ERR_MISSING_DEPS"
-    fi
-    return 0
 }
 
 acquire_lock() {
@@ -296,10 +272,7 @@ acquire_lock() {
         log_error "另一个实例正在运行"
         return "$ERR_RUNTIME"
     fi
-    return 0
 }
-
-# ========================= 校验/安全 =========================
 
 _validate_domain() {
     local d="${1:-}"
@@ -313,9 +286,9 @@ _validate_port() {
 }
 
 _validate_ip_or_hostname_port() {
-    local val="${1:-}"
-    [[ "$val" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || return 1
-    _validate_port "${val##*:}"
+    local v="${1:-}"
+    [[ "$v" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || return 1
+    _validate_port "${v##*:}"
 }
 
 _validate_target_list() {
@@ -327,29 +300,29 @@ _validate_target_list() {
     for item in "${arr[@]}"; do
         _validate_ip_or_hostname_port "$item" || return 1
     done
-    return 0
 }
 
 _validate_email() {
-    local email="${1:-}"
-    [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]
+    local e="${1:-}"
+    [[ "$e" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]
 }
 
 _validate_reload_cmd() {
     local cmd="${1:-}"
     [ -z "$cmd" ] && return 0
-    if [[ "$cmd" =~ ^systemctl[[:space:]]+restart[[:space:]]+[a-zA-Z0-9@_.-]+$ ]]; then
-        return 0
-    fi
+    if [[ "$cmd" =~ ^systemctl[[:space:]]+restart[[:space:]]+[a-zA-Z0-9@_.-]+$ ]]; then return 0; fi
     [ "$cmd" = "systemctl reload nginx" ]
 }
 
 _validate_nginx_directive() {
     local line="${1:-}"
     [ -z "$line" ] && return 0
-    case "$line" in
-        *"`"*|*"$("*|*"{"*|*"}"*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
-    esac
+    if [[ "$line" == *'$('* ]] || [[ "$line" == *'`'* ]] || [[ "$line" == *"{"* ]] || [[ "$line" == *"}"* ]]; then
+        return 1
+    fi
+    if [[ "$line" == *$'\n'* ]] || [[ "$line" == *$'\r'* ]] || [[ "$line" == *$'\t'* ]]; then
+        return 1
+    fi
     [[ "$line" =~ ;$ ]]
 }
 
@@ -371,10 +344,9 @@ _validate_custom_config_block() {
         _validate_nginx_directive "$line" || return 1
         _is_allowed_custom_directive "$line" || return 1
     done <<< "$block"
-    return 0
 }
 
-# ========================= 环境初始化 =========================
+# ------------------ 环境初始化 ------------------
 
 get_vps_ip() {
     if [ -z "$VPS_IP" ]; then
@@ -395,35 +367,10 @@ init_json_files() {
 
 setup_logrotate() {
     [ -d /etc/logrotate.d ] || return 0
-
-    if [ ! -f /etc/logrotate.d/nginx ]; then
-        cat > /etc/logrotate.d/nginx <<'EOF'
-/var/log/nginx/*.log {
-    daily
-    missingok
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 root root
-    sharedscripts
-    postrotate
-        if [ -f /var/run/nginx.pid ]; then kill -USR1 "$(cat /var/run/nginx.pid)"; fi
-    endscript
-}
-EOF
-    fi
-
     if [ ! -f /etc/logrotate.d/nginx_ssl_manager ]; then
         cat > /etc/logrotate.d/nginx_ssl_manager <<EOF
 ${LOG_FILE} {
-    weekly
-    missingok
-    rotate 12
-    compress
-    delaycompress
-    notifempty
-    create 0644 root root
+ delay root
 }
 EOF
     fi
@@ -433,11 +380,9 @@ initialize_environment() {
     ACME_BIN="$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1 || true)"
     [ -z "$ACME_BIN" ] && ACME_BIN="$HOME/.acme.sh/acme.sh"
 
-    mkdir -p \
-        "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" \
-        "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR" \
-        "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" \
-        "$BACKUP_DIR" "$JSON_BACKUP_DIR"
+    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" \
+             "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR" \
+             "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$JSON_BACKUP_DIR"
 
     init_json_files
     setup_logrotate
@@ -445,7 +390,6 @@ initialize_environment() {
     if [ -f /etc/nginx/nginx.conf ] && ! grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
         cat >> /etc/nginx/nginx.conf <<EOF
 
-# TCP/UDP Stream Proxy Auto-injected
 stream {
     include ${NGINX_STREAM_ENABLED_DIR}/*.conf;
 }
@@ -462,7 +406,6 @@ install_acme_sh() {
     log_warn "acme.sh 未安装，开始安装..."
     local email=""
     email="$(prompt_input "注册邮箱(可留空)" "" "" "" "true")" || return 1
-
     if [ -n "$email" ] && ! _validate_email "$email"; then
         log_error "邮箱格式错误"
         return 1
@@ -475,15 +418,13 @@ install_acme_sh() {
     fi
 
     ACME_BIN="$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1 || true)"
-    [ -n "$ACME_BIN" ] || { log_error "acme.sh 安装后未找到"; return 1; }
-
+    [ -n "$ACME_BIN" ] || { log_error "acme.sh 安装失败"; return 1; }
     "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
     manage_cron_jobs
     log_success "acme.sh 安装完成"
-    return 0
 }
 
-# ========================= JSON 数据层 =========================
+# ------------------ JSON数据 ------------------
 
 snapshot_json() {
     local target="${1:-$PROJECTS_METADATA_FILE}"
@@ -551,14 +492,14 @@ project_delete() {
 tcp_project_save() {
     local json="${1:-}"
     [ -n "$json" ] || return 1
-    local listen_port=""
-    listen_port="$(echo "$json" | jq -r '.listen_port')"
-    _validate_port "$listen_port" || return 1
+    local lp=""
+    lp="$(echo "$json" | jq -r '.listen_port')"
+    _validate_port "$lp" || return 1
     snapshot_json "$TCP_PROJECTS_METADATA_FILE"
-    json_upsert_by_key "$TCP_PROJECTS_METADATA_FILE" "listen_port" "$listen_port" "$json"
+    json_upsert_by_key "$TCP_PROJECTS_METADATA_FILE" "listen_port" "$lp" "$json"
 }
 
-# ========================= Nginx 配置层 =========================
+# ------------------ Nginx配置层 ------------------
 
 control_nginx() {
     local action="${1:-reload}"
@@ -568,7 +509,6 @@ control_nginx() {
         return 1
     fi
     systemctl "$action" nginx || return 1
-    return 0
 }
 
 write_http_conf() {
@@ -581,15 +521,15 @@ write_http_conf() {
     _validate_domain "$domain" || return 1
 
     local port=""
+    port="$(echo "$json" | jq -r '.resolved_port')"
+    [ "$port" = "cert_only" ] && return 0
+    _validate_port "$port" || return 1
+
     local cert=""
     local key=""
     local max_body=""
     local custom_cfg=""
     local cf_mode=""
-    port="$(echo "$json" | jq -r '.resolved_port')"
-    [ "$port" = "cert_only" ] && return 0
-    _validate_port "$port" || return 1
-
     cert="$(echo "$json" | jq -r '.cert_file')"
     key="$(echo "$json" | jq -r '.key_file')"
     max_body="$(echo "$json" | jq -r '.client_max_body_size // empty')"
@@ -682,14 +622,14 @@ write_tcp_conf() {
     _validate_port "$port" || return 1
 
     local target=""
-    local tls=""
+    local tls_enabled=""
     target="$(echo "$json" | jq -r '.target')"
-    tls="$(echo "$json" | jq -r '.tls_enabled // "n"')"
+    tls_enabled="$(echo "$json" | jq -r '.tls_enabled // "n"')"
     _validate_target_list "$target" || return 1
 
     local listen_flag=""
     local ssl_block=""
-    if [ "$tls" = "y" ]; then
+    if [ "$tls_enabled" = "y" ]; then
         local ssl_cert=""
         local ssl_key=""
         ssl_cert="$(echo "$json" | jq -r '.ssl_cert')"
@@ -742,41 +682,10 @@ EOF
     return 1
 }
 
-# ========================= DNS / CF =========================
-
-check_dns_resolution() {
-    local domain="${1:-}"
-    log_info "DNS 预检: ${domain}"
-    get_vps_ip
-
-    local resolved=""
-    if command -v dig >/dev/null 2>&1; then
-        resolved="$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | xargs)"
-    elif command -v host >/dev/null 2>&1; then
-        resolved="$(host -t A "$domain" 2>/dev/null | awk '/has address/{print $NF}' | xargs)"
-    else
-        log_warn "无 dig/host，跳过 DNS 预检"
-        return 0
-    fi
-
-    if [ -z "$resolved" ]; then
-        log_warn "域名未解析到 A 记录: ${domain}"
-        confirm_or_cancel "是否继续申请?" || return 1
-        return 0
-    fi
-
-    if [[ " $resolved " == *" $VPS_IP "* ]]; then
-        log_success "DNS 校验通过: ${domain} -> ${VPS_IP}"
-        return 0
-    fi
-
-    log_warn "DNS 与本机IP不匹配: ${resolved} / ${VPS_IP}"
-    confirm_or_cancel "是否继续?" || return 1
-    return 0
-}
+# ------------------ CF / TG ------------------
 
 update_cloudflare_ips() {
-    log_info "正在更新 Cloudflare IP 列表..."
+    log_info "更新 Cloudflare IP..."
     local tmp_allow=""
     local tmp_cf_allow=""
     local tmp_cf_real=""
@@ -787,7 +696,6 @@ update_cloudflare_ips() {
     if curl -sS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$tmp_allow" && \
        echo "" >> "$tmp_allow" && \
        curl -sS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$tmp_allow"; then
-
         mkdir -p /etc/nginx/snippets /etc/nginx/conf.d
         echo "# Cloudflare Allow List" > "$tmp_cf_allow"
         echo "# Cloudflare Real IP" > "$tmp_cf_real"
@@ -803,21 +711,30 @@ update_cloudflare_ips() {
 
         mv -f "$tmp_cf_allow" /etc/nginx/snippets/cf_allow.conf
         mv -f "$tmp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
-        log_success "Cloudflare IP 库已更新"
-
+        log_success "Cloudflare IP 更新完成"
     else
-        log_error "Cloudflare IP 拉取失败"
+        log_error "Cloudflare IP 更新失败"
     fi
 
     rm -f "$tmp_allow" "$tmp_cf_allow" "$tmp_cf_real" 2>/dev/null || true
 }
 
-# ========================= TG 通知 =========================
+load_tg_config() {
+    [ -f "$TG_CONF_FILE" ] || return 1
+    TG_BOT_TOKEN="$(grep '^TG_BOT_TOKEN=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
+    TG_CHAT_ID="$(grep '^TG_CHAT_ID=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
+    SERVER_NAME="$(grep '^SERVER_NAME=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
+    return 0
+}
 
 mask_string() {
     local s="${1:-}"
     local len=${#s}
-    if [ "$len" -le 6 ]; then echo "***"; else echo "${s:0:2}***${s: -3}"; fi
+    if [ "$len" -le 6 ]; then
+        echo "***"
+    else
+        echo "${s:0:2}***${s: -3}"
+    fi
 }
 
 mask_ip() {
@@ -829,14 +746,6 @@ mask_ip() {
     else
         echo "***"
     fi
-}
-
-load_tg_config() {
-    [ -f "$TG_CONF_FILE" ] || return 1
-    TG_BOT_TOKEN="$(grep '^TG_BOT_TOKEN=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
-    TG_CHAT_ID="$(grep '^TG_CHAT_ID=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
-    SERVER_NAME="$(grep '^SERVER_NAME=' "$TG_CONF_FILE" | cut -d= -f2- | sed 's/^"//;s/"$//')"
-    return 0
 }
 
 send_tg_notify() {
@@ -851,6 +760,7 @@ send_tg_notify() {
     [ -n "${TG_BOT_TOKEN:-}" ] && [ -n "${TG_CHAT_ID:-}" ] || return 0
 
     get_vps_ip
+
     local title=""
     local status_text=""
     if [ "$status" = "success" ]; then
@@ -864,21 +774,21 @@ send_tg_notify() {
     local payload=""
     payload="$(mktemp /tmp/tg_payload_XXXXXX.json)"
     jq -n \
-        --arg cid "$TG_CHAT_ID" \
-        --arg txt "<b>${title}</b>
+      --arg cid "$TG_CHAT_ID" \
+      --arg txt "<b>${title}</b>
 🖥<b>服务器:</b> ${sname:-未知}
 🌐<b>IPv4:</b> <code>$(mask_ip "$VPS_IP")</code>
 📄<b>状态:</b> ${status_text}
 🎯<b>域名:</b> <code>${domain}</code>
 📃<b>描述:</b> <i>${detail}</i>" \
-        '{chat_id:$cid,text:$txt,parse_mode:"HTML",disable_web_page_preview:true}' > "$payload"
+      '{chat_id:$cid,text:$txt,parse_mode:"HTML",disable_web_page_preview:true}' > "$payload"
 
     local resp=""
     local rc=0
     resp="$(curl -sS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-        -H "Content-Type: application/json" \
-        -d @"$payload" \
-        --connect-timeout 10 --max-time 15 2>&1)" || rc=$?
+      -H "Content-Type: application/json" \
+      -d @"$payload" \
+      --connect-timeout 10 --max-time 15 2>&1)" || rc=$?
     rm -f "$payload"
 
     [ "$debug" = "true" ] && echo -e "${CYAN}${resp}${NC}"
@@ -899,10 +809,10 @@ setup_tg_notifier() {
         curr_token="${TG_BOT_TOKEN:-}"
         curr_chat="${TG_CHAT_ID:-}"
         curr_name="${SERVER_NAME:-}"
-        render_menu "Telegram 当前配置" \
-            "Token: $(mask_string "$curr_token")" \
-            "Chat : $(mask_string "$curr_chat")" \
-            "Name : ${curr_name}"
+        echo -e "${GREEN}当前配置:${NC}"
+        echo " Token: $(mask_string "$curr_token")"
+        echo " Chat : $(mask_string "$curr_chat")"
+        echo " Name : ${curr_name}"
         confirm_or_cancel "是否重新配置/关闭?" || return
     fi
 
@@ -938,7 +848,7 @@ EOF
     fi
 }
 
-# ========================= 证书逻辑 =========================
+# ------------------ 证书流程 ------------------
 
 detect_web_service() {
     if ! command -v systemctl >/dev/null 2>&1; then
@@ -951,11 +861,41 @@ detect_web_service() {
             return 0
         fi
     done
-    return 0
+}
+
+check_dns_resolution() {
+    local domain="${1:-}"
+    log_info "DNS 预检: ${domain}"
+    get_vps_ip
+
+    local resolved=""
+    if command -v dig >/dev/null 2>&1; then
+        resolved="$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | xargs)"
+    elif command -v host >/dev/null 2>&1; then
+        resolved="$(host -t A "$domain" 2>/dev/null | awk '/has address/{print $NF}' | xargs)"
+    else
+        log_warn "未安装 dig/host，跳过 DNS 校验"
+        return 0
+    fi
+
+    if [ -z "$resolved" ]; then
+        log_warn "域名未解析: ${domain}"
+        confirm_or_cancel "DNS 未生效，是否继续?" || return 1
+        return 0
+    fi
+
+    if [[ " $resolved " == *" $VPS_IP "* ]]; then
+        log_success "DNS 校验通过: ${domain} -> ${VPS_IP}"
+        return 0
+    fi
+
+    log_warn "DNS 与本机IP不匹配: ${resolved} / ${VPS_IP}"
+    confirm_or_cancel "是否继续?" || return 1
 }
 
 issue_and_install_certificate() {
     local json="${1:-}"
+
     local domain=""
     local method=""
     local provider=""
@@ -973,6 +913,7 @@ issue_and_install_certificate() {
     ca_server="$(echo "$json" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')"
     resolved_port="$(echo "$json" | jq -r '.resolved_port // empty')"
     reload_cmd="$(echo "$json" | jq -r '.reload_cmd // empty')"
+
     cert="$SSL_CERTS_BASE_DIR/$domain.cer"
     key="$SSL_CERTS_BASE_DIR/$domain.key"
 
@@ -1043,7 +984,7 @@ EOF
             systemctl start "$stopped_svc" >/dev/null 2>&1 || true
             STOPPED_SERVICE=""
         fi
-        send_tg_notify "fail" "$domain" "acme.sh 申请失败" ""
+        send_tg_notify "fail" "$domain" "acme 申请失败" ""
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret || true
         return 1
     fi
@@ -1069,11 +1010,10 @@ EOF
     [ -n "$install_reload_cmd" ] && inst+=("--reloadcmd" "$install_reload_cmd")
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
 
-    local inst_rc=0
-    "${inst[@]}" >/dev/null 2>&1 || inst_rc=$?
-
+    local rc=0
+    "${inst[@]}" >/dev/null 2>&1 || rc=$?
     if [ -f "$cert" ] && [ -f "$key" ]; then
-        [ "$inst_rc" -ne 0 ] && log_warn "证书安装成功，但 hook 执行失败: ${install_reload_cmd}"
+        [ "$rc" -ne 0 ] && log_warn "证书安装成功，但 hook 执行失败: ${install_reload_cmd}"
         send_tg_notify "success" "$domain" "证书安装成功" ""
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret || true
         return 0
@@ -1083,7 +1023,7 @@ EOF
     return 1
 }
 
-# ========================= 收集项目信息 =========================
+# ------------------ 项目收集/配置 ------------------
 
 gather_project_details() {
     exec 3>&1
@@ -1091,7 +1031,7 @@ gather_project_details() {
 
     local cur="${1:-{}}"
     local skip_cert="${2:-false}"
-    local mode="${3:-standard}" # standard / cert_only
+    local mode="${3:-standard}" # standard/cert_only
 
     local domain=""
     domain="$(echo "$cur" | jq -r '.domain // ""')"
@@ -1111,6 +1051,7 @@ gather_project_details() {
     local custom_cfg=""
     local cf_strict="n"
     local reload_cmd=""
+
     max_body="$(echo "$cur" | jq -r '.client_max_body_size // empty')"
     custom_cfg="$(echo "$cur" | jq -r '.custom_config // empty')"
     cf_strict="$(echo "$cur" | jq -r '.cf_strict_mode // "n"')"
@@ -1128,40 +1069,36 @@ gather_project_details() {
             type="docker"
             resolved_port="$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)"
             if [ -z "$resolved_port" ]; then
-                resolved_port="$(prompt_input "未探测到容器映射端口，手动输入" "80" "^[0-9]+$" "端口错误" "false")" || { exec 1>&3; return 1; }
+                resolved_port="$(prompt_input "未探测端口，手动输入" "80" "^[0-9]+$" "端口错误" "false")" || { exec 1>&3; return 1; }
             fi
         elif _validate_ip_or_hostname_port "$target"; then
             type="remote_port"
             resolved_port="${target##*:}"
         else
-            _validate_port "$target" || { log_error "后端目标无效"; exec 1>&3; return 1; }
+            _validate_port "$target" || { log_error "目标无效"; exec 1>&3; return 1; }
         fi
 
-        if confirm_or_cancel "是否启用 Cloudflare 严格防护?"; then
-            cf_strict="y"
-        else
-            cf_strict="n"
-        fi
+        confirm_or_cancel "是否启用 Cloudflare 严格防护?" && cf_strict="y" || cf_strict="n"
 
         local mb=""
         mb="$(prompt_input "可选 client_max_body_size (回车保持)" "$max_body" "" "" "true")" || true
         [ -n "$mb" ] && max_body="$mb"
 
         local cc=""
-        cc="$(prompt_input "可选自定义 Nginx 指令(回车保持)" "$custom_cfg" "" "" "true")" || true
+        cc="$(prompt_input "可选自定义 Nginx 指令 (回车保持)" "$custom_cfg" "" "" "true")" || true
         if [ -n "$cc" ]; then
             _validate_custom_config_block "$cc" || { log_error "自定义指令不安全"; exec 1>&3; return 1; }
             custom_cfg="$cc"
         fi
     else
         if [ "$skip_cert" = "false" ]; then
-            render_menu "证书续期后重载 Hook" \
-                "1. systemctl restart s-ui/x-ui(自动)" \
-                "2. systemctl restart v2ray" \
-                "3. systemctl restart xray" \
-                "4. systemctl reload nginx" \
-                "5. 自定义命令" \
-                "6. 跳过"
+            echo "Hook 选择:"
+            echo "1. s-ui/x-ui 自动识别"
+            echo "2. systemctl restart v2ray"
+            echo "3. systemctl restart xray"
+            echo "4. systemctl reload nginx"
+            echo "5. 自定义命令"
+            echo "6. 跳过"
             local hk=""
             hk="$(prompt_menu_choice "1-6" "false")" || { exec 1>&3; return 1; }
             case "$hk" in
@@ -1178,7 +1115,7 @@ gather_project_details() {
                 3) reload_cmd="systemctl restart xray" ;;
                 4) reload_cmd="systemctl reload nginx" ;;
                 5)
-                    reload_cmd="$(prompt_input "请输入完整命令" "" "" "" "true")" || { exec 1>&3; return 1; }
+                    reload_cmd="$(prompt_input "输入完整命令" "" "" "" "true")" || { exec 1>&3; return 1; }
                     _validate_reload_cmd "$reload_cmd" || { log_error "命令不安全"; exec 1>&3; return 1; }
                     ;;
                 6) reload_cmd="" ;;
@@ -1186,47 +1123,14 @@ gather_project_details() {
         fi
     fi
 
-    # 证书策略
     local method="http-01"
     local provider=""
     local wildcard="n"
     local ca_server="https://acme-v02.api.letsencrypt.org/directory"
     local ca_name="letsencrypt"
 
-    # 泛域名复用
-    local reuse_wc="false"
-    local wc_match=""
-    local wc_cert=""
-    local wc_key=""
     if [ "$skip_cert" = "false" ]; then
-        local wd=""
-        while IFS= read -r wd; do
-            [ -z "$wd" ] && continue
-            if [[ "$domain" == "$wd" || "$domain" == *".${wd}" ]]; then
-                wc_match="$wd"
-                break
-            fi
-        done < <(jq -r '.[] | select(.use_wildcard=="y" and .cert_file!=null and .key_file!=null) | .domain' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
-
-        if [ -n "$wc_match" ]; then
-            echo -e "${GREEN}检测到可复用泛域名证书: *.${wc_match}${NC}" >&2
-            if confirm_or_cancel "是否复用该证书?"; then
-                reuse_wc="true"
-                local wp=""
-                wp="$(project_get_by_domain "$wc_match")"
-                wc_cert="$(echo "$wp" | jq -r '.cert_file')"
-                wc_key="$(echo "$wp" | jq -r '.key_file')"
-            fi
-        fi
-    fi
-
-    if [ "$reuse_wc" = "true" ]; then
-        method="reuse"
-        skip_cert="true"
-    fi
-
-    if [ "$skip_cert" = "false" ]; then
-        render_menu "选择 CA" "1. Let's Encrypt" "2. ZeroSSL" "3. Google Public CA"
+        echo "选择 CA: 1)Let's Encrypt 2)ZeroSSL 3)Google"
         local ca_choice=""
         ca_choice="$(prompt_menu_choice "1-3" "false")" || { exec 1>&3; return 1; }
         case "$ca_choice" in
@@ -1235,7 +1139,7 @@ gather_project_details() {
             3) ca_server="google"; ca_name="google" ;;
         esac
 
-        render_menu "验证方式" "1. http-01" "2. dns_cf" "3. dns_ali"
+        echo "验证方式: 1)http-01 2)dns_cf 3)dns_ali"
         local v=""
         v="$(prompt_menu_choice "1-3" "false")" || { exec 1>&3; return 1; }
         case "$v" in
@@ -1248,49 +1152,41 @@ gather_project_details() {
             wildcard="$(echo "$wildcard" | tr '[:upper:]' '[:lower:]')"
         fi
     else
-        if [ "$reuse_wc" = "false" ]; then
-            method="$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')"
-            provider="$(echo "$cur" | jq -r '.dns_api_provider // ""')"
-            wildcard="$(echo "$cur" | jq -r '.use_wildcard // "n"')"
-            ca_server="$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')"
-            ca_name="$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')"
-        fi
+        method="$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')"
+        provider="$(echo "$cur" | jq -r '.dns_api_provider // ""')"
+        wildcard="$(echo "$cur" | jq -r '.use_wildcard // "n"')"
+        ca_server="$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')"
+        ca_name="$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')"
     fi
 
     local cert_file="$SSL_CERTS_BASE_DIR/$domain.cer"
     local key_file="$SSL_CERTS_BASE_DIR/$domain.key"
-    if [ "$reuse_wc" = "true" ]; then
-        cert_file="$wc_cert"
-        key_file="$wc_key"
-    fi
 
     jq -n \
-        --arg d "$domain" \
-        --arg t "$type" \
-        --arg n "$name" \
-        --arg p "$resolved_port" \
-        --arg m "$method" \
-        --arg dp "$provider" \
-        --arg w "$wildcard" \
-        --arg cu "$ca_server" \
-        --arg cn "$ca_name" \
-        --arg cf "$cert_file" \
-        --arg kf "$key_file" \
-        --arg mb "$max_body" \
-        --arg cc "$custom_cfg" \
-        --arg cs "$cf_strict" \
-        --arg rc "$reload_cmd" \
-        '{domain:$d,type:$t,name:$n,resolved_port:$p,acme_validation_method:$m,dns_api_provider:$dp,use_wildcard:$w,ca_server_url:$cu,ca_server_name:$cn,cert_file:$cf,key_file:$kf,client_max_body_size:$mb,custom_config:$cc,cf_strict_mode:$cs,reload_cmd:$rc}' >&3
+      --arg d "$domain" \
+      --arg t "$type" \
+      --arg n "$name" \
+      --arg p "$resolved_port" \
+      --arg m "$method" \
+      --arg dp "$provider" \
+      --arg w "$wildcard" \
+      --arg cu "$ca_server" \
+      --arg cn "$ca_name" \
+      --arg cf "$cert_file" \
+      --arg kf "$key_file" \
+      --arg mb "$max_body" \
+      --arg cc "$custom_cfg" \
+      --arg cs "$cf_strict" \
+      --arg rc "$reload_cmd" \
+      '{domain:$d,type:$t,name:$n,resolved_port:$p,acme_validation_method:$m,dns_api_provider:$dp,use_wildcard:$w,ca_server_url:$cu,ca_server_name:$cn,cert_file:$cf,key_file:$kf,client_max_body_size:$mb,custom_config:$cc,cf_strict_mode:$cs,reload_cmd:$rc}' >&3
 
     exec 1>&3
 }
 
-# ========================= 业务动作：HTTP/TCP =========================
-
 configure_nginx_projects() {
-    local mode="${1:-standard}" # standard / cert_only
+    local mode="${1:-standard}" # standard/cert_only
+    log_info "开始配置新项目"
 
-    echo -e "\n${CYAN}开始配置新项目...${NC}"
     local json=""
     json="$(gather_project_details "{}" "false" "$mode")" || { log_warn "用户取消"; return; }
 
@@ -1315,35 +1211,289 @@ configure_nginx_projects() {
         echo -e "${GREEN}证书已就绪: ${cert}${NC}"
     fi
 
-    [ "$issue_rc" -ne 0 ] && log_warn "证书安装阶段存在告警(如 hook 失败)"
+    [ "$issue_rc" -ne 0 ] && log_warn "证书安装阶段有告警"
     log_success "配置完成"
-    return 0
 }
 
-configure_tcp_proxy() {
-    render_menu "配置 TCP 代理"
+# ------------------ HTTP 管理 ------------------
 
+display_projects_table() {
+    local all="${1:-[]}"
+    printf "${BOLD}%-4s %-28s %-14s %-16s${NC}\n" "ID" "域名" "目标" "证书状态"
+    echo "------------------------------------------------------------------------"
+
+    local idx=0
+    local p=""
+    while IFS= read -r p; do
+        idx=$((idx + 1))
+        local d=""
+        local rp=""
+        local cert=""
+        d="$(echo "$p" | jq -r '.domain')"
+        rp="$(echo "$p" | jq -r '.resolved_port')"
+        cert="$(echo "$p" | jq -r '.cert_file // ""')"
+
+        local status="未安装"
+        local color="$GRAY"
+        if [ -f "$cert" ]; then
+            local end=""
+            local days=0
+            end="$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)"
+            days=$(( ( $(date -d "$end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+            if (( days < 0 )); then
+                status="过期${days#-}天"; color="$BRIGHT_RED"
+            elif (( days <= 30 )); then
+                status="${days}天续期"; color="$BRIGHT_YELLOW"
+            else
+                status="正常${days}天"; color="$GREEN"
+            fi
+        fi
+
+        printf "%-4s %-28s %-14s %b\n" "$idx" "${d:0:28}" "${rp:0:14}" "${color}${status}${NC}"
+    done < <(echo "$all" | jq -c '.[]')
+    echo ""
+}
+
+view_http_config() {
+    local domain="${1:-}"
+    local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
+    [ -f "$conf" ] || { log_warn "配置不存在: $conf"; return; }
+    echo -e "${CYAN}===== ${conf} =====${NC}"
+    cat "$conf"
+    press_enter_to_continue
+}
+
+handle_cert_details() {
+    local d="${1:-}"
+    local cert="$SSL_CERTS_BASE_DIR/$d.cer"
+    local p=""
+    p="$(project_get_by_domain "$d")"
+
+    if [ ! -f "$cert" ]; then
+        log_error "证书不存在: ${cert}"
+        press_enter_to_continue
+        return
+    fi
+
+    local issuer=""
+    local subject=""
+    local end=""
+    local days=0
+    local method=""
+    issuer="$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null || echo "issuer=未知")"
+    subject="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || echo "subject=未知")"
+    end="$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)"
+    days=$(( ( $(date -d "$end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+    method="$(echo "$p" | jq -r '.acme_validation_method // "未知"')"
+
+    echo -e "${CYAN}域名: ${d}${NC}"
+    echo "Issuer: ${issuer}"
+    echo "Subject: ${subject}"
+    echo "Expire: ${end} (剩余 ${days} 天)"
+    echo "Method: ${method}"
+    press_enter_to_continue
+}
+
+handle_renew_cert() {
+    local d="${1:-}"
+    local p=""
+    p="$(project_get_by_domain "$d")"
+    [ -n "$p" ] || return
+    issue_and_install_certificate "$p" && control_nginx reload || true
+    press_enter_to_continue
+}
+
+handle_delete_project() {
+    local d="${1:-}"
+    if confirm_or_cancel "确认删除 ${d} 及其证书?"; then
+        remove_http_conf "$d" || true
+        "$ACME_BIN" --remove -d "$d" --ecc >/dev/null 2>&1 || true
+        rm -f "$SSL_CERTS_BASE_DIR/$d.cer" "$SSL_CERTS_BASE_DIR/$d.key"
+        project_delete "$d" || true
+        control_nginx reload || true
+        log_success "项目已删除: ${d}"
+    fi
+    press_enter_to_continue
+}
+
+handle_reconfigure_project() {
+    local d="${1:-}"
+    local cur=""
+    cur="$(project_get_by_domain "$d")"
+    [ -n "$cur" ] || return
+
+    local mode="standard"
+    [ "$(echo "$cur" | jq -r '.resolved_port')" = "cert_only" ] && mode="cert_only"
+
+    local skip_cert="true"
+    confirm_or_cancel "是否重新申请证书?" && skip_cert="false"
+
+    local new=""
+    new="$(gather_project_details "$cur" "$skip_cert" "$mode")" || { log_warn "取消"; return; }
+
+    if [ "$skip_cert" = "false" ]; then
+        issue_and_install_certificate "$new" || { log_error "证书申请失败"; return; }
+    fi
+
+    if [ "$mode" != "cert_only" ]; then
+        write_http_conf "$d" "$new" || return
+        control_nginx reload || return
+    fi
+    project_save "$new" || return
+    log_success "重配成功"
+    press_enter_to_continue
+}
+
+handle_modify_renew_settings() {
+    local d="${1:-}"
+    local cur=""
+    cur="$(project_get_by_domain "$d")"
+    [ -n "$cur" ] || return
+
+    local m=""
+    m="$(echo "$cur" | jq -r '.acme_validation_method')"
+    if [ "$m" = "reuse" ]; then
+        log_warn "复用证书项目请在主域配置修改"
+        press_enter_to_continue
+        return
+    fi
+
+    echo "CA: 1)LE 2)ZeroSSL 3)Google 4)保持"
+    local ca_choice=""
+    ca_choice="$(prompt_menu_choice "1-4" "false")" || return
+    local ca_server=""
+    local ca_name=""
+    ca_server="$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')"
+    ca_name="$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')"
+    case "$ca_choice" in
+        1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
+        2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
+        3) ca_server="google"; ca_name="google" ;;
+    esac
+
+    echo "验证方式: 1)http-01 2)dns_cf 3)dns_ali 4)保持"
+    local v=""
+    v="$(prompt_menu_choice "1-4" "false")" || return
+    local method=""
+    local provider=""
+    method="$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')"
+    provider="$(echo "$cur" | jq -r '.dns_api_provider // ""')"
+    case "$v" in
+        1) method="http-01"; provider="" ;;
+        2) method="dns-01"; provider="dns_cf" ;;
+        3) method="dns-01"; provider="dns_ali" ;;
+    esac
+
+    local new=""
+    new="$(echo "$cur" | jq --arg cu "$ca_server" --arg cn "$ca_name" --arg m "$method" --arg dp "$provider" \
+        '.ca_server_url=$cu | .ca_server_name=$cn | .acme_validation_method=$m | .dns_api_provider=$dp')"
+
+    project_save "$new" && log_success "续期配置已更新" || log_error "保存失败"
+    press_enter_to_continue
+}
+
+handle_set_custom_config() {
+    local d="${1:-}"
+    local cur=""
+    cur="$(project_get_by_domain "$d")"
+    [ -n "$cur" ] || return
+
+    local current_val=""
+    current_val="$(echo "$cur" | jq -r '.custom_config // "无"')"
+    echo -e "${CYAN}当前自定义配置:${NC}\n${current_val}"
+    echo -e "${YELLOW}输入新指令(回车不修改, clear 清空)${NC}"
+
+    local nv=""
+    nv="$(prompt_input "指令内容" "" "" "" "true")" || return
+    [ -z "$nv" ] && return
+
+    local final="$nv"
+    if [ "$nv" = "clear" ]; then
+        final=""
+    else
+        _validate_custom_config_block "$nv" || { log_error "自定义指令不安全"; press_enter_to_continue; return; }
+    fi
+
+    local new=""
+    new="$(echo "$cur" | jq --arg v "$final" '.custom_config=$v')"
+
+    if project_save "$new"; then
+        if write_http_conf "$d" "$new" && control_nginx reload; then
+            log_success "已应用"
+        else
+            log_error "应用失败，回滚..."
+            write_http_conf "$d" "$cur" || true
+            control_nginx reload || true
+        fi
+    fi
+    press_enter_to_continue
+}
+
+manage_configs() {
+    while true; do
+        local all=""
+        all="$(jq . "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]")"
+        local count=0
+        count="$(echo "$all" | jq 'length')"
+        if [ "$count" -eq 0 ]; then
+            log_warn "暂无 HTTP 项目"
+            break
+        fi
+
+        display_projects_table "$all"
+        local idx=""
+        idx="$(prompt_input "请输入序号选择项目(回车返回)" "" "^[0-9]*$" "无效序号" "true")" || return
+        [ -z "$idx" ] && break
+        [ "$idx" -ge 1 ] && [ "$idx" -le "$count" ] || { log_error "序号越界"; continue; }
+
+        local selected_domain=""
+        selected_domain="$(echo "$all" | jq -r ".[$((idx-1))].domain")"
+
+        echo "1. 查看证书        echo "2. 手动续期"
+        echo "3. 删除项目"
+        echo "4. 查看 Nginx 配置"
+        echo "5. 重新配置"
+        echo "6. 修改证书续期设置"
+        echo "7. 添加自定义指令"
+        local c=""
+        c="$(prompt_menu_choice "1-7" "true")" || continue
+        case "$c" in
+            1) handle_cert_details "$selected_domain" ;;
+            2) handle_renew_cert "$selected_domain" ;;
+            3) handle_delete_project "$selected_domain"; break ;;
+            4) view_http_config "$selected_domain" ;;
+            5) handle_reconfigure_project "$selected_domain" ;;
+            6) handle_modify_renew_settings "$selected_domain" ;;
+            7) handle_set_custom_config "$selected_domain" ;;
+            "") continue ;;
+        esac
+    done
+}
+
+# ------------------ TCP管理 ------------------
+
+configure_tcp_proxy() {
     local name=""
-    local listen_port=""
+    local lp=""
     local target=""
-    local tls_enabled="n"
+    local tls="n"
     local ssl_cert=""
     local ssl_key=""
 
     name="$(prompt_input "项目备注名称" "MyTCP" "" "" "false")" || return
-    listen_port="$(prompt_input "本机监听端口" "" "^[0-9]+$" "端口错误" "false")" || return
-    _validate_port "$listen_port" || { log_error "无效端口"; return; }
+    lp="$(prompt_input "本机监听端口" "" "^[0-9]+$" "端口错误" "false")" || return
+    _validate_port "$lp" || { log_error "无效端口"; return; }
 
-    target="$(prompt_input "目标地址(单节点或逗号负载)" "" "^[a-zA-Z0-9.-]+:[0-9]+(,[a-zA-Z0-9.-]+:[0-9]+)*$" "格式错误" "false")" || return
+    target="$(prompt_input "目标地址(支持逗号负载)" "" "^[a-zA-Z0-9.-]+:[0-9]+(,[a-zA-Z0-9.-]+:[0-9]+)*$" "格式错误" "false")" || return
     _validate_target_list "$target" || { log_error "目标地址无效"; return; }
 
     if confirm_or_cancel "是否开启 TLS 卸载?"; then
-        tls_enabled="y"
+        tls="y"
         local projects=""
-        projects="$(jq -c '.[] | select(.cert_file!=null and .cert_file!="")' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)"
+        projects="$(jq -c '.[] | select(.cert_file != null and .cert_file != "")' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)"
         [ -n "$projects" ] || { log_error "未发现可用证书"; return; }
 
-        echo -e "\n${CYAN}请选择证书:${NC}"
+        echo -e "${CYAN}请选择证书:${NC}"
         local idx=0
         local p=""
         local -a domains certs keys
@@ -1369,310 +1519,14 @@ configure_tcp_proxy() {
     fi
 
     local json=""
-    json="$(jq -n \
-        --arg n "$name" \
-        --arg lp "$listen_port" \
-        --arg t "$target" \
-        --arg te "$tls_enabled" \
-        --arg sc "$ssl_cert" \
-        --arg sk "$ssl_key" \
-        '{name:$n,listen_port:$lp,target:$t,tls_enabled:$te,ssl_cert:$sc,ssl_key:$sk}'
-    )"
+    json="$(jq -n --arg n "$name" --arg lp "$lp" --arg t "$target" --arg te "$tls" --arg sc "$ssl_cert" --arg sk "$ssl_key" \
+      '{name:$n,listen_port:$lp,target:$t,tls_enabled:$te,ssl_cert:$sc,ssl_key:$sk}')"
 
-    write_tcp_conf "$listen_port" "$json" || return
+    write_tcp_conf "$lp" "$json" || return
     control_nginx reload || return
     tcp_project_save "$json" || return
-    log_success "TCP 代理创建成功: ${listen_port}"
+    log_success "TCP 代理创建成功: ${lp}"
 }
-
-# ========================= 管理：HTTP =========================
-
-display_projects_table() {
-    local all="${1:-[]}"
-    printf "${BOLD}%-4s %-28s %-16s %-16s${NC}\n" "ID" "域名" "目标" "证书状态"
-    echo "----------------------------------------------------------------------------"
-
-    local idx=0
-    local p=""
-    while IFS= read -r p; do
-        idx=$((idx + 1))
-        local d=""
-        local rp=""
-        local cert=""
-        d="$(echo "$p" | jq -r '.domain')"
-        rp="$(echo "$p" | jq -r '.resolved_port')"
-        cert="$(echo "$p" | jq -r '.cert_file // ""')"
-
-        local status="未安装"
-        local color="$GRAY"
-        if [ -f "$cert" ]; then
-            local end=""
-            local end_ts=0
-            local now_ts=0
-            local days=0
-            end="$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)"
-            end_ts="$(date -d "$end" +%s 2>/dev/null || echo 0)"
-            now_ts="$(date +%s)"
-            days=$(( (end_ts - now_ts) / 86400 ))
-            if (( days < 0 )); then
-                status="过期${days#-}天"; color="$BRIGHT_RED"
-            elif (( days <= 30 )); then
-                status="${days}天续期"; color="$BRIGHT_YELLOW"
-            else
-                status="正常${days}天"; color="$GREEN"
-            fi
-        fi
-
-        printf "%-4s %-28s %-16s %b\n" "$idx" "${d:0:28}" "${rp:0:16}" "${color}${status}${NC}"
-    done < <(echo "$all" | jq -c '.[]')
-    echo ""
-}
-
-view_http_config() {
-    local domain="${1:-}"
-    local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
-    if [ ! -f "$conf" ]; then
-        log_warn "配置文件不存在: $conf"
-        return
-    fi
-    render_menu "配置文件: ${domain}"
-    cat "$conf"
-    press_enter_to_continue
-}
-
-handle_cert_details() {
-    local domain="${1:-}"
-    local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
-    local cur=""
-    cur="$(project_get_by_domain "$domain")"
-
-    if [ ! -f "$cert" ]; then
-        log_error "证书文件不存在: $cert"
-        press_enter_to_continue
-        return
-    fi
-
-    local issuer=""
-    local subject=""
-    local end=""
-    local days=0
-    local method=""
-    issuer="$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null || echo "issuer=未知")"
-    subject="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || echo "subject=未知")"
-    end="$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)"
-    days=$(( ( $(date -d "$end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
-    method="$(echo "$cur" | jq -r '.acme_validation_method // "未知"')"
-
-    echo -e "${CYAN}域名: ${domain}${NC}"
-    echo "颁发者: $issuer"
-    echo "主题:   $subject"
-    echo "到期:   $end (剩余 ${days} 天)"
-    echo "方式:   $method"
-    press_enter_to_continue
-}
-
-handle_renew_cert() {
-    local domain="${1:-}"
-    local p=""
-    p="$(project_get_by_domain "$domain")"
-    [ -n "$p" ] || return
-    issue_and_install_certificate "$p" && control_nginx reload || true
-    press_enter_to_continue
-}
-
-handle_delete_project() {
-    local domain="${1:-}"
-    if confirm_or_cancel "确认删除项目 ${domain} 及其证书?"; then
-        remove_http_conf "$domain" || true
-        "$ACME_BIN" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
-        rm -f "$SSL_CERTS_BASE_DIR/$domain.cer" "$SSL_CERTS_BASE_DIR/$domain.key"
-        project_delete "$domain" || true
-        control_nginx reload || true
-        log_success "项目已删除: ${domain}"
-    fi
-    press_enter_to_continue
-}
-
-handle_reconfigure_project() {
-    local domain="${1:-}"
-    local cur=""
-    cur="$(project_get_by_domain "$domain")"
-    [ -n "$cur" ] || return
-
-    local mode="standard"
-    if [ "$(echo "$cur" | jq -r '.resolved_port')" = "cert_only" ]; then
-        mode="cert_only"
-    fi
-
-    local skip_cert="true"
-    confirm_or_cancel "是否重新申请证书?" && skip_cert="false"
-
-    local new_json=""
-    new_json="$(gather_project_details "$cur" "$skip_cert" "$mode")" || { log_warn "已取消"; return; }
-
-    if [ "$skip_cert" = "false" ]; then
-        issue_and_install_certificate "$new_json" || { log_error "证书申请失败"; return; }
-    fi
-
-    if [ "$mode" != "cert_only" ]; then
-        write_http_conf "$domain" "$new_json" || return
-        control_nginx reload || return
-    fi
-
-    project_save "$new_json" || return
-    log_success "重配完成"
-    press_enter_to_continue
-}
-
-handle_modify_renew_settings() {
-    local domain="${1:-}"
-    local cur=""
-    cur="$(project_get_by_domain "$domain")"
-    [ -n "$cur" ] || return
-
-    local current_method=""
-    current_method="$(echo "$cur" | jq -r '.acme_validation_method')"
-    if [ "$current_method" = "reuse" ]; then
-        log_warn "该项目为复用证书，请在主域配置中修改"
-        press_enter_to_continue
-        return
-    fi
-
-    render_menu "修改续期设置" \
-        "1. CA: Let's Encrypt" \
-        "2. CA: ZeroSSL" \
-        "3. CA: Google" \
-        "4. CA: 保持"
-
-    local ca_choice=""
-    ca_choice="$(prompt_menu_choice "1-4" "false")" || return
-
-    local ca_server=""
-    local ca_name=""
-    ca_server="$(echo "$cur" | jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"')"
-    ca_name="$(echo "$cur" | jq -r '.ca_server_name // "letsencrypt"')"
-
-    case "$ca_choice" in
-        1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
-        2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
-        3) ca_server="google"; ca_name="google" ;;
-    esac
-
-    render_menu "修改验证方式" \
-        "1. http-01" \
-        "2. dns_cf" \
-        "3. dns_ali" \
-        "4. 保持"
-
-    local v_choice=""
-    v_choice="$(prompt_menu_choice "1-4" "false")" || return
-
-    local method=""
-    local provider=""
-    method="$(echo "$cur" | jq -r '.acme_validation_method // "http-01"')"
-    provider="$(echo "$cur" | jq -r '.dns_api_provider // ""')"
-
-    case "$v_choice" in
-        1) method="http-01"; provider="" ;;
-        2) method="dns-01"; provider="dns_cf" ;;
-        3) method="dns-01"; provider="dns_ali" ;;
-    esac
-
-    local new_json=""
-    new_json="$(echo "$cur" | jq --arg cu "$ca_server" --arg cn "$ca_name" --arg m "$method" --arg dp "$provider" \
-        '.ca_server_url=$cu | .ca_server_name=$cn | .acme_validation_method=$m | .dns_api_provider=$dp')"
-
-    if project_save "$new_json"; then
-        log_success "续期设置已更新"
-    else
-        log_error "保存失败"
-    fi
-    press_enter_to_continue
-}
-
-handle_set_custom_config() {
-    local domain="${1:-}"
-    local cur=""
-    cur="$(project_get_by_domain "$domain")"
-    [ -n "$cur" ] || return
-
-    local current_cfg=""
-    current_cfg="$(echo "$cur" | jq -r '.custom_config // "无"')"
-    echo -e "${CYAN}当前自定义配置:${NC}\n${current_cfg}"
-    echo -e "${YELLOW}输入新指令(回车不修改，clear 清空)${NC}"
-
-    local input_cfg=""
-    input_cfg="$(prompt_input "指令内容" "" "" "" "true")" || return
-    [ -z "$input_cfg" ] && return
-
-    local final_cfg="$input_cfg"
-    if [ "$input_cfg" = "clear" ]; then
-        final_cfg=""
-    else
-        _validate_custom_config_block "$input_cfg" || { log_error "自定义指令不安全"; press_enter_to_continue; return; }
-    fi
-
-    local new_json=""
-    new_json="$(echo "$cur" | jq --arg v "$final_cfg" '.custom_config=$v')"
-
-    if project_save "$new_json"; then
-        if write_http_conf "$domain" "$new_json" && control_nginx reload; then
-            log_success "已应用自定义配置"
-        else
-            log_error "应用失败，尝试回滚..."
-            write_http_conf "$domain" "$cur" || true
-            control_nginx reload || true
-        fi
-    fi
-    press_enter_to_continue
-}
-
-manage_configs() {
-    while true; do
-        local all=""
-        all="$(jq . "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]")"
-        local count=0
-        count="$(echo "$all" | jq 'length')"
-
-        if [ "$count" -eq 0 ]; then
-            log_warn "暂无 HTTP 项目"
-            break
-        fi
-
-        display_projects_table "$all"
-        local idx=""
-        idx="$(prompt_input "请输入序号选择项目(回车返回)" "" "^[0-9]*$" "无效序号" "true")" || return
-        [ -z "$idx" ] && break
-        [ "$idx" -ge 1 ] && [ "$idx" -le "$count" ] || { log_error "序号越界"; continue; }
-
-        local domain=""
-        domain="$(echo "$all" | jq -r ".[$((idx-1))].domain")"
-
-        render_menu "管理: ${domain}" \
-            "1. 查看证书详情" \
-            "2. 手动续期" \
-            "3. 删除项目" \
-            "4. 查看 Nginx 配置" \
-            "5. 重新配置(目标/防护/Hook等)" \
-            "6. 修改证书续期设置" \
-            "7. 添加自定义指令"
-
-        local c=""
-        c="$(prompt_menu_choice "1-7" "true")" || continue
-        case "$c" in
-            1) handle_cert_details "$domain" ;;
-            2) handle_renew_cert "$domain" ;;
-            3) handle_delete_project "$domain"; break ;;
-            4) view_http_config "$domain" ;;
-            5) handle_reconfigure_project "$domain" ;;
-            6) handle_modify_renew_settings "$domain" ;;
-            7) handle_set_custom_config "$domain" ;;
-            "") continue ;;
-        esac
-    done
-}
-
-# ========================= 管理：TCP =========================
 
 manage_tcp_configs() {
     while true; do
@@ -1680,15 +1534,13 @@ manage_tcp_configs() {
         all="$(jq . "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]")"
         local count=0
         count="$(echo "$all" | jq 'length')"
-
         if [ "$count" -eq 0 ]; then
             log_warn "暂无 TCP 项目"
             break
         fi
 
-        printf "${BOLD}%-4s %-8s %-6s %-14s %-28s${NC}\n" "ID" "端口" "TLS" "备注" "目标"
-        echo "--------------------------------------------------------------------------"
-
+        printf "${BOLD}%-4s %-8s %-6s %-14s %-24s${NC}\n" "ID" "端口" "TLS" "备注" "目标"
+        echo "------------------------------------------------------------------"
         local idx=0
         local p=""
         while IFS= read -r p; do
@@ -1701,7 +1553,7 @@ manage_tcp_configs() {
             tls="$(echo "$p" | jq -r '.tls_enabled // "n"')"
             name="$(echo "$p" | jq -r '.name // "-"')"
             target="$(echo "$p" | jq -r '.target')"
-            printf "%-4s %-8s %-6s %-14s %-28s\n" "$idx" "$port" "$tls" "${name:0:14}" "${target:0:28}"
+            printf "%-4s %-8s %-6s %-14s %-24s\n" "$idx" "$port" "$tls" "${name:0:14}" "${target:0:24}"
         done < <(echo "$all" | jq -c '.[]')
         echo ""
 
@@ -1713,12 +1565,13 @@ manage_tcp_configs() {
         local selected_port=""
         selected_port="$(echo "$all" | jq -r ".[$((pick-1))].listen_port")"
 
-        render_menu "管理 TCP: 端口 ${selected_port}" "1. 删除项目" "2. 查看配置"
+        echo "1. 删除项目"
+        echo "2. 查看配置"
         local c=""
         c="$(prompt_menu_choice "1-2" "true")" || continue
         case "$c" in
             1)
-                if confirm_or_cancel "确认删除 TCP 代理 ${selected_port}?"; then
+                if confirm_or_cancel "确认删除 TCP 项目 ${selected_port}?"; then
                     rm -f "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" "$NGINX_STREAM_ENABLED_DIR/tcp_${selected_port}.conf"
                     snapshot_json "$TCP_PROJECTS_METADATA_FILE"
                     local tmp=""
@@ -1726,36 +1579,35 @@ manage_tcp_configs() {
                     if jq --arg p "$selected_port" 'del(.[] | select(.listen_port == $p))' "$TCP_PROJECTS_METADATA_FILE" > "$tmp"; then
                         mv -f "$tmp" "$TCP_PROJECTS_METADATA_FILE"
                         control_nginx reload || true
-                        log_success "TCP 项目删除成功: ${selected_port}"
+                        log_success "TCP 项目已删除: ${selected_port}"
                     else
                         rm -f "$tmp"
-                        log_error "删除 TCP 元数据失败"
+                        log_error "删除失败"
                     fi
                 fi
                 ;;
             2)
-                cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置文件不存在"
+                cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置不存在"
                 press_enter_to_continue
                 ;;
         esac
     done
 }
 
-# ========================= 续期/日志/备份 =========================
+# ------------------ 批量续期/日志/备份 ------------------
 
 check_and_auto_renew_certs() {
     log_info "开始批量续期检测..."
     local success=0
     local fail=0
     local p=""
-
     while IFS= read -r p; do
         [ -z "$p" ] && continue
         local d=""
-        local cert_file=""
+        local cert=""
         local method=""
         d="$(echo "$p" | jq -r '.domain')"
-        cert_file="$(echo "$p" | jq -r '.cert_file')"
+        cert="$(echo "$p" | jq -r '.cert_file')"
         method="$(echo "$p" | jq -r '.acme_validation_method')"
 
         echo -ne "检查: ${d} ... "
@@ -1764,7 +1616,7 @@ check_and_auto_renew_certs() {
             continue
         fi
 
-        if [ ! -f "$cert_file" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$cert_file" >/dev/null 2>&1; then
+        if [ ! -f "$cert" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$cert" >/dev/null 2>&1; then
             echo -e "${YELLOW}触发续期${NC}"
             if issue_and_install_certificate "$p"; then
                 success=$((success + 1))
@@ -1781,15 +1633,16 @@ check_and_auto_renew_certs() {
 }
 
 view_file_with_tail() {
-    local file="${1:-}"
-    [ -f "$file" ] || { log_error "文件不存在: $file"; return; }
-    echo -e "${CYAN}--- tail -f ${file} (Ctrl+C 退出) ---${NC}"
-    tail -f -n 50 "$file" || true
-    echo -e "${CYAN}--- 日志查看结束 ---${NC}"
+    local f="${1:-}"
+    [ -f "$f" ] || { log_error "文件不存在: ${f}"; return; }
+    echo -e "${CYAN}--- tail -f ${f} ---${NC}"
+    tail -f -n 50 "$f" || true
+    echo -e "${CYAN}--- 结束 ---${NC}"
 }
 
 view_nginx_global_log() {
-    render_menu "Nginx 全局日志" "1. 访问日志" "2. 错误日志"
+    echo "1. 访问日志"
+    echo "2. 错误日志"
     local c=""
     c="$(prompt_menu_choice "1-2" "true")" || return
     case "$c" in
@@ -1806,16 +1659,14 @@ view_acme_log() {
 
 manage_cron_jobs() {
     local has_acme=0
-    local has_manager=0
-
+    local has_mgr=0
     crontab -l 2>/dev/null | grep -q "\.acme\.sh/acme\.sh" && has_acme=1
-    crontab -l 2>/dev/null | grep -F -q -- "$SCRIPT_PATH --cron" && has_manager=1
+    crontab -l 2>/dev/null | grep -F -q -- "$SCRIPT_PATH --cron" && has_mgr=1
 
-    render_menu "Cron 诊断" \
-        "acme.sh 原生任务: $([ "$has_acme" -eq 1 ] && echo "正常" || echo "缺失")" \
-        "本脚本守护任务 : $([ "$has_manager" -eq 1 ] && echo "正常" || echo "缺失")"
+    echo "acme.sh cron: $([ "$has_acme" -eq 1 ] && echo OK || echo MISSING)"
+    echo "manager cron: $([ "$has_mgr" -eq 1 ] && echo OK || echo MISSING)"
 
-    if [ "$has_acme" -eq 0 ] || [ "$has_manager" -eq 0 ]; then
+    if [ "$has_acme" -eq 0 ] || [ "$has_mgr" -eq 0 ]; then
         "$ACME_BIN" --install-cronjob >/dev/null 2>&1 || true
         local tmp=""
         tmp="$(mktemp /tmp/nginx_ssl_manager_cron.XXXXXX)"
@@ -1825,21 +1676,16 @@ manage_cron_jobs() {
         rm -f "$tmp"
         log_success "Cron 已修复"
     else
-        log_info "Cron 状态健康，无需修复"
+        log_info "Cron 状态健康"
     fi
-
     press_enter_to_continue
 }
 
 rebuild_all_nginx_configs() {
     confirm_or_cancel "确认重建所有 HTTP 配置?" || return
-    local all=""
-    all="$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)"
-    [ -n "$all" ] || { log_warn "无 HTTP 项目"; return; }
-
+    local p=""
     local ok=0
     local bad=0
-    local p=""
     while IFS= read -r p; do
         [ -z "$p" ] && continue
         local d=""
@@ -1852,44 +1698,42 @@ rebuild_all_nginx_configs() {
         else
             bad=$((bad + 1))
         fi
-    done <<< "$all"
+    done < <(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
 
     if control_nginx reload; then
         log_success "重建完成: 成功=${ok}, 失败=${bad}"
     else
-        log_error "Nginx 重载失败"
+        log_error "重载失败"
     fi
 }
 
 handle_backup_restore() {
-    render_menu "维护与灾备" \
-        "1. 创建完整备份包" \
-        "2. 从备份包还原" \
-        "3. 从快照回滚元数据" \
-        "4. 重建所有 HTTP 配置" \
-        "5. 修复 Cron 任务"
-
+    echo "1. 创建完整备份"
+    echo "2. 从备份包恢复"
+    echo "3. 从快照回滚元数据"
+    echo "4. 重建所有 HTTP 配置"
+    echo "5. 修复 Cron"
     local c=""
     c="$(prompt_menu_choice "1-5" "true")" || return
     case "$c" in
         1)
             local ts=""
             ts="$(date +%Y%m%d_%H%M%S)"
-            local backup_file="$BACKUP_DIR/nginx_manager_backup_${ts}.tar.gz"
-            if tar -czf "$backup_file" -C / "$PROJECTS_METADATA_FILE" "$TCP_PROJECTS_METADATA_FILE" "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$SSL_CERTS_BASE_DIR" 2>/dev/null; then
-                log_success "备份完成: ${backup_file}"
+            local out="$BACKUP_DIR/nginx_manager_backup_${ts}.tar.gz"
+            if tar -czf "$out" -C / "$PROJECTS_METADATA_FILE" "$TCP_PROJECTS_METADATA_FILE" "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$SSL_CERTS_BASE_DIR" 2>/dev/null; then
+                log_success "备份完成: ${out}"
             else
                 log_error "备份失败"
             fi
             ;;
         2)
-            ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null || { log_warn "无可用备份"; return; }
-            local f=""
-            f="$(prompt_input "输入备份文件完整路径" "" "" "" "false")" || return
-            [ -f "$f" ] || { log_error "文件不存在"; return; }
+            ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null || { log_warn "无备份"; return; }
+            local file=""
+            file="$(prompt_input "输入备份完整路径" "" "" "" "false")" || return
+            [ -f "$file" ] || { log_error "文件不存在"; return; }
             if confirm_or_cancel "恢复将覆盖当前配置，继续?"; then
                 systemctl stop nginx || true
-                if tar -xzf "$f" -C /; then
+                if tar -xzf "$file" -C /; then
                     control_nginx restart || true
                     log_success "恢复完成"
                 else
@@ -1898,27 +1742,30 @@ handle_backup_restore() {
             fi
             ;;
         3)
-            render_menu "选择回滚类型" "1. HTTP 项目" "2. TCP 项目"
+            echo "1. 回滚 HTTP 项目"
+            echo "2. 回滚 TCP 项目"
             local t=""
             t="$(prompt_menu_choice "1-2" "true")" || return
-            local target_file=""
+            local target=""
             local prefix=""
             if [ "$t" = "1" ]; then
-                target_file="$PROJECTS_METADATA_FILE"
+                target="$PROJECTS_METADATA_FILE"
                 prefix="projects_"
             elif [ "$t" = "2" ]; then
-                target_file="$TCP_PROJECTS_METADATA_FILE"
+                target="$TCP_PROJECTS_METADATA_FILE"
                 prefix="tcp_projects_"
             else
                 return
             fi
+
             ls -lh "$JSON_BACKUP_DIR"/${prefix}*.bak 2>/dev/null || { log_warn "无快照"; return; }
             local s=""
             s="$(prompt_input "输入快照完整路径" "" "" "" "false")" || return
             [ -f "$s" ] || { log_error "快照不存在"; return; }
-            if confirm_or_cancel "确认执行回滚?"; then
-                snapshot_json "$target_file"
-                cp -f "$s" "$target_file"
+
+            if confirm_or_cancel "确认回滚?"; then
+                snapshot_json "$target"
+                cp -f "$s" "$target"
                 log_success "回滚完成"
             fi
             ;;
@@ -1927,24 +1774,22 @@ handle_backup_restore() {
     esac
 }
 
-# ========================= 主菜单 =========================
+# ------------------ 主菜单 ------------------
 
 draw_dashboard() {
     local nginx_v=""
     local up=""
     local http_count=0
     local tcp_count=0
-    local load="unknown"
 
     nginx_v="$(nginx -v 2>&1 | awk -F/ '{print $2}' | awk '{print $1}')"
     up="$(uptime -p 2>/dev/null | sed 's/up //')"
     http_count="$(jq 'length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)"
     tcp_count="$(jq 'length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)"
-    load="$(uptime 2>/dev/null | awk -F'load average:' '{print $2}' | xargs || echo unknown)"
 
     echo ""
     echo -e "${GREEN}================ Nginx 管理面板 v4.33.1 Stable ================${NC}"
-    echo "Nginx: ${nginx_v} | 运行: ${up:-unknown} | 负载: ${load}"
+    echo "Nginx: ${nginx_v:-unknown} | 运行: ${up:-unknown}"
     echo "HTTP: ${http_count} 个 | TCP: ${tcp_count} 个"
     echo -e "${GREEN}===============================================================${NC}"
 }
@@ -1970,7 +1815,7 @@ main_menu() {
         echo ""
 
         local c=""
-        c="$(prompt_menu_choice "1-10" "true")" || break
+        c="$(prompt_menu_choice "1-10" "true")" || return
         case "$c" in
             1) configure_nginx_projects "standard"; press_enter_to_continue ;;
             2) manage_configs ;;
@@ -1984,7 +1829,8 @@ main_menu() {
                 press_enter_to_continue
                 ;;
             7)
-                render_menu "查看日志" "1. Nginx 全局日志" "2. acme.sh 日志"
+                echo "1. Nginx 全局日志"
+                echo "2. acme.sh 日志"
                 local lc=""
                 lc="$(prompt_menu_choice "1-2" "true")" || continue
                 case "$lc" in
@@ -2002,7 +1848,7 @@ main_menu() {
     done
 }
 
-# ========================= 入口 =========================
+# ------------------ 入口 ------------------
 
 pre_check() {
     validate_args "$@" || return "$ERR_INVALID_ARGS"
@@ -2011,7 +1857,6 @@ pre_check() {
     install_dependencies || return "$ERR_MISSING_DEPS"
     check_dependencies || return "$ERR_MISSING_DEPS"
     acquire_lock || return "$ERR_RUNTIME"
-    return 0
 }
 
 _main_inner() {
@@ -2021,7 +1866,6 @@ _main_inner() {
     fi
     install_acme_sh
     main_menu
-    return 0
 }
 
 main() {
