@@ -356,7 +356,7 @@ _draw_dashboard() {
     if [ -f "$PROJECTS_METADATA_FILE" ]; then warn_count=$(jq '[.[] | select(.cert_file)] | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo 0); fi
     local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || echo "unknown")
     
-    local title="Nginx 管理面板 v4.35.0"
+    local title="Nginx 管理面板"
     local line1="Nginx: ${nginx_v} | 运行: ${uptime_raw} | 负载: ${load}"
     local line2="HTTP : ${count} 个 | TCP : ${tcp_count} 个 | 告警 : ${warn_count}"
     
@@ -1255,7 +1255,10 @@ select_item_and_act() {
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_id
         selected_id=$(echo "$list_json" | jq -r ".[$((choice_idx-1))].${id_field}")
-        if ! "$action_fn" "$selected_id"; then return 1; fi
+        if ! "$action_fn" "$selected_id"; then
+            local action_ret=$?
+            if [ "$action_ret" -eq 2 ]; then return 1; fi
+        fi
     done
 }
 
@@ -1267,7 +1270,7 @@ _manage_http_actions() {
     case "$cc" in
         1) _handle_cert_details "$selected_domain" ;;
         2) _handle_renew_cert "$selected_domain" ;;
-        3) _handle_delete_project "$selected_domain"; return 1 ;;
+        3) _handle_delete_project "$selected_domain"; return 2 ;;
         4) _handle_view_config "$selected_domain" ;;
         5) _handle_reconfigure_project "$selected_domain" ;;
         6) _handle_modify_renew_settings "$selected_domain" ;;
@@ -1386,6 +1389,18 @@ _handle_set_custom_config() {
 _handle_cert_details() {
     local d="${1:-}"; local cur=$(_get_project_json "$d"); local cert="$SSL_CERTS_BASE_DIR/$d.cer"
     _generate_op_id
+    local key_path="${SSL_CERTS_BASE_DIR}/${d}.key"
+    local method
+    method=$(echo "$cur" | jq -r '.acme_validation_method // ""')
+    if [ "$method" = "reuse" ]; then
+        local primary_domain
+        primary_domain=$(echo "$cur" | jq -r '.domain // ""')
+        if [ -z "$primary_domain" ] || [ "$primary_domain" = "null" ]; then primary_domain="$d"; fi
+        cert=$(echo "$cur" | jq -r '.cert_file // empty')
+        key_path=$(echo "$cur" | jq -r '.key_file // empty')
+        if [ -z "$cert" ] || [ "$cert" = "null" ]; then cert="$SSL_CERTS_BASE_DIR/$primary_domain.cer"; fi
+        if [ -z "$key_path" ] || [ "$key_path" = "null" ]; then key_path="$SSL_CERTS_BASE_DIR/$primary_domain.key"; fi
+    fi
     if [ -f "$cert" ]; then
         local -a lines=()
         local issuer=$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null | sed -n 's/.*O = \([^,]*\).*/\1/p' || echo "未知")
@@ -1393,9 +1408,11 @@ _handle_cert_details() {
         local end_date=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2); local end_ts=$(date -d "$end_date" +%s 2>/dev/null || echo 0)
         local days=$(( (end_ts - $(date +%s)) / 86400 ))
         local dns_names=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -oP 'DNS:\K[^,]+' | xargs | sed 's/ /, /g' || echo "无")
-        local method=$(echo "$cur" | jq -r '.acme_validation_method // "未知"'); local provider=$(echo "$cur" | jq -r '.dns_api_provider // ""'); local method_zh="未知"
+        local provider=$(echo "$cur" | jq -r '.dns_api_provider // ""'); local method_zh="未知"
         case "$method" in "http-01") method_zh="HTTP 网站根目录验证" ;; "dns-01") method_zh="DNS API 验证 (${provider:-未知})" ;; "reuse") method_zh="泛域名智能复用" ;; esac
         lines+=("${BOLD}颁发机构 (CA) :${NC} $issuer"); lines+=("${BOLD}证书主域名     :${NC} $subject"); lines+=("${BOLD}包含子域名     :${NC} $dns_names")
+        lines+=("${BOLD}证书路径       :${NC} ${cert}")
+        lines+=("${BOLD}私钥路径       :${NC} ${key_path}")
         if (( days < 0 )); then lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${RED}(已过期 ${days#-} 天)${NC}")
         elif (( days <= 30 )); then lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${BRIGHT_RED}(剩余 $days 天 - 急需续期)${NC}")
         else lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${GREEN}(剩余 $days 天)${NC}"); fi
@@ -1435,8 +1452,8 @@ configure_nginx_projects() {
     if [ -f "$cert" ] || [ "$method" = "reuse" ]; then
         snapshot_project_json "$domain" "$json"
         _save_project_json "$json"
-        if [ $ret -ne 0 ]; then log_message WARN "证书已生成并保存配置,但服务重启失败,请手动处理。"
-        else
+        if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$domain" "$json"; fi
+        if control_nginx reload; then
             log_message SUCCESS "配置已保存。"
             if [ -n "$LAST_CERT_ELAPSED" ]; then echo -e "\n申请耗时: ${LAST_CERT_ELAPSED}"; fi
             if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
@@ -1446,6 +1463,8 @@ configure_nginx_projects() {
             if [ "$mode" != "cert_only" ]; then
                 echo -e "\n网站已上线: https://$(echo "$json" | jq -r .domain)"
             fi
+        else
+            log_message WARN "配置已保存,但 Nginx 重载失败,请手动处理。"
         fi
     else log_message ERROR "证书申请失败,未保存。"; fi
 }
