@@ -1598,13 +1598,16 @@ manage_tcp_configs() {
 
 # ------------------ 批量续期/日志/备份 ------------------
 
+# AI_REVIEW_START: check_and_auto_renew_certs
 check_and_auto_renew_certs() {
     log_info "开始批量续期检测..."
     local success=0
     local fail=0
     local p=""
+
     while IFS= read -r p; do
         [ -z "$p" ] && continue
+
         local d=""
         local cert=""
         local method=""
@@ -1633,14 +1636,7 @@ check_and_auto_renew_certs() {
     control_nginx reload || true
     log_info "批量续期完成: 成功=${success}, 失败=${fail}"
 }
-
-view_file_with_tail() {
-    local f="${1:-}"
-    [ -f "$f" ] || { log_error "文件不存在: ${f}"; return; }
-    echo -e "${CYAN}--- tail -f ${f} ---${NC}"
-    tail -f -n 50 "$f" || true
-    echo -e "${CYAN}--- 结束 ---${NC}"
-}
+# AI_REVIEW_END: check_and_auto_renew_certs
 
 view_nginx_global_log() {
     echo "1. 访问日志"
