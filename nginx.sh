@@ -1430,7 +1430,9 @@ configure_nginx_projects() {
     if ! json=$(_gather_project_details "{}" "false" "$mode"); then log_message WARN "用户取消配置。"; return; fi
     
     _issue_and_install_certificate "$json"; local ret=$?; local domain=$(echo "$json" | jq -r .domain); local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
-    if [ -f "$cert" ]; then
+    local method
+    method=$(echo "$json" | jq -r '.acme_validation_method // ""')
+    if [ -f "$cert" ] || [ "$method" = "reuse" ]; then
         snapshot_project_json "$domain" "$json"
         _save_project_json "$json"
         if [ $ret -ne 0 ]; then log_message WARN "证书已生成并保存配置,但服务重启失败,请手动处理。"
