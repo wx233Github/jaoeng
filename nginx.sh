@@ -1258,7 +1258,7 @@ select_item_and_act() {
     while true; do
         local choice_idx
         if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 0; fi
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 1; fi
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 0; fi
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_id
         selected_id=$(echo "$list_json" | jq -r ".[$((choice_idx-1))].${id_field}")
