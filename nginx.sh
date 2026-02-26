@@ -228,6 +228,37 @@ confirm_or_cancel() {
     log_message ERROR "非交互需确认: '$prompt_text',已取消。"; return 1
 }
 
+_get_cf_allow_file() {
+    local f="/etc/nginx/snippets/cf_allow.conf"
+    if [ -f "$f" ] && [ -s "$f" ]; then echo "$f"; return 0; fi
+    echo ""; return 1
+}
+
+_is_cloudflare_ip() {
+    local ip="${1:-}" cf_file
+    cf_file=$(_get_cf_allow_file) || return 1
+    if [ -z "$ip" ]; then return 1; fi
+    grep -q "^allow ${ip}/" "$cf_file"
+}
+
+_domain_uses_cloudflare() {
+    local domain="${1:-}" ip
+    if [ -z "$domain" ]; then return 1; fi
+    while read -r ip; do
+        [ -z "$ip" ] && continue
+        if _is_cloudflare_ip "$ip"; then return 0; fi
+    done < <(getent ahosts "$domain" | awk '{print $1}' | sort -u)
+    return 1
+}
+
+_prompt_update_cf_ips_if_missing() {
+    if _get_cf_allow_file >/dev/null; then return 0; fi
+    if confirm_or_cancel "未检测到 Cloudflare IP 库，是否现在更新?" "n"; then
+        _update_cloudflare_ips || return 1
+    fi
+    return 0
+}
+
 
 _detect_web_service() {
     if ! command -v systemctl &>/dev/null; then return; fi
@@ -389,9 +420,12 @@ _check_dns_resolution() {
     log_message INFO "正在预检域名解析: $domain ..."
     get_vps_ip
     local resolved_ips=""
+    local resolved_list=()
     if command -v dig >/dev/null 2>&1; then resolved_ips=$(dig +short "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | xargs)
     elif command -v host >/dev/null 2>&1; then resolved_ips=$(host -t A "$domain" 2>/dev/null | grep "has address" | awk '{print $NF}' | xargs)
     else log_message WARN "未安装 dig/host 工具,跳过 DNS 预检。"; return 0; fi
+
+    read -r -a resolved_list <<< "$resolved_ips"
 
     if [ -z "$resolved_ips" ]; then
         log_message ERROR "❌ DNS 解析失败: 域名 $domain 当前未解析到任何 IP 地址。"
@@ -403,7 +437,21 @@ _check_dns_resolution() {
         log_message WARN "⚠️  DNS 解析异常!"; echo -e "${YELLOW}本机 IP : ${VPS_IP}${NC}"; echo -e "${YELLOW}解析 IP : ${resolved_ips}${NC}"
         echo -e "${RED}解析结果不包含本机 IP。如果您开启了 Cloudflare CDN (橙色云),这是正常的,请选择 'y' 继续。${NC}"
         if ! confirm_or_cancel "解析结果不匹配,是否强制继续?"; then return 1; fi
-    fi; return 0
+    fi
+
+    if [ -n "$resolved_ips" ]; then
+        if _prompt_update_cf_ips_if_missing; then
+            if ! _domain_uses_cloudflare "$domain"; then
+                if [ "${CF_STRICT_MODE_CURRENT:-n}" = "y" ]; then
+                    echo -e "${YELLOW}检测为灰云/非 CDN，严格防御可能导致 403/521。${NC}"
+                    if confirm_or_cancel "是否立即关闭严格防御?" "n"; then
+                        CF_STRICT_MODE_CURRENT="n"
+                    fi
+                fi
+            fi
+        fi
+    fi
+    return 0
 }
 
 # ==============================================================================
@@ -1017,7 +1065,9 @@ _issue_and_install_certificate() {
         LAST_CERT_KEY=$(echo "$json" | jq -r .key_file)
         return 0
     fi
-    if [ "$method" == "http-01" ]; then if ! _check_dns_resolution "$domain"; then return 1; fi; fi
+    if [ "$method" == "http-01" ]; then
+        if ! _check_dns_resolution "$domain"; then return 1; fi
+    fi
     local provider=$(echo "$json" | jq -r .dns_api_provider); local wildcard=$(echo "$json" | jq -r .use_wildcard)
     local ca=$(echo "$json" | jq -r .ca_server_url); local cert="$SSL_CERTS_BASE_DIR/$domain.cer"; local key="$SSL_CERTS_BASE_DIR/$domain.key"
     local start_ts
@@ -1108,7 +1158,13 @@ _gather_project_details() {
     if [ -z "$domain" ]; then if ! domain=$(prompt_input "主域名" "" "^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" "格式无效" "false"); then exec 1>&3; return 1; fi; fi
     if ! _is_valid_domain "$domain"; then log_message ERROR "域名格式无效。"; exec 1>&3; return 1; fi
     
-    if [ "$skip_cert" == "false" ]; then if ! _check_dns_resolution "$domain"; then echo -e "${RED}域名配置已取消。${NC}"; exec 1>&3; return 1; fi; fi
+    if [ "$skip_cert" == "false" ]; then
+        if ! _check_dns_resolution "$domain"; then
+            echo -e "${RED}域名配置已取消。${NC}"
+            exec 1>&3
+            return 1
+        fi
+    fi
 
     local wc_match=""
     if [ "$skip_cert" == "false" ]; then
@@ -1127,6 +1183,7 @@ _gather_project_details() {
     local type="cert_only"; local name="证书"; local port="cert_only"
     local max_body=$(echo "$cur" | jq -r '.client_max_body_size // empty'); local custom_cfg=$(echo "$cur" | jq -r '.custom_config // empty')
     local cf_strict=$(echo "$cur" | jq -r '.cf_strict_mode // "n"'); local reload_cmd=$(echo "$cur" | jq -r '.reload_cmd // empty')
+    CF_STRICT_MODE_CURRENT="$cf_strict"
 
     if [ "$is_cert_only" == "false" ]; then
         name=$(echo "$cur" | jq -r '.name // ""'); [ "$name" == "证书" ] && name=""
@@ -1187,7 +1244,8 @@ _gather_project_details() {
 
     if [ "$is_cert_only" == "false" ]; then
         local cf_strict_default="n"; [ "$cf_strict" == "y" ] && cf_strict_default="y"
-        if confirm_or_cancel "是否开启 Cloudflare 严格安全防御?"; then cf_strict="y"; else cf_strict="n"; fi
+    if confirm_or_cancel "是否开启 Cloudflare 严格安全防御?" "$cf_strict_default"; then cf_strict="y"; else cf_strict="n"; fi
+    CF_STRICT_MODE_CURRENT="$cf_strict"
     else
         if [ "$skip_cert" == "false" ]; then
             local -a hook_lines=(); local auto_sui_cmd=""
@@ -1211,7 +1269,7 @@ _gather_project_details() {
     jq -n --arg d "${domain:-}" --arg t "${type:-local_port}" --arg n "${name:-}" --arg p "${port:-}" \
         --arg m "${method:-http-01}" --arg dp "${provider:-}" --arg w "${wildcard:-n}" \
         --arg cu "${ca_server:-}" --arg cn "${ca_name:-}" --arg cf "${cf:-}" --arg kf "${kf:-}" \
-        --arg mb "${max_body:-}" --arg cc "${custom_cfg:-}" --arg cs "${cf_strict:-n}" --arg rc "${reload_cmd:-}" \
+        --arg mb "${max_body:-}" --arg cc "${custom_cfg:-}" --arg cs "${CF_STRICT_MODE_CURRENT:-$cf_strict}" --arg rc "${reload_cmd:-}" \
         '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb, custom_config:$cc, cf_strict_mode:$cs, reload_cmd:$rc}' >&3
     exec 1>&3
 }
@@ -1271,9 +1329,9 @@ select_item_and_act() {
 
 _manage_http_actions() {
     local selected_domain="${1:-}"
-    _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令"
+    _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令" "8. 切换 Cloudflare 严格防御"
     local cc
-    if ! cc=$(prompt_menu_choice "1-7" "true"); then return 0; fi
+    if ! cc=$(prompt_menu_choice "1-8" "true"); then return 0; fi
     case "$cc" in
         1) _handle_cert_details "$selected_domain" ;;
         2) _handle_renew_cert "$selected_domain" ;;
@@ -1282,6 +1340,7 @@ _manage_http_actions() {
         5) _handle_reconfigure_project "$selected_domain" ;;
         6) _handle_modify_renew_settings "$selected_domain" ;;
         7) _handle_set_custom_config "$selected_domain" ;;
+        8) _handle_toggle_cf_strict "$selected_domain" ;;
         "") return 0 ;;
     esac
     return 0
@@ -1400,6 +1459,29 @@ _handle_set_custom_config() {
             control_nginx reload || true
         fi
     fi; press_enter_to_continue
+}
+
+_handle_toggle_cf_strict() {
+    local d="${1:-}"; local cur=$(_get_project_json "$d")
+    local current=$(echo "$cur" | jq -r '.cf_strict_mode // "n"')
+    local target="y"; [ "$current" = "y" ] && target="n"
+    local label="开启"; [ "$target" = "n" ] && label="关闭"
+    if ! confirm_or_cancel "是否${label} Cloudflare 严格防御? (仅适用于开启 CDN)" "n"; then return; fi
+    local new_json
+    new_json=$(echo "$cur" | jq --arg v "$target" '.cf_strict_mode = $v')
+    snapshot_project_json "$d" "$cur"
+    if _save_project_json "$new_json"; then
+        _write_and_enable_nginx_config "$d" "$new_json"
+        if control_nginx reload; then
+            echo -e "已${label} Cloudflare 严格防御。"
+        else
+            log_message ERROR "Nginx 重载失败,已回滚。"
+            _save_project_json "$cur"
+            _write_and_enable_nginx_config "$d" "$cur"
+            control_nginx reload || true
+        fi
+    fi
+    press_enter_to_continue
 }
 _handle_cert_details() {
     local d="${1:-}"; local cur=$(_get_project_json "$d"); local cert="$SSL_CERTS_BASE_DIR/$d.cer"
