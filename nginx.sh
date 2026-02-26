@@ -651,9 +651,9 @@ _update_cloudflare_ips() {
         echo "deny all;" >> "$temp_cf_allow"
         echo "real_ip_header CF-Connecting-IP;" >> "$temp_cf_real"
         echo "}" >> "$temp_cf_geo"
-        mv "$temp_cf_allow" /etc/nginx/snippets/cf_allow.conf
         mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
         mv "$temp_cf_geo" /etc/nginx/conf.d/cf_geo.conf
+        rm -f /etc/nginx/snippets/cf_allow.conf
         log_message SUCCESS "Cloudflare IP 列表更新完成。"
     else log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"; fi
     rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
@@ -928,6 +928,7 @@ _rebuild_all_nginx_configs() {
         log_message INFO "重建配置文件: $d ..."
         if _write_and_enable_nginx_config "$d" "$p"; then success=$((success+1)); else fail=$((fail+1)); log_message ERROR "重建失败: $d"; fi
     done <<< "$all_projects"
+    rm -f /etc/nginx/snippets/cf_allow.conf
     log_message INFO "正在重载 Nginx..."
     if control_nginx reload; then log_message SUCCESS "重建完成。成功: $success, 失败: $fail"; else log_message ERROR "Nginx 重载失败!"; fi
 }
