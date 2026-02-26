@@ -579,14 +579,14 @@ _update_cloudflare_ips() {
     log_message INFO "正在拉取最新的 Cloudflare IP 列表..."
     local temp_allow
     temp_allow=$(mktemp)
-    if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_allow" && echo "" >> "$temp_allow" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$temp_allow"; then
+    if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_allow" && printf "\n" >> "$temp_allow" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$temp_allow"; then
         mkdir -p /etc/nginx/snippets /etc/nginx/conf.d; local temp_cf_allow=$(mktemp); local temp_cf_real=$(mktemp)
         echo "# Cloudflare Allow List" > "$temp_cf_allow"; echo "# Cloudflare Real IP" > "$temp_cf_real"
         while read -r ip; do [ -z "$ip" ] && continue; echo "allow $ip;" >> "$temp_cf_allow"; echo "set_real_ip_from $ip;" >> "$temp_cf_real"; done < <(grep -E '^[0-9a-fA-F.:]+(/[0-9]+)?$' "$temp_allow")
         local allow_count
         allow_count=$(grep -c '^allow ' "$temp_cf_allow" || echo 0)
-        if [ "$allow_count" -lt 30 ]; then
-            log_message ERROR "Cloudflare IP 列表过少 (${allow_count})，已放弃更新。"
+        if [ "$allow_count" -lt 5 ]; then
+            log_message ERROR "Cloudflare IP 列表异常 (${allow_count})，已放弃更新。"
             rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" 2>/dev/null || true
             return 1
         fi
