@@ -628,45 +628,35 @@ _update_cloudflare_ips() {
     local temp_allow
     temp_allow=$(mktemp)
     if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_allow" && printf "\n" >> "$temp_allow" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$temp_allow"; then
-        mkdir -p /etc/nginx/snippets /etc/nginx/conf.d; local temp_cf_allow=$(mktemp); local temp_cf_real=$(mktemp)
-        echo "# Cloudflare Allow List" > "$temp_cf_allow"; echo "# Cloudflare Real IP" > "$temp_cf_real"
-        while read -r ip; do [ -z "$ip" ] && continue; echo "allow $ip;" >> "$temp_cf_allow"; echo "set_real_ip_from $ip;" >> "$temp_cf_real"; done < <(grep -E '^[0-9a-fA-F.:]+(/[0-9]+)?$' "$temp_allow")
+        mkdir -p /etc/nginx/snippets /etc/nginx/conf.d
+        local temp_cf_allow temp_cf_real temp_cf_geo
+        temp_cf_allow=$(mktemp); temp_cf_real=$(mktemp); temp_cf_geo=$(mktemp)
+        echo "# Cloudflare Allow List" > "$temp_cf_allow"
+        echo "# Cloudflare Real IP" > "$temp_cf_real"
+        echo "geo \$cf_ip {" > "$temp_cf_geo"
+        echo "    default 0;" >> "$temp_cf_geo"
+        while read -r ip; do
+            [ -z "$ip" ] && continue
+            echo "allow $ip;" >> "$temp_cf_allow"
+            echo "set_real_ip_from $ip;" >> "$temp_cf_real"
+            echo "    $ip 1;" >> "$temp_cf_geo"
+        done < <(grep -E '^[0-9a-fA-F.:]+(/[0-9]+)?$' "$temp_allow")
         local allow_count
         allow_count=$(grep -c '^allow ' "$temp_cf_allow" || echo 0)
         if [ "$allow_count" -lt 5 ]; then
             log_message ERROR "Cloudflare IP 列表异常 (${allow_count})，已放弃更新。"
-            rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" 2>/dev/null || true
+            rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
             return 1
         fi
-        echo "deny all;" >> "$temp_cf_allow"; echo "real_ip_header CF-Connecting-IP;" >> "$temp_cf_real"
-        mv "$temp_cf_allow" /etc/nginx/snippets/cf_allow.conf; mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
+        echo "deny all;" >> "$temp_cf_allow"
+        echo "real_ip_header CF-Connecting-IP;" >> "$temp_cf_real"
+        echo "}" >> "$temp_cf_geo"
+        mv "$temp_cf_allow" /etc/nginx/snippets/cf_allow.conf
+        mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
+        mv "$temp_cf_geo" /etc/nginx/conf.d/cf_geo.conf
         log_message SUCCESS "Cloudflare IP 列表更新完成。"
-        echo -e "\n${BRIGHT_YELLOW}${BOLD}📢 [安全提示] 核心库已下载完毕!但防御规则尚未生效至各个网站。${NC}"
-        if confirm_or_cancel "是否立刻启动【安全巡检】,为您排查并开启尚未防御的网站?"; then
-            local all_projects=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo ""); local modified=0
-            while read -r p; do [ -z "$p" ] && continue
-                local d=$(echo "$p" | jq -r .domain); local cs=$(echo "$p" | jq -r '.cf_strict_mode // "n"'); local port=$(echo "$p" | jq -r .resolved_port)
-                if [ "$port" != "cert_only" ] && [ "$cs" != "y" ]; then
-                    echo -e "\n👉 发现暴露项目: ${CYAN}$d${NC}"
-                    if confirm_or_cancel "是否为 $d 开启防御 (仅允许通过 CF CDN 访问,拉黑直接访问源站的扫描器)?"; then
-                        local new_p=$(echo "$p" | jq '.cf_strict_mode = "y"')
-    local prev_p="$p"
-    if _save_project_json "$new_p"; then
-        snapshot_project_json "$d" "$prev_p"
-        if _write_and_enable_nginx_config "$d" "$new_p"; then
-            modified=1; log_message SUCCESS "已为 $d 注入防火墙规则。"
-        else
-            _save_project_json "$prev_p"
-        fi
-    fi
-                    fi
-                fi
-            done <<< "$all_projects"
-            if [ "$modified" -eq 1 ]; then control_nginx reload; log_message SUCCESS "所有变更已生效,恭喜!您被选中的网站现已进入隐身状态。"
-            else echo -e "${GREEN}无需修改,目前所有适用网站均已配置完毕。${NC}"; fi
-        fi
     else log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"; fi
-    rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" 2>/dev/null || true
+    rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
 }
 
 
@@ -864,7 +854,10 @@ _write_and_enable_nginx_config() {
     local max_body=$(echo "$json" | jq -r '.client_max_body_size // empty'); local custom_cfg=$(echo "$json" | jq -r '.custom_config // empty')
     local cf_strict=$(echo "$json" | jq -r '.cf_strict_mode // "n"'); local body_cfg=""; [[ -n "$max_body" && "$max_body" != "null" ]] && body_cfg="client_max_body_size ${max_body};"
     local extra_cfg=""; [[ -n "$custom_cfg" && "$custom_cfg" != "null" ]] && extra_cfg="$custom_cfg"; local cf_strict_cfg=""
-    if [ "$cf_strict" == "y" ]; then [ ! -f "/etc/nginx/snippets/cf_allow.conf" ] && _update_cloudflare_ips; cf_strict_cfg="include /etc/nginx/snippets/cf_allow.conf;"; fi
+    if [ "$cf_strict" == "y" ]; then
+        [ ! -f "/etc/nginx/conf.d/cf_geo.conf" ] && _update_cloudflare_ips
+        cf_strict_cfg="\n    if (\$cf_ip = 0) { return 444; }"
+    fi
     
     if [[ -z "$port" || "$port" == "null" ]]; then log_message ERROR "端口为空,请检查项目配置。"; return 1; fi; get_vps_ip
 
@@ -884,7 +877,8 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';
     add_header Strict-Transport-Security "max-age=31536000;" always;
-    ${body_cfg}${cf_strict_cfg}${extra_cfg}
+    ${body_cfg}${cf_strict_cfg}
+    ${extra_cfg}
     location / {
         proxy_pass http://127.0.0.1:${port};
         proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr;
