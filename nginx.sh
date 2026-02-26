@@ -314,6 +314,7 @@ _validate_reload_cmd() {
     [ "$cmd" = "systemctl reload nginx" ]
 }
 
+# AI_REVIEW_START: _validate_nginx_directive
 _validate_nginx_directive() {
     local line="${1:-}"
     [ -z "$line" ] && return 0
@@ -323,8 +324,9 @@ _validate_nginx_directive() {
     if [[ "$line" == *$'\n'* ]] || [[ "$line" == *$'\r'* ]] || [[ "$line" == *$'\t'* ]]; then
         return 1
     fi
-    [[ "$line" =~ ;$ ]]
+    [[ "$line" =~ \;$ ]]
 }
+# AI_REVIEW_END: _validate_nginx_directive
 
 _is_allowed_custom_directive() {
     local line="${1:-}"
