@@ -61,6 +61,9 @@ SCRIPT_PATH=$(realpath "$0")
 OP_ID=""
 LOCK_FILE="/var/lock/nginx_ssl_manager.lock"
 LOCK_FD=9
+LAST_CERT_ELAPSED=""
+LAST_CERT_CERT=""
+LAST_CERT_KEY=""
 
 _generate_op_id() { OP_ID="$(date +%Y%m%d_%H%M%S)_$$_$RANDOM"; }
 
@@ -1001,10 +1004,17 @@ _mask_sensitive_data() {
 _issue_and_install_certificate() {
     _generate_op_id
     local json="${1:-}"; local domain=$(echo "$json" | jq -r .domain); local method=$(echo "$json" | jq -r .acme_validation_method)
-    if [ "$method" == "reuse" ]; then return 0; fi
+    LAST_CERT_ELAPSED=""; LAST_CERT_CERT=""; LAST_CERT_KEY=""
+    if [ "$method" == "reuse" ]; then
+        LAST_CERT_CERT=$(echo "$json" | jq -r .cert_file)
+        LAST_CERT_KEY=$(echo "$json" | jq -r .key_file)
+        return 0
+    fi
     if [ "$method" == "http-01" ]; then if ! _check_dns_resolution "$domain"; then return 1; fi; fi
     local provider=$(echo "$json" | jq -r .dns_api_provider); local wildcard=$(echo "$json" | jq -r .use_wildcard)
     local ca=$(echo "$json" | jq -r .ca_server_url); local cert="$SSL_CERTS_BASE_DIR/$domain.cer"; local key="$SSL_CERTS_BASE_DIR/$domain.key"
+    local start_ts
+    start_ts=$(date +%s)
     
     log_message INFO "正在为 $domain 申请证书 ($method)..."
     local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca" --log)
@@ -1074,6 +1084,8 @@ EOF
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
     "${inst[@]}" >/dev/null 2>&1; local acme_ret=$?
     if [ -f "$cert" ] && [ -f "$key" ]; then
+        local elapsed=$(( $(date +%s) - start_ts ))
+        LAST_CERT_ELAPSED="${elapsed}s"; LAST_CERT_CERT="$cert"; LAST_CERT_KEY="$key"
         log_message SUCCESS "证书文件已成功生成于 /etc/ssl/ 目录。"
         if [ $acme_ret -ne 0 ]; then echo -e "\n${RED}⚠️  [警告] 自动重启命令执行失败: $install_reload_cmd${NC}"; echo -e "${YELLOW}证书已安装,但服务未能自动加载新证书。${NC}"; fi
         _send_tg_notify "success" "$domain" "证书已成功安装。"; unset CF_Token CF_Account_ID Ali_Key Ali_Secret; return 0
@@ -1151,12 +1163,15 @@ _gather_project_details() {
             # *** 优化核心：泛域名主域不配置端口 ***
             if [ "$wildcard" = "y" ] && [ "$is_cert_only" == "false" ]; then
                 echo -e "\n${BRIGHT_YELLOW}┌──────────────────────────────────────────────┐${NC}"
-                echo -e "${BRIGHT_YELLOW}│ ⚠️  检测到泛域名申请模式                        │${NC}"
+                local box_msg="⚠️  检测到泛域名申请模式"; local box_line
+                printf -v box_line "%-44s" "$box_msg"
+                echo -e "${BRIGHT_YELLOW}│ ${box_line} │${NC}"
                 echo -e "${BRIGHT_YELLOW}└──────────────────────────────────────────────┘${NC}"
                 echo -e "您的配置将同时覆盖 ${GREEN}${domain}${NC} 和 ${GREEN}*.${domain}${NC}。"
                 if ! confirm_or_cancel "是否为主域名 ${domain} 配置 Nginx HTTP 代理端口? (选 No 则仅管理证书)" "n"; then
                     # 用户选择不配置代理，强制切换为 cert_only 模式
                     is_cert_only="true"
+                    type="cert_only"; port="cert_only"
                     echo -e "${CYAN}已切换为证书管理模式，后续将跳过端口与防御设置。${NC}"
                 fi
             fi ;;
@@ -1235,7 +1250,7 @@ select_item_and_act() {
     local list_json="${1:-}" count="${2:-0}" prompt_text="${3:-}" id_field="${4:-}" action_fn="${5:-}"
     while true; do
         local choice_idx
-        if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 1; fi
+        if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 0; fi
         if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 1; fi
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_id
@@ -1419,7 +1434,17 @@ configure_nginx_projects() {
         snapshot_project_json "$domain" "$json"
         _save_project_json "$json"
         if [ $ret -ne 0 ]; then log_message WARN "证书已生成并保存配置,但服务重启失败,请手动处理。"
-        else log_message SUCCESS "配置已保存。"; [ "$mode" != "cert_only" ] && echo -e "\n网站已上线: https://$(echo "$json" | jq -r .domain)" || echo -e "\n证书已就绪: /etc/ssl/${domain}.cer"; fi
+        else
+            log_message SUCCESS "配置已保存。"
+            if [ -n "$LAST_CERT_ELAPSED" ]; then echo -e "\n申请耗时: ${LAST_CERT_ELAPSED}"; fi
+            if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
+                echo -e "证书路径: ${LAST_CERT_CERT}"
+                echo -e "私钥路径: ${LAST_CERT_KEY}"
+            fi
+            if [ "$mode" != "cert_only" ]; then
+                echo -e "\n网站已上线: https://$(echo "$json" | jq -r .domain)"
+            fi
+        fi
     else log_message ERROR "证书申请失败,未保存。"; fi
 }
 
