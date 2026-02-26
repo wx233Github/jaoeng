@@ -1340,8 +1340,16 @@ _handle_reconfigure_project() {
     snapshot_project_json "$d" "$cur"
     if [ "$skip_cert" == "false" ]; then if ! _issue_and_install_certificate "$new"; then log_message ERROR "证书申请失败。"; return 1; fi; fi
     if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$d" "$new"; fi
-    if control_nginx reload && _save_project_json "$new"; then
+    if _save_project_json "$new" && control_nginx reload; then
         log_message SUCCESS "重配成功"
+        if [ -n "$LAST_CERT_ELAPSED" ]; then echo -e "\n申请耗时: ${LAST_CERT_ELAPSED}"; fi
+        if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
+            echo -e "证书路径: ${LAST_CERT_CERT}"
+            echo -e "私钥路径: ${LAST_CERT_KEY}"
+        fi
+        if [ "$mode" != "cert_only" ]; then
+            echo -e "\n网站已上线: https://$(echo "$new" | jq -r .domain)"
+        fi
     else
         log_message ERROR "重配失败,正在回滚。"
         _save_project_json "$cur"
