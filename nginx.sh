@@ -973,21 +973,7 @@ manage_tcp_configs() {
             local tls=$(echo "$p" | jq -r '.tls_enabled // "n"'); local tls_str="${RED}否${NC}"; [ "$tls" == "y" ] && tls_str="${GREEN}是${NC}"
             printf "%-4d ${GREEN}%-10s${NC} %-14s %-12s %-22s\n" "$idx" "$port" "$tls_str" "${name:0:10}" "$short_target"
         done; echo ""
-        local choice_idx; if ! choice_idx=$(prompt_input "请输入序号选择 TCP 项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true"); then return; fi
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
-        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
-        local selected_port=$(echo "$all" | jq -r ".[$((choice_idx-1))].listen_port")
-        _render_menu "管理 TCP: 端口 $selected_port" "1. 删除项目" "2. 查看配置"
-        local cc; if ! cc=$(prompt_menu_choice "1-2" "true"); then continue; fi
-        case "$cc" in
-            1) if confirm_or_cancel "确认删除 TCP 代理 $selected_port?"; then
-                   rm -f "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" "$NGINX_STREAM_ENABLED_DIR/tcp_${selected_port}.conf"
-                   snapshot_json "$TCP_PROJECTS_METADATA_FILE"; local temp=$(mktemp)
-                   jq --arg p "$selected_port" 'del(.[] | select(.listen_port == $p))' "$TCP_PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$TCP_PROJECTS_METADATA_FILE"
-                   control_nginx reload; log_message SUCCESS "TCP 项目 $selected_port 删除成功。"
-               fi ;;
-            2) cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置文件不存在"; press_enter_to_continue ;;
-        esac
+        if ! select_item_and_act "$all" "$count" "请输入序号选择 TCP 项目 (回车返回)" "listen_port" _manage_tcp_actions; then break; fi
     done
 }
 
@@ -1233,7 +1219,7 @@ _display_projects_list() {
             local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2); local end_ts=$(date -d "$end" +%s 2>/dev/null || echo 0)
             local now_ts=$(date +%s); local days=$(( (end_ts - now_ts) / 86400 ))
             if (( days < 0 )); then status_text="过期 ${days#-}天"; color_code="${BRIGHT_RED}"
-            elif (( days <= 30 )); then status_text="${days}天续期"; color_code="${BRIGHT_YELLOW}"
+            elif (( days <= 30 )); then status_text="${days}天续期"; color_code="${BRIGHT_RED}"
             else status_text="正常 ${days}天"; color_code="${GREEN}"; fi
         fi
         local line=""; line+="$(_center_text "$idx" "$w_id") "; line+="$(_center_text "$domain" "$w_domain") "; line+="$(_center_text "$display_target" "$w_target") "
@@ -1244,19 +1230,64 @@ _display_projects_list() {
     done; echo ""
 }
 
+select_item_and_act() {
+    local list_json="${1:-}" count="${2:-0}" prompt_text="${3:-}" id_field="${4:-}" action_fn="${5:-}"
+    while true; do
+        local choice_idx
+        if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 1; fi
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 1; fi
+        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
+        local selected_id
+        selected_id=$(echo "$list_json" | jq -r ".[$((choice_idx-1))].${id_field}")
+        if ! "$action_fn" "$selected_id"; then return 1; fi
+    done
+}
+
+_manage_http_actions() {
+    local selected_domain="${1:-}"
+    _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令"
+    local cc
+    if ! cc=$(prompt_menu_choice "1-7" "true"); then return 0; fi
+    case "$cc" in
+        1) _handle_cert_details "$selected_domain" ;;
+        2) _handle_renew_cert "$selected_domain" ;;
+        3) _handle_delete_project "$selected_domain"; return 1 ;;
+        4) _handle_view_config "$selected_domain" ;;
+        5) _handle_reconfigure_project "$selected_domain" ;;
+        6) _handle_modify_renew_settings "$selected_domain" ;;
+        7) _handle_set_custom_config "$selected_domain" ;;
+        "") return 0 ;;
+    esac
+    return 0
+}
+
+_manage_tcp_actions() {
+    local selected_port="${1:-}"
+    _render_menu "管理 TCP: 端口 $selected_port" "1. 删除项目" "2. 查看配置"
+    local cc
+    if ! cc=$(prompt_menu_choice "1-2" "true"); then return 0; fi
+    case "$cc" in
+        1)
+            if confirm_or_cancel "确认删除 TCP 代理 $selected_port?"; then
+                rm -f "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" "$NGINX_STREAM_ENABLED_DIR/tcp_${selected_port}.conf"
+                snapshot_json "$TCP_PROJECTS_METADATA_FILE"; local temp=$(mktemp)
+                jq --arg p "$selected_port" 'del(.[] | select(.listen_port == $p))' "$TCP_PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$TCP_PROJECTS_METADATA_FILE"
+                control_nginx reload; log_message SUCCESS "TCP 项目 $selected_port 删除成功。"
+            fi
+            ;;
+        2) cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置文件不存在"; press_enter_to_continue ;;
+        "") return 0 ;;
+    esac
+    return 0
+}
+
 manage_configs() {
     _generate_op_id
     while true; do
         local all=$(jq . "$PROJECTS_METADATA_FILE"); local count=$(echo "$all" | jq 'length')
         if [ "$count" -eq 0 ]; then log_message WARN "暂无项目。"; break; fi
         echo ""; _display_projects_list "$all"
-        local choice_idx; if ! choice_idx=$(prompt_input "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true"); then return; fi
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then break; fi
-        if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
-        local selected_domain=$(echo "$all" | jq -r ".[$((choice_idx-1))].domain")
-        _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令"
-        local cc; if ! cc=$(prompt_menu_choice "1-7" "true"); then continue; fi
-        case "$cc" in 1) _handle_cert_details "$selected_domain" ;; 2) _handle_renew_cert "$selected_domain" ;; 3) _handle_delete_project "$selected_domain"; break ;; 4) _handle_view_config "$selected_domain" ;; 5) _handle_reconfigure_project "$selected_domain" ;; 6) _handle_modify_renew_settings "$selected_domain" ;; 7) _handle_set_custom_config "$selected_domain" ;; "") continue ;; esac
+        if ! select_item_and_act "$all" "$count" "请输入序号选择项目 (回车返回)" "domain" _manage_http_actions; then break; fi
     done
 }
 
@@ -1350,7 +1381,7 @@ _handle_cert_details() {
         case "$method" in "http-01") method_zh="HTTP 网站根目录验证" ;; "dns-01") method_zh="DNS API 验证 (${provider:-未知})" ;; "reuse") method_zh="泛域名智能复用" ;; esac
         lines+=("${BOLD}颁发机构 (CA) :${NC} $issuer"); lines+=("${BOLD}证书主域名     :${NC} $subject"); lines+=("${BOLD}包含子域名     :${NC} $dns_names")
         if (( days < 0 )); then lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${RED}(已过期 ${days#-} 天)${NC}")
-        elif (( days <= 30 )); then lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${YELLOW}(剩余 $days 天 - 急需续期)${NC}")
+        elif (( days <= 30 )); then lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${BRIGHT_RED}(剩余 $days 天 - 急需续期)${NC}")
         else lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${GREEN}(剩余 $days 天)${NC}"); fi
         lines+=("${BOLD}配置的验证方式 :${NC} $method_zh")
         _render_menu "证书详细诊断信息: $d" "${lines[@]}"
@@ -1366,7 +1397,7 @@ check_and_auto_renew_certs() {
         [[ -z "$domain" ]] && continue; echo -ne "检查: $domain ... "
         if [ "$method" == "reuse" ]; then echo -e "跳过(跟随主域)"; continue; fi
         if [ ! -f "$cert_file" ] || ! openssl x509 -checkend $((RENEW_THRESHOLD_DAYS * 86400)) -noout -in "$cert_file"; then
-            echo -e "${YELLOW}触发续期...${NC}"
+            echo -e "${BRIGHT_RED}触发续期...${NC}"
             local project_json; project_json=$(_get_project_json "$domain")
             if [[ -n "$project_json" ]]; then
                 if _issue_and_install_certificate "$project_json"; then success=$((success+1)); else fail=$((fail+1)); fi
@@ -1409,9 +1440,9 @@ main_menu() {
         echo -e " 5. 管理 TCP 反向代理"
         echo ""
         echo -e "${PURPLE}【运维监控与系统维护】${NC}"
-        echo -e " 6. 批量续期"
+        echo -e " 6. ${BRIGHT_RED}${BOLD}批量续期${NC}"
         echo -e " 7. 查看日志 (Logs - Nginx/acme)"
-        echo -e " 8. ${BRIGHT_YELLOW}${BOLD}更新 Cloudflare 防御 IP 库${NC}"
+        echo -e " 8. ${BRIGHT_RED}${BOLD}更新 Cloudflare 防御 IP 库${NC}"
         echo -e " 9. 备份/还原与配置重建"
         echo -e "10. 设置 Telegram 机器人通知"
         echo ""
