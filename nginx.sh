@@ -31,6 +31,7 @@ TCP_PROJECTS_METADATA_FILE="/etc/nginx/tcp_projects.json"
 JSON_BACKUP_DIR="/etc/nginx/projects_backups"
 BACKUP_DIR="/root/nginx_ssl_backups"
 TG_CONF_FILE="/etc/nginx/tg_notifier.conf"
+GZIP_DISABLE_MARK="/etc/nginx/.gzip_optimize_disabled"
 
 RENEW_THRESHOLD_DAYS=30
 DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v3"
@@ -506,11 +507,15 @@ initialize_environment() {
     mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
     if [ ! -f "$TCP_PROJECTS_METADATA_FILE" ] || ! jq -e . "$TCP_PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$TCP_PROJECTS_METADATA_FILE"; fi
+    if [ -f "$GZIP_DISABLE_MARK" ] && [ -f "/etc/nginx/conf.d/gzip_optimize.conf" ]; then
+        rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
+    fi
     if [ -f "/etc/nginx/conf.d/gzip_optimize.conf" ]; then
         if ! nginx -t >/dev/null 2>&1; then
             if nginx -t 2>&1 | grep -q "gzip"; then
                 rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
-                log_message WARN "清理与主配置冲突的 Gzip 文件。"
+                touch "$GZIP_DISABLE_MARK"
+                log_message WARN "清理与主配置冲突的 Gzip 文件，并禁用自动恢复。"
             fi
         fi
     fi
