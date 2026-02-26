@@ -187,7 +187,7 @@ confirm_or_cancel() {
     return 1
 }
 
-# ------------------ 校验 ------------------
+# ------------------ 参数/依赖 ------------------
 
 validate_args() {
     local arg=""
@@ -257,10 +257,10 @@ install_dependencies() {
     if [ "${#missing[@]}" -gt 0 ]; then
         log_info "安装依赖: ${missing[*]}"
         apt update -y >/dev/null 2>&1 || true
-        apt install -y "${missing[@]}" >/dev/null 2>&1 || {
+        if ! apt install -y "${missing[@]}" >/dev/null 2>&1; then
             log_error "依赖安装失败"
             return 1
-        }
+        fi
     fi
     touch "$DEPS_MARK_FILE"
 }
@@ -273,6 +273,8 @@ acquire_lock() {
         return "$ERR_RUNTIME"
     fi
 }
+
+# ------------------ 校验 ------------------
 
 _validate_domain() {
     local d="${1:-}"
@@ -314,7 +316,6 @@ _validate_reload_cmd() {
     [ "$cmd" = "systemctl reload nginx" ]
 }
 
-# AI_REVIEW_START: _validate_nginx_directive
 _validate_nginx_directive() {
     local line="${1:-}"
     [ -z "$line" ] && return 0
@@ -326,7 +327,6 @@ _validate_nginx_directive() {
     fi
     [[ "$line" =~ \;$ ]]
 }
-# AI_REVIEW_END: _validate_nginx_directive
 
 _is_allowed_custom_directive() {
     local line="${1:-}"
@@ -372,7 +372,13 @@ setup_logrotate() {
     if [ ! -f /etc/logrotate.d/nginx_ssl_manager ]; then
         cat > /etc/logrotate.d/nginx_ssl_manager <<EOF
 ${LOG_FILE} {
- delay root
+    weekly
+    missingok
+    rotate 12
+    compress
+    delaycompress
+    notifempty
+    create 0644 root root
 }
 EOF
     fi
@@ -404,7 +410,6 @@ install_acme_sh() {
     if [ -f "$ACME_BIN" ]; then
         return 0
     fi
-
     log_warn "acme.sh 未安装，开始安装..."
     local email=""
     email="$(prompt_input "注册邮箱(可留空)" "" "" "" "true")" || return 1
@@ -412,13 +417,11 @@ install_acme_sh() {
         log_error "邮箱格式错误"
         return 1
     fi
-
     if [ -n "$email" ]; then
         curl -fsSL https://get.acme.sh | /bin/sh -s -- --email "$email" || return 1
     else
         curl -fsSL https://get.acme.sh | /bin/sh || return 1
     fi
-
     ACME_BIN="$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1 || true)"
     [ -n "$ACME_BIN" ] || { log_error "acme.sh 安装失败"; return 1; }
     "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
@@ -426,7 +429,7 @@ install_acme_sh() {
     log_success "acme.sh 安装完成"
 }
 
-# ------------------ JSON数据 ------------------
+# ------------------ JSON 数据 ------------------
 
 snapshot_json() {
     local target="${1:-$PROJECTS_METADATA_FILE}"
@@ -458,7 +461,6 @@ json_upsert_by_key() {
             return 0
         fi
     fi
-
     rm -f "$tmp"
     return 1
 }
@@ -501,7 +503,7 @@ tcp_project_save() {
     json_upsert_by_key "$TCP_PROJECTS_METADATA_FILE" "listen_port" "$lp" "$json"
 }
 
-# ------------------ Nginx配置层 ------------------
+# ------------------ Nginx 配置 ------------------
 
 control_nginx() {
     local action="${1:-reload}"
@@ -684,10 +686,11 @@ EOF
     return 1
 }
 
+# ------------------ DNS/CF/TG/证书/业务/菜单 ------------------
 # ------------------ CF / TG ------------------
 
 update_cloudflare_ips() {
-    log_info "更新 Cloudflare IP..."
+    log_info "更新 Cloudflare IP 列表..."
     local tmp_allow=""
     local tmp_cf_allow=""
     local tmp_cf_real=""
@@ -698,6 +701,7 @@ update_cloudflare_ips() {
     if curl -sS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$tmp_allow" && \
        echo "" >> "$tmp_allow" && \
        curl -sS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$tmp_allow"; then
+
         mkdir -p /etc/nginx/snippets /etc/nginx/conf.d
         echo "# Cloudflare Allow List" > "$tmp_cf_allow"
         echo "# Cloudflare Real IP" > "$tmp_cf_real"
@@ -1015,7 +1019,7 @@ EOF
     local rc=0
     "${inst[@]}" >/dev/null 2>&1 || rc=$?
     if [ -f "$cert" ] && [ -f "$key" ]; then
-        [ "$rc" -ne 0 ] && log_warn "证书安装成功，但 hook 执行失败: ${install_reload_cmd}"
+        [ "$rc" -ne 0 ] && log_warn "证书安装成功，但 hook 失败: ${install_reload_cmd}"
         send_tg_notify "success" "$domain" "证书安装成功" ""
         unset CF_Token CF_Account_ID Ali_Key Ali_Secret || true
         return 0
@@ -1033,7 +1037,7 @@ gather_project_details() {
 
     local cur="${1:-{}}"
     local skip_cert="${2:-false}"
-    local mode="${3:-standard}" # standard/cert_only
+    local mode="${3:-standard}"
 
     local domain=""
     domain="$(echo "$cur" | jq -r '.domain // ""')"
@@ -1138,18 +1142,14 @@ gather_project_details() {
         case "$ca_choice" in
             1) ca_server="https://acme-v02.api.letsencrypt.org/directory"; ca_name="letsencrypt" ;;
             2) ca_server="https://acme.zerossl.com/v2/DV90"; ca_name="zerossl" ;;
-            3) ca_server="google"; ca_name="google" ;;
-        esac
+ ca ca_name="google" esac
 
         echo "验证方式: 1)http-01 2)dns_cf 3)dns_ali"
         local v=""
         v="$(prompt_menu_choice "1-3" "false")" || { exec 1>&3; return 1; }
         case "$v" in
-            1) method="http-01"; provider="" ;;
-            2) method="dns-01"; provider="dns_cf" ;;
-            3) method="dns-01"; provider="dns_ali" ;;
-        esac
-        if [ "$method" = "dns-01" ]; then
+            1) method="=""
+ then
             wildcard="$(prompt_input "是否申请泛域名? (y/n)" "n" "^[yYnN]$" "请输入 y 或 n" "false")" || { exec 1>&3; return 1; }
             wildcard="$(echo "$wildcard" | tr '[:upper:]' '[:lower:]')"
         fi
@@ -1185,10 +1185,11 @@ gather_project_details() {
     exec 1>&3
 }
 
-configure_nginx_projects() {
-    local mode="${1:-standard}" # standard/cert_only
-    log_info "开始配置新项目"
+# ------------------ 业务菜单相关 ------------------
 
+configure_nginx_projects() {
+    local mode="${1:-standard}"
+    log_info "开始配置新项目"
     local json=""
     json="$(gather_project_details "{}" "false" "$mode")" || { log_warn "用户取消"; return; }
 
@@ -1216,8 +1217,6 @@ configure_nginx_projects() {
     [ "$issue_rc" -ne 0 ] && log_warn "证书安装阶段有告警"
     log_success "配置完成"
 }
-
-# ------------------ HTTP 管理 ------------------
 
 display_projects_table() {
     local all="${1:-[]}"
@@ -1250,7 +1249,6 @@ display_projects_table() {
                 status="正常${days}天"; color="$GREEN"
             fi
         fi
-
         printf "%-4s %-28s %-14s %b\n" "$idx" "${d:0:28}" "${rp:0:14}" "${color}${status}${NC}"
     done < <(echo "$all" | jq -c '.[]')
     echo ""
@@ -1270,13 +1268,11 @@ handle_cert_details() {
     local cert="$SSL_CERTS_BASE_DIR/$d.cer"
     local p=""
     p="$(project_get_by_domain "$d")"
-
     if [ ! -f "$cert" ]; then
         log_error "证书不存在: ${cert}"
         press_enter_to_continue
         return
     fi
-
     local issuer=""
     local subject=""
     local end=""
@@ -1287,7 +1283,6 @@ handle_cert_details() {
     end="$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)"
     days=$(( ( $(date -d "$end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
     method="$(echo "$p" | jq -r '.acme_validation_method // "未知"')"
-
     echo -e "${CYAN}域名: ${d}${NC}"
     echo "Issuer: ${issuer}"
     echo "Subject: ${subject}"
@@ -1326,7 +1321,6 @@ handle_reconfigure_project() {
 
     local mode="standard"
     [ "$(echo "$cur" | jq -r '.resolved_port')" = "cert_only" ] && mode="cert_only"
-
     local skip_cert="true"
     confirm_or_cancel "是否重新申请证书?" && skip_cert="false"
 
@@ -1390,7 +1384,7 @@ handle_modify_renew_settings() {
     new="$(echo "$cur" | jq --arg cu "$ca_server" --arg cn "$ca_name" --arg m "$method" --arg dp "$provider" \
         '.ca_server_url=$cu | .ca_server_name=$cn | .acme_validation_method=$m | .dns_api_provider=$dp')"
 
-    project_save "$new" && log_success "续期配置已更新" || log_error "保存失败"
+    project_save "$new" && log_success "续期设置已更新" || log_error "保存失败"
     press_enter_to_continue
 }
 
@@ -1451,12 +1445,13 @@ manage_configs() {
         local selected_domain=""
         selected_domain="$(echo "$all" | jq -r ".[$((idx-1))].domain")"
 
-        echo "1. 查看证书        echo "2. 手动续期"
+        echo "1. 查看证书"
+        echo "2. 手动续期"
         echo "3. 删除项目"
         echo "4. 查看 Nginx 配置"
         echo "5. 重新配置"
-        echo "6. 修改证书续期设置"
-        echo "7. 添加自定义指令"
+        echo "6. 修改续期设置"
+        echo "7. 自定义指令"
         local c=""
         c="$(prompt_menu_choice "1-7" "true")" || continue
         case "$c" in
@@ -1472,7 +1467,7 @@ manage_configs() {
     done
 }
 
-# ------------------ TCP管理 ------------------
+# ------------------ TCP 管理 ------------------
 
 configure_tcp_proxy() {
     local name=""
@@ -1541,8 +1536,9 @@ manage_tcp_configs() {
             break
         fi
 
-        printf "${BOLD}%-4s %-8s %-6s %-14s %-24s${NC}\n" "ID" "端口" "TLS" "备注" "目标"
+        printf "${BOLD}%-4s %-8s %-6s}\" "TLS" "备注" "目标"
         echo "------------------------------------------------------------------"
+
         local idx=0
         local p=""
         while IFS= read -r p; do
@@ -1596,9 +1592,8 @@ manage_tcp_configs() {
     done
 }
 
-# ------------------ 批量续期/日志/备份 ------------------
+# ------------------ 续期/日志/备份/菜单 ------------------
 
-# AI_REVIEW_START: check_and_auto_renew_certs
 check_and_auto_renew_certs() {
     log_info "开始批量续期检测..."
     local success=0
@@ -1607,7 +1602,6 @@ check_and_auto_renew_certs() {
 
     while IFS= read -r p; do
         [ -z "$p" ] && continue
-
         local d=""
         local cert=""
         local method=""
@@ -1636,7 +1630,14 @@ check_and_auto_renew_certs() {
     control_nginx reload || true
     log_info "批量续期完成: 成功=${success}, 失败=${fail}"
 }
-# AI_REVIEW_END: check_and_auto_renew_certs
+
+view_file_with_tail() {
+    local f="${1:-}"
+    [ -f "$f" ] || { log_error "文件不存在: ${f}"; return; }
+    echo -e "${CYAN}--- tail -f ${f} ---${NC}"
+    tail -f -n 50 "$f" || true
+    echo -e "${CYAN}--- 结束 ---${NC}"
+}
 
 view_nginx_global_log() {
     echo "1. 访问日志"
@@ -1772,8 +1773,6 @@ handle_backup_restore() {
     esac
 }
 
-# ------------------ 主菜单 ------------------
-
 draw_dashboard() {
     local nginx_v=""
     local up=""
@@ -1786,10 +1785,10 @@ draw_dashboard() {
     tcp_count="$(jq 'length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo 0)"
 
     echo ""
-    echo -e "${GREEN}================ Nginx 管理面板 v4.33.1 Stable ================${NC}"
+    echo -e "${GREEN}================ Nginx 管理面板 v4.33.1 ================${NC}"
     echo "Nginx: ${nginx_v:-unknown} | 运行: ${up:-unknown}"
     echo "HTTP: ${http_count} 个 | TCP: ${tcp_count} 个"
-    echo -e "${GREEN}===============================================================${NC}"
+    echo -e "${GREEN}========================================================${NC}"
 }
 
 main_menu() {
@@ -1845,8 +1844,6 @@ main_menu() {
         esac
     done
 }
-
-# ------------------ 入口 ------------------
 
 pre_check() {
     validate_args "$@" || return "$ERR_INVALID_ARGS"
