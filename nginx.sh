@@ -208,11 +208,21 @@ _mask_ip() {
 }
 
 confirm_or_cancel() {
+    local prompt_text="${1:-}" default_yesno="${2:-y}"
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-        local c; read -r -p "$(echo -e "${BRIGHT_YELLOW}${1} ([y]/n): ${NC}")" c < /dev/tty || return 1
-        case "$c" in n|N) return 1;; *) return 0;; esac
+        local hint="([y]/n)"; [ "$default_yesno" = "n" ] && hint="(y/[N])"
+        local c
+        read -r -p "$(echo -e "${BRIGHT_YELLOW}${prompt_text} ${hint}: ${NC}")" c < /dev/tty || return 1
+        if [ -z "$c" ]; then
+            [ "$default_yesno" = "y" ] && return 0 || return 1
+        fi
+        case "$c" in
+            y|Y) return 0;;
+            n|N) return 1;;
+            *) return 1;;
+        esac
     fi
-    log_message ERROR "非交互需确认: '$1',已取消。"; return 1
+    log_message ERROR "非交互需确认: '$prompt_text',已取消。"; return 1
 }
 
 
@@ -1141,10 +1151,10 @@ _gather_project_details() {
             # *** 优化核心：泛域名主域不配置端口 ***
             if [ "$wildcard" = "y" ] && [ "$is_cert_only" == "false" ]; then
                 echo -e "\n${BRIGHT_YELLOW}┌──────────────────────────────────────────────┐${NC}"
-                echo -e "${BRIGHT_YELLOW}│ ⚠️  检测到泛域名申请模式                         │${NC}"
+                echo -e "${BRIGHT_YELLOW}│ ⚠️  检测到泛域名申请模式                        │${NC}"
                 echo -e "${BRIGHT_YELLOW}└──────────────────────────────────────────────┘${NC}"
                 echo -e "您的配置将同时覆盖 ${GREEN}${domain}${NC} 和 ${GREEN}*.${domain}${NC}。"
-                if ! confirm_or_cancel "是否为主域名 ${domain} 配置 Nginx HTTP 代理端口? (选 No 则仅管理证书)"; then
+                if ! confirm_or_cancel "是否为主域名 ${domain} 配置 Nginx HTTP 代理端口? (选 No 则仅管理证书)" "n"; then
                     # 用户选择不配置代理，强制切换为 cert_only 模式
                     is_cert_only="true"
                     echo -e "${CYAN}已切换为证书管理模式，后续将跳过端口与防御设置。${NC}"
