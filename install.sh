@@ -15,6 +15,7 @@ SCRIPT_VERSION="v2.2.1"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
+IFS=$'\n\t'
 export LANG="${LANG:-en_US.UTF_8}"
 export LC_ALL="${LC_ALL:-C_UTF_8}"
 
@@ -41,6 +42,57 @@ _log_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 echo_info() { printf "${CYAN}[启动器]${NC} %s\n" "$1" >&2; }
 echo_success() { printf "${GREEN}[启动器]${NC} %s\n" "$1" >&2; }
 echo_error() { printf "${RED}[启动器错误]${NC} %s\n" "$1" >&2; exit 1; }
+
+starter_sudo() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+        return $?
+    fi
+    if sudo -n true 2>/dev/null; then
+        sudo -n "$@"
+        return $?
+    fi
+    echo_info "需要 sudo 权限，可能会提示输入密码。"
+    sudo "$@"
+}
+
+build_exec_env() {
+    local safe_path
+    local -a envs
+    safe_path="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+    envs=(
+        "PATH=${safe_path}"
+        "HOME=${HOME:-/root}"
+        "LANG=${LANG:-C.UTF-8}"
+        "LC_ALL=${LC_ALL:-C.UTF-8}"
+    )
+    if [ -n "${TERM:-}" ]; then envs+=("TERM=${TERM}"); fi
+    if [ -n "${FORCE_REFRESH:-}" ]; then envs+=("FORCE_REFRESH=${FORCE_REFRESH}"); fi
+    if [ -n "${JB_RESTARTED:-}" ]; then envs+=("JB_RESTARTED=${JB_RESTARTED}"); fi
+    if [ -n "${JB_ENABLE_AUTO_CLEAR:-}" ]; then envs+=("JB_ENABLE_AUTO_CLEAR=${JB_ENABLE_AUTO_CLEAR}"); fi
+    if [ -n "${JB_DEBUG:-}" ]; then envs+=("JB_DEBUG=${JB_DEBUG}"); fi
+    if [ -n "${JB_DEBUG_MODE:-}" ]; then envs+=("JB_DEBUG_MODE=${JB_DEBUG_MODE}"); fi
+    if [ -n "${JB_SUDO_LOG_QUIET:-}" ]; then envs+=("JB_SUDO_LOG_QUIET=${JB_SUDO_LOG_QUIET}"); fi
+    if [ -n "${LOG_LEVEL:-}" ]; then envs+=("LOG_LEVEL=${LOG_LEVEL}"); fi
+    if [ -n "${LOG_FILE:-}" ]; then envs+=("LOG_FILE=${LOG_FILE}"); fi
+    printf '%s\n' "${envs[@]}"
+}
+
+exec_script_with_sudo() {
+    local script_path="$1"
+    shift
+    local -a envs
+    mapfile -t envs < <(build_exec_env)
+
+    if [ "$(id -u)" -eq 0 ]; then
+        exec env -i "${envs[@]}" bash "$script_path" "${@:-}"
+    fi
+    if sudo -n true 2>/dev/null; then
+        exec sudo -n env -i "${envs[@]}" bash "$script_path" "${@:-}"
+    fi
+    echo_info "需要 sudo 权限以继续。"
+    exec sudo env -i "${envs[@]}" bash "$script_path" "${@:-}"
+}
 
 # 环境预检 (Pre-flight Check)
 preflight_check() {
@@ -89,10 +141,10 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get >/dev/null 2>&1; then
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2 || true
-            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq >&2 || true
+            starter_sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2 || true
+            starter_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq >&2 || true
         elif command -v yum >/dev/null 2>&1; then
-            sudo yum install -y curl jq >&2 || true
+            starter_sudo yum install -y curl jq >&2 || true
         fi
         check_dependencies curl jq
         echo_success "核心依赖验证通过。"
@@ -100,7 +152,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
 
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH:-false}" = "true" ]; then
         echo_info "正在执行首次安装或强制刷新..."
-        sudo mkdir -p "$INSTALL_DIR"
+        starter_sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
         
         declare -A core_files=( ["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json" )
@@ -113,19 +165,26 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
                 echo_error "下载 ${name} 失败，可能是网络问题或被阻断。"
             fi
             sed 's/\r$//' < "$temp_file" > "${temp_file}.unix" || true
-            sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
+            starter_sudo mv "${temp_file}.unix" "${INSTALL_DIR}/${file_path}" 2>/dev/null || starter_sudo mv "$temp_file" "${INSTALL_DIR}/${file_path}"
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
 
-        sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
+        starter_sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
         BIN_DIR="/usr/local/bin"
-        sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
+        starter_sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
         echo_success "安装/更新完成。"
     fi
     
     printf "${CYAN}────────────────────────────────────────────────────────────${NC}\n" >&2
-    exec sudo -E bash "$FINAL_SCRIPT_PATH" "${@:-}"
+    if [ "$(id -u)" -eq 0 ]; then
+        exec bash "$FINAL_SCRIPT_PATH" "${@:-}"
+    fi
+    if sudo -n true 2>/dev/null; then
+        exec sudo -n -E bash "$FINAL_SCRIPT_PATH" "${@:-}"
+    fi
+    echo_info "需要 sudo 权限以继续。"
+    exec_script_with_sudo "$FINAL_SCRIPT_PATH" "${@:-}"
 fi
 
 # --- 主程序依赖加载 ---
@@ -136,32 +195,10 @@ else
     echo_error "通用工具库 $UTILS_PATH 未找到！系统不完整。"
 fi
 
-# 恢复并强化的双写日志模块 (终端无时间戳，文件带时间戳)
-_write_log() {
-    local level="$1"
-    local msg="$2"
-    local color="$3"
-    
-    # 控制台带颜色输出 (stderr) - 移除时间戳
-    printf "${color}[%s]${NC} %s\n" "$level" "$msg" >&2
-    
-    # 持久化文件无色输出 (仅当目录可用时安全追加写入) - 保留时间戳
-    if [ -d "$INSTALL_DIR" ]; then
-        local timestamp
-        timestamp="$(_log_timestamp)"
-        printf "[%s] [%s] %s\n" "$timestamp" "$level" "$msg" >> "$GLOBAL_LOG_FILE" 2>/dev/null || true
-    fi
-}
-
-log_info() { _write_log "INFO" "$1" "$CYAN"; }
-log_warn() { _write_log "WARN" "$1" "$YELLOW"; }
-log_err()  { _write_log "ERROR" "$1" "$RED"; }
-log_success() { _write_log "SUCCESS" "$1" "$GREEN"; }
-log_debug() { 
-    if [ "${JB_DEBUG:-false}" = "true" ]; then 
-        _write_log "DEBUG" "$1" "\033[0;35m"
-    fi 
-}
+# --- 日志配置 ---
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
+LOG_FILE="${LOG_FILE:-$GLOBAL_LOG_FILE}"
+JB_DEBUG_MODE="${JB_DEBUG_MODE:-${JB_DEBUG:-false}}"
 
 # --- 临时文件管理与资源清理 ---
 TEMP_FILES=()
@@ -243,6 +280,11 @@ check_sudo_privileges() {
 run_with_sudo() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else
         if [ "${JB_SUDO_LOG_QUIET:-false}" != "true" ]; then log_debug "Executing with sudo: sudo $*"; fi
+        if sudo -n true 2>/dev/null; then
+            sudo -n "$@"
+            return $?
+        fi
+        log_warn "需要 sudo 权限，可能会提示输入密码。"
         sudo "$@"
     fi
 }
@@ -250,29 +292,39 @@ export -f run_with_sudo
 
 check_and_install_extra_dependencies() {
     local default_deps="curl ln dirname flock jq sha256sum mktemp sed"
-    local deps; deps=$(jq -r '.dependencies.common' "$CONFIG_PATH" 2>/dev/null || true)
-    if [ -z "$deps" ] || [ "$deps" = "null" ]; then deps="$default_deps"; fi
+    local deps_raw
+    local -a deps
+    local -a missing_pkgs
+    local -A pkg_apt_map
 
-    local missing_pkgs=""
-    declare -A pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
-    for dep in $deps; do 
-        if ! command -v "$dep" >/dev/null 2>&1; then 
+    deps_raw=$(jq -r '.dependencies.common // empty' "$CONFIG_PATH" 2>/dev/null || true)
+    if [ -z "$deps_raw" ] || [ "$deps_raw" = "null" ]; then deps_raw="$default_deps"; fi
+
+    local IFS=$' \t\n'
+    read -r -a deps <<< "$deps_raw"
+
+    pkg_apt_map=( [curl]=curl [ln]=coreutils [dirname]=coreutils [flock]=util-linux [jq]=jq [sha256sum]=coreutils [mktemp]=coreutils [sed]=sed )
+    missing_pkgs=()
+    for dep in "${deps[@]:-}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
             local pkg="${pkg_apt_map[$dep]:-$dep}"
-            missing_pkgs="${missing_pkgs} ${pkg}"
+            missing_pkgs+=("$pkg")
         fi
     done
-    
-    if [ -n "${missing_pkgs:-}" ]; then
-        missing_pkgs=$(echo "$missing_pkgs" | xargs)
-        log_warn "缺失附加依赖: ${missing_pkgs}"
+
+    if [ "${#missing_pkgs[@]}" -gt 0 ]; then
+        local missing_display
+        missing_display=$(printf '%s ' "${missing_pkgs[@]}")
+        missing_display="${missing_display% }"
+        log_warn "缺失附加依赖: ${missing_display}"
         if confirm_action "是否尝试自动安装?"; then
             if command -v apt-get >/dev/null 2>&1; then 
                 run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2
-                run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $missing_pkgs >&2
+                run_with_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing_pkgs[@]}" >&2
             elif command -v yum >/dev/null 2>&1; then 
-                run_with_sudo yum install -y $missing_pkgs >&2
+                run_with_sudo yum install -y "${missing_pkgs[@]}" >&2
             else 
-                log_err "不支持的包管理器。请手动安装: ${missing_pkgs}"; exit 1
+                log_err "不支持的包管理器。请手动安装: ${missing_display}"; exit 1
             fi
         else 
             log_err "用户取消安装，脚本无法继续。"; exit 1
@@ -282,7 +334,8 @@ check_and_install_extra_dependencies() {
 
 run_comprehensive_auto_update() {
     local updated_files=()
-    declare -A core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
+    local -A core_files
+    core_files=( ["install.sh"]="$FINAL_SCRIPT_PATH" ["utils.sh"]="$UTILS_PATH" ["config.json"]="$CONFIG_PATH" )
     for file in "${!core_files[@]}"; do
         local local_path="${core_files[$file]}"; local temp_file; temp_file=$(create_temp_file)
         if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${file}?_=$(date +%s)" -o "$temp_file"; then 
@@ -307,11 +360,17 @@ run_comprehensive_auto_update() {
             fi
         done
     fi
-    echo "${updated_files[@]:-}"
+    if [ "${#updated_files[@]}" -gt 0 ]; then
+        printf '%s\n' "${updated_files[@]}"
+    fi
 }
 
 download_module_to_cache() {
     local script_name="$1"; local mode="${2:-}"; local local_file="${INSTALL_DIR}/$script_name"; local tmp_file; tmp_file=$(create_temp_file)
+    if ! sanitize_module_script "$script_name"; then
+        log_err "模块路径非法，拒绝下载: ${script_name}"
+        return 1
+    fi
     if [ "$mode" != "auto" ]; then log_info "  -> 检查/下载模块: ${script_name}"; fi
     run_with_sudo mkdir -p "$(dirname "$local_file")"
     if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
@@ -335,11 +394,18 @@ uninstall_script() {
     log_warn "  - 安装目录: ${INSTALL_DIR}"
     log_warn "  - 日志文件: ${GLOBAL_LOG_FILE}"
     log_warn "  - 快捷方式: ${BIN_DIR:-/usr/local/bin}/jb"
-    local choice; read -r -p "$(printf "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}")" choice < /dev/tty
+    local choice
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        log_err "无法访问 /dev/tty，无法执行交互式卸载。"
+        exit 1
+    fi
+    printf "%b" "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}" > /dev/tty
+    read -r choice < /dev/tty
     if [ "${choice:-}" = "yes" ]; then 
         log_info "开始卸载..."
         run_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/jb" || true
         run_with_sudo rm -f "/etc/logrotate.d/vps_install_modules" || true
+        ensure_safe_path "$INSTALL_DIR"
         run_with_sudo rm -rf "$INSTALL_DIR" || true
         log_success "脚本已成功卸载。再见！"
         exit 0
@@ -351,16 +417,32 @@ uninstall_script() {
 confirm_and_force_update() {
     log_warn "警告: 这将从 GitHub 强制拉取所有最新脚本和配置 config.json。"
     log_warn "您对 config.json 的【所有本地修改都将丢失】！这是一个恢复出厂设置的操作。"
-    local choice; read -r -p "$(printf "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}")" choice < /dev/tty
+    local choice
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        log_err "无法访问 /dev/tty，无法执行交互式更新。"
+        exit 1
+    fi
+    printf "%b" "${RED}此操作不可逆，请输入 'yes' 确认继续: ${NC}" > /dev/tty
+    read -r choice < /dev/tty
     if [ "${choice:-}" = "yes" ]; then
         log_info "用户确认：开始强制更新所有组件..."
         flock -u 200 2>/dev/null || true; trap - EXIT
-        local install_script
-        install_script=$(curl -fsSL --connect-timeout 10 "${BASE_URL}/install.sh?_=$(date +%s)") || { log_err "拉取核心脚本失败"; exit 1; }
-        FORCE_REFRESH=true bash -c "$install_script"
+        local install_script_path
+        install_script_path=$(create_temp_file)
+        if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/install.sh?_=$(date +%s)" -o "$install_script_path"; then
+            log_err "拉取核心脚本失败"
+            exit 1
+        fi
+        FORCE_REFRESH=true JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}" bash "$install_script_path"
         log_success "强制更新完成！脚本将自动重启以应用所有更新..."
         sleep 2
-        exec sudo -E bash "$FINAL_SCRIPT_PATH" "${@:-}"
+        if [ "$(id -u)" -eq 0 ]; then
+            exec bash "$FINAL_SCRIPT_PATH" "${@:-}"
+        fi
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$FINAL_SCRIPT_PATH" "${@:-}"
+        fi
+        exec_script_with_sudo "$FINAL_SCRIPT_PATH" "${@:-}"
     else 
         log_info "用户取消了强制更新。"
     fi
@@ -368,6 +450,10 @@ confirm_and_force_update() {
 
 run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}";
+    if ! sanitize_module_script "$module_script"; then
+        log_err "模块路径非法，已拒绝执行。"
+        return 1
+    fi
     if [ ! -f "$module_path" ]; then 
         log_info "模块首次运行，正在下载..."
         download_module_to_cache "$module_script"
@@ -399,23 +485,133 @@ run_module(){
     return $exit_code
 }
 
+sanitize_module_script() {
+    local script_name="$1"
+    if [ -z "$script_name" ]; then
+        log_err "模块名称为空"
+        return 1
+    fi
+    if [[ "$script_name" == /* ]]; then
+        log_err "禁止使用绝对路径模块: ${script_name}"
+        return 1
+    fi
+    if [[ "$script_name" == *".."* ]]; then
+        log_err "禁止使用包含 .. 的模块路径: ${script_name}"
+        return 1
+    fi
+    if ! [[ "$script_name" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+        log_err "模块路径包含非法字符: ${script_name}"
+        return 1
+    fi
+    return 0
+}
+
+validate_autoupdate_flag() {
+    case "${JB_ENABLE_AUTO_UPDATE:-true}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "enable_auto_update 值非法: ${JB_ENABLE_AUTO_UPDATE}，已回退为 true"
+            JB_ENABLE_AUTO_UPDATE="true"
+            return 0
+            ;;
+    esac
+}
+
+validate_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+            JB_NONINTERACTIVE="false"
+            return 0
+            ;;
+    esac
+}
+
+require_sudo_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null; then
+            return 0
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下无法获取 sudo 权限"
+            return 1
+        fi
+        return 0
+    fi
+    log_err "未安装 sudo，无法继续"
+    return 1
+}
+
 _get_docker_status() {
     local docker_ok=false compose_ok=false status_str=""
     if systemctl is-active --quiet docker 2>/dev/null; then docker_ok=true; fi
     if command -v docker-compose >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then compose_ok=true; fi
-    if $docker_ok && $compose_ok; then echo -e "${GREEN}已运行${NC}"; else 
+    if $docker_ok && $compose_ok; then printf '%b' "${GREEN}已运行${NC}"; else 
         if ! $docker_ok; then status_str+="Docker${RED}未运行${NC} "; fi
         if ! $compose_ok; then status_str+="Compose${RED}未找到${NC}"; fi
-        echo -e "$status_str"
+        printf '%b' "$status_str"
     fi
 }
-_get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then echo -e "${GREEN}已运行${NC}"; else echo -e "${RED}未运行${NC}"; fi; }
+_get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then printf '%b' "${GREEN}已运行${NC}"; else printf '%b' "${RED}未运行${NC}"; fi; }
 _get_watchtower_status() {
     if systemctl is-active --quiet docker 2>/dev/null; then 
-        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower' >/dev/null 2>&1; then echo -e "${GREEN}已运行${NC}"; else echo -e "${YELLOW}未运行${NC}"; fi
+        if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower' >/dev/null 2>&1; then printf '%b' "${GREEN}已运行${NC}"; else printf '%b' "${YELLOW}未运行${NC}"; fi
     else 
-        echo -e "${RED}Docker未运行${NC}"
+        printf '%b' "${RED}Docker未运行${NC}"
     fi
+}
+
+ensure_safe_path() {
+    local target="$1"
+    if [ -z "${target}" ] || [ "${target}" = "/" ]; then
+        log_err "拒绝对危险路径执行破坏性操作: '${target}'"
+        return 1
+    fi
+    return 0
+}
+
+validate_env() {
+    local base_url="${BASE_URL:-}"
+    if [ -z "$base_url" ]; then
+        log_err "BASE_URL 为空，无法继续"
+        return 1
+    fi
+    case "$base_url" in
+        https://*) ;;
+        *)
+            log_err "BASE_URL 必须使用 https: ${base_url}"
+            return 1
+            ;;
+    esac
+
+    if [ -z "${INSTALL_DIR:-}" ]; then
+        log_err "INSTALL_DIR 未设置"
+        return 1
+    fi
+    ensure_safe_path "$INSTALL_DIR" || return 1
+
+    if [ -z "${LOCK_FILE:-}" ]; then
+        log_warn "LOCK_FILE 未设置，使用默认 /tmp/jb.lock"
+        LOCK_FILE="/tmp/jb.lock"
+    fi
+    ensure_safe_path "$LOCK_FILE" || return 1
+    local lock_dir
+    lock_dir=$(dirname "$LOCK_FILE")
+    if [ ! -d "$lock_dir" ]; then
+        run_with_sudo mkdir -p "$lock_dir" 2>/dev/null || true
+    fi
+    return 0
+}
+
+on_error() {
+    local exit_code="$1"
+    local line_no="$2"
+    log_err "运行出错: exit_code=${exit_code}, line=${line_no}"
+    return "$exit_code"
 }
 
 display_and_process_menu() {
@@ -529,13 +725,21 @@ display_and_process_menu() {
 
 main() {
     load_config "$CONFIG_PATH"
+    LOG_FILE="${LOG_FILE:-$GLOBAL_LOG_FILE}"
+    LOG_LEVEL="${LOG_LEVEL:-INFO}"
+    JB_DEBUG_MODE="${JB_DEBUG_MODE:-${JB_DEBUG:-false}}"
+    validate_env
+    validate_autoupdate_flag
+    validate_noninteractive_flag
+    require_sudo_or_die
     setup_logrotate
     check_and_install_extra_dependencies
     
     # 显式设置 trap，强化对中止信号和退出的兜底
-    trap 'exit_code=$?; cleanup_temp_files; flock -u 200 2>/dev/null || true; rm -f "${LOCK_FILE:-/tmp/jb.lock}" 2>/dev/null || true; log_info "脚本已退出 (代码: ${exit_code})"' EXIT INT TERM
+    trap 'on_error "$?" "$LINENO"' ERR
+    trap 'exit_code=$?; cleanup_temp_files; flock -u 200 2>/dev/null || true; if [ -n "${LOCK_FILE:-}" ] && [ "${LOCK_FILE:-}" != "/" ]; then rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; log_info "脚本已退出 (代码: ${exit_code})"' EXIT INT TERM
     
-    exec 200>"${LOCK_FILE:-/tmp/jb.lock}"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
+    exec 200>"${LOCK_FILE}"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     
     # 防护级别的 Headless 命令读取，规避空值引发全量匹配
     if [ $# -gt 0 ]; then
@@ -547,7 +751,12 @@ main() {
                 update) log_info "正在以 Headless 模式更新所有脚本..."; run_comprehensive_auto_update "${@:-}"; exit 0 ;;
                 uninstall) log_info "正在以 Headless 模式执行卸载..."; uninstall_script; exit 0 ;;
                 *) 
-                    local action_to_run; action_to_run=$(jq -r --arg cmd "$command" '.menus[] | .items[]? | select(.action and (.action | contains($cmd)) or (.name | ascii_downcase | contains($cmd))) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1 || true)
+                    local cmd_lower
+                    local cmd_with_sh
+                    local action_to_run
+                    cmd_lower=$(printf '%s' "$command" | tr '[:upper:]' '[:lower:]')
+                    cmd_with_sh="${cmd_lower}.sh"
+                    action_to_run=$(jq -r --arg cmd "$cmd_lower" --arg cmdsh "$cmd_with_sh" '.menus[] | .items[]? | select((.action // "" | ascii_downcase) == $cmd or (.action // "" | ascii_downcase) == $cmdsh or (.name // "" | ascii_downcase) == $cmd) | .action' "$CONFIG_PATH" 2>/dev/null | head -n 1 || true)
                     if [ -n "${action_to_run:-}" ] && [ "$action_to_run" != "null" ]; then 
                         local display_name; display_name=$(jq -r --arg act "$action_to_run" '.menus[] | .items[]? | select(.action == $act) | .name' "$CONFIG_PATH" 2>/dev/null | head -n 1 || echo "Unknown")
                         log_info "正在以 Headless 模式执行: ${display_name}"
@@ -563,43 +772,54 @@ main() {
     
     log_info "脚本启动 (${SCRIPT_VERSION})"
 
-    if [ "${JB_RESTARTED:-false}" != "true" ]; then
+    if [ "${JB_RESTARTED:-false}" != "true" ] && [ "${JB_ENABLE_AUTO_UPDATE}" = "true" ]; then
         printf "${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
-        local updated_files_list; updated_files_list=$(run_comprehensive_auto_update "${@:-}")
+        local -a updated_files_list
+        mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
         printf "\r${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local updated_core_files=false
-        local update_messages=""
+        local updated_config=false
+        local -a update_messages
+        update_messages=()
 
-        if [ -n "${updated_files_list:-}" ]; then
-            for file in $updated_files_list; do
-                local filename; filename=$(basename "$file")
-                if [[ "$filename" == "install.sh" ]]; then
+        if [ "${#updated_files_list[@]}" -gt 0 ]; then
+            for file in "${updated_files_list[@]}"; do
+                local filename
+                filename=$(basename "$file")
+                if [ "$filename" = "install.sh" ]; then
                     updated_core_files=true
-                    update_messages+="主程序 (install.sh) 已更新\n"
+                    update_messages+=("主程序 (install.sh) 已更新")
                 else
-                    update_messages+="${GREEN}${filename}${NC} 已更新\n"
+                    update_messages+=("${filename} 已更新")
+                fi
+                if [ "$filename" = "config.json" ]; then
+                    updated_config=true
                 fi
             done
-            if [[ " ${updated_files_list} " == *"config.json"* ]]; then
-                update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
+            if [ "$updated_config" = true ]; then
+                update_messages+=("  > 配置文件 config.json 已更新，部分默认设置可能已改变。")
             fi
 
-            if [ -n "$update_messages" ]; then
+            if [ "${#update_messages[@]}" -gt 0 ]; then
                 log_info "发现以下更新:"
-                echo -e "$update_messages" | while IFS= read -r line; do
-                    if [ -n "$line" ]; then log_success "$line"; fi
+                for line in "${update_messages[@]}"; do
+                    log_success "$line"
                 done
             fi
 
             if [ "$updated_core_files" = true ]; then
                 log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀"
                 flock -u 200 2>/dev/null || true; trap - EXIT
-                exec sudo -E JB_RESTARTED="true" bash "$FINAL_SCRIPT_PATH" "${@:-}"
+                JB_RESTARTED="true" exec_script_with_sudo "$FINAL_SCRIPT_PATH" "${@:-}"
             fi
         fi
     else
-        log_info "脚本已由自身重启，跳过初始更新检查。"
+        if [ "${JB_RESTARTED:-false}" = "true" ]; then
+            log_info "脚本已由自身重启，跳过初始更新检查。"
+        else
+            log_info "自动更新已禁用，跳过初始更新检查。"
+        fi
     fi
     
     check_sudo_privileges; display_and_process_menu "${@:-}"

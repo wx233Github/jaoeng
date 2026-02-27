@@ -19,6 +19,8 @@ DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
 DEFAULT_LOG_WITH_TIMESTAMP="false"
 DEFAULT_LOG_FILE="/var/log/jaoeng-utils.log"
 DEFAULT_LOG_LEVEL="INFO"
+DEFAULT_ENABLE_AUTO_UPDATE="true"
+DEFAULT_NONINTERACTIVE="false"
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -119,6 +121,11 @@ _prompt_user_input() {
     local default_value="$2"
     local result
     
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：使用默认值"
+        echo "$default_value"
+        return 0
+    fi
     if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
         log_warn "无法访问 /dev/tty，使用默认值"
         echo "$default_value"
@@ -162,6 +169,11 @@ _prompt_for_menu_choice() {
     prompt_text+="(↩ 返回): "
     
     local choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：返回空选项"
+        echo ""
+        return 1
+    fi
     if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
         log_warn "无法访问 /dev/tty，返回空选项"
         echo ""
@@ -173,6 +185,10 @@ _prompt_for_menu_choice() {
 }
 
 press_enter_to_continue() {
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：跳过等待"
+        return 0
+    fi
     if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
         log_warn "无法访问 /dev/tty，跳过等待"
         return 0
@@ -183,6 +199,10 @@ press_enter_to_continue() {
 confirm_action() {
     local prompt="$1"
     local choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：默认确认"
+        return 0
+    fi
     if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
         log_warn "无法访问 /dev/tty，默认确认"
         return 0
@@ -202,7 +222,7 @@ _get_json_value_fallback() {
 
 load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
-    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="$config_path"; JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="$config_path"; JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"; JB_ENABLE_AUTO_UPDATE="${JB_ENABLE_AUTO_UPDATE:-$DEFAULT_ENABLE_AUTO_UPDATE}"; JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-$DEFAULT_NONINTERACTIVE}"
     LOG_FILE="${LOG_FILE:-${DEFAULT_LOG_FILE}}"; LOG_LEVEL="${LOG_LEVEL:-${DEFAULT_LOG_LEVEL}}"
     
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
@@ -214,6 +234,8 @@ load_config() {
         LOCK_FILE=$(jq -r '.lock_file // empty' "$config_path" 2>/dev/null || echo "$LOCK_FILE")
         JB_TIMEZONE=$(jq -r '.timezone // empty' "$config_path" 2>/dev/null || echo "$JB_TIMEZONE")
         JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$config_path" 2>/dev/null || echo "$JB_LOG_WITH_TIMESTAMP")
+        JB_ENABLE_AUTO_UPDATE=$(jq -r '.enable_auto_update // "true"' "$config_path" 2>/dev/null || echo "$JB_ENABLE_AUTO_UPDATE")
+        JB_NONINTERACTIVE=$(jq -r '.noninteractive // "false"' "$config_path" 2>/dev/null || echo "$JB_NONINTERACTIVE")
     else
         log_warn "未检测到 jq，使用轻量文本解析。"
         BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
@@ -222,6 +244,8 @@ load_config() {
         LOCK_FILE=$(_get_json_value_fallback "$config_path" "lock_file" "$LOCK_FILE")
         JB_TIMEZONE=$(_get_json_value_fallback "$config_path" "timezone" "$JB_TIMEZONE")
         JB_LOG_WITH_TIMESTAMP=$(_get_json_value_fallback "$config_path" "log_with_timestamp" "$JB_LOG_WITH_TIMESTAMP")
+        JB_ENABLE_AUTO_UPDATE=$(_get_json_value_fallback "$config_path" "enable_auto_update" "$JB_ENABLE_AUTO_UPDATE")
+        JB_NONINTERACTIVE=$(_get_json_value_fallback "$config_path" "noninteractive" "$JB_NONINTERACTIVE")
     fi
 }
 
