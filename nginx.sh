@@ -2511,7 +2511,20 @@ main() {
 
     if [[ " $* " =~ " --check " ]]; then run_diagnostics; return $?; fi
     if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; return $?; fi
-    install_acme_sh && main_menu
+
+    if ! install_acme_sh; then
+        return 1
+    fi
+
+    local menu_rc=0
+    if main_menu; then
+        return 0
+    fi
+    menu_rc=$?
+    if [ "$menu_rc" -eq 10 ]; then
+        return 10
+    fi
+    return "$menu_rc"
 }
 
 main "$@"

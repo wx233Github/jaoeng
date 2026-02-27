@@ -27,6 +27,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
+EXIT_MESSAGE=""
 
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
@@ -513,7 +514,7 @@ run_module(){
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。"
     elif [ "$exit_code" -eq 10 ]; then 
-        log_info "已从 [${module_name}] 返回。"
+        :
     else 
         log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"
     fi
@@ -741,7 +742,7 @@ display_and_process_menu() {
         choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
 
         if [ -z "${choice:-}" ]; then 
-            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then log_info "用户选择退出，脚本正常终止。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
+            if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then EXIT_MESSAGE="已退出。"; exit 0; else CURRENT_MENU_NAME="MAIN_MENU"; continue; fi
         fi
         
         local item_json=""
@@ -765,7 +766,7 @@ display_and_process_menu() {
         esac
 
         if [ "$type" = "item" ] && [ "$exit_code" -eq 10 ]; then
-            log_info "子脚本在主菜单回车退出，主程序同步退出。"
+            EXIT_MESSAGE="已退出。"
             exit 0
         fi
         
@@ -787,7 +788,7 @@ main() {
     
     # 显式设置 trap，强化对中止信号和退出的兜底
     trap 'on_error "$?" "$LINENO"' ERR
-    trap 'exit_code=$?; cleanup_temp_files; flock -u 200 2>/dev/null || true; if [ -n "${LOCK_FILE:-}" ] && [ "${LOCK_FILE:-}" != "/" ]; then rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; log_info "脚本已退出 (代码: ${exit_code})"' EXIT INT TERM
+    trap 'exit_code=$?; cleanup_temp_files; flock -u 200 2>/dev/null || true; if [ -n "${LOCK_FILE:-}" ] && [ "${LOCK_FILE:-}" != "/" ]; then rm -f "${LOCK_FILE}" 2>/dev/null || true; fi; if [ -n "${EXIT_MESSAGE:-}" ]; then log_info "${EXIT_MESSAGE}"; elif [ "$exit_code" -ne 0 ]; then log_info "脚本已退出 (代码: ${exit_code})"; fi' EXIT INT TERM
     
     exec 200>"${LOCK_FILE}"; if ! flock -n 200; then log_err "脚本已在运行。"; exit 1; fi
     
