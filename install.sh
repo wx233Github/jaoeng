@@ -839,16 +839,16 @@ main() {
                 filename=$(basename "$file")
                 if [ "$filename" = "install.sh" ]; then
                     updated_core_files=true
-                    update_messages+=("主程序 (install.sh) 已更新")
+                    update_messages+=("主程序 (${GREEN}install.sh${NC}) 已更新")
                 else
-                    update_messages+=("${filename} 已更新")
+                    update_messages+=("${GREEN}${filename}${NC} 已更新")
                 fi
                 if [ "$filename" = "config.json" ]; then
                     updated_config=true
                 fi
             done
             if [ "$updated_config" = true ]; then
-                update_messages+=("  > 配置文件 config.json 已更新，部分默认设置可能已改变。")
+                update_messages+=("  > 配置文件 ${GREEN}config.json${NC} 已更新，部分默认设置可能已改变。")
             fi
 
             if [ "${#update_messages[@]}" -gt 0 ]; then
