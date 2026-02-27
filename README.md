@@ -1,64 +1,89 @@
-# VPS Scripts
+# Jaoeng VPS 一键安装与运维脚本
 
-这是一个 VPS 一键安装脚本仓库，包含多个功能模块：
-
-- `install.sh` ：入口脚本，带菜单选择
-- `install_docker.sh` ：安装 Docker
-- `install_nginx.sh` ：安装 Nginx
-- `install_tools.sh` ：安装常用工具
-  
----
-
-## 4、cert.sh ：申请证书
-
+一个面向 Debian/Ubuntu 的 VPS 自动化脚本集合，提供 Docker、Nginx、证书、Watchtower、TCP 优化等常用运维能力。
 
 ---
 
-<details><summary>Watchtower.sh</summary>自动化日志</details>
+## 功能概览
 
-## 使用方法
+- `install.sh`：主入口脚本（菜单调度、更新检查、模块执行）
+- `docker.sh`：Docker / Docker Compose 安装与管理
+- `nginx.sh`：Nginx 反代、证书、TCP 代理、备份恢复
+- `cert.sh`：acme.sh 证书申请与管理
+- `tools/Watchtower.sh`：容器自动更新（Watchtower）管理
+- `tools/tcp_optimizer.sh`：TCP/BBR 优化
+- `rm/install.sh`：卸载入口
+- `rm/rm_cert.sh`：证书相关清理
 
-在 VPS 上执行：
+---
+
+## 快速开始
+
+### 1) 直接运行（推荐）
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh)
 ```
-调试拉取最新
 
-```
+### 2) 强制拉取最新脚本（调试/修复场景）
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s
 ```
 
-临时记录日志-存放于执行命令所在的目录
+### 3) 执行并落盘日志到当前目录
 
-```
-curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee jb_a_$(date +%Y%m%d_%H%M%S).log
-```
-
-诊断
-
-```
-sudo bash -x /opt/vps_install_modules/install.sh
+```bash
+curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee "jb_$(date +%Y%m%d_%H%M%S).log"
 ```
 
 ---
 
-## 删除
-jb&&目录
+## 交互说明（重要）
+
+- 在**子模块主菜单**中直接按回车（Enter），会退出当前脚本链路（不再返回父菜单）。
+- 菜单内的具体操作页通常仍可按提示返回上一级菜单。
+
+---
+
+## 常见维护命令
+
+### 调试主脚本
+
+```bash
+sudo bash -x /opt/vps_install_modules/install.sh
 ```
+
+### 重置安装目录与命令链接
+
+```bash
 sudo sh -c "rm -rf /opt/vps_install_modules && rm -f /usr/local/bin/jb"
 ```
-config.json
-```
+
+### 仅重置配置文件
+
+```bash
 sudo rm -f /opt/vps_install_modules/config.json
 ```
 
 ---
 
-## 卸载
+## 卸载入口
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/rm/install.sh)
 ```
 
 ---
+
+## 兼容性与权限
+
+- 系统：Debian / Ubuntu（其他发行版请自行评估）
+- 权限：涉及系统配置变更时需要 root 或可用 sudo
+
+---
+
+## 免责声明
+
+本仓库脚本会修改系统服务与配置（如 Nginx、Docker、证书、内核网络参数）。
+请在生产环境使用前先在测试机验证，并做好快照/备份。
