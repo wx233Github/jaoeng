@@ -497,8 +497,23 @@ _send_tg_notify() {
     else title="异常警报"; status_text="⚠️ 续订失败"; emoji="⚠️"
     fi
     local ipv6_line=""; [ -n "$VPS_IPV6" ] && ipv6_line=$'\n'"🌐<b>IPv6:</b> <code>${display_ipv6}</code>"
-    local current_time=$(date "+%Y-%m-%d %H:%M:%S (%Z)")
-    local text_body="<b>${emoji} ${title}</b>\n\n🖥<b>服务器:</b> ${sname:-未知主机}\n🌐<b>IPv4:</b> <code>${display_ip:-未知}</code>${ipv6_line}\n\n📄<b>状态:</b> ${status_text}\n🎯<b>域名:</b> <code>${domain}</code>\n⌚<b>时间:</b> ${current_time}\n\n📃<b>详细描述:</b>\n<i>${detail_msg}</i>"
+    local current_time
+    current_time=$(date "+%Y-%m-%d %H:%M:%S (%Z)")
+    local text_body
+    text_body=$(cat <<EOF
+<b>${emoji} ${title}</b>
+
+🖥<b>服务器:</b> ${sname:-未知主机}
+🌐<b>IPv4:</b> <code>${display_ip:-未知}</code>${ipv6_line}
+
+📄<b>状态:</b> ${status_text}
+🎯<b>域名:</b> <code>${domain}</code>
+⌚<b>时间:</b> ${current_time}
+
+📃<b>详细描述:</b>
+<i>${detail_msg}</i>
+EOF
+)
     local button_url="http://${domain}/"; [ "$debug" == "true" ] && button_url="https://core.telegram.org/bots/api"
     local kb_json='{"inline_keyboard":[[{"text":"📊 访问实例","url":"'"$button_url"'"}]]}'
     local payload_file=$(mktemp /tmp/tg_payload_XXXXXX.json)
@@ -654,8 +669,12 @@ _update_cloudflare_ips() {
         mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
         mv "$temp_cf_geo" /etc/nginx/conf.d/cf_geo.conf
         rm -f /etc/nginx/snippets/cf_allow.conf
-        log_message SUCCESS "Cloudflare IP 列表更新完成。"
-    else log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"; fi
+    log_message SUCCESS "Cloudflare IP 列表更新完成。"
+    echo -e "${GREEN}Cloudflare IP 列表已更新。${NC}"
+    else
+        log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"
+        echo -e "${RED}Cloudflare IP 列表更新失败。${NC}"
+    fi
     rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
 }
 
@@ -1311,7 +1330,7 @@ select_item_and_act() {
     while true; do
         local choice_idx
         if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 0; fi
-        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 0; fi
+        if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 1; fi
         if [ "$choice_idx" -gt "$count" ]; then log_message ERROR "序号越界"; continue; fi
         local selected_id
         selected_id=$(echo "$list_json" | jq -r ".[$((choice_idx-1))].${id_field}")
@@ -1525,7 +1544,13 @@ check_and_auto_renew_certs() {
             echo -e "${BRIGHT_RED}触发续期...${NC}"
             local project_json; project_json=$(_get_project_json "$domain")
             if [[ -n "$project_json" ]]; then
-                if _issue_and_install_certificate "$project_json"; then success=$((success+1)); else fail=$((fail+1)); fi
+                if _issue_and_install_certificate "$project_json"; then
+                    success=$((success+1))
+                    _send_tg_notify "success" "$domain" "证书已成功安装。" ""
+                else
+                    fail=$((fail+1))
+                    _send_tg_notify "fail" "$domain" "自动续签失败。" ""
+                fi
             else log_message ERROR "无法读取 $domain 的配置元数据"; fail=$((fail+1)); fi
         else echo -e "${GREEN}有效期充足${NC}"; fi
     done < <(jq -r '.[] | "\(.domain)\1\(.cert_file)\1\(.acme_validation_method)' "$PROJECTS_METADATA_FILE" 2>/dev/null)
