@@ -39,6 +39,11 @@ BACKUP_DIR="/root/nginx_ssl_backups"
 CONF_BACKUP_DIR="/etc/nginx/conf_backups"
 TG_CONF_FILE="/etc/nginx/tg_notifier.conf"
 GZIP_DISABLE_MARK="/etc/nginx/.gzip_optimize_disabled"
+CONF_BACKUP_KEEP="${CONF_BACKUP_KEEP:-10}"
+
+ERR_CFG_INVALID_ARGS=2
+ERR_CFG_VALIDATE=20
+ERR_CFG_WRITE=21
 
 RENEW_THRESHOLD_DAYS=30
 DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v3"
@@ -935,19 +940,34 @@ _nginx_conf_snapshot_file() {
 
 snapshot_nginx_conf() {
     local src_conf="${1:-}"; local name="${2:-}"; local type="${3:-http}"
-    if [ -z "$src_conf" ] || [ -z "$name" ]; then return 1; fi
+    if [ -z "$src_conf" ] || [ -z "$name" ]; then return $ERR_CFG_INVALID_ARGS; fi
     if ! _require_safe_path "$src_conf" "配置快照"; then return 1; fi
     if [ ! -f "$src_conf" ]; then return 0; fi
     local snap
     snap=$(_nginx_conf_snapshot_file "$name" "$type") || return 1
     mkdir -p "$CONF_BACKUP_DIR"
     cp "$src_conf" "$snap"
+    _cleanup_conf_backups "$name" "$type"
+}
+
+_cleanup_conf_backups() {
+    local name="${1:-}"
+    local type="${2:-http}"
+    if [ -z "$name" ]; then return 0; fi
+    local keep="$CONF_BACKUP_KEEP"
+    if ! [[ "$keep" =~ ^[0-9]+$ ]] || [ "$keep" -lt 1 ]; then keep=10; fi
+    ls -tp "$CONF_BACKUP_DIR/${type}_${name}_"*.conf.bak 2>/dev/null | grep -v '/$' | tail -n +$((keep + 1)) | xargs -I {} rm -- "{}" 2>/dev/null || true
 }
 
 _apply_nginx_conf_with_validation() {
     local temp_conf="${1:-}"; local target_conf="${2:-}"; local name="${3:-}"; local type="${4:-http}"
-    if [ -z "$temp_conf" ] || [ -z "$target_conf" ] || [ -z "$name" ]; then return 1; fi
-    if ! _require_safe_path "$target_conf" "配置写入"; then return 1; fi
+    if [ -z "$temp_conf" ] || [ -z "$target_conf" ] || [ -z "$name" ]; then return $ERR_CFG_INVALID_ARGS; fi
+    if ! _require_safe_path "$target_conf" "配置写入"; then return $ERR_CFG_INVALID_ARGS; fi
+    if [ -f "$target_conf" ] && cmp -s "$temp_conf" "$target_conf"; then
+        log_message INFO "配置未变化，跳过写入与重载: $target_conf"
+        rm -f "$temp_conf"
+        return 0
+    fi
     snapshot_nginx_conf "$target_conf" "$name" "$type" || true
     mv "$temp_conf" "$target_conf"
     if ! nginx -t >/dev/null 2>&1; then
@@ -958,9 +978,10 @@ _apply_nginx_conf_with_validation() {
         else
             rm -f "$target_conf"
         fi
-        log_message ERROR "Nginx 配置检查失败,已回滚。"
-        return 1
+        log_message ERROR "Nginx 配置检查失败,已回滚 (snapshot: ${rollback_conf:-none})"
+        return $ERR_CFG_VALIDATE
     fi
+    chmod 640 "$target_conf" || true
     return 0
 }
 
@@ -1104,10 +1125,13 @@ server {
     }
 }
 EOF
-    if ! _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$domain" "http"; then
-        return 1
+    _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$domain" "http"
+    local apply_ret=$?
+    if [ $apply_ret -ne 0 ]; then
+        return $apply_ret
     fi
     ln -sf "$conf" "$NGINX_SITES_ENABLED_DIR/"
+    chmod 640 "$conf" 2>/dev/null || true
 }
 
 _remove_and_disable_nginx_config() {
@@ -1168,7 +1192,7 @@ _write_and_enable_tcp_config() {
         proxy_pass_target="tcp_backend_${port}"; upstream_block="upstream ${proxy_pass_target} {"
         IFS=',' read -ra ADDR <<< "$target"; for i in "${ADDR[@]}"; do upstream_block+=$'\n    server '"${i};"; done; upstream_block+=$'\n}\n'
     fi
-    local temp_conf rollback_conf=""
+    local temp_conf
     temp_conf=$(mktemp "${conf}.tmp.XXXXXX")
     cat > "$temp_conf" << EOF
 ${upstream_block}server {
@@ -1176,10 +1200,13 @@ ${upstream_block}server {
     proxy_pass ${proxy_pass_target};${ssl_block}
 }
 EOF
-    if ! _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$port" "tcp"; then
-        return 1
+    _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$port" "tcp"
+    local apply_ret=$?
+    if [ $apply_ret -ne 0 ]; then
+        return $apply_ret
     fi
     ln -sf "$conf" "$NGINX_STREAM_ENABLED_DIR/"
+    chmod 640 "$conf" 2>/dev/null || true
 }
 
 configure_tcp_proxy() {
@@ -1448,6 +1475,8 @@ EOF
     [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
     "${inst[@]}" >/dev/null 2>&1; local acme_ret=$?
     if [ -f "$cert" ] && [ -f "$key" ]; then
+        chmod 600 "$key" 2>/dev/null || true
+        chmod 644 "$cert" 2>/dev/null || true
         local elapsed=$(( $(date +%s) - start_ts ))
         LAST_CERT_ELAPSED="${elapsed}s"; LAST_CERT_CERT="$cert"; LAST_CERT_KEY="$key"
         log_message SUCCESS "证书文件已成功生成于 /etc/ssl/ 目录。"
