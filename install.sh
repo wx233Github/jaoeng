@@ -26,6 +26,8 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
+JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
+
 # --- [核心架构]: 智能自引导启动器 ---
 INSTALL_DIR="/opt/vps_install_modules"
 FINAL_SCRIPT_PATH="${INSTALL_DIR}/install.sh"
@@ -43,6 +45,15 @@ echo_info() { printf "${CYAN}[启动器]${NC} %s\n" "$1" >&2; }
 echo_success() { printf "${GREEN}[启动器]${NC} %s\n" "$1" >&2; }
 echo_error() { printf "${RED}[启动器错误]${NC} %s\n" "$1" >&2; exit 1; }
 
+validate_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            echo_error "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}"
+            ;;
+    esac
+}
+
 starter_sudo() {
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
@@ -51,6 +62,9 @@ starter_sudo() {
     if sudo -n true 2>/dev/null; then
         sudo -n "$@"
         return $?
+    fi
+    if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+        echo_error "非交互模式下无法获取 sudo 权限"
     fi
     echo_info "需要 sudo 权限，可能会提示输入密码。"
     sudo "$@"
@@ -89,6 +103,9 @@ exec_script_with_sudo() {
     fi
     if sudo -n true 2>/dev/null; then
         exec sudo -n env -i "${envs[@]}" bash "$script_path" "${@:-}"
+    fi
+    if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+        echo_error "非交互模式下无法获取 sudo 权限"
     fi
     echo_info "需要 sudo 权限以继续。"
     exec sudo env -i "${envs[@]}" bash "$script_path" "${@:-}"
@@ -135,10 +152,14 @@ check_dependencies() {
 }
 
 if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
+    validate_noninteractive_flag
     
     preflight_check
 
     if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+            echo_error "非交互模式下禁止自动安装依赖"
+        fi
         echo_info "检测到核心依赖 curl 或 jq 未安装，正在尝试自动安装..."
         if command -v apt-get >/dev/null 2>&1; then
             starter_sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2 || true
@@ -151,6 +172,13 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
     fi
 
     if [ ! -f "$FINAL_SCRIPT_PATH" ] || [ ! -f "$CONFIG_PATH" ] || [ ! -f "$UTILS_PATH" ] || [ "${FORCE_REFRESH:-false}" = "true" ]; then
+        if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+            echo_error "非交互模式下禁止下载/覆盖核心文件"
+        fi
+        require_safe_path_or_die "$INSTALL_DIR" "安装目录"
+        require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本"
+        require_safe_path_or_die "$UTILS_PATH" "工具库"
+        require_safe_path_or_die "$CONFIG_PATH" "配置文件"
         echo_info "正在执行首次安装或强制刷新..."
         starter_sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -169,9 +197,12 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
 
+        require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本权限"
+        require_safe_path_or_die "$UTILS_PATH" "工具库权限"
         starter_sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
         BIN_DIR="/usr/local/bin"
+        require_safe_path_or_die "$BIN_DIR/jb" "快捷指令"
         starter_sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
         echo_success "安装/更新完成。"
     fi
@@ -242,6 +273,10 @@ EOF
 setup_logrotate() {
     local logrotate_conf="/etc/logrotate.d/vps_install_modules"
     if [ -d "/etc/logrotate.d" ] && [ ! -f "$logrotate_conf" ]; then
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下禁止写入 logrotate 配置"
+            return 1
+        fi
         log_info "首次运行: 正在为脚本日志配置 Logrotate 自动轮转..."
         run_with_sudo bash -c "cat > '$logrotate_conf' << 'EOF'
 ${INSTALL_DIR}/*.log {
@@ -569,6 +604,16 @@ ensure_safe_path() {
     local target="$1"
     if [ -z "${target}" ] || [ "${target}" = "/" ]; then
         log_err "拒绝对危险路径执行破坏性操作: '${target}'"
+        return 1
+    fi
+    return 0
+}
+
+require_safe_path_or_die() {
+    local target="$1"
+    local reason="$2"
+    if ! ensure_safe_path "$target"; then
+        log_err "路径不安全 (${reason}): ${target}"
         return 1
     fi
     return 0
