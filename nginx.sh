@@ -2477,7 +2477,7 @@ main_menu() {
         printf '%b' "\n"
         local c
         if ! c=$(prompt_menu_choice "1-10" "true"); then
-            return 10
+            exit 10
         fi
         case "$c" in
             1) configure_nginx_projects; press_enter_to_continue ;;
@@ -2491,12 +2491,10 @@ main_menu() {
             8) _update_cloudflare_ips; press_enter_to_continue ;;
             9) _handle_backup_restore ;;
             10) setup_tg_notifier; press_enter_to_continue ;;
-            "") return 10 ;;
+            "") exit 10 ;;
             *) log_message ERROR "无效选择" ;;
         esac
     done
-
-    return 10
 }
 
 main() {

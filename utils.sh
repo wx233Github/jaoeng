@@ -73,7 +73,7 @@ _log_write() {
     if [ -n "$log_file" ]; then
         printf '[%s] [%s] %s\n' "$ts" "$level" "$msg" >> "$log_file" 2>/dev/null || true
     fi
-    printf '[%s] [%s] %s\n' "$ts" "$level" "$msg"
+    printf '[%s] %b\n' "$level" "$msg"
 }
 
 log_info()    { _log_write "INFO" "$*"; }
