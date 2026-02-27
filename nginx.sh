@@ -40,6 +40,11 @@ CONF_BACKUP_DIR="/etc/nginx/conf_backups"
 TG_CONF_FILE="/etc/nginx/tg_notifier.conf"
 GZIP_DISABLE_MARK="/etc/nginx/.gzip_optimize_disabled"
 CONF_BACKUP_KEEP="${CONF_BACKUP_KEEP:-10}"
+HEALTH_CHECK_ENABLED="${HEALTH_CHECK_ENABLED:-false}"
+HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH:-/}"
+HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-5}"
+RENEW_FAIL_DB="${RENEW_FAIL_DB:-/var/lib/nginx_ssl_manager/renew_failures.json}"
+RENEW_FAIL_THRESHOLD="${RENEW_FAIL_THRESHOLD:-3}"
 
 ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
@@ -741,6 +746,7 @@ initialize_environment() {
     
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$CONF_BACKUP_DIR"
     mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
+    _renew_fail_db_init
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
     if [ ! -f "$TCP_PROJECTS_METADATA_FILE" ] || ! jq -e . "$TCP_PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$TCP_PROJECTS_METADATA_FILE"; fi
     if [ -f "$GZIP_DISABLE_MARK" ] && [ -f "/etc/nginx/conf.d/gzip_optimize.conf" ]; then
@@ -985,6 +991,20 @@ _apply_nginx_conf_with_validation() {
     return 0
 }
 
+_health_check_nginx_config() {
+    local domain="${1:-}"
+    if [ "$HEALTH_CHECK_ENABLED" != "true" ]; then return 0; fi
+    if [ -z "$domain" ]; then return 0; fi
+    local url="http://127.0.0.1${HEALTH_CHECK_PATH}"
+    local host_header="$domain"
+    if ! command -v curl >/dev/null 2>&1; then return 0; fi
+    if ! curl -fsS --connect-timeout "$HEALTH_CHECK_TIMEOUT" --max-time "$HEALTH_CHECK_TIMEOUT" -H "Host: ${host_header}" "$url" >/dev/null 2>&1; then
+        log_message ERROR "健康检查失败: ${domain}${HEALTH_CHECK_PATH}"
+        return 1
+    fi
+    return 0
+}
+
 snapshot_project_json() {
     local domain="${1:-}" json="${2:-}"
     if [ -z "$domain" ] || [ -z "$json" ]; then return 1; fi
@@ -1132,6 +1152,18 @@ EOF
     fi
     ln -sf "$conf" "$NGINX_SITES_ENABLED_DIR/"
     chmod 640 "$conf" 2>/dev/null || true
+    if ! _health_check_nginx_config "$domain"; then
+        local rollback_conf
+        rollback_conf=$(ls -t "$CONF_BACKUP_DIR/http_${domain}_"*.conf.bak 2>/dev/null | head -n 1 || true)
+        if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
+            cp "$rollback_conf" "$conf"
+            control_nginx reload || true
+            log_message ERROR "健康检查失败,已回滚配置 (snapshot: ${rollback_conf:-none})"
+        else
+            log_message ERROR "健康检查失败且无可用快照: $domain"
+        fi
+        return $ERR_CFG_VALIDATE
+    fi
 }
 
 _remove_and_disable_nginx_config() {
@@ -1271,6 +1303,38 @@ _mask_sensitive_data() {
         -e "s/(Ali_Key(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
         -e "s/(Ali_Secret(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
         -e "s/(SAVED_[^ ]+)(=)([^ ]+)/\1\2***MASKED***/g"
+}
+
+_renew_fail_db_init() {
+    local db_dir
+    db_dir=$(dirname "$RENEW_FAIL_DB")
+    mkdir -p "$db_dir"
+    if [ ! -f "$RENEW_FAIL_DB" ]; then
+        echo "{}" > "$RENEW_FAIL_DB"
+    fi
+}
+
+_renew_fail_incr() {
+    local domain="${1:-}"
+    if [ -z "$domain" ]; then echo 0; return 0; fi
+    _renew_fail_db_init
+    local temp
+    temp=$(mktemp)
+    chmod 600 "$temp"
+    local count
+    count=$(jq -r --arg d "$domain" '(.[$d] // 0) + 1' "$RENEW_FAIL_DB" 2>/dev/null || echo 1)
+    jq --arg d "$domain" --argjson c "$count" '. + {($d): $c}' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
+    echo "$count"
+}
+
+_renew_fail_reset() {
+    local domain="${1:-}"
+    if [ -z "$domain" ]; then return 0; fi
+    _renew_fail_db_init
+    local temp
+    temp=$(mktemp)
+    chmod 600 "$temp"
+    jq --arg d "$domain" 'del(.[$d])' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
 }
 
 _handle_dns_provider_credentials() {
@@ -1904,10 +1968,17 @@ check_and_auto_renew_certs() {
             if [[ -n "$project_json" ]]; then
                 if _issue_and_install_certificate "$project_json"; then
                     success=$((success+1))
+                    _renew_fail_reset "$domain"
                     _send_tg_notify "success" "$domain" "证书已成功安装。" ""
                 else
                     fail=$((fail+1))
-                    _send_tg_notify "fail" "$domain" "自动续签失败。" ""
+                    local fcount
+                    fcount=$(_renew_fail_incr "$domain")
+                    if [ "$fcount" -ge "$RENEW_FAIL_THRESHOLD" ]; then
+                        _send_tg_notify "fail" "$domain" "自动续签失败(${fcount}次)。" ""
+                    else
+                        log_message WARN "续签失败次数未达阈值(${fcount}/${RENEW_FAIL_THRESHOLD})，暂不通知。"
+                    fi
                 fi
             else log_message ERROR "无法读取 $domain 的配置元数据"; fail=$((fail+1)); fi
         else echo -e "${GREEN}有效期充足${NC}"; fi
