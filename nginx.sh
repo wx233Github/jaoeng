@@ -1394,7 +1394,13 @@ _handle_renew_cert() {
     local d="${1:-}"; local p=$(_get_project_json "$d")
     [ -z "$p" ] && return
     _generate_op_id
-    _issue_and_install_certificate "$p" && control_nginx reload
+    if _issue_and_install_certificate "$p" && control_nginx reload; then
+        echo -e "已续期: ${d}"
+        echo -e "请返回项目列表继续操作。"
+    else
+        echo -e "续期失败: ${d}"
+        echo -e "请查看日志后重试。"
+    fi
     press_enter_to_continue
 }
 _handle_delete_project() {
@@ -1405,8 +1411,15 @@ _handle_delete_project() {
         "$ACME_BIN" --remove -d "$d" --ecc >/dev/null 2>&1 || true
         rm -f "$SSL_CERTS_BASE_DIR/$d.cer" "$SSL_CERTS_BASE_DIR/$d.key"
         _delete_project_json "$d"
-        control_nginx reload
-        log_message SUCCESS "项目 $d 已成功删除。"
+        if control_nginx reload; then
+            echo -e "已删除: ${d}"
+            echo -e "配置已重载。"
+        else
+            echo -e "已删除: ${d}"
+            echo -e "Nginx 重载失败,请手动处理。"
+        fi
+    else
+        echo -e "已取消删除。"
     fi
     press_enter_to_continue
 }
@@ -1421,17 +1434,19 @@ _handle_reconfigure_project() {
     if [ "$skip_cert" == "false" ]; then if ! _issue_and_install_certificate "$new"; then log_message ERROR "证书申请失败。"; return 1; fi; fi
     if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$d" "$new"; fi
     if _save_project_json "$new" && control_nginx reload; then
-        log_message SUCCESS "重配成功"
-        if [ -n "$LAST_CERT_ELAPSED" ]; then echo -e "\n申请耗时: ${LAST_CERT_ELAPSED}"; fi
+        echo -e "重配完成: ${d}"
+        if [ -n "$LAST_CERT_ELAPSED" ]; then echo -e "申请耗时: ${LAST_CERT_ELAPSED}"; fi
         if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
             echo -e "证书路径: ${LAST_CERT_CERT}"
             echo -e "私钥路径: ${LAST_CERT_KEY}"
         fi
         if [ "$mode" != "cert_only" ]; then
-            echo -e "\n网站已上线: https://$(echo "$new" | jq -r .domain)"
+            echo -e "网站已上线: https://$(echo "$new" | jq -r .domain)"
         fi
+        echo -e "已重载 Nginx。"
     else
-        log_message ERROR "重配失败,正在回滚。"
+        echo -e "重配失败: ${d}"
+        echo -e "已回滚到原配置。"
         _save_project_json "$cur"
         if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$d" "$cur"; fi
         control_nginx reload || true
@@ -1453,7 +1468,15 @@ _handle_modify_renew_settings() {
     case "$v_choice" in 1) method="http-01"; provider="" ;; 2) method="dns-01"; provider="dns_cf" ;; 3) method="dns-01"; provider="dns_ali" ;; esac
     local new_json=$(echo "$cur" | jq --arg cu "$ca_server" --arg cn "$ca_name" --arg m "$method" --arg dp "$provider" '.ca_server_url=$cu | .ca_server_name=$cn | .acme_validation_method=$m | .dns_api_provider=$dp')
     snapshot_project_json "$d" "$cur"
-    if _save_project_json "$new_json"; then log_message SUCCESS "设置已更新,将在证书快到期时自动应用。"; else log_message ERROR "保存配置失败。"; _save_project_json "$cur"; fi; press_enter_to_continue
+    if _save_project_json "$new_json"; then
+        echo -e "已更新: 证书续期设置 (CA/验证方式)"
+        echo -e "下次续期将自动应用。"
+    else
+        echo -e "保存失败: 证书续期设置"
+        echo -e "已回滚到原配置。"
+        _save_project_json "$cur"
+    fi
+    press_enter_to_continue
 }
 _handle_set_custom_config() {
     local d="${1:-}"; local cur=$(_get_project_json "$d"); local current_val=$(echo "$cur" | jq -r '.custom_config // "无"')
@@ -1465,14 +1488,17 @@ _handle_set_custom_config() {
     snapshot_project_json "$d" "$cur"
     if _save_project_json "$new_json"; then
         if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx reload; then
-            log_message SUCCESS "已应用。"
+            echo -e "已应用: 自定义指令"
+            echo -e "Nginx 已重载。"
         else
-            log_message ERROR "重载失败!回滚配置...";
+            echo -e "应用失败: 自定义指令"
+            echo -e "已回滚配置。"
             _save_project_json "$cur"
             _write_and_enable_nginx_config "$d" "$cur"
             control_nginx reload || true
         fi
-    fi; press_enter_to_continue
+    fi
+    press_enter_to_continue
 }
 
 _handle_toggle_cf_strict() {
@@ -1488,12 +1514,16 @@ _handle_toggle_cf_strict() {
         _write_and_enable_nginx_config "$d" "$new_json"
         if control_nginx reload; then
             echo -e "已${label} Cloudflare 严格防御。"
+            echo -e "配置已重载。"
         else
-            log_message ERROR "Nginx 重载失败,已回滚。"
+            echo -e "操作失败: Nginx 重载失败"
+            echo -e "已回滚配置。"
             _save_project_json "$cur"
             _write_and_enable_nginx_config "$d" "$cur"
             control_nginx reload || true
         fi
+    else
+        echo -e "保存失败: 严格防御设置"
     fi
     press_enter_to_continue
 }
