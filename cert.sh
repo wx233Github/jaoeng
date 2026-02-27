@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # =============================================================
 # 🚀 SSL 证书管理助手 (acme.sh) (v3.15.0-文案微调版)
 # - 优化: API Token 输入提示更符合直觉。
@@ -8,9 +9,10 @@
 SCRIPT_VERSION="v3.15.0"
 
 # --- 严格模式与环境设定 ---
-set -eo pipefail
-export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C.UTF_8}
+set -euo pipefail
+IFS=$'\n\t'
+export LANG="${LANG:-en_US.UTF_8}"
+export LC_ALL="${LC_ALL:-C.UTF_8}"
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
@@ -24,10 +26,46 @@ else
     log_warn() { echo "[Warn] $*"; }
     log_success() { echo "[Success] $*"; }
     generate_line() { local len=${1:-40}; printf "%${len}s" "" | sed "s/ /-/g"; }
-    press_enter_to_continue() { read -r -p "Press Enter..."; }
-    confirm_action() { read -r -p "$1 (y/n): " c; [[ "$c" == "y" ]] && return 0 || return 1; }
-    _prompt_user_input() { read -r -p "$1" v; echo "${v:-$2}"; }
-    _prompt_for_menu_choice() { read -r -p "Choice: " v; echo "$v"; }
+    press_enter_to_continue() {
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_warn "非交互模式：跳过等待"
+            return 0
+        fi
+        read -r -p "Press Enter..." < /dev/tty
+    }
+    confirm_action() {
+        local prompt="$1"
+        local c
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_warn "非交互模式：默认确认"
+            return 0
+        fi
+        read -r -p "${prompt} (y/n): " c < /dev/tty
+        [[ "$c" == "y" ]] && return 0 || return 1
+    }
+    _prompt_user_input() {
+        local prompt="$1"
+        local def_val="${2:-}"
+        local v
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_warn "非交互模式：使用默认值"
+            echo "$def_val"
+            return 0
+        fi
+        read -r -p "${prompt}" v < /dev/tty
+        echo "${v:-$def_val}"
+    }
+    _prompt_for_menu_choice() {
+        local prompt="$1"
+        local v
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_warn "非交互模式：返回空选项"
+            echo ""
+            return 1
+        fi
+        read -r -p "${prompt}" v < /dev/tty
+        echo "$v"
+    }
     _render_menu() { echo "--- $1 ---"; shift; for l in "$@"; do echo "$l"; done; }
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; NC=""; BOLD=""; ORANGE="";
 fi
@@ -37,8 +75,51 @@ if ! declare -f run_with_sudo &>/dev/null; then
     run_with_sudo() { "$@"; }
 fi
 
+ensure_safe_path() {
+    local target="$1"
+    if [ -z "${target}" ] || [ "${target}" = "/" ]; then
+        log_err "拒绝对危险路径执行破坏性操作: '${target}'"
+        return 1
+    fi
+    return 0
+}
+
+sanitize_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+            JB_NONINTERACTIVE="false"
+            return 0
+            ;;
+    esac
+}
+
+require_sudo_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null; then
+            return 0
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下无法获取 sudo 权限"
+            exit 1
+        fi
+        return 0
+    fi
+    log_err "未安装 sudo，无法继续"
+    exit 1
+}
+
 # --- 全局变量 ---
 ACME_BIN="$HOME/.acme.sh/acme.sh"
+
+init_runtime() {
+    sanitize_noninteractive_flag
+    require_sudo_or_die
+}
 
 # =============================================================
 # SECTION: 辅助功能函数 (私有)
@@ -89,9 +170,27 @@ _check_dependencies() {
         log_warn "首次运行，正在安装 acme.sh ..."
         local email
         email=$(_prompt_user_input "请输入注册邮箱 (推荐): " "")
-        local cmd="curl https://get.acme.sh | sh"
-        if [ -n "$email" ]; then cmd+=" -s email=$email"; fi
-        if ! eval "$cmd"; then log_err "安装失败！"; return 1; fi
+        local install_script
+        install_script=$(mktemp "/tmp/acme_install_XXXXXX")
+        if ! curl -fsSL --connect-timeout 10 --max-time 60 "https://get.acme.sh" -o "$install_script"; then
+            log_err "下载 acme.sh 安装脚本失败！"
+            rm -f "$install_script" 2>/dev/null || true
+            return 1
+        fi
+        if [ -n "$email" ]; then
+            if ! bash "$install_script" -s email="$email"; then
+                log_err "安装失败！"
+                rm -f "$install_script" 2>/dev/null || true
+                return 1
+            fi
+        else
+            if ! bash "$install_script"; then
+                log_err "安装失败！"
+                rm -f "$install_script" 2>/dev/null || true
+                return 1
+            fi
+        fi
+        rm -f "$install_script" 2>/dev/null || true
         log_success "acme.sh 安装成功。"
     fi
     export PATH="$HOME/.acme.sh:$PATH"
@@ -139,8 +238,13 @@ _apply_for_certificate() {
     # -------------------------
 
     local USE_WILDCARD=""
-    echo -ne "${YELLOW}是否申请泛域名证书 (*.$DOMAIN)？ (y/[N]): ${NC}"
-    read -r wild_choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：跳过泛域名选择"
+        wild_choice=""
+    else
+        echo -ne "${YELLOW}是否申请泛域名证书 (*.$DOMAIN)？ (y/[N]): ${NC}" > /dev/tty
+        read -r wild_choice < /dev/tty
+    fi
     if [[ "$wild_choice" == "y" || "$wild_choice" == "Y" ]]; then
         USE_WILDCARD="*.$DOMAIN"
         log_info "已启用泛域名: $USE_WILDCARD"
@@ -150,6 +254,7 @@ _apply_for_certificate() {
 
     local INSTALL_PATH
     INSTALL_PATH=$(_prompt_user_input "证书保存路径 [默认: /etc/ssl/$DOMAIN]: " "/etc/ssl/$DOMAIN")
+    ensure_safe_path "$INSTALL_PATH"
     
     local active_svc
     active_svc=$(_detect_web_service)
@@ -550,11 +655,8 @@ main_menu() {
 }
 
 main() {
-    trap 'echo -e "\n操作被中断。"; exit 10' INT
-    if [ "$(id -u)" -ne 0 ]; then
-        log_err "请使用 root 权限运行。"
-        exit 1
-    fi
+    trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
+    init_runtime
     log_info "SSL 证书管理模块 ${SCRIPT_VERSION}"
     _check_dependencies || return 1
     main_menu

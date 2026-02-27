@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # =============================================================
 # 🚀 Docker 管理模块 (v4.3.9-菜单逻辑与交互优化)
 # - 优化: 将“安装”与“卸载/重装”合并为统一的“安装管理”菜单，简化主界面。
@@ -10,9 +11,10 @@
 SCRIPT_VERSION="v4.3.9"
 
 # --- 严格模式与环境设定 ---
-set -eo pipefail
-export LANG=${LANG:-en_US.UTF_8}
-export LC_ALL=${LC_ALL:-C_UTF_8}
+set -euo pipefail
+IFS=$'\n\t'
+export LANG="${LANG:-en_US.UTF_8}"
+export LC_ALL="${LC_ALL:-C_UTF_8}"
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
@@ -26,9 +28,24 @@ else
     log_info() { echo -e "[信息] $*"; }
     log_success() { echo -e "${GREEN}[成功] $*${NC}"; }
     _render_menu() { local title="$1"; shift; echo "--- $title ---"; printf " %s\n" "$@"; }
-    press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
-    confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
-    _prompt_for_menu_choice() { read -r -p "> 选项: " choice; echo "$choice"; }
+press_enter_to_continue() {
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：跳过等待"
+        return 0
+    fi
+    read -r -p "按 Enter 继续..." < /dev/tty
+}
+confirm_action() {
+    local prompt="$1"
+    local choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：默认确认"
+        return 0
+    fi
+    read -r -p "${prompt} ([y]/n): " choice < /dev/tty
+    case "$choice" in n|N) return 1;; *) return 0;; esac
+}
+_prompt_for_menu_choice() { read -r -p "> 选项: " choice < /dev/tty; echo "$choice"; }
     log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
     exit 1
 fi
@@ -38,6 +55,44 @@ if ! declare -f run_with_sudo &>/dev/null; then
   log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
   exit 1
 fi
+
+ensure_safe_path() {
+    local target="$1"
+    if [ -z "${target}" ] || [ "${target}" = "/" ]; then
+        log_err "拒绝对危险路径执行破坏性操作: '${target}'"
+        return 1
+    fi
+    return 0
+}
+
+require_sudo_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null; then
+            return 0
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下无法获取 sudo 权限"
+            exit 1
+        fi
+        return 0
+    fi
+    log_err "未安装 sudo，无法继续"
+    exit 1
+}
+
+sanitize_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+            JB_NONINTERACTIVE="false"
+            return 0
+            ;;
+    esac
+}
 
 # --- 全局状态变量 ---
 DOCKER_INSTALLED="false"
@@ -81,6 +136,11 @@ pre_check_dependencies() {
         execute_with_spinner "更新软件源..." run_with_sudo apt-get update -qq
         execute_with_spinner "安装缺失的依赖: ${missing_deps[*]}..." run_with_sudo apt-get install -y "${missing_deps[@]}"
     fi
+}
+
+init_runtime() {
+    sanitize_noninteractive_flag
+    require_sudo_or_die
 }
 
 get_docker_status() {
@@ -144,8 +204,13 @@ uninstall_docker() {
     execute_with_spinner "自动移除不再需要的依赖..." run_with_sudo apt-get autoremove -y --purge
     
     if confirm_action "是否同时删除 Docker 数据目录 (镜像, 容器, 数据卷)? 这是一个【不可逆】操作！"; then
+        ensure_safe_path "/var/lib/docker"
+        ensure_safe_path "/var/lib/containerd"
+        ensure_safe_path "/etc/docker"
         execute_with_spinner "删除 Docker 数据和配置目录..." run_with_sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker
     fi
+    ensure_safe_path "/etc/apt/keyrings/docker.gpg"
+    ensure_safe_path "/etc/apt/sources.list.d/docker.list"
     execute_with_spinner "清理 APT 源..." run_with_sudo rm -rf /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
 
     log_info "检查 docker 用户组残留..."
@@ -374,9 +439,10 @@ main_menu() {
 
 # --- 脚本执行入口 ---
 main() {
-    trap 'echo -e "\n操作被中断。"; exit 10' INT
+    trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
     log_info "您选择了 [Docker & Compose 管理]"
     log_info "欢迎使用 Docker 模块 ${SCRIPT_VERSION}"
+    init_runtime
     pre_check_dependencies
     main_menu "$@"
 }

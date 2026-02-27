@@ -9,6 +9,8 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
+JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
+
 # --- 全局变量 ---
 readonly NC="\033[0m"
 readonly BLACK="\033[30m"
@@ -100,6 +102,35 @@ _generate_op_id() { OP_ID="$(date +%Y%m%d_%H%M%S)_$$_$RANDOM"; }
 _is_valid_var_name() {
     local name="${1:-}"
     [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+sanitize_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+            JB_NONINTERACTIVE="false"
+            return 0
+            ;;
+    esac
+}
+
+require_sudo_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null; then
+            return 0
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_error "非交互模式下无法获取 sudo 权限"
+            exit 1
+        fi
+        return 0
+    fi
+    log_error "未安装 sudo，无法继续"
+    exit 1
 }
 
 cleanup() {
@@ -299,11 +330,22 @@ log_message() {
     esac
 }
 
-press_enter_to_continue() { read -r -p "$(printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty || true; }
+press_enter_to_continue() {
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+        log_warn "非交互模式：跳过等待"
+        return 0
+    fi
+    read -r -p "$(printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}")" < /dev/tty || true
+}
 
 prompt_menu_choice() {
     local range="${1:-}"; local allow_empty="${2:-false}"; local prompt_text="${BRIGHT_YELLOW}选项 [${range}]${NC} (Enter 返回): "
     local choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+        if [ "$allow_empty" = "true" ]; then printf '%b' "\n"; return 0; fi
+        log_message ERROR "非交互模式无法选择菜单"
+        return 1
+    fi
     while true; do
         read -r -p "$(printf '%b' "$prompt_text")" choice < /dev/tty || return 1
         if [ -z "$choice" ]; then
@@ -317,7 +359,10 @@ prompt_menu_choice() {
 prompt_input() {
     local prompt="${1:-}" default="${2:-}" regex="${3:-}" error_msg="${4:-}" allow_empty="${5:-false}" visual_default="${6:-}"
     while true; do
-        if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+            val="$default"
+            if [[ -z "$val" && "$allow_empty" = "false" ]]; then log_message ERROR "非交互缺失: $prompt"; return 1; fi
+        else
             local disp=""
             if [ -n "$visual_default" ]; then
                 disp=" [默认: ${visual_default}]"
@@ -327,9 +372,6 @@ prompt_input() {
             printf '%b' "${BRIGHT_YELLOW}${prompt}${NC}${disp}: " >&2
             read -r val < /dev/tty || return 1
             val=${val:-$default}
-        else
-            val="$default"
-            if [[ -z "$val" && "$allow_empty" = "false" ]]; then log_message ERROR "非交互缺失: $prompt"; return 1; fi
         fi
         if [[ -z "$val" && "$allow_empty" = "true" ]]; then printf '%b' "\n"; return 0; fi
         if [[ -z "$val" ]]; then log_message ERROR "输入不能为空"; [ "$IS_INTERACTIVE_MODE" = "false" ] && return 1; continue; fi
@@ -340,6 +382,10 @@ prompt_input() {
 
 _prompt_secret() {
     local prompt="${1:-}" val=""
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+        log_message ERROR "非交互模式禁止读取密文输入"
+        return 1
+    fi
     printf '%b' "${BRIGHT_YELLOW}${prompt} (无屏幕回显): ${NC}" >&2
     read -rs val < /dev/tty || return 1
     printf '%b' "\n" >&2; printf '%s\n' "$val"
@@ -841,6 +887,10 @@ install_dependencies() {
     done
     if (( ${#missing_deps[@]} > 0 )); then
         log_message WARN "检测到缺失依赖: ${missing_deps[*]}，正在批量安装..."
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_message ERROR "非交互模式禁止自动安装依赖"
+            return 1
+        fi
         if run_cmd 60 sudo -n apt-get update >/dev/null 2>&1 || run_cmd 60 apt-get update >/dev/null 2>&1; then
             if run_cmd 120 sudo -n apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1 || run_cmd 120 apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1; then log_message SUCCESS "依赖安装成功。"
             else log_message ERROR "依赖安装失败"; return 1; fi
@@ -856,6 +906,10 @@ _setup_logrotate() {
     if [ -z "$log_path" ]; then log_path="$LOG_FILE_DEFAULT"; fi
     if [ ! -f /etc/logrotate.d/nginx ]; then
         log_message INFO "自动补全 Nginx 缺失的日志切割配置..."
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_message ERROR "非交互模式禁止写入 logrotate 配置"
+            return 1
+        fi
         cat > /etc/logrotate.d/nginx << 'EOF'
 /var/log/nginx/*.log {
     daily missingok rotate 14 compress delaycompress notifempty create 0640 root root sharedscripts postrotate if [ -f /var/run/nginx.pid ]; then kill -USR1 `cat /var/run/nginx.pid`; fi endscript
@@ -864,6 +918,10 @@ EOF
     fi
     if [ ! -f /etc/logrotate.d/nginx_ssl_manager ]; then
         log_message INFO "注入本面板运行日志 切割规则..."
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_message ERROR "非交互模式禁止写入 logrotate 配置"
+            return 1
+        fi
         cat > /etc/logrotate.d/nginx_ssl_manager << EOF
 ${log_path} { weekly missingok rotate 12 compress delaycompress notifempty create 0644 root root }
 EOF
@@ -905,21 +963,35 @@ initialize_environment() {
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$CONF_BACKUP_DIR"
     mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
     _renew_fail_db_init
-    if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then printf '%s\n' "[]" > "$PROJECTS_METADATA_FILE"; fi
-    if [ ! -f "$TCP_PROJECTS_METADATA_FILE" ] || ! jq -e . "$TCP_PROJECTS_METADATA_FILE" > /dev/null 2>&1; then printf '%s\n' "[]" > "$TCP_PROJECTS_METADATA_FILE"; fi
+    if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then
+        if ! _require_safe_path "$PROJECTS_METADATA_FILE" "初始化项目配置"; then return 1; fi
+        printf '%s\n' "[]" > "$PROJECTS_METADATA_FILE"
+    fi
+    if [ ! -f "$TCP_PROJECTS_METADATA_FILE" ] || ! jq -e . "$TCP_PROJECTS_METADATA_FILE" > /dev/null 2>&1; then
+        if ! _require_safe_path "$TCP_PROJECTS_METADATA_FILE" "初始化 TCP 配置"; then return 1; fi
+        printf '%s\n' "[]" > "$TCP_PROJECTS_METADATA_FILE"
+    fi
     if [ -f "$GZIP_DISABLE_MARK" ] && [ -f "/etc/nginx/conf.d/gzip_optimize.conf" ]; then
-        rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
+        if _require_safe_path "/etc/nginx/conf.d/gzip_optimize.conf" "删除 gzip 配置"; then
+            rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
+        fi
     fi
     if [ -f "/etc/nginx/conf.d/gzip_optimize.conf" ]; then
         if ! _nginx_test_cached; then
             if nginx -t 2>&1 | grep -q "gzip"; then
-                rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
+                if _require_safe_path "/etc/nginx/conf.d/gzip_optimize.conf" "删除 gzip 配置"; then
+                    rm -f "/etc/nginx/conf.d/gzip_optimize.conf"
+                fi
                 touch "$GZIP_DISABLE_MARK"
                 log_message WARN "清理与主配置冲突的 Gzip 文件，并禁用自动恢复。"
             fi
         fi
     fi
     if [ -f /etc/nginx/nginx.conf ] && ! grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_message ERROR "非交互模式禁止修改 /etc/nginx/nginx.conf"
+            return 1
+        fi
         cat >> /etc/nginx/nginx.conf << EOF
 
 # TCP/UDP Stream Proxy Auto-injected
@@ -1041,6 +1113,9 @@ _update_cloudflare_ips() {
         printf '%s\n' "deny all;" >> "$temp_cf_allow"
         printf '%s\n' "real_ip_header CF-Connecting-IP;" >> "$temp_cf_real"
         printf '%s\n' "}" >> "$temp_cf_geo"
+        if ! _require_safe_path "/etc/nginx/conf.d/cf_real_ip.conf" "写入 CF Real IP"; then return 1; fi
+        if ! _require_safe_path "/etc/nginx/conf.d/cf_geo.conf" "写入 CF Geo"; then return 1; fi
+        if ! _require_safe_path "/etc/nginx/snippets/cf_allow.conf" "写入 CF Allow"; then return 1; fi
         mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
         mv "$temp_cf_geo" /etc/nginx/conf.d/cf_geo.conf
         mv "$temp_cf_allow" /etc/nginx/snippets/cf_allow.conf
@@ -1124,6 +1199,10 @@ _manage_cron_jobs() {
     else lines+=("${YELLOW}检测到必需的定时任务不完整,正在自动执行修复...${NC}"); fi
     _render_menu "系统定时任务 (Cron) 诊断与修复" "${lines[@]}"
     if [ $has_acme -eq 0 ] || [ $has_manager -eq 0 ]; then
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_message ERROR "非交互模式禁止修复定时任务"
+            return 1
+        fi
         "$ACME_BIN" --install-cronjob >/dev/null 2>&1 || true
         local cron_tmp
         cron_tmp=$(mktemp /tmp/cron.bak.XXXXXX)
@@ -2419,6 +2498,8 @@ main() {
     _generate_op_id
     _resolve_log_file
     _parse_args "$@"
+    sanitize_noninteractive_flag
+    require_sudo_or_die
     if ! validate_args "$@"; then return 1; fi
     if ! acquire_http_lock; then return 1; fi
     if ! check_root; then return 1; fi

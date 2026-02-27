@@ -11,6 +11,7 @@
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
+IFS=$'\n\t'
 
 # --- 退出码常量定义 ---
 readonly ERR_OK=0
@@ -81,22 +82,87 @@ if [ -t 1 ] && command -v tput &>/dev/null; then
 fi
 
 # --- 通用工具函数 ---
-_render_menu() { local title="$1"; shift; echo -e "\n${BLUE}--- $title ---${NC}"; printf " %s\n" "$@"; }
-press_enter_to_continue() { read -r -p "按 Enter 继续..."; }
-confirm_action() { read -r -p "$1 ([y]/n): " choice; case "$choice" in n|N) return 1;; *) return 0;; esac; }
-_prompt_user_input() { read -r -p "$1" val; echo "${val:-$2}"; }
-_prompt_for_menu_choice() { read -r -p "请选择 [${1}]: " val; echo "$val"; }
+_render_menu() { local title="$1"; shift; printf '%b\n' "\n${BLUE}--- $title ---${NC}"; printf " %s\n" "$@"; }
+sanitize_noninteractive_flag() {
+    case "${JB_NONINTERACTIVE:-false}" in
+        true|false) return 0 ;;
+        *)
+            log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+            JB_NONINTERACTIVE="false"
+            return 0
+            ;;
+    esac
+}
+
+press_enter_to_continue() {
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：跳过等待"
+        return 0
+    fi
+    read -r -p "按 Enter 继续..." < /dev/tty
+}
+
+confirm_action() {
+    local prompt="$1"
+    local choice
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：默认确认"
+        return 0
+    fi
+    read -r -p "${prompt} ([y]/n): " choice < /dev/tty
+    case "$choice" in n|N) return 1;; *) return 0;; esac
+}
+
+_prompt_user_input() {
+    local prompt="$1"
+    local def_val="${2:-}"
+    local val
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：使用默认值"
+        echo "$def_val"
+        return 0
+    fi
+    read -r -p "${prompt}" val < /dev/tty
+    echo "${val:-$def_val}"
+}
+
+_prompt_for_menu_choice() {
+    local prompt="$1"
+    local val
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        log_warn "非交互模式：返回空选项"
+        echo ""
+        return 1
+    fi
+    read -r -p "请选择 [${prompt}]: " val < /dev/tty
+    echo "$val"
+}
 
 # --- Sudo 兜底函数 ---
 if ! declare -f run_with_sudo &>/dev/null; then
     run_with_sudo() {
         if [ "$(id -u)" -eq 0 ]; then "$@"; else
-            if command -v sudo &>/dev/null; then sudo "$@"; else
-                log_error "需要 root 权限执行此操作，且未找到 sudo 命令。"; return "${ERR_PERMISSION}";
+            if command -v sudo &>/dev/null; then
+                if sudo -n true 2>/dev/null; then
+                    sudo -n "$@"
+                    return $?
+                fi
+                if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+                    log_error "非交互模式下无法获取 sudo 权限"
+                    return "${ERR_PERMISSION}"
+                fi
+                sudo "$@"
+            else
+                log_error "需要 root 权限执行此操作，且未找到 sudo 命令。"
+                return "${ERR_PERMISSION}"
             fi
         fi
     }
 fi
+
+init_runtime() {
+    sanitize_noninteractive_flag
+}
 
 # --- 辅助函数：遮蔽字符串 ---
 _mask_string() {
@@ -1231,6 +1297,7 @@ main_menu(){
 }
 
 main(){ 
+    init_runtime
     validate_args "$@"
     [ -f "$CONFIG_FILE" ] && load_config
     
@@ -1255,7 +1322,7 @@ main(){
             ;;
     esac
 
-    trap 'echo -e "\n操作被中断。"; exit '"${ERR_RUNTIME}"'' INT TERM
+    trap 'printf "\n操作被中断。\n" >&2; exit '"${ERR_RUNTIME}"'' INT TERM
     main_menu
     exit "${ERR_OK}"
 }
