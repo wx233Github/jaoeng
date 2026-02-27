@@ -30,11 +30,13 @@ LOG_LEVEL_DEFAULT="INFO"
 LOG_LEVEL="${LOG_LEVEL:-$LOG_LEVEL_DEFAULT}"
 LOG_FILE="${LOG_FILE:-$LOG_FILE_DEFAULT}"
 ALLOW_UNSAFE_HOOKS="${ALLOW_UNSAFE_HOOKS:-false}"
-SAFE_PATH_ROOTS=("/etc/nginx" "/etc/ssl" "/var/www" "/var/log" "/root/nginx_ssl_backups" "/etc/nginx/projects_backups")
+SAFE_PATH_ROOTS=("/etc/nginx" "/etc/ssl" "/var/www" "/var/log" "/root/nginx_ssl_backups" "/etc/nginx/projects_backups" "/etc/nginx/conf_backups")
+HOOK_WHITELIST=("systemctl restart s-ui" "systemctl restart x-ui" "systemctl restart v2ray" "systemctl restart xray" "systemctl reload nginx" "systemctl restart nginx")
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 TCP_PROJECTS_METADATA_FILE="/etc/nginx/tcp_projects.json"
 JSON_BACKUP_DIR="/etc/nginx/projects_backups"
 BACKUP_DIR="/root/nginx_ssl_backups"
+CONF_BACKUP_DIR="/etc/nginx/conf_backups"
 TG_CONF_FILE="/etc/nginx/tg_notifier.conf"
 GZIP_DISABLE_MARK="/etc/nginx/.gzip_optimize_disabled"
 
@@ -228,30 +230,34 @@ _prompt_secret() {
     echo "" >&2; echo "$val"
 }
 
+
+_is_hook_whitelisted() {
+    local cmd="${1:-}"
+    local item
+    for item in "${HOOK_WHITELIST[@]}"; do
+        if [ "$cmd" = "$item" ]; then return 0; fi
+    done
+    return 1
+}
+
 _validate_hook_command() {
     local cmd="${1:-}"
     if [ -z "$cmd" ]; then return 0; fi
-    case "$cmd" in
-        "systemctl restart s-ui"|"systemctl restart x-ui"|"systemctl restart v2ray"|"systemctl restart xray"|"systemctl reload nginx"|"systemctl restart nginx")
-            return 0
-            ;;
-        *)
-            if [ "$ALLOW_UNSAFE_HOOKS" = "true" ]; then
-                if [ "$IS_INTERACTIVE_MODE" != "true" ]; then
-                    log_message ERROR "非交互模式禁止不安全 Hook: $cmd"
-                    return 1
-                fi
-                if confirm_or_cancel "检测到不安全 Hook: '$cmd'，是否继续执行?" "n"; then
-                    return 0
-                fi
-                log_message ERROR "已取消不安全 Hook 执行。"
-                return 1
-            fi
-            log_message ERROR "拒绝执行自定义 Hook 命令(未允许不安全 Hook): $cmd"
-            log_message INFO "如确需执行,请设置环境变量 ALLOW_UNSAFE_HOOKS=true"
+    if _is_hook_whitelisted "$cmd"; then return 0; fi
+    if [ "$ALLOW_UNSAFE_HOOKS" = "true" ]; then
+        if [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+            log_message ERROR "非交互模式禁止不安全 Hook: $cmd"
             return 1
-            ;;
-    esac
+        fi
+        if confirm_or_cancel "检测到不安全 Hook: '$cmd'，是否继续执行?" "n"; then
+            return 0
+        fi
+        log_message ERROR "已取消不安全 Hook 执行。"
+        return 1
+    fi
+    log_message ERROR "拒绝执行自定义 Hook 命令(未允许不安全 Hook): $cmd"
+    log_message INFO "如确需执行,请设置环境变量 ALLOW_UNSAFE_HOOKS=true"
+    return 1
 }
 
 _mask_string() {
@@ -728,7 +734,7 @@ initialize_environment() {
     if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
     export PATH="$(dirname "$ACME_BIN"):$PATH"
     
-    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR"
+    mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$CONF_BACKUP_DIR"
     mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
     if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$PROJECTS_METADATA_FILE"; fi
     if [ ! -f "$TCP_PROJECTS_METADATA_FILE" ] || ! jq -e . "$TCP_PROJECTS_METADATA_FILE" > /dev/null 2>&1; then echo "[]" > "$TCP_PROJECTS_METADATA_FILE"; fi
@@ -921,6 +927,43 @@ _project_snapshot_file() {
     echo "${JSON_BACKUP_DIR}/project_${domain}_$(date +%Y%m%d_%H%M%S).json.bak"
 }
 
+_nginx_conf_snapshot_file() {
+    local name="${1:-}"; local type="${2:-http}"
+    if [ -z "$name" ]; then return 1; fi
+    echo "${CONF_BACKUP_DIR}/${type}_${name}_$(date +%Y%m%d_%H%M%S).conf.bak"
+}
+
+snapshot_nginx_conf() {
+    local src_conf="${1:-}"; local name="${2:-}"; local type="${3:-http}"
+    if [ -z "$src_conf" ] || [ -z "$name" ]; then return 1; fi
+    if ! _require_safe_path "$src_conf" "配置快照"; then return 1; fi
+    if [ ! -f "$src_conf" ]; then return 0; fi
+    local snap
+    snap=$(_nginx_conf_snapshot_file "$name" "$type") || return 1
+    mkdir -p "$CONF_BACKUP_DIR"
+    cp "$src_conf" "$snap"
+}
+
+_apply_nginx_conf_with_validation() {
+    local temp_conf="${1:-}"; local target_conf="${2:-}"; local name="${3:-}"; local type="${4:-http}"
+    if [ -z "$temp_conf" ] || [ -z "$target_conf" ] || [ -z "$name" ]; then return 1; fi
+    if ! _require_safe_path "$target_conf" "配置写入"; then return 1; fi
+    snapshot_nginx_conf "$target_conf" "$name" "$type" || true
+    mv "$temp_conf" "$target_conf"
+    if ! nginx -t >/dev/null 2>&1; then
+        local rollback_conf
+        rollback_conf=$(ls -t "$CONF_BACKUP_DIR/${type}_${name}_"*.conf.bak 2>/dev/null | head -n 1 || true)
+        if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
+            cp "$rollback_conf" "$target_conf"
+        else
+            rm -f "$target_conf"
+        fi
+        log_message ERROR "Nginx 配置检查失败,已回滚。"
+        return 1
+    fi
+    return 0
+}
+
 snapshot_project_json() {
     local domain="${1:-}" json="${2:-}"
     if [ -z "$domain" ] || [ -z "$json" ]; then return 1; fi
@@ -948,7 +991,6 @@ json_upsert_by_key() {
     local temp
     temp=$(mktemp)
     chmod 600 "$temp"
-    chmod 600 "$temp"
     if jq -e --arg k "$key_name" --arg v "$key_value" '.[] | select(.[$k] == $v)' "$target_file" >/dev/null 2>&1; then
         jq --argjson new_val "$json" --arg k "$key_name" --arg v "$key_value" 'map(if .[$k] == $v then $new_val else . end)' "$target_file" > "$temp"
     else
@@ -969,6 +1011,7 @@ _save_project_json() {
     if [ -z "$domain" ] || [ "$domain" = "null" ]; then return 1; fi
     json_upsert_by_key "$PROJECTS_METADATA_FILE" "domain" "$domain" "$json"
 }
+
 
 _check_dependencies() {
     local -a deps=(nginx curl socat openssl jq idn dnsutils nano coreutils)
@@ -1034,7 +1077,7 @@ _write_and_enable_nginx_config() {
     
     if [[ -z "$port" || "$port" == "null" ]]; then log_message ERROR "端口为空,请检查项目配置。"; return 1; fi; get_vps_ip
 
-    local temp_conf rollback_conf=""
+    local temp_conf
     temp_conf=$(mktemp "${conf}.tmp.XXXXXX")
     cat > "$temp_conf" << EOF
 server {
@@ -1061,22 +1104,9 @@ server {
     }
 }
 EOF
-    local rollback_conf=""
-    if [ -f "$conf" ]; then
-        rollback_conf=$(mktemp "${conf}.bak.XXXXXX")
-        cp "$conf" "$rollback_conf"
-    fi
-    mv "$temp_conf" "$conf"
-    if ! nginx -t >/dev/null 2>&1; then
-        if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
-            mv "$rollback_conf" "$conf"
-        else
-            rm -f "$conf"
-        fi
-        log_message ERROR "Nginx 配置检查失败,已回滚。"
+    if ! _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$domain" "http"; then
         return 1
     fi
-    [ -n "$rollback_conf" ] && rm -f "$rollback_conf"
     ln -sf "$conf" "$NGINX_SITES_ENABLED_DIR/"
 }
 
@@ -1146,21 +1176,9 @@ ${upstream_block}server {
     proxy_pass ${proxy_pass_target};${ssl_block}
 }
 EOF
-    if [ -f "$conf" ]; then
-        rollback_conf=$(mktemp "${conf}.bak.XXXXXX")
-        cp "$conf" "$rollback_conf"
-    fi
-    mv "$temp_conf" "$conf"
-    if ! nginx -t >/dev/null 2>&1; then
-        if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
-            mv "$rollback_conf" "$conf"
-        else
-            rm -f "$conf"
-        fi
-        log_message ERROR "Nginx 配置检查失败,已回滚。"
+    if ! _apply_nginx_conf_with_validation "$temp_conf" "$conf" "$port" "tcp"; then
         return 1
     fi
-    [ -n "$rollback_conf" ] && rm -f "$rollback_conf"
     ln -sf "$conf" "$NGINX_STREAM_ENABLED_DIR/"
 }
 
