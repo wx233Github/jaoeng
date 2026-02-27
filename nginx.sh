@@ -932,7 +932,7 @@ _view_nginx_config() {
     local domain="${1:-}"; local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
     if [ ! -f "$conf" ]; then log_message WARN "此项目未生成配置文件。"; return; fi
     local -a lines=(); while IFS= read -r line; do lines+=("$line"); done < "$conf"
-    _render_menu "配置文件: $domain" "${lines[@]}"; press_enter_to_continue
+    _render_menu "配置文件: $domain" "${lines[@]}"
 }
 
 _rebuild_all_nginx_configs() {
@@ -1374,7 +1374,7 @@ _manage_tcp_actions() {
                 control_nginx reload; log_message SUCCESS "TCP 项目 $selected_port 删除成功。"
             fi
             ;;
-        2) cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置文件不存在"; press_enter_to_continue ;;
+        2) cat "$NGINX_STREAM_AVAILABLE_DIR/tcp_${selected_port}.conf" 2>/dev/null || echo "配置文件不存在" ;;
         "") return 0 ;;
     esac
     return 0
@@ -1529,7 +1529,7 @@ _handle_cert_details() {
         else lines+=("${BOLD}到期时间       :${NC} $(date -d "$end_date" "+%Y-%m-%d %H:%M:%S") ${GREEN}(剩余 $days 天)${NC}"); fi
         lines+=("${BOLD}配置的验证方式 :${NC} $method_zh")
         _render_menu "证书详细诊断信息: $d" "${lines[@]}"
-    else log_message ERROR "证书文件不存在: $cert"; fi; press_enter_to_continue
+    else log_message ERROR "证书文件不存在: $cert"; fi
 }
 
 check_and_auto_renew_certs() {
