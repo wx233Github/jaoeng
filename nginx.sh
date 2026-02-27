@@ -7,6 +7,7 @@
 
 set -euo pipefail
 IFS=$'\n\t'
+umask 077
 
 # --- 全局变量 ---
 readonly NC="\033[0m"
@@ -25,7 +26,11 @@ readonly BOLD="\033[1m"
 
 LOG_FILE_DEFAULT="/var/log/nginx_ssl_manager.log"
 LOG_FILE_FALLBACK="/tmp/nginx_ssl_manager.log"
-LOG_FILE="${LOG_FILE_DEFAULT}"
+LOG_LEVEL_DEFAULT="INFO"
+LOG_LEVEL="${LOG_LEVEL:-$LOG_LEVEL_DEFAULT}"
+LOG_FILE="${LOG_FILE:-$LOG_FILE_DEFAULT}"
+ALLOW_UNSAFE_HOOKS="${ALLOW_UNSAFE_HOOKS:-false}"
+SAFE_PATH_ROOTS=("/etc/nginx" "/etc/ssl" "/var/www" "/var/log" "/root/nginx_ssl_backups" "/etc/nginx/projects_backups")
 PROJECTS_METADATA_FILE="/etc/nginx/projects.json"
 TCP_PROJECTS_METADATA_FILE="/etc/nginx/tcp_projects.json"
 JSON_BACKUP_DIR="/etc/nginx/projects_backups"
@@ -46,11 +51,6 @@ NGINX_ACCESS_LOG="/var/log/nginx/access.log"
 NGINX_ERROR_LOG="/var/log/nginx/error.log"
 
 IS_INTERACTIVE_MODE="true"
-for arg in "$@"; do
-    if [[ "$arg" == "--cron" || "$arg" == "--non-interactive" ]]; then
-        IS_INTERACTIVE_MODE="false"; break
-    fi
-done
 VPS_IP=""; VPS_IPV6=""; ACME_BIN=""
 SCRIPT_PATH=$(realpath "$0")
 
@@ -70,7 +70,11 @@ _generate_op_id() { OP_ID="$(date +%Y%m%d_%H%M%S)_$$_$RANDOM"; }
 cleanup() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
     rm -f /tmp/tg_payload_*.json 2>/dev/null || true
-    if [ -n "${LOCK_FILE:-}" ]; then rm -f "$LOCK_FILE" 2>/dev/null || true; fi
+    if [ -n "${LOCK_FILE:-}" ] && [ -n "${LOCK_OWNER_PID:-}" ]; then
+        if [ -f "$LOCK_FILE" ] && [ "$(cat "$LOCK_FILE" 2>/dev/null || true)" = "$LOCK_OWNER_PID" ]; then
+            rm -f "$LOCK_FILE" 2>/dev/null || true
+        fi
+    fi
 }
 
 err_handler() {
@@ -106,6 +110,8 @@ acquire_lock() {
         log_error "已有实例在运行,退出。"
         return 1
     fi
+    LOCK_OWNER_PID="$$"
+    printf "%s" "$LOCK_OWNER_PID" > "$LOCK_FILE"
     return 0
 }
 
@@ -122,14 +128,42 @@ trap cleanup EXIT
 trap 'err_handler $? $LINENO' ERR
 trap '_on_int' INT TERM
 
+_log_level_to_num() {
+    case "${1:-INFO}" in
+        ERROR) echo 0 ;;
+        WARN) echo 1 ;;
+        INFO) echo 2 ;;
+        SUCCESS) echo 3 ;;
+        DEBUG) echo 4 ;;
+        *) echo 2 ;;
+    esac
+}
+
+_log_should_emit() {
+    local msg_level="${1:-INFO}"
+    local current_level="${LOG_LEVEL:-$LOG_LEVEL_DEFAULT}"
+    local msg_num
+    local cur_num
+    msg_num=$(_log_level_to_num "$msg_level")
+    cur_num=$(_log_level_to_num "$current_level")
+    [ "$msg_num" -le "$cur_num" ]
+}
+
 _log_emit() {
-    local level="${1:-INFO}" message="${2:-}" stream="${3:-stdout}"
+    local level="${1:-INFO}" message="${2:-}"
     local ts op_tag
     ts="$(date +"%Y-%m-%d %H:%M:%S")"
     op_tag="${OP_ID:-NA}"
     local plain_line="[${ts}] [${level}] [op:${op_tag}] ${message}"
+    if ! _log_should_emit "$level"; then return 0; fi
     _resolve_log_file
     echo "$plain_line" >> "$LOG_FILE"
+    if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
+        case "$level" in
+            ERROR|WARN) echo "$plain_line" >&2 ;;
+            *) echo "$plain_line" ;;
+        esac
+    fi
 }
 
 log_info() { _log_emit "INFO" "${1:-}" "stdout"; }
@@ -192,6 +226,32 @@ _prompt_secret() {
     echo -ne "${BRIGHT_YELLOW}${prompt} (无屏幕回显): ${NC}" >&2
     read -rs val < /dev/tty || return 1
     echo "" >&2; echo "$val"
+}
+
+_validate_hook_command() {
+    local cmd="${1:-}"
+    if [ -z "$cmd" ]; then return 0; fi
+    case "$cmd" in
+        "systemctl restart s-ui"|"systemctl restart x-ui"|"systemctl restart v2ray"|"systemctl restart xray"|"systemctl reload nginx"|"systemctl restart nginx")
+            return 0
+            ;;
+        *)
+            if [ "$ALLOW_UNSAFE_HOOKS" = "true" ]; then
+                if [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+                    log_message ERROR "非交互模式禁止不安全 Hook: $cmd"
+                    return 1
+                fi
+                if confirm_or_cancel "检测到不安全 Hook: '$cmd'，是否继续执行?" "n"; then
+                    return 0
+                fi
+                log_message ERROR "已取消不安全 Hook 执行。"
+                return 1
+            fi
+            log_message ERROR "拒绝执行自定义 Hook 命令(未允许不安全 Hook): $cmd"
+            log_message INFO "如确需执行,请设置环境变量 ALLOW_UNSAFE_HOOKS=true"
+            return 1
+            ;;
+    esac
 }
 
 _mask_string() {
@@ -275,9 +335,43 @@ _is_safe_path() {
     return 0
 }
 
+_is_path_in_allowed_roots() {
+    local p="${1:-}"
+    if ! _is_safe_path "$p"; then return 1; fi
+    local real_p
+    real_p=$(realpath -m "$p" 2>/dev/null || true)
+    if [ -z "$real_p" ]; then return 1; fi
+    local root
+    for root in "${SAFE_PATH_ROOTS[@]}"; do
+        if [[ "$real_p" == "$root" || "$real_p" == "$root"/* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_require_safe_path() {
+    local p="${1:-}"
+    local purpose="${2:-操作}"
+    if ! _is_path_in_allowed_roots "$p"; then
+        log_message ERROR "不安全路径(${purpose}): $p"
+        return 1
+    fi
+    return 0
+}
+
 _is_valid_domain() {
     local d="${1:-}"
     [[ "$d" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
+}
+
+_require_valid_domain() {
+    local d="${1:-}"
+    if ! _is_valid_domain "$d"; then
+        log_message ERROR "域名格式无效: $d"
+        return 1
+    fi
+    return 0
 }
 
 _is_valid_port() {
@@ -304,12 +398,13 @@ check_os_compatibility() {
         if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
             echo -e "${RED}⚠️ 警告: 检测到非 Debian/Ubuntu 系统 ($NAME)。${NC}"
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-                if ! confirm_or_cancel "是否尝试继续?"; then exit 1; fi
+                if ! confirm_or_cancel "是否尝试继续?"; then return 1; fi
             else
                 log_message WARN "非 Debian 系统,尝试强制运行..."
             fi
         fi
     fi
+    return 0
 }
 
 # ==============================================================================
@@ -516,7 +611,9 @@ EOF
 )
     local button_url="http://${domain}/"; [ "$debug" == "true" ] && button_url="https://core.telegram.org/bots/api"
     local kb_json='{"inline_keyboard":[[{"text":"📊 访问实例","url":"'"$button_url"'"}]]}'
-    local payload_file=$(mktemp /tmp/tg_payload_XXXXXX.json)
+    local payload_file
+    payload_file=$(mktemp /tmp/tg_payload_XXXXXX.json)
+    chmod 600 "$payload_file"
     if ! jq -n --arg cid "$TG_CHAT_ID" --arg txt "$text_body" --argjson kb "$kb_json" '{chat_id: $cid, text: $txt, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: $kb}' > "$payload_file"; then log_message ERROR "构造 TG JSON 失败。"; rm -f "$payload_file"; return 1; fi
     local curl_cmd=(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" -H "Content-Type: application/json" -d @"$payload_file" --connect-timeout 10 --max-time 15)
     local ret_code=0
@@ -538,6 +635,31 @@ EOF
 # SECTION: 环境初始化与依赖 (优化版)
 # ==============================================================================
 
+check_dependencies() {
+    local -a missing=()
+    local cmd
+
+    for cmd in nginx curl socat openssl jq idn nano; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if ! command -v dig >/dev/null 2>&1 && ! command -v host >/dev/null 2>&1; then
+        missing+=("dnsutils")
+    fi
+
+    if ! command -v ls >/dev/null 2>&1 || ! command -v date >/dev/null 2>&1 || ! command -v cp >/dev/null 2>&1 || ! command -v realpath >/dev/null 2>&1; then
+        missing+=("coreutils")
+    fi
+
+    if (( ${#missing[@]} > 0 )); then
+        log_message WARN "缺失依赖: ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
 install_dependencies() {
     if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
     local -a deps=(nginx curl socat openssl jq idn dnsutils nano coreutils)
@@ -548,7 +670,7 @@ install_dependencies() {
     done
     if (( ${#missing_deps[@]} > 0 )); then
         log_message WARN "检测到缺失依赖: ${missing_deps[*]}，正在批量安装..."
-    if run_cmd 60 apt-get update >/dev/null 2>&1; then
+        if run_cmd 60 apt-get update >/dev/null 2>&1; then
             if run_cmd 120 apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1; then log_message SUCCESS "依赖安装成功。"
             else log_message ERROR "依赖安装失败"; return 1; fi
         else log_message ERROR "apt-get update 失败"; return 1; fi
@@ -572,6 +694,33 @@ EOF
 ${LOG_FILE} { weekly missingok rotate 12 compress delaycompress notifempty create 0644 root root }
 EOF
     fi
+}
+
+_parse_args() {
+    IS_INTERACTIVE_MODE="true"
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --cron|--non-interactive)
+                IS_INTERACTIVE_MODE="false"
+                ;;
+        esac
+    done
+}
+
+validate_args() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --cron|--non-interactive|--check)
+                ;;
+            *)
+                log_message ERROR "未知参数: $arg"
+                return 1
+                ;;
+        esac
+    done
+    return 0
 }
 
 initialize_environment() {
@@ -642,10 +791,12 @@ _update_cloudflare_ips() {
     log_message INFO "正在拉取最新的 Cloudflare IP 列表..."
     local temp_allow
     temp_allow=$(mktemp)
+    chmod 600 "$temp_allow"
     if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_allow" && printf "\n" >> "$temp_allow" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$temp_allow"; then
         mkdir -p /etc/nginx/snippets /etc/nginx/conf.d
         local temp_cf_allow temp_cf_real temp_cf_geo
         temp_cf_allow=$(mktemp); temp_cf_real=$(mktemp); temp_cf_geo=$(mktemp)
+        chmod 600 "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo"
         echo "# Cloudflare Allow List" > "$temp_cf_allow"
         echo "# Cloudflare Real IP" > "$temp_cf_real"
         echo "geo \$cf_ip {" > "$temp_cf_geo"
@@ -695,7 +846,7 @@ _handle_backup_restore() {
                 2)
                     echo -e "\n${CYAN}可用备份列表:${NC}"; ls -lh "$BACKUP_DIR"/*.tar.gz 2>/dev/null || { log_message WARN "无可用备份。"; return; }
                     local file_path; if ! file_path=$(prompt_input "请输入完整备份文件路径" "" "" "" "true"); then return; fi
-                    if [ -n "$file_path" ] && ! _is_safe_path "$file_path"; then log_message ERROR "路径不安全。"; return; fi
+                    if [ -n "$file_path" ] && ! _require_safe_path "$file_path" "还原"; then return; fi
                     [ -z "$file_path" ] && return; [ ! -f "$file_path" ] && log_message ERROR "文件不存在" && return
                     if confirm_or_cancel "警告:还原将覆盖当前配置,是否继续?"; then
                         systemctl stop nginx || true; log_message INFO "正在解压还原..."
@@ -710,7 +861,7 @@ _handle_backup_restore() {
                     [ -z "$target_file" ] && return
                     echo -e "\n${CYAN}可用快照 (${filter_str}):${NC}"; ls -lh "$JSON_BACKUP_DIR"/${filter_str}*.bak 2>/dev/null || { log_message WARN "无快照。"; return; }
                     local snap_path; if ! snap_path=$(prompt_input "请输入要恢复的快照路径" "" "" "" "true"); then return; fi
-                    if [ -n "$snap_path" ] && ! _is_safe_path "$snap_path"; then log_message ERROR "路径不安全。"; return; fi
+                    if [ -n "$snap_path" ] && ! _require_safe_path "$snap_path" "快照恢复"; then return; fi
                     if [ -n "$snap_path" ] && [ -f "$snap_path" ]; then
                         if confirm_or_cancel "这将会回滚记录,确认执行?"; then
                             snapshot_json "$target_file"; cp "$snap_path" "$target_file"
@@ -796,6 +947,8 @@ json_upsert_by_key() {
     fi
     local temp
     temp=$(mktemp)
+    chmod 600 "$temp"
+    chmod 600 "$temp"
     if jq -e --arg k "$key_name" --arg v "$key_value" '.[] | select(.[$k] == $v)' "$target_file" >/dev/null 2>&1; then
         jq --argjson new_val "$json" --arg k "$key_name" --arg v "$key_value" 'map(if .[$k] == $v then $new_val else . end)' "$target_file" > "$temp"
     else
@@ -861,6 +1014,7 @@ _delete_project_json() {
     snapshot_json "$PROJECTS_METADATA_FILE"
     local temp
     temp=$(mktemp)
+    chmod 600 "$temp"
     jq --arg d "${1:-}" 'del(.[] | select(.domain == $d))' "$PROJECTS_METADATA_FILE" > "$temp" && mv "$temp" "$PROJECTS_METADATA_FILE"
 }
 
@@ -926,7 +1080,11 @@ EOF
     ln -sf "$conf" "$NGINX_SITES_ENABLED_DIR/"
 }
 
-_remove_and_disable_nginx_config() { rm -f "$NGINX_SITES_AVAILABLE_DIR/${1:-}.conf" "$NGINX_SITES_ENABLED_DIR/${1:-}.conf"; }
+_remove_and_disable_nginx_config() {
+    local domain="${1:-}"
+    if ! _require_valid_domain "$domain"; then return 1; fi
+    rm -f "$NGINX_SITES_AVAILABLE_DIR/${domain}.conf" "$NGINX_SITES_ENABLED_DIR/${domain}.conf"
+}
 
 _view_nginx_config() {
     local domain="${1:-}"; local conf="$NGINX_SITES_AVAILABLE_DIR/$domain.conf"
@@ -1070,6 +1228,117 @@ _mask_sensitive_data() {
         -e "s/(SAVED_[^ ]+)(=)([^ ]+)/\1\2***MASKED***/g"
 }
 
+_handle_dns_provider_credentials() {
+    local provider="${1:-}"
+    if [ "$provider" != "dns_cf" ]; then return 0; fi
+    if [ "$IS_INTERACTIVE_MODE" != "true" ]; then return 0; fi
+    local saved_t="" saved_a="" use_saved="false"
+    saved_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
+    saved_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
+    if [[ -n "$saved_t" && -n "$saved_a" ]]; then
+        echo -e "${CYAN}检测到已保存的 Cloudflare 凭证:${NC}"
+        echo -e "  Token : $(_mask_string "$saved_t")"
+        echo -e "  AccID : $(_mask_string "$saved_a")"
+        if confirm_or_cancel "是否复用该凭证?"; then use_saved="true"; fi
+    fi
+    if [ "$use_saved" = "false" ]; then
+        local t
+        local a
+        if ! t=$(_prompt_secret "请输入新的 CF_Token"); then return 1; fi
+        if ! a=$(_prompt_secret "请输入新的 Account_ID"); then return 1; fi
+        [ -n "$t" ] && export CF_Token="$t"
+        [ -n "$a" ] && export CF_Account_ID="$a"
+    fi
+    return 0
+}
+
+_prepare_http01_challenge() {
+    local domain="${1:-}"
+    local -n cmd_ref="$2"
+    local -n temp_conf_created_ref="$3"
+    local -n temp_conf_ref="$4"
+    local -n stopped_svc_ref="$5"
+
+    if ss -tuln 2>/dev/null | grep -qE ':(80|443)\s'; then
+        local temp_svc
+        temp_svc=$(_detect_web_service)
+        if [ "$temp_svc" = "nginx" ]; then
+            if [ ! -f "$NGINX_SITES_AVAILABLE_DIR/$domain.conf" ]; then
+                cat > "$temp_conf_ref" <<EOF
+server { listen 80; server_name ${domain}; location /.well-known/acme-challenge/ { root $NGINX_WEBROOT_DIR; } }
+EOF
+                ln -sf "$temp_conf_ref" "$NGINX_SITES_ENABLED_DIR/"
+                systemctl reload nginx || true
+                temp_conf_created_ref="true"
+            fi
+            mkdir -p "$NGINX_WEBROOT_DIR"
+            cmd_ref+=("--webroot" "$NGINX_WEBROOT_DIR")
+        else
+            if confirm_or_cancel "是否临时停止 $temp_svc 以释放 80 端口?"; then
+                systemctl stop "$temp_svc"
+                stopped_svc_ref="$temp_svc"
+                trap "systemctl start \"$stopped_svc_ref\"; cleanup; exit 130" INT TERM
+            fi
+            cmd_ref+=("--standalone")
+        fi
+    else
+        cmd_ref+=("--standalone")
+    fi
+}
+
+_run_acme_issue_command() {
+    local -n cmd_ref="$1"
+    local -n log_temp_ref="$2"
+    local -n ret_ref="$3"
+    local log_temp
+    log_temp=$(mktemp /tmp/acme_cmd_log.XXXXXX)
+    chmod 600 "$log_temp"
+    echo -ne "${YELLOW}正在通信 (约 30-60 秒,请勿中断)... ${NC}"
+    run_cmd 90 "${cmd_ref[@]}" > "$log_temp" 2>&1 &
+    local pid=$!
+    local spinstr='|/-\'
+    while kill -0 $pid 2>/dev/null; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep 0.2
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+    wait $pid
+    ret_ref=$?
+    log_temp_ref="$log_temp"
+}
+
+_cleanup_http01_challenge() {
+    local temp_conf_created="${1:-false}"
+    local temp_conf="${2:-}"
+    local stopped_svc="${3:-}"
+
+    if [ "$temp_conf_created" = "true" ]; then
+        rm -f "$temp_conf" "$NGINX_SITES_ENABLED_DIR/temp_acme_$(basename "$temp_conf" | sed 's/^temp_acme_//;s/\.conf$//').conf"
+        systemctl reload nginx || true
+    fi
+    if [ -n "$stopped_svc" ]; then
+        systemctl start "$stopped_svc"
+        trap '_on_int' INT TERM
+    fi
+}
+
+_install_certificate_files() {
+    local domain="${1:-}"
+    local key="${2:-}"
+    local cert="${3:-}"
+    local install_reload_cmd="${4:-}"
+    local wildcard="${5:-n}"
+    local -a inst
+    inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --log)
+    [ -n "$install_reload_cmd" ] && inst+=("--reloadcmd" "$install_reload_cmd")
+    [ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
+    "${inst[@]}" >/dev/null 2>&1
+    return $?
+}
+
 _issue_and_install_certificate() {
     _generate_op_id
     local json="${1:-}"; local domain=$(echo "$json" | jq -r .domain); local method=$(echo "$json" | jq -r .acme_validation_method)
@@ -1092,6 +1361,7 @@ _issue_and_install_certificate() {
     [ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
     
     local temp_conf_created="false"; local temp_conf="$NGINX_SITES_AVAILABLE_DIR/temp_acme_${domain}.conf"; local stopped_svc=""
+    if ! _require_valid_domain "$domain"; then return 1; fi
     if [ "$method" = "dns-01" ]; then
         if [ "$provider" = "dns_cf" ]; then
             if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
@@ -1131,6 +1401,7 @@ EOF
 
     local log_temp
     log_temp=$(mktemp /tmp/acme_cmd_log.XXXXXX)
+    chmod 600 "$log_temp"
     echo -ne "${YELLOW}正在通信 (约 30-60 秒,请勿中断)... ${NC}"
     run_cmd 90 "${cmd[@]}" > "$log_temp" 2>&1 &
     local pid=$!
@@ -1149,6 +1420,10 @@ EOF
         rm -f "$log_temp"; _send_tg_notify "fail" "$domain" "acme.sh 申请证书失败。" ""; unset CF_Token CF_Account_ID Ali_Key Ali_Secret; return 1; fi
     rm -f "$log_temp"
     local rcmd=$(echo "$json" | jq -r '.reload_cmd // empty'); local resolved_port=$(echo "$json" | jq -r '.resolved_port // empty'); local install_reload_cmd=""
+    if ! _validate_hook_command "$rcmd"; then
+        log_message ERROR "不安全的 Hook 命令,已拒绝。"
+        return 1
+    fi
     if [ "$resolved_port" == "cert_only" ]; then install_reload_cmd="$rcmd"; else install_reload_cmd="systemctl reload nginx"; fi
     local inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --log)
     [ -n "$install_reload_cmd" ] && inst+=("--reloadcmd" "$install_reload_cmd")
@@ -1273,7 +1548,13 @@ _gather_project_details() {
             hook_lines+=("5. 手动输入自定义 Shell 命令"); hook_lines+=("6. 跳过")
             _render_menu "配置外部重载组件 (Reload Hook)" "${hook_lines[@]}" >&2
             local hk; while true; do hk=$(prompt_menu_choice "1-6"); [ -n "$hk" ] && break; done
-            case "$hk" in 1) reload_cmd="$auto_sui_cmd" ;; 2) reload_cmd="systemctl restart v2ray" ;; 3) reload_cmd="systemctl restart xray" ;; 4) reload_cmd="systemctl reload nginx" ;; 5) if ! reload_cmd=$(prompt_input "请输入完整 Shell 命令" "" "" "" "true"); then exec 1>&3; return 1; fi ;; 6) reload_cmd="" ;; esac
+             case "$hk" in 1) reload_cmd="$auto_sui_cmd" ;; 2) reload_cmd="systemctl restart v2ray" ;; 3) reload_cmd="systemctl restart xray" ;; 4) reload_cmd="systemctl reload nginx" ;; 5) if ! reload_cmd=$(prompt_input "请输入完整 Shell 命令" "" "" "" "true"); then exec 1>&3; return 1; fi ;; 6) reload_cmd="" ;; esac
+             if [ -n "$reload_cmd" ]; then
+                 if ! _validate_hook_command "$reload_cmd"; then
+                     exec 1>&3
+                     return 1
+                 fi
+             fi
         fi
     fi
 
@@ -1662,10 +1943,14 @@ main_menu() {
 main() {
     _generate_op_id
     _resolve_log_file
+    _parse_args "$@"
+    if ! validate_args "$@"; then return 1; fi
     if ! acquire_lock; then return 1; fi
     if ! check_root; then return 1; fi
-    check_os_compatibility
-    install_dependencies
+    if ! check_os_compatibility; then return 1; fi
+    if ! check_dependencies; then
+        install_dependencies
+    fi
     initialize_environment
 
     if [[ " $* " =~ " --check " ]]; then run_diagnostics; return $?; fi
