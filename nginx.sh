@@ -43,8 +43,13 @@ CONF_BACKUP_KEEP="${CONF_BACKUP_KEEP:-10}"
 HEALTH_CHECK_ENABLED="${HEALTH_CHECK_ENABLED:-false}"
 HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH:-/}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-5}"
+HEALTH_CHECK_SCHEME="${HEALTH_CHECK_SCHEME:-http}"
+HEALTH_CHECK_EXPECT_CODES="${HEALTH_CHECK_EXPECT_CODES:-200,204,301,302,403}"
+HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-2}"
+HEALTH_CHECK_RETRY_DELAY="${HEALTH_CHECK_RETRY_DELAY:-1}"
 RENEW_FAIL_DB="${RENEW_FAIL_DB:-/var/lib/nginx_ssl_manager/renew_failures.json}"
 RENEW_FAIL_THRESHOLD="${RENEW_FAIL_THRESHOLD:-3}"
+RENEW_FAIL_TTL_DAYS="${RENEW_FAIL_TTL_DAYS:-14}"
 
 ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
@@ -71,8 +76,12 @@ SCRIPT_PATH=$(realpath "$0")
 # ==============================================================================
 
 OP_ID=""
-LOCK_FILE="/var/lock/nginx_ssl_manager.lock"
-LOCK_FD=9
+LOCK_FILE_HTTP="/var/lock/nginx_ssl_manager_http.lock"
+LOCK_FILE_TCP="/var/lock/nginx_ssl_manager_tcp.lock"
+LOCK_FILE_CERT="/var/lock/nginx_ssl_manager_cert.lock"
+LOCK_FD_HTTP=9
+LOCK_FD_TCP=10
+LOCK_FD_CERT=11
 LAST_CERT_ELAPSED=""
 LAST_CERT_CERT=""
 LAST_CERT_KEY=""
@@ -82,11 +91,9 @@ _generate_op_id() { OP_ID="$(date +%Y%m%d_%H%M%S)_$$_$RANDOM"; }
 cleanup() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
     rm -f /tmp/tg_payload_*.json 2>/dev/null || true
-    if [ -n "${LOCK_FILE:-}" ] && [ -n "${LOCK_OWNER_PID:-}" ]; then
-        if [ -f "$LOCK_FILE" ] && [ "$(cat "$LOCK_FILE" 2>/dev/null || true)" = "$LOCK_OWNER_PID" ]; then
-            rm -f "$LOCK_FILE" 2>/dev/null || true
-        fi
-    fi
+    _release_lock "$LOCK_FILE_HTTP" "${LOCK_OWNER_PID_HTTP:-}"
+    _release_lock "$LOCK_FILE_TCP" "${LOCK_OWNER_PID_TCP:-}"
+    _release_lock "$LOCK_FILE_CERT" "${LOCK_OWNER_PID_CERT:-}"
 }
 
 err_handler() {
@@ -111,20 +118,57 @@ _resolve_log_file() {
     touch "$LOG_FILE" 2>/dev/null || true
 }
 
-acquire_lock() {
+_acquire_lock() {
+    local lock_file="${1:-}"
+    local lock_fd_var="${2:-}"
+    if [ -z "$lock_file" ] || [ -z "$lock_fd_var" ]; then return 1; fi
     local lock_dir
-    lock_dir=$(dirname "$LOCK_FILE")
+    lock_dir=$(dirname "$lock_file")
     if ! mkdir -p "$lock_dir" 2>/dev/null; then
-        LOCK_FILE="$LOG_FILE_FALLBACK.lock"
+        lock_file="$LOG_FILE_FALLBACK.lock"
     fi
-    exec {LOCK_FD}>"$LOCK_FILE" || return 1
-    if ! flock -n "$LOCK_FD"; then
+    local lock_fd
+    eval "exec {lock_fd}>\"$lock_file\"" || return 1
+    if ! flock -n "$lock_fd"; then
         log_error "已有实例在运行,退出。"
         return 1
     fi
-    LOCK_OWNER_PID="$$"
-    printf "%s" "$LOCK_OWNER_PID" > "$LOCK_FILE"
+    eval "${lock_fd_var}=$lock_fd"
+    echo "$$" > "$lock_file"
     return 0
+}
+
+_release_lock() {
+    local lock_file="${1:-}"
+    local lock_pid="${2:-}"
+    if [ -z "$lock_file" ] || [ -z "$lock_pid" ]; then return 0; fi
+    if [ -f "$lock_file" ] && [ "$(cat "$lock_file" 2>/dev/null || true)" = "$lock_pid" ]; then
+        rm -f "$lock_file" 2>/dev/null || true
+    fi
+}
+
+acquire_http_lock() {
+    if _acquire_lock "$LOCK_FILE_HTTP" "LOCK_FD_HTTP"; then
+        LOCK_OWNER_PID_HTTP="$$"
+        return 0
+    fi
+    return 1
+}
+
+acquire_tcp_lock() {
+    if _acquire_lock "$LOCK_FILE_TCP" "LOCK_FD_TCP"; then
+        LOCK_OWNER_PID_TCP="$$"
+        return 0
+    fi
+    return 1
+}
+
+acquire_cert_lock() {
+    if _acquire_lock "$LOCK_FILE_CERT" "LOCK_FD_CERT"; then
+        LOCK_OWNER_PID_CERT="$$"
+        return 0
+    fi
+    return 1
 }
 
 run_cmd() {
@@ -995,13 +1039,28 @@ _health_check_nginx_config() {
     local domain="${1:-}"
     if [ "$HEALTH_CHECK_ENABLED" != "true" ]; then return 0; fi
     if [ -z "$domain" ]; then return 0; fi
-    local url="http://127.0.0.1${HEALTH_CHECK_PATH}"
+    local url="${HEALTH_CHECK_SCHEME}://127.0.0.1${HEALTH_CHECK_PATH}"
     local host_header="$domain"
     if ! command -v curl >/dev/null 2>&1; then return 0; fi
-    if ! curl -fsS --connect-timeout "$HEALTH_CHECK_TIMEOUT" --max-time "$HEALTH_CHECK_TIMEOUT" -H "Host: ${host_header}" "$url" >/dev/null 2>&1; then
-        log_message ERROR "健康检查失败: ${domain}${HEALTH_CHECK_PATH}"
-        return 1
-    fi
+    local expect_list=()
+    IFS=',' read -r -a expect_list <<< "$HEALTH_CHECK_EXPECT_CODES"
+    local retries="$HEALTH_CHECK_RETRIES"
+    if ! [[ "$retries" =~ ^[0-9]+$ ]] || [ "$retries" -lt 1 ]; then retries=1; fi
+    local attempt=1
+    while [ $attempt -le "$retries" ]; do
+        local code
+        code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout "$HEALTH_CHECK_TIMEOUT" --max-time "$HEALTH_CHECK_TIMEOUT" -H "Host: ${host_header}" "$url" 2>/dev/null || echo "000")
+        local ok="false"
+        local c
+        for c in "${expect_list[@]}"; do
+            if [ "$code" = "$c" ]; then ok="true"; break; fi
+        done
+        if [ "$ok" = "true" ]; then return 0; fi
+        attempt=$((attempt + 1))
+        sleep "$HEALTH_CHECK_RETRY_DELAY"
+    done
+    log_message ERROR "健康检查失败: ${domain}${HEALTH_CHECK_PATH} (code=${code})"
+    return 1
     return 0
 }
 
@@ -1182,14 +1241,23 @@ _view_nginx_config() {
 _rebuild_all_nginx_configs() {
     log_message INFO "准备基于现有记录从零重建所有 Nginx HTTP 代理文件..."
     if ! confirm_or_cancel "这将会覆盖当前所有 Nginx HTTP 代理配置文件,是否继续?"; then return; fi
-    local all_projects=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "")
+    local all_projects
+    all_projects=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || echo "")
     if [ -z "$all_projects" ]; then log_message WARN "没有任何项目记录可供重建。"; return; fi
     local success=0 fail=0
-    while read -r p; do [ -z "$p" ] && continue
-        local d=$(echo "$p" | jq -r .domain); local port=$(echo "$p" | jq -r .resolved_port)
+    while read -r p; do
+        [ -z "$p" ] && continue
+        local d port
+        d=$(echo "$p" | jq -r .domain)
+        port=$(echo "$p" | jq -r .resolved_port)
         if [ "$port" == "cert_only" ]; then continue; fi
         log_message INFO "重建配置文件: $d ..."
-        if _write_and_enable_nginx_config "$d" "$p"; then success=$((success+1)); else fail=$((fail+1)); log_message ERROR "重建失败: $d"; fi
+        if _write_and_enable_nginx_config "$d" "$p"; then
+            success=$((success+1))
+        else
+            fail=$((fail+1))
+            log_message ERROR "重建失败: $d"
+        fi
     done <<< "$all_projects"
     rm -f /etc/nginx/snippets/cf_allow.conf
     log_message INFO "正在重载 Nginx..."
@@ -1243,6 +1311,7 @@ EOF
 
 configure_tcp_proxy() {
     _generate_op_id
+    if ! acquire_tcp_lock; then return 1; fi
     _render_menu "配置 TCP 代理与负载均衡"
     local name; if ! name=$(prompt_input "项目备注名称" "MyTCP" "" "" "false"); then return; fi
     local l_port; if ! l_port=$(prompt_input "本机监听端口" "" "^[0-9]+$" "无效端口" "false"); then return; fi
@@ -1270,8 +1339,11 @@ configure_tcp_proxy() {
 
 manage_tcp_configs() {
     _generate_op_id
+    if ! acquire_tcp_lock; then return 1; fi
     while true; do
-        local all=$(jq . "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]"); local count=$(echo "$all" | jq 'length')
+    local all count
+    all=$(jq . "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || echo "[]")
+    count=$(echo "$all" | jq 'length')
         if [ "$count" -eq 0 ]; then log_message WARN "暂无 TCP 项目。"; break; fi
         echo ""; printf "${BOLD}%-4s %-10s %-5s %-12s %-22s${NC}\n" "ID" "端口" "TLS" "备注" "目标地址"; echo "──────────────────────────────────────────────────────────"
         local idx=0
@@ -1321,9 +1393,11 @@ _renew_fail_incr() {
     local temp
     temp=$(mktemp)
     chmod 600 "$temp"
+    local now_ts
+    now_ts=$(date +%s)
     local count
-    count=$(jq -r --arg d "$domain" '(.[$d] // 0) + 1' "$RENEW_FAIL_DB" 2>/dev/null || echo 1)
-    jq --arg d "$domain" --argjson c "$count" '. + {($d): $c}' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
+    count=$(jq -r --arg d "$domain" '(.[$d].count // 0) + 1' "$RENEW_FAIL_DB" 2>/dev/null || echo 1)
+    jq --arg d "$domain" --argjson c "$count" --argjson ts "$now_ts" '. + {($d): {count: $c, ts: $ts}}' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
     echo "$count"
 }
 
@@ -1335,6 +1409,19 @@ _renew_fail_reset() {
     temp=$(mktemp)
     chmod 600 "$temp"
     jq --arg d "$domain" 'del(.[$d])' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
+}
+
+_renew_fail_cleanup() {
+    _renew_fail_db_init
+    local ttl_days="$RENEW_FAIL_TTL_DAYS"
+    if ! [[ "$ttl_days" =~ ^[0-9]+$ ]] || [ "$ttl_days" -lt 1 ]; then ttl_days=14; fi
+    local now_ts
+    now_ts=$(date +%s)
+    local cutoff=$((now_ts - ttl_days * 86400))
+    local temp
+    temp=$(mktemp)
+    chmod 600 "$temp"
+    jq --argjson cutoff "$cutoff" 'with_entries(select((.value.ts // 0) >= $cutoff))' "$RENEW_FAIL_DB" > "$temp" && mv "$temp" "$RENEW_FAIL_DB"
 }
 
 _handle_dns_provider_credentials() {
@@ -1775,7 +1862,9 @@ _manage_tcp_actions() {
 manage_configs() {
     _generate_op_id
     while true; do
-        local all=$(jq . "$PROJECTS_METADATA_FILE"); local count=$(echo "$all" | jq 'length')
+    local all count
+    all=$(jq . "$PROJECTS_METADATA_FILE")
+    count=$(echo "$all" | jq 'length')
         if [ "$count" -eq 0 ]; then log_message WARN "暂无项目。"; break; fi
         echo ""; _display_projects_list "$all"
         if ! select_item_and_act "$all" "$count" "请输入序号选择项目 (回车返回)" "domain" _manage_http_actions; then break; fi
@@ -1956,8 +2045,10 @@ _handle_cert_details() {
 
 check_and_auto_renew_certs() {
     _generate_op_id
+    if ! acquire_cert_lock; then return 1; fi
     log_message INFO "正在执行 Cron 守护检测并批量续期..."
     local success=0 fail=0
+    _renew_fail_cleanup
     local IFS=$'\1'
     while IFS=$'\1' read -r domain cert_file method; do
         [[ -z "$domain" ]] && continue; echo -ne "检查: $domain ... "
@@ -2063,7 +2154,7 @@ main() {
     _resolve_log_file
     _parse_args "$@"
     if ! validate_args "$@"; then return 1; fi
-    if ! acquire_lock; then return 1; fi
+    if ! acquire_http_lock; then return 1; fi
     if ! check_root; then return 1; fi
     if ! check_os_compatibility; then return 1; fi
     if ! check_dependencies; then
