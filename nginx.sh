@@ -2488,7 +2488,7 @@ main_menu() {
             8) _update_cloudflare_ips; press_enter_to_continue ;;
             9) _handle_backup_restore ;;
             10) setup_tg_notifier; press_enter_to_continue ;;
-            "") return 0 ;;
+            "") return 10 ;;
             *) log_message ERROR "无效选择" ;;
         esac
     done

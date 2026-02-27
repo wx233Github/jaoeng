@@ -146,6 +146,7 @@ main() {
         fi
         read -r -p "请下发执行指令 [0-9]: " c < /dev/tty
         case "$c" in
+            "") exit 10 ;;
             1) apply_profile "latency"; read -r -p "按回车继续..." < /dev/tty;;
             2) apply_profile "throughput"; read -r -p "按回车继续..." < /dev/tty;;
             3) apply_profile "balanced"; read -r -p "按回车继续..." < /dev/tty;;

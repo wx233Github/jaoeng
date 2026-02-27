@@ -85,9 +85,15 @@ main_menu() {
             log_warn "非交互模式：已退出"
             exit 0
         fi
-        read -r -p "请选择要执行的脚本 (0-${#SCRIPTS[@]}): " choice < /dev/tty
+        read -r -p "请选择要执行的脚本 (0-${#SCRIPTS[@]}，回车退出): " choice < /dev/tty
 
-        if [ "$choice" -eq 0 ]; then
+        if [ -z "$choice" ]; then
+            log_info "👋 回车退出"
+            exit 10
+        elif ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+            log_warn "❌ 请输入数字选项"
+            continue
+        elif [ "$choice" -eq 0 ]; then
             log_info "👋 退出"
             exit 0
         elif [ "$choice" -ge 1 ] && [ "$choice" -le "${#SCRIPTS[@]}" ]; then

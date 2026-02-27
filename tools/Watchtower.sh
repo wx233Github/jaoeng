@@ -1290,7 +1290,7 @@ main_menu(){
             3) manage_tasks ;;
             4) view_and_edit_config ;;
             5) show_watchtower_details ;;
-            "") return "${ERR_OK}" ;;
+            "") return "${ERR_RUNTIME}" ;;
             *) log_warn "无效选项。"; sleep 1 ;;
         esac
     done
@@ -1323,7 +1323,16 @@ main(){
     esac
 
     trap 'printf "\n操作被中断。\n" >&2; exit '"${ERR_RUNTIME}"'' INT TERM
-    main_menu
+    local menu_rc
+    if main_menu; then
+        menu_rc="${ERR_OK}"
+    else
+        menu_rc="$?"
+    fi
+
+    if [ "$menu_rc" -eq "${ERR_RUNTIME}" ]; then
+        exit "${ERR_RUNTIME}"
+    fi
     exit "${ERR_OK}"
 }
 

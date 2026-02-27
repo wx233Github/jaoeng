@@ -763,6 +763,11 @@ display_and_process_menu() {
             submenu) CURRENT_MENU_NAME="$action" ;; 
             func) "$action" "${@:-}"; exit_code=$? ;; 
         esac
+
+        if [ "$type" = "item" ] && [ "$exit_code" -eq 10 ]; then
+            log_info "子脚本在主菜单回车退出，主程序同步退出。"
+            exit 0
+        fi
         
         if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then press_enter_to_continue; fi
     done
