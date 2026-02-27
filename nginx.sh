@@ -2475,7 +2475,10 @@ main_menu() {
         printf '%b' " 9. 备份/还原与配置重建\n"
         printf '%b' "10. 设置 Telegram 机器人通知\n"
         printf '%b' "\n"
-        local c; if ! c=$(prompt_menu_choice "1-10" "true"); then break; fi
+        local c
+        if ! c=$(prompt_menu_choice "1-10" "true"); then
+            return 10
+        fi
         case "$c" in
             1) configure_nginx_projects; press_enter_to_continue ;;
             2) manage_configs ;;
@@ -2492,6 +2495,8 @@ main_menu() {
             *) log_message ERROR "无效选择" ;;
         esac
     done
+
+    return 10
 }
 
 main() {
