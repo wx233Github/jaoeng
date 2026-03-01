@@ -2292,9 +2292,9 @@ select_item_and_act() {
 
 _manage_http_actions() {
     local selected_domain="${1:-}"
-    _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令" "8. 切换 Cloudflare 严格防御"
+    _render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令"
     local cc
-    if ! cc=$(prompt_menu_choice "1-8" "true"); then return 0; fi
+    if ! cc=$(prompt_menu_choice "1-7" "true"); then return 0; fi
     case "$cc" in
         1) _handle_cert_details "$selected_domain" ;;
         2) _handle_renew_cert "$selected_domain" ;;
@@ -2303,7 +2303,6 @@ _manage_http_actions() {
         5) _handle_reconfigure_project "$selected_domain" ;;
         6) _handle_modify_renew_settings "$selected_domain" ;;
         7) _handle_set_custom_config "$selected_domain" ;;
-        8) _handle_toggle_cf_strict "$selected_domain" ;;
         "") return 0 ;;
     esac
     return 0
@@ -2553,11 +2552,209 @@ _handle_set_custom_config() {
     press_enter_to_continue
 }
 
+_set_cf_strict_mode_for_domain() {
+    local d="${1:-}"
+    local target="${2:-}"
+    if [ -z "$d" ] || { [ "$target" != "y" ] && [ "$target" != "n" ]; }; then
+        return 1
+    fi
+
+    local cur
+    cur=$(_get_project_json "$d")
+    if [ -z "$cur" ]; then
+        log_message ERROR "项目不存在: ${d}"
+        return 1
+    fi
+
+    local port
+    port=$(jq -r '.resolved_port // ""' <<< "$cur")
+    if [ "$port" = "cert_only" ]; then
+        log_message WARN "项目 ${d} 为 cert_only，已跳过严格防御切换。"
+        return 2
+    fi
+
+    local current
+    current=$(jq -r '.cf_strict_mode // "n"' <<< "$cur")
+    if [ "$current" = "$target" ]; then
+        return 0
+    fi
+
+    local new_json
+    new_json=$(jq --arg v "$target" '.cf_strict_mode = $v' <<< "$cur")
+    snapshot_project_json "$d" "$cur"
+    if _save_project_json "$new_json"; then
+        if _write_and_enable_nginx_config "$d" "$new_json"; then
+            NGINX_RELOAD_NEEDED="true"
+            if control_nginx_reload_if_needed; then
+                return 0
+            fi
+            log_message ERROR "Nginx 重载失败，开始回滚项目: ${d}"
+            _save_project_json "$cur" || true
+            _write_and_enable_nginx_config "$d" "$cur" || true
+            NGINX_RELOAD_NEEDED="true"
+            control_nginx_reload_if_needed || true
+            return 1
+        fi
+        log_message ERROR "写入 Nginx 配置失败，开始回滚项目: ${d}"
+        _save_project_json "$cur" || true
+        return 1
+    fi
+    log_message ERROR "保存严格防御状态失败: ${d}"
+    return 1
+}
+
+_show_cf_strict_status_list() {
+    local all
+    all=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
+    local -a lines=()
+    lines+=("${CYAN}项目 Cloudflare 严格防御状态列表:${NC}")
+    if [ -z "$all" ]; then
+        lines+=("暂无项目")
+        _render_menu "Cloudflare 防御项目状态" "${lines[@]}"
+        return 0
+    fi
+
+    while read -r p; do
+        [ -z "$p" ] && continue
+        local d mode strict strict_zh
+        d=$(jq -r '.domain // "-"' <<< "$p")
+        mode=$(jq -r '.resolved_port // "-"' <<< "$p")
+        strict=$(jq -r '.cf_strict_mode // "n"' <<< "$p")
+        strict_zh="关闭"
+        [ "$strict" = "y" ] && strict_zh="开启"
+        if [ "$mode" = "cert_only" ]; then
+            lines+=("- ${d} | 严格防御: ${strict_zh}(${strict}) | 模式: cert_only(跳过)")
+        else
+            lines+=("- ${d} | 严格防御: ${strict_zh}(${strict}) | 目标: ${mode}")
+        fi
+    done <<< "$all"
+
+    _render_menu "Cloudflare 防御项目状态" "${lines[@]}"
+}
+
+_batch_set_cf_strict_mode() {
+    local target="${1:-}"
+    if [ "$target" != "y" ] && [ "$target" != "n" ]; then
+        return 1
+    fi
+    local action_zh="开启"
+    [ "$target" = "n" ] && action_zh="关闭"
+
+    if ! confirm_or_cancel "确认批量${action_zh} Cloudflare 严格防御? (默认跳过 cert_only 项目)" "n"; then
+        return 0
+    fi
+
+    local all
+    all=$(jq -c '.[]' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
+    if [ -z "$all" ]; then
+        log_message WARN "暂无项目可执行批量操作。"
+        return 0
+    fi
+
+    local success=0 fail=0 skipped=0
+    local -a fail_list=()
+    local -a skipped_list=()
+
+    while read -r p; do
+        [ -z "$p" ] && continue
+        local d mode
+        d=$(jq -r '.domain // ""' <<< "$p")
+        mode=$(jq -r '.resolved_port // ""' <<< "$p")
+        [ -z "$d" ] && continue
+
+        if [ "$mode" = "cert_only" ]; then
+            skipped=$((skipped + 1))
+            skipped_list+=("$d")
+            continue
+        fi
+
+        if _set_cf_strict_mode_for_domain "$d" "$target"; then
+            success=$((success + 1))
+        else
+            local rc=$?
+            if [ "$rc" -eq 2 ]; then
+                skipped=$((skipped + 1))
+                skipped_list+=("$d")
+            else
+                fail=$((fail + 1))
+                fail_list+=("$d")
+            fi
+        fi
+    done <<< "$all"
+
+    log_message INFO "批量${action_zh}严格防御完成: 成功=${success}, 跳过=${skipped}, 失败=${fail}"
+    if [ "${#skipped_list[@]}" -gt 0 ]; then
+        log_message WARN "已跳过(cert_only): ${skipped_list[*]}"
+    fi
+    if [ "${#fail_list[@]}" -gt 0 ]; then
+        log_message ERROR "失败项目: ${fail_list[*]}"
+    fi
+}
+
+_toggle_cf_strict_single() {
+    local all count
+    all=$(jq . "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "[]")
+    count=$(jq 'length' <<< "$all")
+    if [ "$count" -eq 0 ]; then
+        log_message WARN "暂无项目。"
+        return 0
+    fi
+
+    printf '%b' "\n"
+    _display_projects_list "$all"
+
+    local choice_idx
+    if ! choice_idx=$(prompt_input "请输入序号选择项目 (回车返回)" "" "^[0-9]*$" "无效序号" "true"); then return 0; fi
+    if [ -z "$choice_idx" ] || [ "$choice_idx" = "0" ]; then return 0; fi
+    if [ "$choice_idx" -gt "$count" ]; then
+        log_message ERROR "序号越界"
+        return 0
+    fi
+
+    local selected_domain
+    selected_domain=$(jq -r ".[$((choice_idx-1))].domain" <<< "$all")
+    _handle_toggle_cf_strict "$selected_domain"
+}
+
+_manage_cloudflare_defense() {
+    _generate_op_id
+    while true; do
+        _show_cf_strict_status_list
+        _render_menu "Cloudflare 防御中心" \
+            "1. 更新 Cloudflare 防御 IP 库" \
+            "2. 逐项目切换 Cloudflare 严格防御" \
+            "3. 批量开启 Cloudflare 严格防御 (跳过 cert_only)" \
+            "4. 批量关闭 Cloudflare 严格防御 (跳过 cert_only)" \
+            "5. 返回"
+        local c
+        if ! c=$(prompt_menu_choice "1-5" "true"); then return; fi
+        case "$c" in
+            1) _update_cloudflare_ips; press_enter_to_continue ;;
+            2) _toggle_cf_strict_single ;;
+            3) _batch_set_cf_strict_mode "y"; press_enter_to_continue ;;
+            4) _batch_set_cf_strict_mode "n"; press_enter_to_continue ;;
+            5|"") return ;;
+            *) log_message ERROR "无效选择" ;;
+        esac
+    done
+}
+
 _handle_toggle_cf_strict() {
     local d="${1:-}"
     local cur
     local current
     cur=$(_get_project_json "$d")
+    if [ -z "$cur" ]; then
+        log_message ERROR "项目不存在: ${d}"
+        return
+    fi
+    local mode
+    mode=$(jq -r '.resolved_port // ""' <<< "$cur")
+    if [ "$mode" = "cert_only" ]; then
+        log_message WARN "该项目为 cert_only，仅证书模式，不适用 Cloudflare 严格防御。"
+        press_enter_to_continue
+        return
+    fi
     current=$(jq -r '.cf_strict_mode // "n"' <<< "$cur")
     local current_label="关闭"
     [ "$current" = "y" ] && current_label="开启"
@@ -2565,25 +2762,12 @@ _handle_toggle_cf_strict() {
     local target="y"; [ "$current" = "y" ] && target="n"
     local label="开启"; [ "$target" = "n" ] && label="关闭"
     if ! confirm_or_cancel "是否${label} Cloudflare 严格防御? (仅适用于开启 CDN)" "n"; then return; fi
-    local new_json
-    new_json=$(jq --arg v "$target" '.cf_strict_mode = $v' <<< "$cur")
-    snapshot_project_json "$d" "$cur"
-    if _save_project_json "$new_json"; then
-        _write_and_enable_nginx_config "$d" "$new_json"
-        NGINX_RELOAD_NEEDED="true"
-        if control_nginx_reload_if_needed; then
-            printf '%b' "已${label} Cloudflare 严格防御。\n"
-            printf '%b' "配置已重载。\n"
-        else
-            printf '%b' "操作失败: Nginx 重载失败\n"
-            printf '%b' "已回滚配置。\n"
-            _save_project_json "$cur"
-            _write_and_enable_nginx_config "$d" "$cur"
-            NGINX_RELOAD_NEEDED="true"
-            control_nginx_reload_if_needed || true
-        fi
+    if _set_cf_strict_mode_for_domain "$d" "$target"; then
+        printf '%b' "已${label} Cloudflare 严格防御。\n"
+        printf '%b' "配置已重载。\n"
     else
-        printf '%b' "保存失败: 严格防御设置\n"
+        printf '%b' "操作失败: 严格防御切换失败\n"
+        printf '%b' "已尝试自动回滚。\n"
     fi
     press_enter_to_continue
 }
@@ -2717,7 +2901,7 @@ main_menu() {
         printf '%b' "${PURPLE}【运维监控与系统维护】${NC}\n"
         printf '%b' " 6. 批量续期\n"
         printf '%b' " 7. 查看日志 (Logs - Nginx/acme)\n"
-        printf '%b' " 8. ${BRIGHT_RED}${BOLD}更新 Cloudflare 防御 IP 库${NC}\n"
+        printf '%b' " 8. ${BRIGHT_RED}${BOLD}Cloudflare 防御中心 (状态/更新/切换)${NC}\n"
         printf '%b' " 9. 备份/还原与配置重建\n"
         printf '%b' "10. 设置 Telegram 机器人通知\n"
         printf '%b' "\n"
@@ -2734,7 +2918,7 @@ main_menu() {
             6) if confirm_or_cancel "确认检查所有项目?"; then check_and_auto_renew_certs; press_enter_to_continue; fi ;;
             7) _render_menu "查看日志" "1. Nginx 全局访问/错误日志" "2. acme.sh 证书运行日志"
                local log_c; if log_c=$(prompt_menu_choice "1-2" "true"); then [ "$log_c" = "1" ] && _view_nginx_global_log || _view_acme_log; press_enter_to_continue; fi ;;
-            8) _update_cloudflare_ips; press_enter_to_continue ;;
+            8) _manage_cloudflare_defense ;;
             9) _handle_backup_restore ;;
             10) setup_tg_notifier; press_enter_to_continue ;;
             "") exit 10 ;;
