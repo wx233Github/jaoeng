@@ -461,6 +461,118 @@ update_stock_kernel() {
     fi
 }
 
+disable_xanmod_repo() {
+    if [[ ! -f "${XANMOD_REPO_FILE}" ]]; then
+        return 0
+    fi
+
+    local disabled_repo="${XANMOD_REPO_FILE}.disabled.${TIMESTAMP}"
+    mv -f "${XANMOD_REPO_FILE}" "${disabled_repo}"
+    log_info "已禁用 XanMod 源: ${disabled_repo}"
+}
+
+install_stock_kernel_apt() {
+    export DEBIAN_FRONTEND=noninteractive
+    local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+    local distro_id=""
+
+    if [[ -r /etc/os-release ]]; then
+        distro_id="$(. /etc/os-release && printf '%s' "${ID:-}")"
+    fi
+
+    apt-get update -y
+
+    if [[ "${distro_id}" == "ubuntu" ]]; then
+        if ! (apt-get install -yq ${DPKG_OPTS} --install-recommends linux-image-generic linux-headers-generic || apt-get install -yq ${DPKG_OPTS} --install-recommends linux-image-amd64 linux-headers-amd64); then
+            apt-get upgrade -yq ${DPKG_OPTS}
+        fi
+    else
+        if ! (apt-get install -yq ${DPKG_OPTS} --install-recommends linux-image-amd64 linux-headers-amd64 || apt-get install -yq ${DPKG_OPTS} --install-recommends linux-image-generic linux-headers-generic); then
+            apt-get upgrade -yq ${DPKG_OPTS}
+        fi
+    fi
+
+    update-grub 2>/dev/null || true
+}
+
+cleanup_xanmod_kernel_packages() {
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_warn "当前系统不是 apt 系，跳过 XanMod 包清理。"
+        return 0
+    fi
+
+    local xanmod_pkgs=()
+    mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
+
+    if [[ "${#xanmod_pkgs[@]}" -eq 0 ]]; then
+        log_info "未检测到已安装的 XanMod 内核包。"
+        return 0
+    fi
+
+    log_warn "检测到 XanMod 包: ${xanmod_pkgs[*]}"
+    if ! read_confirm "确认清理以上 XanMod 内核包? [y/N]: "; then
+        log_warn "已取消 XanMod 包清理。"
+        return 0
+    fi
+
+    apt-get purge -y "${xanmod_pkgs[@]}" || log_warn "部分 XanMod 包清理失败，请手动检查。"
+    apt-get autoremove -y || true
+    update-grub 2>/dev/null || true
+    log_info "XanMod 包清理流程已完成。"
+}
+
+switch_xanmod_to_stock_kernel() {
+    if [[ "${IS_CONTAINER}" -eq 1 ]]; then
+        log_warn "容器环境无法切换宿主机内核。"
+        return 0
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_warn "从 XanMod 切回原版内核仅支持 Debian/Ubuntu (apt)。"
+        return 0
+    fi
+
+    local running_kernel=""
+    local xanmod_pkgs=()
+    local has_xanmod_trace=0
+    running_kernel="$(uname -r)"
+
+    mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
+
+    if [[ -f "${XANMOD_REPO_FILE}" || "${running_kernel}" == *xanmod* || "${#xanmod_pkgs[@]}" -gt 0 ]]; then
+        has_xanmod_trace=1
+    fi
+
+    if [[ "${has_xanmod_trace}" -eq 0 ]]; then
+        log_info "未检测到 XanMod 痕迹，执行原版内核更新。"
+        update_stock_kernel
+        return 0
+    fi
+
+    log_warn "检测到 XanMod 痕迹（源/内核/包），将执行回退至原版内核流程。"
+    if ! read_confirm "确认从 XanMod 切回原版内核? [y/N]: "; then
+        log_warn "操作已取消。"
+        return 0
+    fi
+
+    disable_xanmod_repo
+    install_stock_kernel_apt
+    log_info "原版内核已安装/更新完成。"
+
+    if [[ "${#xanmod_pkgs[@]}" -gt 0 ]]; then
+        log_warn "为确保下次启动优先进入原版内核，建议清理 XanMod 包。"
+        cleanup_xanmod_kernel_packages
+    fi
+
+    if read_confirm "是否立即重启系统以切换到原版内核? [y/N]: "; then
+        log_warn "用户确认重启，正在执行系统重启..."
+        sync
+        systemctl reboot || reboot
+    else
+        log_info "已取消立即重启。请稍后手动重启完成切换。"
+    fi
+}
+
 remove_old_kernels() {
     log_step "正在查找可清理的旧内核..."
     if ! command -v dpkg >/dev/null 2>&1; then
@@ -479,7 +591,7 @@ remove_old_kernels() {
             continue
         fi
         kernels_to_remove+=("${pkg}")
-    done < <(dpkg --list 'linux-image-*' 2>/dev/null | awk '/^ii/ {print $2}')
+    done < <(dpkg --list 'linux-image-[0-9]*' 2>/dev/null | awk '/^ii/ {print $2}')
 
     if [[ "${#kernels_to_remove[@]}" -eq 0 ]]; then
         log_info "没有发现可清理的旧内核。"
@@ -503,17 +615,19 @@ remove_old_kernels() {
 kernel_manager() {
     echo "--- 内核维护工具 ---"
     echo "1. 更新原版内核 (系统仓库)"
-    echo "2. 清理所有冗余旧内核 (Debian/Ubuntu)"
+    echo "2. 从 XanMod 切回原版内核 (Debian/Ubuntu)"
+    echo "3. 清理所有冗余旧内核 (Debian/Ubuntu)"
     echo "0. 返回主菜单"
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
         log_warn "非交互模式：内核维护工具已跳过。"
         return 0
     fi
     local choice=""
-    read -r -p "请选择操作 [0-2]: " choice < /dev/tty
+    read -r -p "请选择操作 [0-3]: " choice < /dev/tty
     case "${choice}" in
         1) update_stock_kernel ;;
-        2) remove_old_kernels ;;
+        2) switch_xanmod_to_stock_kernel ;;
+        3) remove_old_kernels ;;
         0|*) return 0 ;;
     esac
 }
