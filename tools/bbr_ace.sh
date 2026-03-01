@@ -143,18 +143,18 @@ ui_render_menu() {
     fi
 
     printf "\n"
-    printf "%b\n" "${GREEN}╭$(ui_generate_line "${box_inner_width}" "─")╮${NC}"
+    printf "%b\n" "${COLOR_GREEN}╭$(ui_generate_line "${box_inner_width}" "─")╮${COLOR_RESET}"
     if [[ -n "${title}" ]]; then
         pad_total=$(( box_inner_width - title_width ))
         pad_left=$(( pad_total / 2 ))
         pad_right=$(( pad_total - pad_left ))
-        printf "%b\n" "${GREEN}│${NC}$(printf '%*s' "${pad_left}" "")${BOLD}${title}${NC}$(printf '%*s' "${pad_right}" "")${GREEN}│${NC}"
+        printf "%b\n" "${COLOR_GREEN}│${COLOR_RESET}$(printf '%*s' "${pad_left}" "")${BOLD}${title}${COLOR_RESET}$(printf '%*s' "${pad_right}" "")${COLOR_GREEN}│${COLOR_RESET}"
     fi
-    printf "%b\n" "${GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${NC}"
+    printf "%b\n" "${COLOR_GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${COLOR_RESET}"
     for line in "${lines[@]}"; do
         printf "%b\n" "${line}"
     done
-    printf "%b\n" "${GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${NC}"
+    printf "%b\n" "${COLOR_GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${COLOR_RESET}"
 }
 
 ui_prompt_choice() {
@@ -174,7 +174,7 @@ ui_prompt_choice() {
         printf ""
         return 0
     fi
-    printf "%b" "${ORANGE:-${YELLOW}}> ${NC}${prompt_text} [${numeric_range}] (↩ 返回): " > /dev/tty
+    printf "%b" "${ORANGE}> ${COLOR_RESET}${prompt_text} [${numeric_range}] (↩ 返回): " > /dev/tty
     read -r choice < /dev/tty || choice=""
     printf "%s" "${choice}"
 }
@@ -798,7 +798,7 @@ remove_old_kernels() {
 
 kernel_manager() {
     local -a km_lines=()
-    km_lines+=(" ${CYAN}内核维护子菜单${NC}")
+    km_lines+=(" ${COLOR_CYAN}内核维护子菜单${COLOR_RESET}")
     km_lines+=("   1) 更新原版内核 (系统仓库)")
     km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
     km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
@@ -861,21 +861,21 @@ show_menu() {
     current_mode="$(read_current_mode)"
 
     local -a lines=()
-    lines+=(" ${CYAN}系统概览${NC}")
-    lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${NC}")
-    lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${NC}    活跃连接: ${COLOR_GREEN}${active_conn}${NC}")
-    lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${NC}")
-    lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${NC}")
+    lines+=(" ${COLOR_CYAN}系统概览${COLOR_RESET}")
+    lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}")
+    lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    活跃连接: ${COLOR_GREEN}${active_conn}${COLOR_RESET}")
+    lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}")
+    lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}")
     lines+=(" ")
-    lines+=(" ${CYAN}模式选择${NC}")
+    lines+=(" ${COLOR_CYAN}模式选择${COLOR_RESET}")
     lines+=("   1) BBR+FQ 原版参数 [Stock]")
     lines+=("   2) BBRV1 + FQ + 激进128MB")
     lines+=(" ")
-    lines+=(" ${CYAN}网络策略${NC}")
+    lines+=(" ${COLOR_CYAN}网络策略${COLOR_RESET}")
     lines+=("   3) 开启 IPv4 强制优先")
     lines+=("   4) 恢复 IPv6 默认优先级")
     lines+=(" ")
-    lines+=(" ${CYAN}维护与恢复${NC}")
+    lines+=(" ${COLOR_CYAN}维护与恢复${COLOR_RESET}")
     lines+=("   5) 内核维护工具 (更新/清理)")
     lines+=("   6) 从备份恢复配置 (时光机)")
     lines+=("   7) 审计当前系统配置")
