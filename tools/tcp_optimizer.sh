@@ -99,7 +99,57 @@ manage_ipv4_precedence() { if [[ ${IS_CONTAINER} -eq 1 ]]; then return 0; fi; lo
 # ... [Modules for kernel, audit, backup/restore] ...
 remove_old_kernels() { log_step "正在查找可清理的旧内核..."; if ! command -v dpkg &>/dev/null; then log_warn "非 Debian/Ubuntu 系统，暂不支持内核自动清理。"; return; fi; local current_kernel; current_kernel=$(uname -r); local kernels_to_remove=(); kernels_to_remove=($(dpkg --list | grep 'linux-image' | awk '{ print $2 }' | grep -v "${current_kernel}")); if [[ ${#kernels_to_remove[@]} -eq 0 ]]; then log_info "没有发现可清理的旧内核。"; return; fi; echo "以下旧内核将被清理:"; printf " - %s\n" "${kernels_to_remove[@]}"; if ! read_confirm "确认要继续吗? [y/N]: "; then log_warn "操作已取消。"; return; fi; export DEBIAN_FRONTEND=noninteractive; apt-get purge -y "${kernels_to_remove[@]}"; apt-get autoremove -y; update-grub 2>/dev/null || true; log_info "旧内核清理完成。"; }
 kernel_manager() { echo "--- 内核维护工具 ---"; echo "1. 安装/更新 XanMod 内核"; echo "2. 清理所有冗余旧内核"; echo "0. 返回主菜单"; read -rp "请选择操作 [0-2]: " choice; case "${choice}" in 1) install_xanmod_kernel ;; 2) remove_old_kernels ;; 0|*) return ;; esac; }
-install_xanmod_kernel() { if [[ ${IS_CONTAINER} -eq 1 ]]; then log_warn "容器环境无法更换内核。"; return; fi; echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"; echo -e "${COLOR_BLUE}   XanMod Kernel 安装向导 (Debian/Ubuntu Only)          ${COLOR_RESET}"; echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"; if grep -iq "xanmod" /proc/version 2>/dev/null; then log_info "✅ 检测到当前已运行 XanMod 内核。"; read_confirm "按回车继续..." || true; return; fi; if [[ ! -f /etc/debian_version ]]; then log_warn "非 Debian/Ubuntu，暂不支持自动安装 XanMod。"; return; fi; if read_confirm "是否需要先清理旧内核为新内核腾出空间? [y/N]: "; then remove_old_kernels; fi; if ! read_confirm "是否继续安装 XanMod Kernel (推荐 x64v3)? [y/N]: "; then return; fi; export DEBIAN_FRONTEND=noninteractive; local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"; log_step "正在导入 XanMod GPG Key..."; wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes; echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list; apt-get update -y; log_step "安装 linux-xanmod-x64v3 (极端静默模式)..."; if apt-get install -yq ${DPKG_OPTS} linux-xanmod-x64v3; then echo -e "${COLOR_GREEN}XanMod 内核安装成功！请在脚本结束后重启服务器以生效。${COLOR_RESET}"; else log_error "安装失败，请检查网络。"; fi; }
+install_xanmod_kernel() {
+    if [[ ${IS_CONTAINER} -eq 1 ]]; then
+        log_warn "容器环境无法更换内核。"
+        return
+    fi
+
+    echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}   XanMod Kernel 安装向导 (Debian/Ubuntu Only)          ${COLOR_RESET}"
+    echo -e "${COLOR_BLUE}========================================================${COLOR_RESET}"
+
+    if grep -iq "xanmod" /proc/version 2>/dev/null; then
+        log_info "✅ 检测到当前已运行 XanMod 内核。"
+        read_confirm "按回车继续..." || true
+        return
+    fi
+
+    if [[ ! -f /etc/debian_version ]]; then
+        log_warn "非 Debian/Ubuntu，暂不支持自动安装 XanMod。"
+        return
+    fi
+
+    if read_confirm "是否需要先清理旧内核为新内核腾出空间? [y/N]: "; then
+        remove_old_kernels
+    fi
+
+    if ! read_confirm "是否继续安装 XanMod Kernel (推荐 x64v3)? [y/N]: "; then
+        return
+    fi
+
+    export DEBIAN_FRONTEND=noninteractive
+    local DPKG_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+
+    log_step "正在导入 XanMod GPG Key..."
+    wget -qO - https://dl.xanmod.org/archive.key | gpg --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg --yes
+    echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | tee /etc/apt/sources.list.d/xanmod-release.list
+    apt-get update -y
+
+    log_step "安装 linux-xanmod-x64v3 (极端静默模式)..."
+    if apt-get install -yq ${DPKG_OPTS} linux-xanmod-x64v3; then
+        echo -e "${COLOR_GREEN}XanMod 内核安装成功！${COLOR_RESET}"
+        if read_confirm "是否立即重启系统以加载新内核? [y/N]: "; then
+            log_warn "用户确认重启，正在执行系统重启..."
+            sync
+            systemctl reboot || reboot
+        else
+            log_info "已取消立即重启。请稍后手动重启以使新内核生效。"
+        fi
+    else
+        log_error "安装失败，请检查网络。"
+    fi
+}
 manage_backups() { local backups=(); backups=($(ls -t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)); if [[ ${#backups[@]} -gt ${MAX_BACKUPS} ]]; then log_info "备份数量超出限制(${MAX_BACKUPS})，正在清理最旧的备份..."; ls -tr "${BACKUP_DIR}"/config_backup_*.tar.gz | head -n $((${#backups[@]} - MAX_BACKUPS)) | xargs -r rm -f; fi; }
 backup_configs() { log_step "正在创建当前配置的快照..."; local backup_file="${BACKUP_DIR}/config_backup_${TIMESTAMP}.tar.gz"; local files_to_backup=(); for f in "${CONFIG_FILES[@]}"; do if [[ -f "${f}" ]]; then files_to_backup+=("${f}"); fi; done; if [[ ${#files_to_backup[@]} -gt 0 ]]; then tar -czf "${backup_file}" "${files_to_backup[@]}" 2>/dev/null; log_info "配置已备份至: ${backup_file}"; manage_backups; fi; }
 restore_configs() { log_step "正在查找可用备份..."; local backups=(); backups=($(find "${BACKUP_DIR}" -name "*.tar.gz" 2>/dev/null | sort -r)); if [[ ${#backups[@]} -eq 0 ]]; then log_warn "未找到任何备份文件。"; return 1; fi; echo "请选择要恢复的配置备份:"; select backup_choice in "${backups[@]}"; do if [[ -z "${backup_choice}" ]]; then log_warn "无效选择。"; return 1; fi; local temp_dir; temp_dir=$(mktemp -d); if [[ -z "${temp_dir}" || ! -d "${temp_dir}" ]]; then log_error "无法创建临时目录"; return 1; fi; trap 'rm -rf "${temp_dir}"' RETURN; log_step "正在验证并解压备份至临时目录..."; if tar -xzf "${backup_choice}" -C "${temp_dir}"; then log_info "备份文件验证通过。正在应用..."; rm -f "${CONFIG_FILES[@]}"; cp -r "${temp_dir}"/* /; if [[ ${IS_SYSTEMD} -eq 1 ]]; then systemctl daemon-reload; systemctl restart systemd-sysctl; systemctl enable --now nic-optimize.service 2>/dev/null || true; fi; log_info "配置恢复并已应用。"; return 0; else log_error "备份文件已损坏或解压失败！当前配置未受影响。"; return 1; fi; done; }
