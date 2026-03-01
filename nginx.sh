@@ -1473,7 +1473,16 @@ _write_and_enable_nginx_config() {
     if ! _require_safe_path "$conf" "配置写入"; then return 1; fi
     if [ -z "$json" ]; then log_message ERROR "配置生成失败: 传入 JSON 为空。"; return 1; fi
     local port cert key max_body custom_cfg cf_strict
-    IFS=$'\t' read -r port cert key max_body custom_cfg cf_strict < <(jq -r '[.resolved_port, .cert_file, .key_file, (.client_max_body_size // empty), (.custom_config // empty), (.cf_strict_mode // "n")] | @tsv' <<< "$json")
+    port=$(jq -r '.resolved_port // empty' <<< "$json" 2>/dev/null || true)
+    cert=$(jq -r '.cert_file // empty' <<< "$json" 2>/dev/null || true)
+    key=$(jq -r '.key_file // empty' <<< "$json" 2>/dev/null || true)
+    max_body=$(jq -r '.client_max_body_size // empty' <<< "$json" 2>/dev/null || true)
+    custom_cfg=$(jq -r '.custom_config // empty' <<< "$json" 2>/dev/null || true)
+    cf_strict=$(jq -r '.cf_strict_mode // "n"' <<< "$json" 2>/dev/null || true)
+    if [ -z "$port" ] || [ -z "$cert" ] || [ -z "$key" ]; then
+        log_message ERROR "配置生成失败: 关键字段缺失(端口/证书/密钥)。"
+        return 1
+    fi
     if [ "$port" == "cert_only" ]; then return 0; fi
     if ! _require_valid_port "$port"; then return 1; fi
     
@@ -2419,7 +2428,11 @@ _handle_set_custom_config() {
             fi
             printf '%b' "Nginx 已重载。\n"
         else
-            printf '%b' "应用失败: 自定义指令\n"
+            if [ "$update_max_body" = "true" ]; then
+                printf '%b' "应用失败: 请求体大小上限设置\n"
+            else
+                printf '%b' "应用失败: 自定义指令\n"
+            fi
             printf '%b' "已回滚配置。\n"
             _save_project_json "$cur"
         fi
