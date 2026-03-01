@@ -209,6 +209,7 @@ get_mode_label() {
     local mode="${1:-}"
     case "${mode}" in
         stock) printf "BBR+FQ 原版参数" ;;
+        aggressive) printf "BBRV1 + FQ + 激进128MB" ;;
         *) printf "未选择" ;;
     esac
 }
@@ -220,10 +221,17 @@ read_current_mode() {
     fi
     if [[ -z "${mode}" ]]; then
         local cur_cc cur_qdisc
+        local cur_rmem_max cur_slow_start_idle
         cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "")"
         cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf "")"
+        cur_rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || printf "")"
+        cur_slow_start_idle="$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || printf "")"
         if [[ "${cur_cc}" == "bbr" && "${cur_qdisc}" == "fq" ]]; then
-            mode="stock"
+            if [[ "${cur_rmem_max}" == "134217728" || "${cur_slow_start_idle}" == "0" ]]; then
+                mode="aggressive"
+            else
+                mode="stock"
+            fi
         fi
     fi
     printf "%s" "$(get_mode_label "${mode}")"
@@ -338,21 +346,53 @@ generate_stock_sysctl_content() {
     printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
 }
 
+generate_aggressive_sysctl_content() {
+    local buffer_size="134217728"
+    printf "%s\n" "# ============================================================="
+    printf "%s\n" "# TCP Optimizer Configuration (BBRV1+FQ Aggressive 128MB)"
+    printf "%s\n" "# ============================================================="
+    printf "%s\n" "net.core.default_qdisc = fq"
+    printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
+    printf "%s\n" "net.core.rmem_max = ${buffer_size}"
+    printf "%s\n" "net.core.wmem_max = ${buffer_size}"
+    printf "%s\n" "net.core.rmem_default = ${buffer_size}"
+    printf "%s\n" "net.core.wmem_default = ${buffer_size}"
+    printf "%s\n" "net.ipv4.udp_rmem_min = 131072"
+    printf "%s\n" "net.ipv4.udp_wmem_min = 131072"
+    printf "%s\n" "net.ipv4.tcp_notsent_lowat = 16384"
+    printf "%s\n" "net.ipv4.tcp_limit_output_bytes = 131072"
+    printf "%s\n" "net.ipv4.tcp_slow_start_after_idle = 0"
+    printf "%s\n" "net.ipv4.tcp_retries2 = 8"
+}
+
 apply_profile() {
     local profile_type="${1:-stock}"
     local mode_key="stock"
     local target_qdisc="fq"
     local target_cc="bbr"
+    local profile_label="BBR+FQ 原版参数 / Stock"
     local avail_cc=""
     local final_cc=""
     local final_qdisc=""
 
-    if [[ "${profile_type}" != "stock" ]]; then
-        log_warn "未知模式 ${profile_type}，已回退到 BBR+FQ 原版参数。"
-    fi
+    case "${profile_type}" in
+        stock)
+            mode_key="stock"
+            profile_label="BBR+FQ 原版参数 / Stock"
+            ;;
+        aggressive)
+            mode_key="aggressive"
+            profile_label="BBRV1 + FQ + 激进128MB"
+            ;;
+        *)
+            log_warn "未知模式 ${profile_type}，已回退到 BBR+FQ 原版参数。"
+            mode_key="stock"
+            profile_label="BBR+FQ 原版参数 / Stock"
+            ;;
+    esac
 
     backup_configs
-    log_step "加载画像: [BBR+FQ 原版参数 / Stock]"
+    log_step "加载画像: [${profile_label}]"
 
     if [[ "${IS_CONTAINER}" -eq 0 ]]; then
         modprobe sch_fq 2>/dev/null || true
@@ -365,7 +405,10 @@ apply_profile() {
     fi
 
     mkdir -p "${SYSCTL_D_DIR}"
-    generate_stock_sysctl_content > "${SYSCTL_CONF}"
+    case "${mode_key}" in
+        aggressive) generate_aggressive_sysctl_content > "${SYSCTL_CONF}" ;;
+        *) generate_stock_sysctl_content > "${SYSCTL_CONF}" ;;
+    esac
     sysctl -e -p "${SYSCTL_CONF}" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
 
     final_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "unknown")"
@@ -680,13 +723,14 @@ show_menu() {
     echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET} | 当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}"
     echo "--------------------------------------------------------"
     echo " 1. BBR+FQ 原版参数 [Stock]"
+    echo " 2. BBRV1 + FQ + 激进128MB"
     echo "--------------------------------------------------------"
-    echo " 2. 开启 IPv4 强制优先"
-    echo " 3. 恢复 IPv6 默认优先级"
-    echo -e " 4. ${COLOR_BLUE}内核维护工具 (更新/清理)${COLOR_RESET}"
-    echo -e " 5. ${COLOR_YELLOW}从备份恢复配置 (时光机)${COLOR_RESET}"
-    echo -e " 6. ${COLOR_CYAN}审计当前系统配置${COLOR_RESET}"
-    echo -e " 7. ${COLOR_RED}彻底卸载/恢复系统默认${COLOR_RESET}"
+    echo " 3. 开启 IPv4 强制优先"
+    echo " 4. 恢复 IPv6 默认优先级"
+    echo -e " 5. ${COLOR_BLUE}内核维护工具 (更新/清理)${COLOR_RESET}"
+    echo -e " 6. ${COLOR_YELLOW}从备份恢复配置 (时光机)${COLOR_RESET}"
+    echo -e " 7. ${COLOR_CYAN}审计当前系统配置${COLOR_RESET}"
+    echo -e " 8. ${COLOR_RED}彻底卸载/恢复系统默认${COLOR_RESET}"
     echo "--------------------------------------------------------"
     echo " 0. 退出"
     echo "========================================================"
@@ -707,16 +751,17 @@ main() {
         fi
 
         local c=""
-        read -r -p "请下发执行指令 [0-7]: " c < /dev/tty
+        read -r -p "请下发执行指令 [0-8]: " c < /dev/tty
         case "${c}" in
             "") exit 10 ;;
             1) apply_profile "stock"; read -r -p "按回车继续..." < /dev/tty ;;
-            2) manage_ipv4_precedence "enable"; read -r -p "按回车继续..." < /dev/tty ;;
-            3) manage_ipv4_precedence "disable"; read -r -p "按回车继续..." < /dev/tty ;;
-            4) kernel_manager; read -r -p "按回车返回主菜单..." < /dev/tty ;;
-            5) restore_configs; read -r -p "按回车继续..." < /dev/tty ;;
-            6) audit_configs; read -r -p "按回车继续..." < /dev/tty ;;
-            7) uninstall_and_restore_defaults; read -r -p "按回车继续..." < /dev/tty ;;
+            2) apply_profile "aggressive"; read -r -p "按回车继续..." < /dev/tty ;;
+            3) manage_ipv4_precedence "enable"; read -r -p "按回车继续..." < /dev/tty ;;
+            4) manage_ipv4_precedence "disable"; read -r -p "按回车继续..." < /dev/tty ;;
+            5) kernel_manager; read -r -p "按回车返回主菜单..." < /dev/tty ;;
+            6) restore_configs; read -r -p "按回车继续..." < /dev/tty ;;
+            7) audit_configs; read -r -p "按回车继续..." < /dev/tty ;;
+            8) uninstall_and_restore_defaults; read -r -p "按回车继续..." < /dev/tty ;;
             0) exit 0 ;;
             *) sleep 0.5 ;;
         esac
