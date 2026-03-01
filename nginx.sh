@@ -1271,17 +1271,59 @@ _apply_nginx_conf_with_validation() {
     _mark_nginx_conf_changed
     if [ "$skip_test" != "true" ] && ! _nginx_test_cached; then
         local rollback_conf
+        local test_output=""
         rollback_conf=$(ls -t "$CONF_BACKUP_DIR/${type}_${name}_"*.conf.bak 2>/dev/null | head -n 1 || true)
         if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
             cp "$rollback_conf" "$target_conf"
         else
             rm -f "$target_conf"
         fi
+        _mark_nginx_conf_changed
         log_message ERROR "Nginx 配置检查失败,已回滚 (snapshot: ${rollback_conf:-none})"
+        test_output=$(nginx -t 2>&1 || true)
+        if [ -n "$test_output" ]; then
+            printf '%s\n' "$test_output" >&2
+        fi
         return $ERR_CFG_VALIDATE
     fi
     chmod 640 "$target_conf" || true
     return 0
+}
+
+_validate_custom_directive() {
+    local val="${1:-}"
+    local semicolon_re=';[[:space:]]*$'
+    local full_re='^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]].*;[[:space:]]*$'
+    if [ -z "$val" ]; then
+        return 1
+    fi
+    if [[ "$val" == *$'\n'* ]] || [[ "$val" == *$'\r'* ]]; then
+        log_message ERROR "自定义指令仅支持单行输入。"
+        return 1
+    fi
+    if [[ "$val" == *"{"* ]] || [[ "$val" == *"}"* ]]; then
+        log_message ERROR "禁止输入块级配置(包含 { 或 })。"
+        return 1
+    fi
+    if [[ ! "$val" =~ $semicolon_re ]]; then
+        log_message ERROR "指令必须以分号结尾。"
+        return 1
+    fi
+    if [[ ! "$val" =~ $full_re ]]; then
+        log_message ERROR "指令格式无效。"
+        return 1
+    fi
+    local directive
+    directive="${val%%[[:space:]]*}"
+    case "$directive" in
+        client_max_body_size|proxy_read_timeout|proxy_send_timeout|proxy_connect_timeout|send_timeout|keepalive_timeout|add_header|proxy_set_header)
+            return 0
+            ;;
+        *)
+            log_message ERROR "当前仅允许常用安全指令，拒绝未知指令: ${directive}"
+            return 1
+            ;;
+    esac
 }
 
 _health_check_nginx_config() {
@@ -2282,15 +2324,48 @@ _handle_set_custom_config() {
     local d="${1:-}"
     local cur
     local current_val
+    local mode_choice
     cur=$(_get_project_json "$d")
     current_val=$(jq -r '.custom_config // "无"' <<< "$cur")
     _generate_op_id
-    printf '%b' "\n${CYAN}当前自定义配置:${NC}\n${current_val}\n${YELLOW}请输入完整的 Nginx 指令 (需以分号结尾)。回车不修改; 输入 'clear' 清空${NC}\n"
-    local new_val; if ! new_val=$(prompt_input "指令内容" "" "" "" "true"); then return; fi
+    printf '%b' "\n${CYAN}当前自定义配置:${NC}\n${current_val}\n"
+    _render_menu "常用自定义指令（仅 server 级）" \
+        "1. client_max_body_size 10m;       # 调整请求体大小上限（常用于解决 413）" \
+        "2. proxy_read_timeout 600s;        # 上游读取超时（长响应场景）" \
+        "3. proxy_send_timeout 600s;        # 向上游发送超时" \
+        "4. proxy_connect_timeout 60s;      # 连接上游超时" \
+        "5. send_timeout 120s;              # 向客户端发送超时" \
+        "6. add_header X-Frame-Options \"SAMEORIGIN\" always;  # 基础安全响应头" \
+        "7. clear                            # 清空自定义指令" \
+        "8. 手动输入"
+    if ! mode_choice=$(prompt_menu_choice "1-8" "true"); then return; fi
+    if [ -z "$mode_choice" ]; then return; fi
+    local new_val=""
+    case "$mode_choice" in
+        1) new_val='client_max_body_size 10m;' ;;
+        2) new_val='proxy_read_timeout 600s;' ;;
+        3) new_val='proxy_send_timeout 600s;' ;;
+        4) new_val='proxy_connect_timeout 60s;' ;;
+        5) new_val='send_timeout 120s;' ;;
+        6) new_val='add_header X-Frame-Options "SAMEORIGIN" always;' ;;
+        7) new_val='clear' ;;
+        8)
+            printf '%b' "${YELLOW}请输入完整的 Nginx 指令 (需以分号结尾)。回车不修改; 输入 'clear' 清空${NC}\n"
+            if ! new_val=$(prompt_input "指令内容" "" "" "" "true"); then return; fi
+            ;;
+        *)
+            log_message ERROR "无效选项"
+            return
+            ;;
+    esac
     if [ -z "$new_val" ]; then return; fi
     local json_val="$new_val"
     local new_json
     [ "$new_val" == "clear" ] && json_val=""
+    if [ "$new_val" != "clear" ] && ! _validate_custom_directive "$new_val"; then
+        press_enter_to_continue
+        return
+    fi
     new_json=$(jq --arg v "$json_val" '.custom_config = $v' <<< "$cur")
     snapshot_project_json "$d" "$cur"
     if _save_project_json "$new_json"; then
