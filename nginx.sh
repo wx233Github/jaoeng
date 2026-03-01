@@ -1268,6 +1268,17 @@ _apply_nginx_conf_with_validation() {
     fi
     snapshot_nginx_conf "$target_conf" "$name" "$type" || true
     mv "$temp_conf" "$target_conf"
+    if grep -q '\\n' "$target_conf" 2>/dev/null; then
+        local rollback_conf_literal
+        rollback_conf_literal=$(ls -t "$CONF_BACKUP_DIR/${type}_${name}_"*.conf.bak 2>/dev/null | head -n 1 || true)
+        if [ -n "$rollback_conf_literal" ] && [ -f "$rollback_conf_literal" ]; then
+            cp "$rollback_conf_literal" "$target_conf"
+        else
+            rm -f "$target_conf"
+        fi
+        log_message ERROR "检测到非法字面量 \\n，已回滚配置 (snapshot: ${rollback_conf_literal:-none})"
+        return $ERR_CFG_VALIDATE
+    fi
     _mark_nginx_conf_changed
     if [ "$skip_test" != "true" ]; then
         local test_output=""
@@ -1498,10 +1509,14 @@ _write_and_enable_nginx_config() {
         fi
         body_cfg="client_max_body_size ${normalized_max_body};"
     fi
-    local extra_cfg=""; [[ -n "$custom_cfg" && "$custom_cfg" != "null" ]] && extra_cfg="$custom_cfg"; local cf_strict_cfg=""
+    local extra_cfg=""
+    if [ -n "$custom_cfg" ] && [ "$custom_cfg" != "null" ]; then
+        extra_cfg="$custom_cfg"
+    fi
+    local cf_strict_cfg=""
     if [ "$cf_strict" == "y" ]; then
         [ ! -f "/etc/nginx/conf.d/cf_geo.conf" ] && _update_cloudflare_ips
-        cf_strict_cfg="\n    if (\$cf_ip = 0) { return 444; }"
+        cf_strict_cfg=$'\n    if (\$cf_ip = 0) { return 444; }'
     fi
     
     if [[ -z "$port" || "$port" == "null" ]]; then log_message ERROR "端口为空,请检查项目配置。"; return 1; fi; get_vps_ip
