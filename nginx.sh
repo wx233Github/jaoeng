@@ -1357,15 +1357,63 @@ _validate_custom_directive() {
     esac
 }
 
+_is_valid_custom_directive_silent() {
+    local val="${1:-}"
+    local semicolon_re=';[[:space:]]*$'
+    local full_re='^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]].*;[[:space:]]*$'
+    if [ -z "$val" ]; then
+        return 1
+    fi
+    if [[ "$val" == *$'\n'* ]] || [[ "$val" == *$'\r'* ]]; then
+        return 1
+    fi
+    if [[ "$val" == *"{"* ]] || [[ "$val" == *"}"* ]]; then
+        return 1
+    fi
+    if [[ ! "$val" =~ $semicolon_re ]]; then
+        return 1
+    fi
+    if [[ ! "$val" =~ $full_re ]]; then
+        return 1
+    fi
+    local directive
+    directive="${val%%[[:space:]]*}"
+    case "$directive" in
+        client_max_body_size|proxy_read_timeout|proxy_send_timeout|proxy_connect_timeout|send_timeout|keepalive_timeout|add_header|proxy_set_header)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 _normalize_max_body_size() {
     local raw="${1:-}"
+    local trimmed="${raw//$'\r'/}"
     local normalized
-    normalized="$(printf '%s' "$raw" | tr -d '[:space:]')"
-    normalized="${normalized%;}"
-    if [ -z "$normalized" ] || [ "$normalized" = "null" ]; then
+    local body_re='^client_max_body_size[[:space:]]+([^[:space:];]+)[[:space:]]*;?[[:space:]]*$'
+
+    trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+
+    if [ -z "$trimmed" ] || [ "$trimmed" = "null" ]; then
         printf '%s\n' ""
         return 0
     fi
+
+    if [[ "$trimmed" == *$'\n'* ]]; then
+        return 1
+    fi
+
+    if [[ "$trimmed" =~ $body_re ]]; then
+        normalized="${BASH_REMATCH[1]}"
+    else
+        normalized="${trimmed%;}"
+    fi
+
+    normalized="${normalized,,}"
+
     if [[ "$normalized" =~ ^[1-9][0-9]*[kKmMgG]?$ ]] || [[ "$normalized" =~ ^0$ ]]; then
         printf '%s\n' "$normalized"
         return 0
@@ -1522,12 +1570,29 @@ _write_and_enable_nginx_config() {
     fi
     local extra_cfg=""
     if [ -n "$custom_cfg" ] && [ "$custom_cfg" != "null" ]; then
-        extra_cfg="$custom_cfg"
+        if _is_valid_custom_directive_silent "$custom_cfg"; then
+            extra_cfg="$custom_cfg"
+        else
+            local custom_as_max_body=""
+            custom_as_max_body=$(_normalize_max_body_size "$custom_cfg" 2>/dev/null || true)
+            if [ -z "$body_cfg" ] && [ -n "$custom_as_max_body" ]; then
+                body_cfg="client_max_body_size ${custom_as_max_body};"
+                log_message WARN "检测到旧格式 custom_config 中的请求体大小配置，已自动迁移。"
+            else
+                log_message WARN "检测到无效 custom_config，已忽略以防止 Nginx 配置损坏。"
+            fi
+        fi
     fi
     local cf_strict_cfg=""
     if [ "$cf_strict" == "y" ]; then
-        [ ! -f "/etc/nginx/conf.d/cf_geo.conf" ] && _update_cloudflare_ips
-        cf_strict_cfg=$'\n    if ($cf_ip = 0) { return 444; }'
+        if [ ! -f "/etc/nginx/conf.d/cf_geo.conf" ]; then
+            _update_cloudflare_ips || true
+        fi
+        if [ -f "/etc/nginx/conf.d/cf_geo.conf" ]; then
+            cf_strict_cfg=$'\n    if ($cf_ip = 0) { return 444; }'
+        else
+            log_message WARN "Cloudflare 严格防御依赖项缺失(cf_geo.conf)，本次已跳过严格防御指令。"
+        fi
     fi
     
     if [[ -z "$port" || "$port" == "null" ]]; then log_message ERROR "端口为空,请检查项目配置。"; return 1; fi; get_vps_ip
@@ -2434,6 +2499,18 @@ _handle_set_custom_config() {
     local json_val="$new_val"
     local new_json
     if [ "$update_max_body" = "true" ]; then
+        local custom_body_re='^[[:space:]]*client_max_body_size[[:space:]]+.*;[[:space:]]*$'
+        local old_custom_cfg
+        old_custom_cfg=$(jq -r '.custom_config // empty' <<< "$cur")
+        if [ -n "$old_custom_cfg" ]; then
+            if ! _is_valid_custom_directive_silent "$old_custom_cfg"; then
+                cur=$(jq '.custom_config = ""' <<< "$cur")
+                log_message WARN "检测到历史无效 custom_config，已自动清空后继续应用。"
+            elif [[ "$old_custom_cfg" =~ $custom_body_re ]]; then
+                cur=$(jq '.custom_config = ""' <<< "$cur")
+                log_message INFO "已清理 custom_config 中重复的 client_max_body_size 指令。"
+            fi
+        fi
         new_json=$(jq --arg mb "$new_val" '.client_max_body_size = $mb' <<< "$cur")
     else
         [ "$new_val" == "clear" ] && json_val=""
