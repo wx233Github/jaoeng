@@ -1335,6 +1335,22 @@ _validate_custom_directive() {
     esac
 }
 
+_normalize_max_body_size() {
+    local raw="${1:-}"
+    local normalized
+    normalized="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    normalized="${normalized%;}"
+    if [ -z "$normalized" ] || [ "$normalized" = "null" ]; then
+        printf '%s\n' ""
+        return 0
+    fi
+    if [[ "$normalized" =~ ^[1-9][0-9]*[kKmMgG]?$ ]] || [[ "$normalized" =~ ^0$ ]]; then
+        printf '%s\n' "$normalized"
+        return 0
+    fi
+    return 1
+}
+
 _health_check_nginx_config() {
     local domain="${1:-}"
     if [ "$HEALTH_CHECK_ENABLED" != "true" ]; then return 0; fi
@@ -1464,7 +1480,15 @@ _write_and_enable_nginx_config() {
     if ! _require_safe_path "$cert" "证书文件"; then return 1; fi
     if ! _require_safe_path "$key" "密钥文件"; then return 1; fi
     local body_cfg=""
-    [[ -n "$max_body" && "$max_body" != "null" ]] && body_cfg="client_max_body_size ${max_body};"
+    local normalized_max_body=""
+    if [ -n "$max_body" ] && [ "$max_body" != "null" ]; then
+        normalized_max_body=$(_normalize_max_body_size "$max_body" 2>/dev/null || true)
+        if [ -z "$normalized_max_body" ]; then
+            log_message ERROR "client_max_body_size 值无效: ${max_body}"
+            return 1
+        fi
+        body_cfg="client_max_body_size ${normalized_max_body};"
+    fi
     local extra_cfg=""; [[ -n "$custom_cfg" && "$custom_cfg" != "null" ]] && extra_cfg="$custom_cfg"; local cf_strict_cfg=""
     if [ "$cf_strict" == "y" ]; then
         [ ! -f "/etc/nginx/conf.d/cf_geo.conf" ] && _update_cloudflare_ips
@@ -2334,6 +2358,7 @@ _handle_set_custom_config() {
     local cur
     local current_val
     local mode_choice
+    local update_max_body="false"
     cur=$(_get_project_json "$d")
     current_val=$(jq -r '.custom_config // "无"' <<< "$cur")
     _generate_op_id
@@ -2351,7 +2376,10 @@ _handle_set_custom_config() {
     if [ -z "$mode_choice" ]; then return; fi
     local new_val=""
     case "$mode_choice" in
-        1) new_val='client_max_body_size 10m;' ;;
+        1)
+            new_val='10m'
+            update_max_body="true"
+            ;;
         2) new_val='proxy_read_timeout 600s;' ;;
         3) new_val='proxy_send_timeout 600s;' ;;
         4) new_val='proxy_connect_timeout 60s;' ;;
@@ -2370,17 +2398,25 @@ _handle_set_custom_config() {
     if [ -z "$new_val" ]; then return; fi
     local json_val="$new_val"
     local new_json
-    [ "$new_val" == "clear" ] && json_val=""
-    if [ "$new_val" != "clear" ] && ! _validate_custom_directive "$new_val"; then
-        press_enter_to_continue
-        return
+    if [ "$update_max_body" = "true" ]; then
+        new_json=$(jq --arg mb "$new_val" '.client_max_body_size = $mb' <<< "$cur")
+    else
+        [ "$new_val" == "clear" ] && json_val=""
+        if [ "$new_val" != "clear" ] && ! _validate_custom_directive "$new_val"; then
+            press_enter_to_continue
+            return
+        fi
+        new_json=$(jq --arg v "$json_val" '.custom_config = $v' <<< "$cur")
     fi
-    new_json=$(jq --arg v "$json_val" '.custom_config = $v' <<< "$cur")
     snapshot_project_json "$d" "$cur"
     if _save_project_json "$new_json"; then
         NGINX_RELOAD_NEEDED="true"
         if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
-            printf '%b' "已应用: 自定义指令\n"
+            if [ "$update_max_body" = "true" ]; then
+                printf '%b' "已应用: 请求体大小上限 (client_max_body_size ${new_val})\n"
+            else
+                printf '%b' "已应用: 自定义指令\n"
+            fi
             printf '%b' "Nginx 已重载。\n"
         else
             printf '%b' "应用失败: 自定义指令\n"
