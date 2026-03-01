@@ -2720,12 +2720,12 @@ _manage_cloudflare_defense() {
     _generate_op_id
     while true; do
         _show_cf_strict_status_list
-        _render_menu "Cloudflare 防御中心" \
-            "1. 更新 Cloudflare 防御 IP 库" \
-            "2. 逐项目切换 Cloudflare 严格防御" \
-            "3. 批量开启 Cloudflare 严格防御 (跳过 cert_only)" \
-            "4. 批量关闭 Cloudflare 严格防御 (跳过 cert_only)" \
-            "5. 返回"
+        printf '%b' "\n"
+        printf '%b' "1. 更新 Cloudflare 防御 IP 库\n"
+        printf '%b' "2. 逐项目切换 Cloudflare 严格防御\n"
+        printf '%b' "3. 批量开启 Cloudflare 严格防御 (跳过 cert_only)\n"
+        printf '%b' "4. 批量关闭 Cloudflare 严格防御 (跳过 cert_only)\n"
+        printf '%b' "5. 返回\n"
         local c
         if ! c=$(prompt_menu_choice "1-5" "true"); then return; fi
         case "$c" in
