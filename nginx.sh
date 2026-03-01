@@ -1269,9 +1269,19 @@ _apply_nginx_conf_with_validation() {
     snapshot_nginx_conf "$target_conf" "$name" "$type" || true
     mv "$temp_conf" "$target_conf"
     _mark_nginx_conf_changed
-    if [ "$skip_test" != "true" ] && ! _nginx_test_cached; then
-        local rollback_conf
+    if [ "$skip_test" != "true" ]; then
         local test_output=""
+        local test_rc=0
+        test_output=$(nginx -t 2>&1) || test_rc=$?
+        NGINX_TEST_CACHE_RESULT="$test_rc"
+        NGINX_TEST_CACHE_GEN="$NGINX_CONF_GEN"
+        NGINX_TEST_CACHE_TS=$(date +%s)
+        if [ "$test_rc" -eq 0 ]; then
+            chmod 640 "$target_conf" || true
+            return 0
+        fi
+
+        local rollback_conf
         rollback_conf=$(ls -t "$CONF_BACKUP_DIR/${type}_${name}_"*.conf.bak 2>/dev/null | head -n 1 || true)
         if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
             cp "$rollback_conf" "$target_conf"
@@ -1280,7 +1290,6 @@ _apply_nginx_conf_with_validation() {
         fi
         _mark_nginx_conf_changed
         log_message ERROR "Nginx 配置检查失败,已回滚 (snapshot: ${rollback_conf:-none})"
-        test_output=$(nginx -t 2>&1 || true)
         if [ -n "$test_output" ]; then
             printf '%s\n' "$test_output" >&2
         fi
@@ -2377,9 +2386,6 @@ _handle_set_custom_config() {
             printf '%b' "应用失败: 自定义指令\n"
             printf '%b' "已回滚配置。\n"
             _save_project_json "$cur"
-            _write_and_enable_nginx_config "$d" "$cur"
-            NGINX_RELOAD_NEEDED="true"
-            control_nginx_reload_if_needed || true
         fi
     fi
     press_enter_to_continue
