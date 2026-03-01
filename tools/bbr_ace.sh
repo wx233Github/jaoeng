@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 tcp_optimizer.sh (v6.6.0 - Stock BBR/FQ Edition)
+# 🚀 bbr_ace.sh (v6.7.0 - UI Refresh Edition)
 # =============================================================
 
 set -euo pipefail
@@ -10,7 +10,7 @@ JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 readonly BASE_DIR="/opt/vps_install_modules"
-readonly LOG_FILE="${BASE_DIR}/tcp_optimizer.log"
+readonly LOG_FILE="${BASE_DIR}/bbr_ace.log"
 readonly BACKUP_DIR="${BASE_DIR}/backups"
 readonly MAX_BACKUPS=5
 readonly SYSCTL_D_DIR="/etc/sysctl.d"
@@ -27,10 +27,15 @@ readonly GAI_CONF="/etc/gai.conf"
 readonly MODE_STATE_FILE="${BASE_DIR}/current_profile_mode"
 readonly XANMOD_REPO_FILE="/etc/apt/sources.list.d/xanmod-release.list"
 readonly TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly UTILS_PRIMARY_PATH="/opt/vps_install_modules/utils.sh"
+readonly UTILS_FALLBACK_PATH="${SCRIPT_DIR}/../utils.sh"
+readonly SCRIPT_VERSION="v6.7.0"
 
 IS_CONTAINER=0
 IS_SYSTEMD=0
 TOTAL_MEM_KB=0
+USE_UTILS_UI=0
 
 readonly CONFIG_FILES=(
     "${SYSCTL_CONF}"
@@ -50,8 +55,129 @@ readonly COLOR_RED='\033[0;31m'
 readonly COLOR_YELLOW='\033[1;33m'
 readonly COLOR_CYAN='\033[0;36m'
 readonly COLOR_BLUE='\033[0;34m'
+readonly BOLD='\033[1m'
+readonly ORANGE='\033[38;5;208m'
 
 mkdir -p "${BASE_DIR}" "${BACKUP_DIR}"
+
+init_utils_ui() {
+    if [[ -r "${UTILS_PRIMARY_PATH}" ]]; then
+        # shellcheck source=/opt/vps_install_modules/utils.sh
+        if source "${UTILS_PRIMARY_PATH}"; then
+            if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
+                USE_UTILS_UI=1
+                return 0
+            fi
+        fi
+    fi
+
+    if [[ -r "${UTILS_FALLBACK_PATH}" ]]; then
+        # shellcheck source=/dev/null
+        if source "${UTILS_FALLBACK_PATH}"; then
+            if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
+                USE_UTILS_UI=1
+                return 0
+            fi
+        fi
+    fi
+    USE_UTILS_UI=0
+    return 1
+}
+
+ui_generate_line() {
+    local len="${1:-40}"
+    local char="${2:-─}"
+    local spaces=""
+    if [[ "${len}" -le 0 ]]; then
+        printf ""
+        return 0
+    fi
+    printf -v spaces "%${len}s" ""
+    printf "%s" "${spaces// /${char}}"
+}
+
+ui_get_visual_width() {
+    local text="${1:-}"
+    local plain_text=""
+    plain_text="$(printf '%b' "${text}" | sed 's/\x1b\[[0-9;]*m//g')"
+    if [[ -z "${plain_text}" ]]; then
+        printf "0"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<< "${plain_text}" 2>/dev/null || printf "%s" "${#plain_text}"
+    else
+        printf "%s" "${#plain_text}"
+    fi
+}
+
+ui_render_menu() {
+    local title="${1:-}"
+    shift
+    local -a lines=("$@")
+    if [[ "${USE_UTILS_UI}" -eq 1 ]] && declare -f _render_menu >/dev/null 2>&1; then
+        _render_menu "${title}" "${lines[@]}"
+        return 0
+    fi
+
+    local max_content_width=0
+    local title_width=0
+    local current_width=0
+    local box_inner_width=0
+    local pad_total=0
+    local pad_left=0
+    local pad_right=0
+    local line=""
+
+    title_width="$(ui_get_visual_width "${title}")"
+    max_content_width="${title_width}"
+    for line in "${lines[@]}"; do
+        current_width="$(ui_get_visual_width "${line}")"
+        if [[ "${current_width}" -gt "${max_content_width}" ]]; then
+            max_content_width="${current_width}"
+        fi
+    done
+    box_inner_width="${max_content_width}"
+    if [[ "${box_inner_width}" -lt 56 ]]; then
+        box_inner_width=56
+    fi
+
+    printf "\n"
+    printf "%b\n" "${GREEN}╭$(ui_generate_line "${box_inner_width}" "─")╮${NC}"
+    if [[ -n "${title}" ]]; then
+        pad_total=$(( box_inner_width - title_width ))
+        pad_left=$(( pad_total / 2 ))
+        pad_right=$(( pad_total - pad_left ))
+        printf "%b\n" "${GREEN}│${NC}$(printf '%*s' "${pad_left}" "")${BOLD}${title}${NC}$(printf '%*s' "${pad_right}" "")${GREEN}│${NC}"
+    fi
+    printf "%b\n" "${GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${NC}"
+    for line in "${lines[@]}"; do
+        printf "%b\n" "${line}"
+    done
+    printf "%b\n" "${GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${NC}"
+}
+
+ui_prompt_choice() {
+    local numeric_range="${1:-}"
+    local prompt_text="${2:-选项}"
+    local choice=""
+    if [[ "${USE_UTILS_UI}" -eq 1 ]] && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
+        _prompt_for_menu_choice "${numeric_range}" ""
+        return 0
+    fi
+
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+        printf ""
+        return 0
+    fi
+    if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+        printf ""
+        return 0
+    fi
+    printf "%b" "${ORANGE:-${YELLOW}}> ${NC}${prompt_text} [${numeric_range}] (↩ 返回): " > /dev/tty
+    read -r choice < /dev/tty || choice=""
+    printf "%s" "${choice}"
+}
 
 level_to_num() {
     local level="${1:-INFO}"
@@ -671,17 +797,20 @@ remove_old_kernels() {
 }
 
 kernel_manager() {
-    echo "--- 内核维护工具 ---"
-    echo "1. 更新原版内核 (系统仓库)"
-    echo "2. 从 XanMod 切回原版内核 (Debian/Ubuntu)"
-    echo "3. 清理所有冗余旧内核 (Debian/Ubuntu)"
-    echo "0. 返回主菜单"
+    local -a km_lines=()
+    km_lines+=(" ${CYAN}内核维护子菜单${NC}")
+    km_lines+=("   1) 更新原版内核 (系统仓库)")
+    km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
+    km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
+    km_lines+=("   0) 返回主菜单")
+    ui_render_menu "🧰 BBR ACE - 内核维护" "${km_lines[@]}"
+
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
         log_warn "非交互模式：内核维护工具已跳过。"
         return 0
     fi
     local choice=""
-    read -r -p "请选择操作 [0-3]: " choice < /dev/tty
+    choice="$(ui_prompt_choice "0-3" "请选择内核维护操作")"
     case "${choice}" in
         1) update_stock_kernel ;;
         2) switch_xanmod_to_stock_kernel ;;
@@ -731,27 +860,34 @@ show_menu() {
     [[ "${active_conn}" -lt 0 ]] && active_conn=0
     current_mode="$(read_current_mode)"
 
-    echo "========================================================"
-    echo -e " 🚀 终极画像调优引擎 ${COLOR_YELLOW}(v6.6.0 Stock Edition)${COLOR_RESET}"
-    echo "========================================================"
-    echo -e " 物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    并发承载: ${COLOR_GREEN}${active_conn} 活跃连接${COLOR_RESET}"
-    echo -e " 内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}    拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET} | 当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}"
-    echo "--------------------------------------------------------"
-    echo " 1. BBR+FQ 原版参数 [Stock]"
-    echo " 2. BBRV1 + FQ + 激进128MB"
-    echo "--------------------------------------------------------"
-    echo " 3. 开启 IPv4 强制优先"
-    echo " 4. 恢复 IPv6 默认优先级"
-    echo -e " 5. ${COLOR_BLUE}内核维护工具 (更新/清理)${COLOR_RESET}"
-    echo -e " 6. ${COLOR_YELLOW}从备份恢复配置 (时光机)${COLOR_RESET}"
-    echo -e " 7. ${COLOR_CYAN}审计当前系统配置${COLOR_RESET}"
-    echo -e " 8. ${COLOR_RED}彻底卸载/恢复系统默认${COLOR_RESET}"
-    echo "--------------------------------------------------------"
-    echo " 0. 退出"
-    echo "========================================================"
+    local -a lines=()
+    lines+=(" ${CYAN}系统概览${NC}")
+    lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${NC}")
+    lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${NC}    活跃连接: ${COLOR_GREEN}${active_conn}${NC}")
+    lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${NC}")
+    lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${NC}")
+    lines+=(" ")
+    lines+=(" ${CYAN}模式选择${NC}")
+    lines+=("   1) BBR+FQ 原版参数 [Stock]")
+    lines+=("   2) BBRV1 + FQ + 激进128MB")
+    lines+=(" ")
+    lines+=(" ${CYAN}网络策略${NC}")
+    lines+=("   3) 开启 IPv4 强制优先")
+    lines+=("   4) 恢复 IPv6 默认优先级")
+    lines+=(" ")
+    lines+=(" ${CYAN}维护与恢复${NC}")
+    lines+=("   5) 内核维护工具 (更新/清理)")
+    lines+=("   6) 从备份恢复配置 (时光机)")
+    lines+=("   7) 审计当前系统配置")
+    lines+=("   8) 彻底卸载/恢复系统默认")
+    lines+=(" ")
+    lines+=("   0) 退出")
+
+    ui_render_menu "🚀 BBR ACE 网络调优引擎 (${SCRIPT_VERSION})" "${lines[@]}"
 }
 
 main() {
+    init_utils_ui || true
     sanitize_noninteractive_flag
     validate_args "$@"
     check_root
@@ -766,7 +902,7 @@ main() {
         fi
 
         local c=""
-        read -r -p "请下发执行指令 [0-8]: " c < /dev/tty
+        c="$(ui_prompt_choice "0-8" "请选择操作")"
         case "${c}" in
             "") exit 10 ;;
             1) apply_profile "stock"; read -r -p "按回车继续..." < /dev/tty ;;

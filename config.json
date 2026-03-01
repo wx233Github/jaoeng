@@ -39,7 +39,7 @@
       "title": "🛠️ 常用工具",
       "items": [
         { "type": "item", "name": "Watchtower (Docker 更新)", "icon": "🔄", "action": "tools/Watchtower.sh" },
-        { "type": "item", "name": "BBR加速 (TCP优化)", "icon": "", "action": "tools/tcp_optimizer.sh" }  
+        { "type": "item", "name": "BBR ACE (网络调优)", "icon": "⚡", "action": "tools/bbr_ace.sh" }  
       ]
     }
   },

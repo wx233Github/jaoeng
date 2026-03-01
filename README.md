@@ -11,7 +11,7 @@
 - `nginx.sh`：Nginx 反代、证书、TCP 代理、备份恢复
 - `cert.sh`：acme.sh 证书申请与管理
 - `tools/Watchtower.sh`：容器自动更新（Watchtower）管理
-- `tools/tcp_optimizer.sh`：TCP/BBR 优化
+- `tools/bbr_ace.sh`：BBR ACE 网络调优
 - `rm/install.sh`：卸载入口
 - `rm/rm_cert.sh`：证书相关清理
 
