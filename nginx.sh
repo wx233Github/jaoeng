@@ -1095,8 +1095,12 @@ _update_cloudflare_ips() {
         chmod 600 "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo"
         printf '%s\n' "# Cloudflare Allow List" > "$temp_cf_allow"
         printf '%s\n' "# Cloudflare Real IP" > "$temp_cf_real"
-        printf '%s\n' "geo \$cf_ip {" > "$temp_cf_geo"
+        printf '%s\n' "geo \$realip_remote_addr \$cf_ip {" > "$temp_cf_geo"
         printf '%s\n' "    default 0;" >> "$temp_cf_geo"
+        printf '%s\n' "    127.0.0.1/32 1;" >> "$temp_cf_geo"
+        printf '%s\n' "    ::1/128 1;" >> "$temp_cf_geo"
+        printf '%s\n' "allow 127.0.0.1;" >> "$temp_cf_allow"
+        printf '%s\n' "allow ::1;" >> "$temp_cf_allow"
         while read -r ip; do
             [ -z "$ip" ] && continue
             printf '%s\n' "allow $ip;" >> "$temp_cf_allow"
@@ -1112,6 +1116,7 @@ _update_cloudflare_ips() {
         fi
         printf '%s\n' "deny all;" >> "$temp_cf_allow"
         printf '%s\n' "real_ip_header CF-Connecting-IP;" >> "$temp_cf_real"
+        printf '%s\n' "real_ip_recursive on;" >> "$temp_cf_real"
         printf '%s\n' "}" >> "$temp_cf_geo"
         if ! _require_safe_path "/etc/nginx/conf.d/cf_real_ip.conf" "写入 CF Real IP"; then return 1; fi
         if ! _require_safe_path "/etc/nginx/conf.d/cf_geo.conf" "写入 CF Geo"; then return 1; fi
