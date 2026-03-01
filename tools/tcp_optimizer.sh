@@ -129,14 +129,29 @@ sanitize_noninteractive_flag() {
 }
 
 read_confirm() {
-    local prompt="${1:-确认继续? [y/N]: }"
+    local prompt="${1:-确认继续? [Y/n]: }"
     local reply=""
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-        log_warn "非交互模式：默认否"
+        log_warn "非交互模式：默认是"
+        return 0
+    fi
+    read -r -p "${prompt}" reply < /dev/tty
+    case "${reply,,}" in
+        ""|y|yes) return 0 ;;
+        n|no) return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
+read_required_yes() {
+    local prompt="${1:-请输入 yes 继续，其他输入取消: }"
+    local reply=""
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+        log_warn "非交互模式：高风险操作默认取消"
         return 1
     fi
     read -r -p "${prompt}" reply < /dev/tty
-    [[ "${reply,,}" == "y" ]]
+    [[ "${reply,,}" == "yes" ]]
 }
 
 validate_args() {
@@ -463,7 +478,7 @@ update_stock_kernel() {
         return 0
     fi
 
-    if ! read_confirm "是否继续更新系统仓库原版内核? [y/N]: "; then
+    if ! read_confirm "是否继续更新系统仓库原版内核? [Y/n]: "; then
         log_warn "操作已取消。"
         return 0
     fi
@@ -495,7 +510,7 @@ update_stock_kernel() {
     fi
 
     log_info "原版内核更新流程已完成。"
-    if read_confirm "是否立即重启系统以加载新内核? [y/N]: "; then
+    if read_required_yes "高风险操作：是否立即重启系统以加载新内核? 请输入 yes 继续: "; then
         log_warn "用户确认重启，正在执行系统重启..."
         sync
         systemctl reboot || reboot
@@ -553,7 +568,7 @@ cleanup_xanmod_kernel_packages() {
     fi
 
     log_warn "检测到 XanMod 包: ${xanmod_pkgs[*]}"
-    if ! read_confirm "确认清理以上 XanMod 内核包? [y/N]: "; then
+    if ! read_required_yes "高风险操作：确认清理以上 XanMod 内核包? 请输入 yes 继续: "; then
         log_warn "已取消 XanMod 包清理。"
         return 0
     fi
@@ -593,7 +608,7 @@ switch_xanmod_to_stock_kernel() {
     fi
 
     log_warn "检测到 XanMod 痕迹（源/内核/包），将执行回退至原版内核流程。"
-    if ! read_confirm "确认从 XanMod 切回原版内核? [y/N]: "; then
+    if ! read_confirm "确认从 XanMod 切回原版内核? [Y/n]: "; then
         log_warn "操作已取消。"
         return 0
     fi
@@ -607,7 +622,7 @@ switch_xanmod_to_stock_kernel() {
         cleanup_xanmod_kernel_packages
     fi
 
-    if read_confirm "是否立即重启系统以切换到原版内核? [y/N]: "; then
+    if read_required_yes "高风险操作：是否立即重启系统以切换到原版内核? 请输入 yes 继续: "; then
         log_warn "用户确认重启，正在执行系统重启..."
         sync
         systemctl reboot || reboot
@@ -643,7 +658,7 @@ remove_old_kernels() {
 
     echo "以下旧内核将被清理:"
     printf " - %s\n" "${kernels_to_remove[@]}"
-    if ! read_confirm "确认要继续吗? [y/N]: "; then
+    if ! read_required_yes "高风险操作：确认清理以上旧内核? 请输入 yes 继续: "; then
         log_warn "操作已取消。"
         return 0
     fi
@@ -677,7 +692,7 @@ kernel_manager() {
 
 uninstall_and_restore_defaults() {
     echo -e "${COLOR_RED}警告: 此操作将删除本脚本优化配置和备份，且不可逆！${COLOR_RESET}"
-    if ! read_confirm "确认要彻底卸载吗? [y/N]: "; then
+    if ! read_required_yes "高风险操作：确认要彻底卸载吗? 请输入 yes 继续: "; then
         log_warn "卸载操作已取消。"
         return 0
     fi
