@@ -473,15 +473,20 @@ confirm_or_cancel() {
     if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
         local hint="([y]/n)"; [ "$default_yesno" = "n" ] && hint="(y/[N])"
         local c
-        read -r -p "$(printf '%b' "${BRIGHT_YELLOW}${prompt_text} ${hint}: ${NC}")" c < /dev/tty || return 1
-        if [ -z "$c" ]; then
-            [ "$default_yesno" = "y" ] && return 0 || return 1
-        fi
-        case "$c" in
-            y|Y) return 0;;
-            n|N) return 1;;
-            *) return 1;;
-        esac
+        while true; do
+            read -r -p "$(printf '%b' "${BRIGHT_YELLOW}${prompt_text} ${hint}: ${NC}")" c < /dev/tty || return 1
+            if [ -z "$c" ]; then
+                [ "$default_yesno" = "y" ] && return 0 || return 1
+            fi
+            case "$c" in
+                y|Y|yes|YES|Yes) return 0 ;;
+                n|N|no|NO|No) return 1 ;;
+                *)
+                    log_message WARN "无效输入: '${c}'，请输入 y 或 n。"
+                    continue
+                    ;;
+            esac
+        done
     fi
     log_message ERROR "非交互需确认: '$prompt_text',已取消。"; return 1
 }
@@ -2554,6 +2559,9 @@ _handle_toggle_cf_strict() {
     local current
     cur=$(_get_project_json "$d")
     current=$(jq -r '.cf_strict_mode // "n"' <<< "$cur")
+    local current_label="关闭"
+    [ "$current" = "y" ] && current_label="开启"
+    printf '%b' "当前 Cloudflare 严格防御状态: ${current_label} (${current})\n"
     local target="y"; [ "$current" = "y" ] && target="n"
     local label="开启"; [ "$target" = "n" ] && label="关闭"
     if ! confirm_or_cancel "是否${label} Cloudflare 严格防御? (仅适用于开启 CDN)" "n"; then return; fi
