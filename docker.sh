@@ -14,7 +14,7 @@ SCRIPT_VERSION="v4.3.9"
 set -euo pipefail
 IFS=$'\n\t'
 export LANG="${LANG:-en_US.UTF_8}"
-export LC_ALL="${LC_ALL:-C_UTF_8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
@@ -46,14 +46,57 @@ confirm_action() {
     case "$choice" in n|N) return 1;; *) return 0;; esac
 }
 _prompt_for_menu_choice() { read -r -p "> 选项: " choice < /dev/tty; echo "$choice"; }
-    log_err "致命错误: 通用工具库 $UTILS_PATH 未找到！"
-    exit 1
+    log_warn "未找到通用工具库 $UTILS_PATH，已启用内置兼容函数。"
 fi
 
-# --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
-  log_err "致命错误: run_with_sudo 函数未定义。请确保从 install.sh 启动此脚本。"
-  exit 1
+    run_with_sudo() {
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+            return $?
+        fi
+        if ! command -v sudo >/dev/null 2>&1; then
+            log_err "需要 root 权限执行该操作，且未安装 sudo。"
+            return 1
+        fi
+        if sudo -n true 2>/dev/null; then
+            sudo -n "$@"
+            return $?
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下无法获取 sudo 权限。"
+            return 1
+        fi
+        sudo "$@"
+    }
+fi
+
+if ! declare -f should_clear_screen &>/dev/null; then
+    declare -A DOCKER_SMART_CLEAR_SEEN=()
+    should_clear_screen() {
+        local menu_key="${1:-docker:default}"
+        local mode="${JB_CLEAR_MODE:-}"
+        if [ -z "$mode" ]; then
+            if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then
+                mode="full"
+            else
+                mode="off"
+            fi
+        fi
+
+        case "$mode" in
+            off|false) return 1 ;;
+            full|true) return 0 ;;
+            smart)
+                if [ -n "${DOCKER_SMART_CLEAR_SEEN[$menu_key]+x}" ]; then
+                    return 1
+                fi
+                DOCKER_SMART_CLEAR_SEEN["$menu_key"]=1
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    }
 fi
 
 ensure_safe_path() {
@@ -81,6 +124,27 @@ require_sudo_or_die() {
     fi
     log_err "未安装 sudo，无法继续"
     exit 1
+}
+
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_err "未安装 sudo，无法自动提权。"
+        exit 1
+    fi
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+        exit 1
+    fi
+
+    exec sudo -E bash "$0" "$@"
 }
 
 sanitize_noninteractive_flag() {
@@ -440,6 +504,7 @@ main_menu() {
 # --- 脚本执行入口 ---
 main() {
     trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
+    self_elevate_or_die "$@"
     log_info "您选择了 [Docker & Compose 管理]"
     log_info "欢迎使用 Docker 模块 ${SCRIPT_VERSION}"
     init_runtime

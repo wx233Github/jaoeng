@@ -29,6 +29,28 @@ require_sudo_or_die() {
     exit 1
 }
 
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_err "未安装 sudo，无法自动提权。"
+        exit 1
+    fi
+
+    if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+        exit 1
+    fi
+
+    exec sudo -E bash "$0" "$@"
+}
+
+self_elevate_or_die "$@"
 require_sudo_or_die
 
 log_info "🔍 检测 Nginx 状态..."

@@ -334,7 +334,16 @@ validate_args() {
 
 check_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
-        die 1 "需要 root 权限。"
+        if ! command -v sudo >/dev/null 2>&1; then
+            die 1 "需要 root 权限，且未安装 sudo。"
+        fi
+        if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+            if sudo -n true 2>/dev/null; then
+                exec sudo -n -E bash "$0" "$@"
+            fi
+            die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
+        fi
+        exec sudo -E bash "$0" "$@"
     fi
 }
 
@@ -942,7 +951,7 @@ main() {
     init_utils_ui || true
     sanitize_noninteractive_flag
     validate_args "$@"
-    check_root
+    check_root "$@"
     check_dependencies
     check_environment
 

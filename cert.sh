@@ -72,7 +72,53 @@ fi
 
 # --- 确保 run_with_sudo 函数可用 ---
 if ! declare -f run_with_sudo &>/dev/null; then
-    run_with_sudo() { "$@"; }
+    run_with_sudo() {
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+            return $?
+        fi
+        if ! command -v sudo >/dev/null 2>&1; then
+            log_err "需要 root 权限执行该操作，且未安装 sudo。"
+            return 1
+        fi
+        if sudo -n true 2>/dev/null; then
+            sudo -n "$@"
+            return $?
+        fi
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            log_err "非交互模式下无法获取 sudo 权限。"
+            return 1
+        fi
+        sudo "$@"
+    }
+fi
+
+if ! declare -f should_clear_screen &>/dev/null; then
+    declare -A CERT_SMART_CLEAR_SEEN=()
+    should_clear_screen() {
+        local menu_key="${1:-cert:default}"
+        local mode="${JB_CLEAR_MODE:-}"
+        if [ -z "$mode" ]; then
+            if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then
+                mode="full"
+            else
+                mode="off"
+            fi
+        fi
+
+        case "$mode" in
+            off|false) return 1 ;;
+            full|true) return 0 ;;
+            smart)
+                if [ -n "${CERT_SMART_CLEAR_SEEN[$menu_key]+x}" ]; then
+                    return 1
+                fi
+                CERT_SMART_CLEAR_SEEN["$menu_key"]=1
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    }
 fi
 
 ensure_safe_path() {
@@ -111,6 +157,27 @@ require_sudo_or_die() {
     fi
     log_err "未安装 sudo，无法继续"
     exit 1
+}
+
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_err "未安装 sudo，无法自动提权。"
+        exit 1
+    fi
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+        exit 1
+    fi
+
+    exec sudo -E bash "$0" "$@"
 }
 
 # --- 全局变量 ---
@@ -656,6 +723,7 @@ main_menu() {
 
 main() {
     trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
+    self_elevate_or_die "$@"
     init_runtime
     log_info "SSL 证书管理模块 ${SCRIPT_VERSION}"
     _check_dependencies || return 1

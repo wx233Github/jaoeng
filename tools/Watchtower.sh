@@ -164,6 +164,27 @@ init_runtime() {
     sanitize_noninteractive_flag
 }
 
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_error "未安装 sudo，无法自动提权。"
+        exit "${ERR_PERMISSION}"
+    fi
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_error "非交互模式下无法自动提权（需要免密 sudo）。"
+        exit "${ERR_PERMISSION}"
+    fi
+
+    exec sudo -E bash "$0" "$@"
+}
+
 # --- 辅助函数：遮蔽字符串 ---
 _mask_string() {
     local str="$1"
@@ -1297,6 +1318,7 @@ main_menu(){
 }
 
 main(){ 
+    self_elevate_or_die "$@"
     init_runtime
     validate_args "$@"
     [ -f "$CONFIG_FILE" ] && load_config

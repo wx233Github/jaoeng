@@ -43,6 +43,7 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh
 
 - 在**子模块主菜单**中直接按回车（Enter），会退出当前脚本链路（不再返回父菜单）。
 - 菜单内的具体操作页通常仍可按提示返回上一级菜单。
+- 各模块支持**独立运行**，在非 root 场景下会自动尝试 sudo 提权。
 
 ### 清屏策略
 

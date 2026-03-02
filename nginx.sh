@@ -133,6 +133,27 @@ require_sudo_or_die() {
     exit 1
 }
 
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_error "未安装 sudo，无法自动提权。"
+        exit 1
+    fi
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_error "非交互模式下无法自动提权（需要免密 sudo）。"
+        exit 1
+    fi
+
+    exec sudo -E bash "$0" "$@"
+}
+
 cleanup() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
     rm -f /tmp/tg_payload_*.json 2>/dev/null || true
@@ -2928,6 +2949,7 @@ main_menu() {
 }
 
 main() {
+    self_elevate_or_die "$@"
     _generate_op_id
     _resolve_log_file
     _parse_args "$@"
