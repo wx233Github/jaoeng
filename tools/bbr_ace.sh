@@ -507,7 +507,7 @@ restore_configs() {
     mapfile -t backups < <(ls -1t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)
     if [[ "${#backups[@]}" -eq 0 ]]; then
         log_warn "未找到任何备份文件。"
-        return 1
+        return 0
     fi
 
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then

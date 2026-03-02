@@ -14,7 +14,7 @@
   "comment_enable_auto_clear": "是否在每次菜单显示前自动清屏 (true/false)",
   "enable_auto_clear": false,
   "comment_clear_mode": "清屏模式: off/smart/full（smart=每个菜单首次进入清一次）",
-  "clear_mode": "smart",
+  "clear_mode": "off",
   "comment_enable_auto_update": "是否在启动时自动检查更新 (true/false)",
   "enable_auto_update": true,
   "comment_noninteractive": "是否启用非交互模式 (true/false)",

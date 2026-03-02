@@ -81,8 +81,86 @@ if [ -t 1 ] && command -v tput &>/dev/null; then
     CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); ORANGE=$(tput setaf 166); NC=$(tput sgr0)
 fi
 
+if [ -f "/opt/vps_install_modules/utils.sh" ]; then
+    # shellcheck source=/dev/null
+    source "/opt/vps_install_modules/utils.sh"
+fi
+
+if [ -f "${SCRIPT_DIR}/../utils.sh" ] && ! declare -f should_clear_screen &>/dev/null; then
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/../utils.sh"
+fi
+
+if ! declare -f should_clear_screen &>/dev/null; then
+    declare -A WATCHTOWER_SMART_CLEAR_SEEN=()
+    should_clear_screen() {
+        local menu_key="${1:-watchtower:default}"
+        local mode="${JB_CLEAR_MODE:-off}"
+        case "$mode" in
+            full|true) return 0 ;;
+            smart)
+                if [ -n "${WATCHTOWER_SMART_CLEAR_SEEN[$menu_key]+x}" ]; then return 1; fi
+                WATCHTOWER_SMART_CLEAR_SEEN["$menu_key"]=1
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    }
+fi
+
+if ! declare -f _render_menu &>/dev/null; then
+    _render_menu() { local title="$1"; shift; printf '%b\n' "\n${BLUE}--- $title ---${NC}"; printf " %s\n" "$@"; }
+fi
+
+if ! declare -f _prompt_user_input &>/dev/null; then
+    _prompt_user_input() {
+        local prompt="$1"
+        local def_val="${2:-}"
+        local val
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            echo "$def_val"
+            return 0
+        fi
+        read -r -p "${prompt}" val < /dev/tty
+        echo "${val:-$def_val}"
+    }
+fi
+
+if ! declare -f _prompt_for_menu_choice &>/dev/null; then
+    _prompt_for_menu_choice() {
+        local prompt="$1"
+        local val
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            echo ""
+            return 1
+        fi
+        read -r -p "请选择 [${prompt}]: " val < /dev/tty
+        echo "$val"
+    }
+fi
+
+if ! declare -f press_enter_to_continue &>/dev/null; then
+    press_enter_to_continue() {
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            return 0
+        fi
+        read -r -p "按 Enter 继续..." < /dev/tty
+    }
+fi
+
+if ! declare -f confirm_action &>/dev/null; then
+    confirm_action() {
+        local prompt="$1"
+        local choice
+        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+            return 0
+        fi
+        read -r -p "${prompt} ([y]/n): " choice < /dev/tty
+        case "$choice" in n|N) return 1 ;; *) return 0 ;; esac
+    }
+fi
+
 # --- 通用工具函数 ---
-_render_menu() { local title="$1"; shift; printf '%b\n' "\n${BLUE}--- $title ---${NC}"; printf " %s\n" "$@"; }
 sanitize_noninteractive_flag() {
     case "${JB_NONINTERACTIVE:-false}" in
         true|false) return 0 ;;
@@ -92,50 +170,6 @@ sanitize_noninteractive_flag() {
             return 0
             ;;
     esac
-}
-
-press_enter_to_continue() {
-    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-        log_warn "非交互模式：跳过等待"
-        return 0
-    fi
-    read -r -p "按 Enter 继续..." < /dev/tty
-}
-
-confirm_action() {
-    local prompt="$1"
-    local choice
-    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-        log_warn "非交互模式：默认确认"
-        return 0
-    fi
-    read -r -p "${prompt} ([y]/n): " choice < /dev/tty
-    case "$choice" in n|N) return 1;; *) return 0;; esac
-}
-
-_prompt_user_input() {
-    local prompt="$1"
-    local def_val="${2:-}"
-    local val
-    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-        log_warn "非交互模式：使用默认值"
-        echo "$def_val"
-        return 0
-    fi
-    read -r -p "${prompt}" val < /dev/tty
-    echo "${val:-$def_val}"
-}
-
-_prompt_for_menu_choice() {
-    local prompt="$1"
-    local val
-    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-        log_warn "非交互模式：返回空选项"
-        echo ""
-        return 1
-    fi
-    read -r -p "请选择 [${prompt}]: " val < /dev/tty
-    echo "$val"
 }
 
 # --- Sudo 兜底函数 ---
@@ -599,6 +633,9 @@ _prompt_rebuild_if_needed() {
     
     if [ "$current_hash" != "$new_hash" ]; then 
         echo -e "\n${RED}⚠️ 检测到配置已变更 (Diff Found)，建议前往'服务运维'重建服务以生效。${NC}"
+        if confirm_action "检测到配置变更，是否立即重建 Watchtower 以应用新配置?"; then
+            _rebuild_watchtower || return $?
+        fi
     fi
 }
 
