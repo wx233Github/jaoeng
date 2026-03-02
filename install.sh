@@ -832,7 +832,7 @@ main() {
         fi
     fi
     
-    log_info "脚本启动 (${SCRIPT_VERSION})"
+    :
 
     if [ "${JB_RESTARTED:-false}" != "true" ] && [ "${JB_ENABLE_AUTO_UPDATE}" = "true" ]; then
         printf "${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2

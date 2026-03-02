@@ -44,7 +44,7 @@ _cleanup_temp_files() {
 trap _cleanup_temp_files EXIT INT TERM
 
 # --- 参数验证函数 ---
-validate_args() {
+watchtower_validate_args() {
     local arg="${1:-}"
     case "$arg" in
         ""|--run-once|--systemd-start|--systemd-stop|--generate-systemd-service)
@@ -619,6 +619,10 @@ _rebuild_watchtower() {
 }
 
 _prompt_rebuild_if_needed() { 
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        return
+    fi
+
     if ! JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then return; fi
     if [ ! -f "$ENV_FILE_LAST_RUN" ]; then return; fi
     
@@ -1409,7 +1413,7 @@ main_menu(){
 main(){ 
     self_elevate_or_die "$@"
     init_runtime
-    validate_args "$@"
+    watchtower_validate_args "$@"
     [ -f "$CONFIG_FILE" ] && load_config
     
     case "${1:-}" in
