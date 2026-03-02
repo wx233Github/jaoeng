@@ -303,7 +303,7 @@ install_docker() {
 docker_service_menu() {
     while true;
     do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "docker:service_menu"; then clear; fi
         get_docker_status
         local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi
         local -a content_array=(
@@ -352,7 +352,7 @@ docker_prune_system() {
 
 _manage_installation() {
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "docker:manage_installation"; then clear; fi
         local -a menu_items=(
             "1. 重新安装 Docker"
             "2. 卸载 Docker"
@@ -382,7 +382,7 @@ _manage_installation() {
 
 main_menu() {
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "docker:main_menu"; then clear; fi
         get_docker_status
         
         local status_color="$GREEN"; if [ "$DOCKER_SERVICE_STATUS" != "active" ]; then status_color="$RED"; fi

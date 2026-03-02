@@ -27,6 +27,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
+JB_CLEAR_MODE="${JB_CLEAR_MODE:-smart}"
 EXIT_MESSAGE=""
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -85,6 +86,7 @@ build_exec_env() {
     if [ -n "${FORCE_REFRESH:-}" ]; then envs+=("FORCE_REFRESH=${FORCE_REFRESH}"); fi
     if [ -n "${JB_RESTARTED:-}" ]; then envs+=("JB_RESTARTED=${JB_RESTARTED}"); fi
     if [ -n "${JB_ENABLE_AUTO_CLEAR:-}" ]; then envs+=("JB_ENABLE_AUTO_CLEAR=${JB_ENABLE_AUTO_CLEAR}"); fi
+    if [ -n "${JB_CLEAR_MODE:-}" ]; then envs+=("JB_CLEAR_MODE=${JB_CLEAR_MODE}"); fi
     if [ -n "${JB_DEBUG:-}" ]; then envs+=("JB_DEBUG=${JB_DEBUG}"); fi
     if [ -n "${JB_DEBUG_MODE:-}" ]; then envs+=("JB_DEBUG_MODE=${JB_DEBUG_MODE}"); fi
     if [ -n "${JB_SUDO_LOG_QUIET:-}" ]; then envs+=("JB_SUDO_LOG_QUIET=${JB_SUDO_LOG_QUIET}"); fi
@@ -662,7 +664,7 @@ on_error() {
 
 display_and_process_menu() {
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "install:${CURRENT_MENU_NAME}"; then clear; fi
         local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || true)
         if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then 
             log_warn "菜单配置 '$CURRENT_MENU_NAME' 读取失败，回退到主菜单."
@@ -776,6 +778,11 @@ display_and_process_menu() {
 
 main() {
     load_config "$CONFIG_PATH"
+    export JB_CLEAR_MODE="${JB_CLEAR_MODE:-smart}"
+    case "${JB_CLEAR_MODE}" in
+        full) export JB_ENABLE_AUTO_CLEAR=true ;;
+        off|smart|*) export JB_ENABLE_AUTO_CLEAR=false ;;
+    esac
     LOG_FILE="${LOG_FILE:-$GLOBAL_LOG_FILE}"
     LOG_LEVEL="${LOG_LEVEL:-INFO}"
     JB_DEBUG_MODE="${JB_DEBUG_MODE:-${JB_DEBUG:-false}}"

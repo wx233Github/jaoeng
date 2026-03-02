@@ -416,7 +416,7 @@ _manage_certificates() {
     if ! [ -f "$ACME_BIN" ]; then log_err "acme.sh 未安装。"; return; fi
 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "cert:manage_certificates"; then clear; fi
         log_info "正在扫描证书详情 (请稍候)..."
         
         local raw_list
@@ -603,7 +603,7 @@ _manage_certificates() {
 
 _system_maintenance() {
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "cert:system_maintenance"; then clear; fi
         local -a sys_menu=("1. 诊断自动续期" "2. 升级 acme.sh" "3. 开启自动更新" "4. 关闭自动更新")
         _render_menu "系统维护" "${sys_menu[@]}"
         local sys_choice
@@ -637,7 +637,7 @@ _system_maintenance() {
 
 main_menu() {
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "cert:main_menu"; then clear; fi
         local -a menu_items=("1. 申请证书 (New Certificate)" "2. 证书管理 (Manage Certificates)" "3. 系统设置 (Settings)")
         _render_menu "🔐 SSL 证书管理 (acme.sh)" "${menu_items[@]}"
         

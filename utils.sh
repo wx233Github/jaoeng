@@ -21,6 +21,7 @@ DEFAULT_LOG_FILE="/var/log/jaoeng-utils.log"
 DEFAULT_LOG_LEVEL="INFO"
 DEFAULT_ENABLE_AUTO_UPDATE="true"
 DEFAULT_NONINTERACTIVE="false"
+DEFAULT_CLEAR_MODE="smart"
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -212,6 +213,69 @@ confirm_action() {
     case "$choice" in n|N ) return 1 ;; * ) return 0 ;; esac
 }
 
+# --- 清屏策略 ---
+declare -A JB_SMART_CLEAR_SEEN=()
+
+normalize_clear_mode() {
+    local mode="${1:-${JB_CLEAR_MODE:-}}"
+    case "${mode}" in
+        off|smart|full)
+            printf '%s' "$mode"
+            return 0
+            ;;
+        true)
+            printf '%s' "full"
+            return 0
+            ;;
+        false)
+            printf '%s' "off"
+            return 0
+            ;;
+        "")
+            case "${JB_ENABLE_AUTO_CLEAR:-false}" in
+                true) printf '%s' "full" ;;
+                false) printf '%s' "off" ;;
+                *) printf '%s' "${DEFAULT_CLEAR_MODE}" ;;
+            esac
+            return 0
+            ;;
+        *)
+            log_warn "JB_CLEAR_MODE 值非法: ${mode}，已回退为 ${DEFAULT_CLEAR_MODE}"
+            printf '%s' "${DEFAULT_CLEAR_MODE}"
+            return 1
+            ;;
+    esac
+}
+
+should_clear_screen() {
+    local menu_key="${1:-__default_menu__}"
+    local clear_mode
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        return 1
+    fi
+
+    clear_mode="$(normalize_clear_mode)"
+    case "${clear_mode}" in
+        off)
+            return 1
+            ;;
+        full)
+            return 0
+            ;;
+        smart)
+            if [ -n "${JB_SMART_CLEAR_SEEN[${menu_key}]+x}" ]; then
+                return 1
+            fi
+            JB_SMART_CLEAR_SEEN["${menu_key}"]=1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # --- 配置加载 (优化版) ---
 _get_json_value_fallback() {
     local file="$1"; local key="$2"; local default_val="$3"
@@ -222,7 +286,15 @@ _get_json_value_fallback() {
 
 load_config() {
     local config_path="${1:-${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}}"
-    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="$config_path"; JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"; JB_ENABLE_AUTO_UPDATE="${JB_ENABLE_AUTO_UPDATE:-$DEFAULT_ENABLE_AUTO_UPDATE}"; JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-$DEFAULT_NONINTERACTIVE}"
+    local clear_mode_from_env="false"
+    local config_clear_mode=""
+    local config_enable_auto_clear=""
+
+    if [ -n "${JB_CLEAR_MODE+x}" ]; then
+        clear_mode_from_env="true"
+    fi
+
+    BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"; INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"; BIN_DIR="${BIN_DIR:-$DEFAULT_BIN_DIR}"; LOCK_FILE="${LOCK_FILE:-$DEFAULT_LOCK_FILE}"; JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"; CONFIG_PATH="$config_path"; JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"; JB_ENABLE_AUTO_UPDATE="${JB_ENABLE_AUTO_UPDATE:-$DEFAULT_ENABLE_AUTO_UPDATE}"; JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-$DEFAULT_NONINTERACTIVE}"; JB_CLEAR_MODE="${JB_CLEAR_MODE:-$DEFAULT_CLEAR_MODE}"
     LOG_FILE="${LOG_FILE:-${DEFAULT_LOG_FILE}}"; LOG_LEVEL="${LOG_LEVEL:-${DEFAULT_LOG_LEVEL}}"
     
     if [ ! -f "$config_path" ]; then log_warn "配置文件 $config_path 未找到，使用默认配置。"; return 0; fi
@@ -236,6 +308,8 @@ load_config() {
         JB_LOG_WITH_TIMESTAMP=$(jq -r '.log_with_timestamp // false' "$config_path" 2>/dev/null || echo "$JB_LOG_WITH_TIMESTAMP")
         JB_ENABLE_AUTO_UPDATE=$(jq -r '.enable_auto_update // "true"' "$config_path" 2>/dev/null || echo "$JB_ENABLE_AUTO_UPDATE")
         JB_NONINTERACTIVE=$(jq -r '.noninteractive // "false"' "$config_path" 2>/dev/null || echo "$JB_NONINTERACTIVE")
+        config_clear_mode=$(jq -r '.clear_mode // empty' "$config_path" 2>/dev/null || true)
+        config_enable_auto_clear=$(jq -r '.enable_auto_clear // empty' "$config_path" 2>/dev/null || true)
     else
         log_warn "未检测到 jq，使用轻量文本解析。"
         BASE_URL=$(_get_json_value_fallback "$config_path" "base_url" "$BASE_URL")
@@ -246,7 +320,23 @@ load_config() {
         JB_LOG_WITH_TIMESTAMP=$(_get_json_value_fallback "$config_path" "log_with_timestamp" "$JB_LOG_WITH_TIMESTAMP")
         JB_ENABLE_AUTO_UPDATE=$(_get_json_value_fallback "$config_path" "enable_auto_update" "$JB_ENABLE_AUTO_UPDATE")
         JB_NONINTERACTIVE=$(_get_json_value_fallback "$config_path" "noninteractive" "$JB_NONINTERACTIVE")
+        config_clear_mode=$(_get_json_value_fallback "$config_path" "clear_mode" "")
+        config_enable_auto_clear=$(_get_json_value_fallback "$config_path" "enable_auto_clear" "")
     fi
+
+    if [ "$clear_mode_from_env" = "false" ]; then
+        if [ -n "$config_clear_mode" ] && [ "$config_clear_mode" != "null" ]; then
+            JB_CLEAR_MODE="$config_clear_mode"
+        elif [ -n "$config_enable_auto_clear" ] && [ "$config_enable_auto_clear" != "null" ]; then
+            case "$config_enable_auto_clear" in
+                true) JB_CLEAR_MODE="full" ;;
+                false) JB_CLEAR_MODE="off" ;;
+                *) JB_CLEAR_MODE="${DEFAULT_CLEAR_MODE}" ;;
+            esac
+        fi
+    fi
+
+    JB_CLEAR_MODE="$(normalize_clear_mode "${JB_CLEAR_MODE}")"
 }
 
 # --- UI 渲染 & 字符串处理 (性能优化版) ---

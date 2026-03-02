@@ -593,7 +593,7 @@ _configure_alias() {
 
 notification_menu() { 
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:notification_menu"; then clear; fi
         
         local tg_status="${RED}未配置${NC}"
         if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then 
@@ -741,7 +741,7 @@ configure_exclusion_list() {
     fi
     
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:configure_exclusion_list"; then clear; fi
         
         local -a all_containers_array=()
         while IFS= read -r line; do 
@@ -894,7 +894,7 @@ configure_watchtower(){
 
 manage_tasks(){
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:manage_tasks"; then clear; fi
         local -a items_array=(
             "1. 停止并移除服务 (uninstall) - 删除容器并清除配置"
             "2. 重建服务 (redeploy) - 应用新配置，重启 Watchtower"
@@ -1045,7 +1045,7 @@ show_container_info() {
 show_watchtower_details(){
     local original_trap; original_trap=$(trap -p INT)
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:show_watchtower_details"; then clear; fi
         local title="📊 详情与管理 📊"
         local interval raw_logs COUNTDOWN schedule_env
         interval=$(get_watchtower_inspect_summary 2>/dev/null || true)
@@ -1102,7 +1102,7 @@ view_and_edit_config(){
     )
     
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:view_and_edit_config"; then clear; fi
         load_config
         local -a content_lines_array=()
         local i
@@ -1220,7 +1220,7 @@ view_and_edit_config(){
 
 main_menu(){
     while true; do
-        if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then clear; fi
+        if should_clear_screen "watchtower:main_menu"; then clear; fi
         load_config
         
         local STATUS_RAW="未运行"

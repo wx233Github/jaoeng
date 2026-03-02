@@ -44,6 +44,14 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh
 - 在**子模块主菜单**中直接按回车（Enter），会退出当前脚本链路（不再返回父菜单）。
 - 菜单内的具体操作页通常仍可按提示返回上一级菜单。
 
+### 清屏策略
+
+- `clear_mode=off`：不自动清屏
+- `clear_mode=smart`（默认）：每个菜单首次进入时清屏一次
+- `clear_mode=full`：每次菜单循环都清屏
+
+可通过环境变量临时覆盖：`JB_CLEAR_MODE=off|smart|full`
+
 ---
 
 ## 常见维护命令
