@@ -17,7 +17,7 @@ SCRIPT_VERSION="v2.2.1"
 set -euo pipefail
 IFS=$'\n\t'
 export LANG="${LANG:-en_US.UTF_8}"
-export LC_ALL="${LC_ALL:-C_UTF_8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # --- 颜色与样式定义 ---
 CYAN='\033[0;36m'

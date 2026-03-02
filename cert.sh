@@ -12,7 +12,7 @@ SCRIPT_VERSION="v3.15.0"
 set -euo pipefail
 IFS=$'\n\t'
 export LANG="${LANG:-en_US.UTF_8}"
-export LC_ALL="${LC_ALL:-C.UTF_8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # --- 加载通用工具函数库 ---
 UTILS_PATH="/opt/vps_install_modules/utils.sh"
