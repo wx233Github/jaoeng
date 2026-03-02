@@ -36,6 +36,7 @@ IS_CONTAINER=0
 IS_SYSTEMD=0
 TOTAL_MEM_KB=0
 USE_UTILS_UI=0
+UTILS_RUNTIME_PATH=""
 
 readonly CONFIG_FILES=(
     "${SYSCTL_CONF}"
@@ -55,33 +56,54 @@ readonly COLOR_RED='\033[0;31m'
 readonly COLOR_YELLOW='\033[1;33m'
 readonly COLOR_CYAN='\033[0;36m'
 readonly COLOR_BLUE='\033[0;34m'
-readonly BOLD='\033[1m'
-readonly ORANGE='\033[38;5;208m'
+readonly UI_BOLD='\033[1m'
+readonly UI_ORANGE='\033[38;5;208m'
 
 mkdir -p "${BASE_DIR}" "${BACKUP_DIR}"
 
 init_utils_ui() {
-    if [[ -r "${UTILS_PRIMARY_PATH}" ]]; then
-        # shellcheck source=/opt/vps_install_modules/utils.sh
-        if source "${UTILS_PRIMARY_PATH}"; then
-            if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
-                USE_UTILS_UI=1
-                return 0
-            fi
+    local candidate=""
+    for candidate in "${UTILS_PRIMARY_PATH}" "${UTILS_FALLBACK_PATH}"; do
+        if [[ ! -r "${candidate}" ]]; then
+            continue
         fi
+
+        if bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; declare -f _render_menu >/dev/null 2>&1 || exit 2; declare -f _prompt_for_menu_choice >/dev/null 2>&1 || exit 3' _ "${candidate}" >/dev/null 2>&1; then
+            USE_UTILS_UI=1
+            UTILS_RUNTIME_PATH="${candidate}"
+            return 0
+        fi
+    done
+
+    USE_UTILS_UI=0
+    UTILS_RUNTIME_PATH=""
+    return 1
+}
+
+utils_render_menu_external() {
+    local title="${1:-}"
+    shift
+    local -a lines=("$@")
+
+    if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
+        return 1
     fi
 
-    if [[ -r "${UTILS_FALLBACK_PATH}" ]]; then
-        # shellcheck source=/dev/null
-        if source "${UTILS_FALLBACK_PATH}"; then
-            if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
-                USE_UTILS_UI=1
-                return 0
-            fi
-        fi
+    if bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _render_menu "$@"' _ "${UTILS_RUNTIME_PATH}" "${title}" "${lines[@]}" 2>/dev/null; then
+        return 0
     fi
-    USE_UTILS_UI=0
+
     return 1
+}
+
+utils_prompt_choice_external() {
+    local numeric_range="${1:-}"
+
+    if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
+        return 1
+    fi
+
+    bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _prompt_for_menu_choice "$1" ""' _ "${UTILS_RUNTIME_PATH}" "${numeric_range}" 2>/dev/null
 }
 
 ui_generate_line() {
@@ -115,9 +137,12 @@ ui_render_menu() {
     local title="${1:-}"
     shift
     local -a lines=("$@")
-    if [[ "${USE_UTILS_UI}" -eq 1 ]] && declare -f _render_menu >/dev/null 2>&1; then
-        _render_menu "${title}" "${lines[@]}"
-        return 0
+    if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
+        if utils_render_menu_external "${title}" "${lines[@]}"; then
+            return 0
+        fi
+        USE_UTILS_UI=0
+        UTILS_RUNTIME_PATH=""
     fi
 
     local max_content_width=0
@@ -148,7 +173,7 @@ ui_render_menu() {
         pad_total=$(( box_inner_width - title_width ))
         pad_left=$(( pad_total / 2 ))
         pad_right=$(( pad_total - pad_left ))
-        printf "%b\n" "${COLOR_GREEN}│${COLOR_RESET}$(printf '%*s' "${pad_left}" "")${BOLD}${title}${COLOR_RESET}$(printf '%*s' "${pad_right}" "")${COLOR_GREEN}│${COLOR_RESET}"
+        printf "%b\n" "${COLOR_GREEN}│${COLOR_RESET}$(printf '%*s' "${pad_left}" "")${UI_BOLD}${title}${COLOR_RESET}$(printf '%*s' "${pad_right}" "")${COLOR_GREEN}│${COLOR_RESET}"
     fi
     printf "%b\n" "${COLOR_GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${COLOR_RESET}"
     for line in "${lines[@]}"; do
@@ -161,9 +186,13 @@ ui_prompt_choice() {
     local numeric_range="${1:-}"
     local prompt_text="${2:-选项}"
     local choice=""
-    if [[ "${USE_UTILS_UI}" -eq 1 ]] && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
-        _prompt_for_menu_choice "${numeric_range}" ""
-        return 0
+    if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
+        if choice="$(utils_prompt_choice_external "${numeric_range}")"; then
+            printf "%s" "${choice}"
+            return 0
+        fi
+        USE_UTILS_UI=0
+        UTILS_RUNTIME_PATH=""
     fi
 
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
@@ -174,7 +203,7 @@ ui_prompt_choice() {
         printf ""
         return 0
     fi
-    printf "%b" "${ORANGE}> ${COLOR_RESET}${prompt_text} [${numeric_range}] (↩ 返回): " > /dev/tty
+    printf "%b" "${UI_ORANGE}> ${COLOR_RESET}${prompt_text} [${numeric_range}] (↩ 返回): " > /dev/tty
     read -r choice < /dev/tty || choice=""
     printf "%s" "${choice}"
 }
