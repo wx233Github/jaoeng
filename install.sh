@@ -488,6 +488,7 @@ confirm_and_force_update() {
 
 run_module(){
     local module_script="$1"; local module_name="$2"; local module_path="${INSTALL_DIR}/${module_script}";
+    shift 2
     if ! sanitize_module_script "$module_script"; then
         log_err "模块路径非法，已拒绝执行。"
         return 1
@@ -503,15 +504,15 @@ run_module(){
         local module_config_json; module_config_json=$(jq -r --arg key "$module_key" '.module_configs[$key]' "$CONFIG_PATH")
         local prefix_base="${module_key^^}"
 
-        echo "$module_config_json" | jq -r 'keys[]' | while IFS= read -r key; do
+        while IFS= read -r key; do
             if [[ "$key" == "comment_"* ]]; then continue; fi
             local value; value=$(echo "$module_config_json" | jq -r --arg subkey "$key" '.[$subkey]')
             local upper_key="${key^^}"
             export "${prefix_base}_CONF_${upper_key}"="$value"
-        done
+        done < <(echo "$module_config_json" | jq -r 'keys[]')
     fi
     
-    set +e; bash "$module_path"; local exit_code=$?; set -e
+    set +e; bash "$module_path" "$@"; local exit_code=$?; set -e
     
     if [ "$exit_code" -eq 0 ]; then 
         log_success "模块 [${module_name}] 执行完毕。"
@@ -521,6 +522,27 @@ run_module(){
         log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"
     fi
     return $exit_code
+}
+
+self_elevate_or_die() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        log_err "未安装 sudo，无法自动提权。"
+        return 1
+    fi
+
+    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+        return 1
+    fi
+
+    exec sudo -E bash "$0" "$@"
 }
 
 sanitize_module_script() {
@@ -564,24 +586,6 @@ validate_noninteractive_flag() {
             return 0
             ;;
     esac
-}
-
-require_sudo_or_die() {
-    if [ "$(id -u)" -eq 0 ]; then
-        return 0
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-        if sudo -n true 2>/dev/null; then
-            return 0
-        fi
-        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-            log_err "非交互模式下无法获取 sudo 权限"
-            return 1
-        fi
-        return 0
-    fi
-    log_err "未安装 sudo，无法继续"
-    return 1
 }
 
 _get_docker_status() {
@@ -777,6 +781,7 @@ display_and_process_menu() {
 }
 
 main() {
+    self_elevate_or_die "$@"
     load_config "$CONFIG_PATH"
     export JB_CLEAR_MODE="${JB_CLEAR_MODE:-smart}"
     case "${JB_CLEAR_MODE}" in
@@ -789,7 +794,6 @@ main() {
     validate_env
     validate_autoupdate_flag
     validate_noninteractive_flag
-    require_sudo_or_die
     setup_logrotate
     check_and_install_extra_dependencies
     

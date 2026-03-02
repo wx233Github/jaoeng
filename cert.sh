@@ -141,24 +141,6 @@ sanitize_noninteractive_flag() {
     esac
 }
 
-require_sudo_or_die() {
-    if [ "$(id -u)" -eq 0 ]; then
-        return 0
-    fi
-    if command -v sudo >/dev/null 2>&1; then
-        if sudo -n true 2>/dev/null; then
-            return 0
-        fi
-        if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-            log_err "非交互模式下无法获取 sudo 权限"
-            exit 1
-        fi
-        return 0
-    fi
-    log_err "未安装 sudo，无法继续"
-    exit 1
-}
-
 self_elevate_or_die() {
     if [ "$(id -u)" -eq 0 ]; then
         return 0
@@ -169,15 +151,32 @@ self_elevate_or_die() {
         exit 1
     fi
 
-    if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-        if sudo -n true 2>/dev/null; then
-            exec sudo -n -E bash "$0" "$@"
-        fi
-        log_err "非交互模式下无法自动提权（需要免密 sudo）。"
-        exit 1
-    fi
-
-    exec sudo -E bash "$0" "$@"
+    case "$0" in
+        /dev/fd/*|/proc/self/fd/*)
+            local tmp_script
+            tmp_script=$(mktemp /tmp/cert_module.XXXXXX.sh)
+            cat < "$0" > "$tmp_script"
+            chmod 700 "$tmp_script" || true
+            if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+                if sudo -n true 2>/dev/null; then
+                    exec sudo -n -E bash "$tmp_script" "$@"
+                fi
+                log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+                exit 1
+            fi
+            exec sudo -E bash "$tmp_script" "$@"
+            ;;
+        *)
+            if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+                if sudo -n true 2>/dev/null; then
+                    exec sudo -n -E bash "$0" "$@"
+                fi
+                log_err "非交互模式下无法自动提权（需要免密 sudo）。"
+                exit 1
+            fi
+            exec sudo -E bash "$0" "$@"
+            ;;
+    esac
 }
 
 # --- 全局变量 ---

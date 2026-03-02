@@ -315,6 +315,49 @@ read_confirm() {
     esac
 }
 
+detect_script_invocation_source() {
+    case "$0" in
+        /dev/fd/*|/proc/self/fd/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+reexec_with_sudo_or_die() {
+    if ! command -v sudo >/dev/null 2>&1; then
+        die 1 "需要 root 权限，且未安装 sudo。"
+    fi
+
+    if detect_script_invocation_source; then
+        local tmp_script=""
+        tmp_script="$(mktemp /tmp/bbr_ace.XXXXXX.sh)"
+        if [[ -z "${tmp_script}" ]]; then
+            die 1 "创建临时脚本失败，无法自动提权。"
+        fi
+        cat < "$0" > "${tmp_script}" || die 1 "复制临时脚本失败，无法自动提权。"
+        chmod 700 "${tmp_script}" || true
+        if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+            if sudo -n true 2>/dev/null; then
+                exec sudo -n -E bash "${tmp_script}" "$@"
+            fi
+            die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
+        fi
+        exec sudo -E bash "${tmp_script}" "$@"
+    fi
+
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+        if sudo -n true 2>/dev/null; then
+            exec sudo -n -E bash "$0" "$@"
+        fi
+        die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
+    fi
+
+    exec sudo -E bash "$0" "$@"
+}
+
 read_required_yes() {
     local prompt="${1:-请输入 yes 继续，其他输入取消: }"
     local reply=""
@@ -334,16 +377,7 @@ validate_args() {
 
 check_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
-        if ! command -v sudo >/dev/null 2>&1; then
-            die 1 "需要 root 权限，且未安装 sudo。"
-        fi
-        if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-            if sudo -n true 2>/dev/null; then
-                exec sudo -n -E bash "$0" "$@"
-            fi
-            die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
-        fi
-        exec sudo -E bash "$0" "$@"
+        reexec_with_sudo_or_die "$@"
     fi
 }
 

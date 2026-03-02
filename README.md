@@ -89,6 +89,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/rm/i
 
 - 系统：Debian / Ubuntu（其他发行版请自行评估）
 - 权限：涉及系统配置变更时需要 root 或可用 sudo
+- 提权兼容：若以 `bash <(curl ...)` 方式运行且需要提权，脚本会自动落盘临时副本后再 sudo 重启执行
 
 ---
 
