@@ -30,7 +30,7 @@ readonly TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly UTILS_PRIMARY_PATH="/opt/vps_install_modules/utils.sh"
 readonly UTILS_FALLBACK_PATH="${SCRIPT_DIR}/../utils.sh"
-readonly SCRIPT_VERSION="v6.7.0"
+readonly SCRIPT_VERSION="v6.7.1"
 
 IS_CONTAINER=0
 IS_SYSTEMD=0
@@ -68,7 +68,7 @@ init_utils_ui() {
             continue
         fi
 
-        if bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; declare -f _render_menu >/dev/null 2>&1 || exit 2; declare -f _prompt_for_menu_choice >/dev/null 2>&1 || exit 3' _ "${candidate}" >/dev/null 2>&1; then
+        if FORCE_COLOR=true bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; declare -f _render_menu >/dev/null 2>&1 || exit 2; declare -f _prompt_for_menu_choice >/dev/null 2>&1 || exit 3' _ "${candidate}" >/dev/null 2>&1; then
             USE_UTILS_UI=1
             UTILS_RUNTIME_PATH="${candidate}"
             return 0
@@ -89,7 +89,7 @@ utils_render_menu_external() {
         return 1
     fi
 
-    if bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _render_menu "$@"' _ "${UTILS_RUNTIME_PATH}" "${title}" "${lines[@]}" 2>/dev/null; then
+    if FORCE_COLOR=true bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _render_menu "$@"' _ "${UTILS_RUNTIME_PATH}" "${title}" "${lines[@]}" 2>/dev/null; then
         return 0
     fi
 
@@ -103,7 +103,7 @@ utils_prompt_choice_external() {
         return 1
     fi
 
-    bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _prompt_for_menu_choice "$1" ""' _ "${UTILS_RUNTIME_PATH}" "${numeric_range}" 2>/dev/null
+    FORCE_COLOR=true bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; _prompt_for_menu_choice "$1" ""' _ "${UTILS_RUNTIME_PATH}" "${numeric_range}" 2>/dev/null
 }
 
 ui_generate_line() {
@@ -831,7 +831,7 @@ kernel_manager() {
     km_lines+=("   1) 更新原版内核 (系统仓库)")
     km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
     km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
-    km_lines+=("   0) 返回主菜单")
+    km_lines+=("   ↩ 回车返回主菜单")
     ui_render_menu "🧰 BBR ACE - 内核维护" "${km_lines[@]}"
 
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
@@ -839,12 +839,13 @@ kernel_manager() {
         return 0
     fi
     local choice=""
-    choice="$(ui_prompt_choice "0-3" "请选择内核维护操作")"
+    choice="$(ui_prompt_choice "1-3" "请选择内核维护操作")"
     case "${choice}" in
+        "") return 0 ;;
         1) update_stock_kernel ;;
         2) switch_xanmod_to_stock_kernel ;;
         3) remove_old_kernels ;;
-        0|*) return 0 ;;
+        *) return 0 ;;
     esac
 }
 
@@ -910,7 +911,7 @@ show_menu() {
     lines+=("   7) 审计当前系统配置")
     lines+=("   8) 彻底卸载/恢复系统默认")
     lines+=(" ")
-    lines+=("   0) 退出")
+    lines+=("   ↩ 回车退出")
 
     ui_render_menu "🚀 BBR ACE 网络调优引擎 (${SCRIPT_VERSION})" "${lines[@]}"
 }
@@ -931,18 +932,17 @@ main() {
         fi
 
         local c=""
-        c="$(ui_prompt_choice "0-8" "请选择操作")"
+        c="$(ui_prompt_choice "1-8" "请选择操作")"
         case "${c}" in
             "") exit 10 ;;
-            1) apply_profile "stock"; read -r -p "按回车继续..." < /dev/tty ;;
-            2) apply_profile "aggressive"; read -r -p "按回车继续..." < /dev/tty ;;
-            3) manage_ipv4_precedence "enable"; read -r -p "按回车继续..." < /dev/tty ;;
-            4) manage_ipv4_precedence "disable"; read -r -p "按回车继续..." < /dev/tty ;;
-            5) kernel_manager; read -r -p "按回车返回主菜单..." < /dev/tty ;;
-            6) restore_configs; read -r -p "按回车继续..." < /dev/tty ;;
-            7) audit_configs; read -r -p "按回车继续..." < /dev/tty ;;
-            8) uninstall_and_restore_defaults; read -r -p "按回车继续..." < /dev/tty ;;
-            0) exit 0 ;;
+            1) apply_profile "stock" ;;
+            2) apply_profile "aggressive" ;;
+            3) manage_ipv4_precedence "enable" ;;
+            4) manage_ipv4_precedence "disable" ;;
+            5) kernel_manager ;;
+            6) restore_configs ;;
+            7) audit_configs ;;
+            8) uninstall_and_restore_defaults ;;
             *) sleep 0.5 ;;
         esac
     done
