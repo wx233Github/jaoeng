@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 bbr_ace.sh (v6.7.0 - UI Refresh Edition)
+# 🚀 bbr_ace.sh (UI Refresh Edition)
 # =============================================================
 
 set -euo pipefail
@@ -30,7 +30,6 @@ readonly TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly UTILS_PRIMARY_PATH="/opt/vps_install_modules/utils.sh"
 readonly UTILS_FALLBACK_PATH="${SCRIPT_DIR}/../utils.sh"
-readonly SCRIPT_VERSION="v6.7.1"
 
 IS_CONTAINER=0
 IS_SYSTEMD=0
@@ -831,7 +830,6 @@ kernel_manager() {
     km_lines+=("   1) 更新原版内核 (系统仓库)")
     km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
     km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
-    km_lines+=("   ↩ 回车返回主菜单")
     ui_render_menu "🧰 BBR ACE - 内核维护" "${km_lines[@]}"
 
     if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
@@ -873,7 +871,6 @@ uninstall_and_restore_defaults() {
 }
 
 show_menu() {
-    clear
     local mem_mb=0
     local cur_kver=""
     local cur_cc=""
@@ -911,9 +908,8 @@ show_menu() {
     lines+=("   7) 审计当前系统配置")
     lines+=("   8) 彻底卸载/恢复系统默认")
     lines+=(" ")
-    lines+=("   ↩ 回车退出")
 
-    ui_render_menu "🚀 BBR ACE 网络调优引擎 (${SCRIPT_VERSION})" "${lines[@]}"
+    ui_render_menu "🚀 BBR ACE 网络调优引擎" "${lines[@]}"
 }
 
 main() {
