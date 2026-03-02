@@ -74,13 +74,6 @@ log_error() { echo "[ERROR] $*" >&2; }
 log_warn() { echo "[WARN] $*" >&2; }
 log_success() { echo "[SUCCESS] $*" >&2; }
 
-# --- 颜色变量 ---
-GREEN=""; NC=""; RED=""; YELLOW=""; CYAN=""; BLUE=""; ORANGE="";
-if [ -t 1 ] && command -v tput &>/dev/null; then
-    GREEN=$(tput setaf 2); RED=$(tput setaf 1); YELLOW=$(tput setaf 3)
-    CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); ORANGE=$(tput setaf 166); NC=$(tput sgr0)
-fi
-
 if [ -f "/opt/vps_install_modules/utils.sh" ]; then
     # shellcheck source=/dev/null
     source "/opt/vps_install_modules/utils.sh"
@@ -106,6 +99,19 @@ if ! declare -f should_clear_screen &>/dev/null; then
             *) return 1 ;;
         esac
     }
+fi
+
+# --- 颜色变量 ---
+if ! declare -p GREEN >/dev/null 2>&1; then GREEN=""; fi
+if ! declare -p NC >/dev/null 2>&1; then NC=""; fi
+if ! declare -p RED >/dev/null 2>&1; then RED=""; fi
+if ! declare -p YELLOW >/dev/null 2>&1; then YELLOW=""; fi
+if ! declare -p CYAN >/dev/null 2>&1; then CYAN=""; fi
+if ! declare -p BLUE >/dev/null 2>&1; then BLUE=""; fi
+if ! declare -p ORANGE >/dev/null 2>&1; then ORANGE=""; fi
+if [ -z "$GREEN" ] && [ -t 1 ] && command -v tput &>/dev/null; then
+    GREEN=$(tput setaf 2); RED=$(tput setaf 1); YELLOW=$(tput setaf 3)
+    CYAN=$(tput setaf 6); BLUE=$(tput setaf 4); ORANGE=$(tput setaf 166); NC=$(tput sgr0)
 fi
 
 if ! declare -f _render_menu &>/dev/null; then
@@ -376,7 +382,8 @@ save_config(){
     local temp_config; temp_config=$(mktemp)
     TEMP_FILES+=("$temp_config")
     
-    local final_encrypted_token="${ENCRYPTED_TG_BOT_TOKEN}"
+    local final_encrypted_token=""
+    local plain_token_to_write="${TG_BOT_TOKEN}"
     if [ "${CONFIG_ENCRYPTED}" = "true" ]; then
         if ! command -v openssl &>/dev/null; then
              log_error "需要 openssl 来加密配置，请先安装。"; return "${ERR_DEPENDENCY}";
@@ -387,11 +394,13 @@ save_config(){
         else
             final_encrypted_token=""
         fi
+        plain_token_to_write=""
     fi
 
     cat > "$temp_config" <<EOF
 CONFIG_ENCRYPTED="${CONFIG_ENCRYPTED}"
 ENCRYPTED_TG_BOT_TOKEN="${final_encrypted_token}"
+TG_BOT_TOKEN="${plain_token_to_write}"
 TG_CHAT_ID="${TG_CHAT_ID}"
 WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST}"
 WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS}"
@@ -1414,6 +1423,7 @@ main(){
     self_elevate_or_die "$@"
     init_runtime
     watchtower_validate_args "$@"
+    log_info "配置文件路径: ${CONFIG_FILE}"
     [ -f "$CONFIG_FILE" ] && load_config
     
     case "${1:-}" in

@@ -47,11 +47,7 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh
 
 ### 清屏策略
 
-- `clear_mode=off`：不自动清屏
-- `clear_mode=smart`（默认）：每个菜单首次进入时清屏一次
-- `clear_mode=full`：每次菜单循环都清屏
-
-可通过环境变量临时覆盖：`JB_CLEAR_MODE=off|smart|full`
+- 当前默认与运行时策略均为 `off`（关闭自动清屏）
 
 ---
 

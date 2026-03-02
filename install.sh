@@ -27,7 +27,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
-JB_CLEAR_MODE="${JB_CLEAR_MODE:-smart}"
+JB_CLEAR_MODE="off"
 EXIT_MESSAGE=""
 
 # --- [核心架构]: 智能自引导启动器 ---
@@ -85,8 +85,8 @@ build_exec_env() {
     if [ -n "${TERM:-}" ]; then envs+=("TERM=${TERM}"); fi
     if [ -n "${FORCE_REFRESH:-}" ]; then envs+=("FORCE_REFRESH=${FORCE_REFRESH}"); fi
     if [ -n "${JB_RESTARTED:-}" ]; then envs+=("JB_RESTARTED=${JB_RESTARTED}"); fi
-    if [ -n "${JB_ENABLE_AUTO_CLEAR:-}" ]; then envs+=("JB_ENABLE_AUTO_CLEAR=${JB_ENABLE_AUTO_CLEAR}"); fi
-    if [ -n "${JB_CLEAR_MODE:-}" ]; then envs+=("JB_CLEAR_MODE=${JB_CLEAR_MODE}"); fi
+    envs+=("JB_ENABLE_AUTO_CLEAR=false")
+    envs+=("JB_CLEAR_MODE=off")
     if [ -n "${JB_DEBUG:-}" ]; then envs+=("JB_DEBUG=${JB_DEBUG}"); fi
     if [ -n "${JB_DEBUG_MODE:-}" ]; then envs+=("JB_DEBUG_MODE=${JB_DEBUG_MODE}"); fi
     if [ -n "${JB_SUDO_LOG_QUIET:-}" ]; then envs+=("JB_SUDO_LOG_QUIET=${JB_SUDO_LOG_QUIET}"); fi
@@ -783,11 +783,8 @@ display_and_process_menu() {
 main() {
     self_elevate_or_die "$@"
     load_config "$CONFIG_PATH"
-    export JB_CLEAR_MODE="${JB_CLEAR_MODE:-smart}"
-    case "${JB_CLEAR_MODE}" in
-        full) export JB_ENABLE_AUTO_CLEAR=true ;;
-        off|smart|*) export JB_ENABLE_AUTO_CLEAR=false ;;
-    esac
+    export JB_CLEAR_MODE="off"
+    export JB_ENABLE_AUTO_CLEAR=false
     LOG_FILE="${LOG_FILE:-$GLOBAL_LOG_FILE}"
     LOG_LEVEL="${LOG_LEVEL:-INFO}"
     JB_DEBUG_MODE="${JB_DEBUG_MODE:-${JB_DEBUG:-false}}"

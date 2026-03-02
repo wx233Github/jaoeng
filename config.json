@@ -13,7 +13,7 @@
   "lock_file": "/tmp/vps_install_modules.lock",
   "comment_enable_auto_clear": "是否在每次菜单显示前自动清屏 (true/false)",
   "enable_auto_clear": false,
-  "comment_clear_mode": "清屏模式: off/smart/full（smart=每个菜单首次进入清一次）",
+  "comment_clear_mode": "清屏模式: 当前强制 off（已关闭自动清屏）",
   "clear_mode": "off",
   "comment_enable_auto_update": "是否在启动时自动检查更新 (true/false)",
   "enable_auto_update": true,
