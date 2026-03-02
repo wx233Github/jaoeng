@@ -30,6 +30,8 @@ readonly TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly UTILS_PRIMARY_PATH="/opt/vps_install_modules/utils.sh"
 readonly UTILS_FALLBACK_PATH="${SCRIPT_DIR}/../utils.sh"
+readonly CLEAR_MENU_KEY_MAIN="bbr_ace:main_menu"
+readonly CLEAR_MENU_KEY_KERNEL="bbr_ace:kernel_menu"
 
 IS_CONTAINER=0
 IS_SYSTEMD=0
@@ -179,6 +181,22 @@ ui_render_menu() {
         printf "%b\n" "${line}"
     done
     printf "%b\n" "${COLOR_GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${COLOR_RESET}"
+}
+
+ui_should_clear_menu() {
+    local menu_key="${1:-bbr_ace:default}"
+
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+        return 1
+    fi
+
+    if [[ "${USE_UTILS_UI}" -eq 1 ]] && [[ -n "${UTILS_RUNTIME_PATH}" ]] && [[ -r "${UTILS_RUNTIME_PATH}" ]]; then
+        if FORCE_COLOR=true bash -c 'set +u; source "$1" >/dev/null 2>&1 || exit 1; shift; should_clear_screen "$1"' _ "${UTILS_RUNTIME_PATH}" "${menu_key}" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    return 1
 }
 
 ui_prompt_choice() {
@@ -825,6 +843,10 @@ remove_old_kernels() {
 }
 
 kernel_manager() {
+    if ui_should_clear_menu "${CLEAR_MENU_KEY_KERNEL}"; then
+        clear
+    fi
+
     local -a km_lines=()
     km_lines+=(" ${COLOR_CYAN}内核维护子菜单${COLOR_RESET}")
     km_lines+=("   1) 更新原版内核 (系统仓库)")
@@ -871,6 +893,10 @@ uninstall_and_restore_defaults() {
 }
 
 show_menu() {
+    if ui_should_clear_menu "${CLEAR_MENU_KEY_MAIN}"; then
+        clear
+    fi
+
     local mem_mb=0
     local cur_kver=""
     local cur_cc=""
