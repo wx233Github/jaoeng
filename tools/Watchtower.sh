@@ -260,6 +260,12 @@ _mask_string() {
     fi
 }
 
+_sanitize_input_text() {
+    local raw="${1:-}"
+    raw=$(printf '%s' "$raw" | tr -d '\000-\010\013\014\016-\037\177')
+    printf '%s' "$raw"
+}
+
 # --- 模块变量 ---
 TG_BOT_TOKEN=""
 ENCRYPTED_TG_BOT_TOKEN=""
@@ -656,6 +662,8 @@ run_watchtower_once(){ if ! confirm_action "确定要运行一次 Watchtower 来
 
 # --- 菜单函数 ---
 _configure_telegram() {
+    local old_token="${TG_BOT_TOKEN}"
+    local old_chat_id="${TG_CHAT_ID}"
     local masked_token="[未设置]"
     local masked_chat_id="[未设置]"
     
@@ -669,12 +677,29 @@ _configure_telegram() {
     echo -e "当前 Token: ${GREEN}${masked_token}${NC}"
     local val
     read -r -p "请输入 Telegram Bot Token (回车保持, 空格清空): " val
-    if [[ "$val" =~ ^\ +$ ]]; then TG_BOT_TOKEN=""; log_info "Token 已清空。"; elif [ -n "$val" ]; then TG_BOT_TOKEN="$val"; fi
+    val="$(_sanitize_input_text "$val")"
+    if [[ "$val" =~ ^[[:space:]]+$ ]]; then
+        TG_BOT_TOKEN=""
+        log_info "Token 已清空。"
+    elif [ -n "$val" ]; then
+        TG_BOT_TOKEN="$val"
+    fi
     
     echo -e "当前 Chat ID: ${GREEN}${masked_chat_id}${NC}"
     read -r -p "请输入 Chat ID (回车保持, 空格清空): " val
-    if [[ "$val" =~ ^\ +$ ]]; then TG_CHAT_ID=""; log_info "Chat ID 已清空。"; elif [ -n "$val" ]; then TG_CHAT_ID="$val"; fi
-    
+    val="$(_sanitize_input_text "$val")"
+    if [[ "$val" =~ ^[[:space:]]+$ ]]; then
+        TG_CHAT_ID=""
+        log_info "Chat ID 已清空。"
+    elif [ -n "$val" ]; then
+        TG_CHAT_ID="$val"
+    fi
+
+    if [ "$old_token" = "$TG_BOT_TOKEN" ] && [ "$old_chat_id" = "$TG_CHAT_ID" ]; then
+        log_info "配置未变更，跳过保存与重建提示。"
+        return 0
+    fi
+
     save_config
     log_info "通知配置已保存。"
     _prompt_rebuild_if_needed
