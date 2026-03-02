@@ -59,7 +59,6 @@ self_elevate_or_die() {
 }
 
 self_elevate_or_die "$@"
-require_sudo_or_die
 
 log_info "=============================="
 log_info "⚠️  开始卸载 SSL 脚本相关内容"

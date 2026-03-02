@@ -2954,7 +2954,6 @@ main() {
     _resolve_log_file
     _parse_args "$@"
     sanitize_noninteractive_flag
-    require_sudo_or_die
     if ! validate_args "$@"; then return 1; fi
     if ! acquire_http_lock; then return 1; fi
     if ! check_root; then return 1; fi

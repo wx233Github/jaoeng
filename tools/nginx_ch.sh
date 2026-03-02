@@ -51,7 +51,6 @@ self_elevate_or_die() {
 }
 
 self_elevate_or_die "$@"
-require_sudo_or_die
 
 log_info "🔍 检测 Nginx 状态..."
 if ! command -v nginx >/dev/null 2>&1; then

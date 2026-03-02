@@ -52,7 +52,6 @@ self_elevate_or_die() {
 }
 
 self_elevate_or_die "$@"
-require_sudo_or_die
 
 # GitHub 仓库基础 URL
 BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"

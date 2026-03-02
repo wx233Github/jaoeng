@@ -185,7 +185,6 @@ ACME_BIN="$HOME/.acme.sh/acme.sh"
 
 init_runtime() {
     sanitize_noninteractive_flag
-    require_sudo_or_die
 }
 
 # =============================================================

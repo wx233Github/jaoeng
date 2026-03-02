@@ -204,7 +204,6 @@ pre_check_dependencies() {
 
 init_runtime() {
     sanitize_noninteractive_flag
-    require_sudo_or_die
 }
 
 get_docker_status() {
