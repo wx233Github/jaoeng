@@ -75,7 +75,10 @@ fi
 
 log_info ""
 log_info "🔍 检测 Cloudflare IP 段是否放行..."
-CF_IPS=$(curl -fsSL https://www.cloudflare.com/ips-v4; curl -fsSL https://www.cloudflare.com/ips-v6 || true)
+CF_IPS="$((curl -fsSL https://www.cloudflare.com/ips-v4 || true; curl -fsSL https://www.cloudflare.com/ips-v6 || true) | sed '/^[[:space:]]*$/d' || true)"
+if [ -z "$CF_IPS" ]; then
+    log_warn "⚠️ 未能获取 Cloudflare IP 列表，跳过该项检测"
+fi
 for ip in $CF_IPS; do
     if ! iptables -L -n | grep -q "$ip"; then
         log_warn "⚠️ 未检测到放行 CF IP: $ip"
@@ -86,7 +89,7 @@ log_info ""
 log_info "🔍 检测 SSL 证书 (443)"
 if ss -tulnp | grep -q ':443'; then
     if command -v openssl >/dev/null 2>&1; then
-        DOMAIN=$(grep server_name /etc/nginx/sites-enabled/* 2>/dev/null | head -n1 | awk '{print $2}' | sed 's/;//')
+        DOMAIN="$(grep server_name /etc/nginx/sites-enabled/* 2>/dev/null | head -n1 | awk '{print $2}' | sed 's/;//' || true)"
         if [ -n "$DOMAIN" ]; then
             log_info "🌐 检测域名证书: $DOMAIN"
             echo | openssl s_client -servername "$DOMAIN" -connect 127.0.0.1:443 2>/dev/null | openssl x509 -noout -dates

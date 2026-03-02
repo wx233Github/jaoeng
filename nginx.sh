@@ -61,6 +61,7 @@ NGINX_TEST_CACHE_RESULT=1
 NGINX_TEST_CACHE_TS=0
 ACME_SH_INSTALL_URL="${ACME_SH_INSTALL_URL:-https://get.acme.sh}"
 ACME_SH_INSTALL_SHA256="${ACME_SH_INSTALL_SHA256:-}"
+declare -a TMP_PAYLOAD_FILES=()
 
 ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
@@ -156,7 +157,9 @@ self_elevate_or_die() {
 
 cleanup() {
     find /tmp -maxdepth 1 -name "acme_cmd_log.*" -user "$(id -un)" -delete 2>/dev/null || true
-    rm -f /tmp/tg_payload_*.json 2>/dev/null || true
+    if [ "${#TMP_PAYLOAD_FILES[@]}" -gt 0 ]; then
+        rm -f "${TMP_PAYLOAD_FILES[@]}" 2>/dev/null || true
+    fi
     _release_lock "$LOCK_FILE_HTTP" "${LOCK_OWNER_PID_HTTP:-}"
     _release_lock "$LOCK_FILE_TCP" "${LOCK_OWNER_PID_TCP:-}"
     _release_lock "$LOCK_FILE_CERT" "${LOCK_OWNER_PID_CERT:-}"
@@ -856,6 +859,7 @@ EOF
     local kb_json='{"inline_keyboard":[[{"text":"📊 访问实例","url":"'"$button_url"'"}]]}'
     local payload_file
     payload_file=$(mktemp /tmp/tg_payload_XXXXXX.json)
+    TMP_PAYLOAD_FILES+=("$payload_file")
     chmod 600 "$payload_file"
     if ! jq -n --arg cid "$TG_CHAT_ID" --arg txt "$text_body" --argjson kb "$kb_json" '{chat_id: $cid, text: $txt, parse_mode: "HTML", disable_web_page_preview: true, reply_markup: $kb}' > "$payload_file"; then log_message ERROR "构造 TG JSON 失败。"; rm -f "$payload_file"; return 1; fi
     local curl_cmd=(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" -H "Content-Type: application/json" -d @"$payload_file" --connect-timeout 10 --max-time 15)

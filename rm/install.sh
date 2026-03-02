@@ -58,9 +58,13 @@ BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
 
 # 格式: "显示名:真实路径"
 SCRIPTS=(
-    "安装脚本:scripts/install.sh"
-    "更新脚本:scripts/update.sh"
-    "清理脚本:scripts/clean.sh"
+    "主程序入口:install.sh"
+    "Docker 管理:docker.sh"
+    "Nginx 管理:nginx.sh"
+    "证书管理:cert.sh"
+    "BBR ACE 网络调优:tools/bbr_ace.sh"
+    "Watchtower 管理:tools/Watchtower.sh"
+    "Nginx + Cloudflare 排查:tools/nginx_ch.sh"
     "删除证书:rm/rm_cert.sh"
 )
 

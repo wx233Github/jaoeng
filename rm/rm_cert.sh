@@ -129,7 +129,21 @@ fi
 
 # 4️⃣ 清理 crontab 自动续期任务
 log_info "🔹 清理 acme.sh 自动续期 crontab..."
-crontab -l | grep -v 'acme.sh' | crontab -
+if command -v crontab >/dev/null 2>&1; then
+    current_cron="$(crontab -l 2>/dev/null || true)"
+    if [ -n "${current_cron}" ]; then
+        filtered_cron="$(printf '%s\n' "${current_cron}" | grep -v 'acme.sh' || true)"
+        if [ -n "${filtered_cron}" ]; then
+            printf '%s\n' "${filtered_cron}" | crontab -
+        else
+            crontab -r 2>/dev/null || true
+        fi
+    else
+        log_info "ℹ️ 当前用户无 crontab，跳过"
+    fi
+else
+    log_warn "⚠️ 未检测到 crontab 命令，跳过自动续期任务清理"
+fi
 
 # 5️⃣ 卸载 socat（可选）
 if command -v socat &>/dev/null; then

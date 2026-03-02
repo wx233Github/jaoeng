@@ -1,6 +1,6 @@
 # Jaoeng VPS 一键安装与运维脚本
 
-一个面向 Debian/Ubuntu 的 VPS 自动化脚本集合，提供 Docker、Nginx、证书、Watchtower、TCP 优化等常用运维能力。
+一个以 Debian/Ubuntu 为主、部分模块兼容更多发行版的 VPS 自动化脚本集合，提供 Docker、Nginx、证书、Watchtower、TCP 优化等常用运维能力。
 
 ---
 

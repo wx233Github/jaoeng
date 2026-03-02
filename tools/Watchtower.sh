@@ -232,6 +232,36 @@ _get_encryption_password() {
 }
 
 # --- 配置加载与保存 ---
+_parse_config_value() {
+    local raw="${1:-}"
+    if [[ "$raw" =~ ^\"(.*)\"$ ]]; then
+        raw="${BASH_REMATCH[1]}"
+        raw="${raw//\\\"/\"}"
+        raw="${raw//\\\\/\\}"
+    fi
+    printf '%s' "$raw"
+}
+
+_apply_config_kv() {
+    local key="${1:-}"
+    local value="${2:-}"
+
+    case "$key" in
+        CONFIG_ENCRYPTED|ENCRYPTED_TG_BOT_TOKEN|TG_BOT_TOKEN|TG_CHAT_ID)
+            printf -v "$key" '%s' "$value"
+            return 0
+            ;;
+        WATCHTOWER_*)
+            if [[ "$key" =~ ^WATCHTOWER_[A-Za-z0-9_]+$ ]]; then
+                printf -v "$key" '%s' "$value"
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
 load_config(){
     if [ ! -f "$CONFIG_FILE" ]; then
         WATCHTOWER_EXCLUDE_LIST="portainer,portainer_agent"
@@ -243,11 +273,16 @@ load_config(){
         return
     fi
 
-    local valid_var_regex="^(CONFIG_ENCRYPTED|ENCRYPTED_TG_BOT_TOKEN|TG_BOT_TOKEN|TG_CHAT_ID|WATCHTOWER_[A-Za-z0-9_]+)="
+    local key=""
+    local raw_value=""
+    local parsed_value=""
     while IFS= read -r line || [ -n "$line" ]; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        if [[ "$line" =~ $valid_var_regex ]]; then
-            eval "$line" 2>/dev/null || true
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            raw_value="${BASH_REMATCH[2]}"
+            parsed_value="$(_parse_config_value "$raw_value")"
+            _apply_config_kv "$key" "$parsed_value" || true
         fi
     done < "$CONFIG_FILE"
 
