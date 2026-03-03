@@ -304,7 +304,7 @@ CURRENT_MENU_NAME="MAIN_MENU"
 check_sudo_privileges() {
     if [ "$(id -u)" -eq 0 ]; then 
         JB_HAS_PASSWORDLESS_SUDO=true; 
-        log_info "以 root 用户运行（拥有完整权限）。"
+        :
         return 0; 
     fi
     
@@ -733,6 +733,10 @@ display_and_process_menu() {
                 formatted_items_for_render+=("$(printf "%s. %s" "${func_letters[i]}" "$name")")
             fi
         done
+
+        if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$PENDING_SELF_UPDATE" = "true" ]; then
+            formatted_items_for_render+=("${YELLOW}⚠ 主程序有可用更新：本次已延迟应用，下次启动生效${NC}")
+        fi
         
         _render_menu "$menu_title" "${formatted_items_for_render[@]:-}"
         
@@ -881,9 +885,6 @@ main() {
     fi
     
     check_sudo_privileges
-    if [ "$PENDING_SELF_UPDATE" = "true" ]; then
-        log_warn "检测到主程序有可用更新，已延迟到下次启动应用（本次不自动重启）。"
-    fi
     display_and_process_menu "${@:-}"
 }
 
