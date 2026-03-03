@@ -518,6 +518,8 @@ run_module(){
         log_success "模块 [${module_name}] 执行完毕。"
     elif [ "$exit_code" -eq 10 ]; then 
         :
+    elif [ "$exit_code" -eq 130 ]; then
+        :
     else 
         log_warn "模块 [${module_name}] 执行出错 (代码: ${exit_code})。"
     fi
@@ -771,12 +773,12 @@ display_and_process_menu() {
             func) "$action" "${@:-}"; exit_code=$? ;; 
         esac
 
-        if [ "$type" = "item" ] && [ "$exit_code" -eq 10 ]; then
+        if [ "$type" = "item" ] && { [ "$exit_code" -eq 10 ] || [ "$exit_code" -eq 130 ]; }; then
             EXIT_MESSAGE="已退出。"
             exit 0
         fi
         
-        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ]; then press_enter_to_continue; fi
+        if [ "$type" != "submenu" ] && [ "$exit_code" -ne 10 ] && [ "$exit_code" -ne 130 ]; then press_enter_to_continue; fi
     done
 }
 
