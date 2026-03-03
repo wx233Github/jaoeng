@@ -19,6 +19,9 @@ AUTO_UPDATE_STATE=""
 AUTO_UPDATE_UPDATED_CORE="false"
 AUTO_UPDATE_UPDATED_COUNT="0"
 AUTO_UPDATE_NOTE=""
+AUTO_UPDATE_PID=""
+AUTO_UPDATE_STARTED_AT=""
+AUTO_UPDATE_SPINNER_INDEX=0
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -680,6 +683,8 @@ write_auto_update_status() {
     local updated_count="${2:-0}"
     local updated_core="${3:-false}"
     local note="${4:-}"
+    local pid="${5:-}"
+    local started_at="${6:-}"
     local tmp_file=""
 
     note="${note//$'\n'/ }"
@@ -689,6 +694,8 @@ write_auto_update_status() {
         printf 'updated_count=%s\n' "$updated_count"
         printf 'updated_core=%s\n' "$updated_core"
         printf 'note=%s\n' "$note"
+        printf 'pid=%s\n' "$pid"
+        printf 'started_at=%s\n' "$started_at"
     } > "$tmp_file"
     mv -f "$tmp_file" "$AUTO_UPDATE_STATUS_FILE"
 }
@@ -698,6 +705,8 @@ refresh_auto_update_state() {
     AUTO_UPDATE_UPDATED_CORE="false"
     AUTO_UPDATE_UPDATED_COUNT="0"
     AUTO_UPDATE_NOTE=""
+    AUTO_UPDATE_PID=""
+    AUTO_UPDATE_STARTED_AT=""
 
     if [ ! -f "$AUTO_UPDATE_STATUS_FILE" ]; then
         return 0
@@ -709,8 +718,43 @@ refresh_auto_update_state() {
             updated_count) AUTO_UPDATE_UPDATED_COUNT="$value" ;;
             updated_core) AUTO_UPDATE_UPDATED_CORE="$value" ;;
             note) AUTO_UPDATE_NOTE="$value" ;;
+            pid) AUTO_UPDATE_PID="$value" ;;
+            started_at) AUTO_UPDATE_STARTED_AT="$value" ;;
         esac
     done < "$AUTO_UPDATE_STATUS_FILE"
+
+    if [ "$AUTO_UPDATE_STATE" = "running" ]; then
+        local now elapsed
+        now=$(date +%s)
+        elapsed=0
+        if [[ "$AUTO_UPDATE_STARTED_AT" =~ ^[0-9]+$ ]] && [ "$now" -ge "$AUTO_UPDATE_STARTED_AT" ]; then
+            elapsed=$((now - AUTO_UPDATE_STARTED_AT))
+        fi
+
+        if [[ "$AUTO_UPDATE_PID" =~ ^[0-9]+$ ]]; then
+            if ! kill -0 "$AUTO_UPDATE_PID" 2>/dev/null; then
+                write_auto_update_status "error_stale" "0" "false" "worker_gone"
+                AUTO_UPDATE_STATE="error_stale"
+                AUTO_UPDATE_NOTE="worker_gone"
+            elif [ "$elapsed" -gt 300 ]; then
+                write_auto_update_status "error_stale" "0" "false" "timeout"
+                AUTO_UPDATE_STATE="error_stale"
+                AUTO_UPDATE_NOTE="timeout"
+                rm -f "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true
+            fi
+        elif [ "$elapsed" -gt 30 ]; then
+            write_auto_update_status "error_stale" "0" "false" "missing_pid"
+            AUTO_UPDATE_STATE="error_stale"
+            AUTO_UPDATE_NOTE="missing_pid"
+        fi
+    fi
+}
+
+auto_update_spinner_char() {
+    local -a chars=('|' '/' '-' '\\')
+    local idx=$((AUTO_UPDATE_SPINNER_INDEX % ${#chars[@]}))
+    AUTO_UPDATE_SPINNER_INDEX=$((AUTO_UPDATE_SPINNER_INDEX + 1))
+    printf '%s' "${chars[$idx]}"
 }
 
 _can_run_background_update() {
@@ -743,10 +787,13 @@ start_auto_update_background() {
         fi
     fi
 
-    write_auto_update_status "running" "0" "false" ""
+    local started_at
+    started_at=$(date +%s)
+    write_auto_update_status "running" "0" "false" "" "" "$started_at"
 
     (
         set +e
+        trap 'write_auto_update_status "error" "0" "false" "worker_interrupted" "" ""; rm -f "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true' INT TERM
         local -a updated_files_list=()
         local count=0
         local updated_core=false
@@ -773,7 +820,9 @@ start_auto_update_background() {
         rm -f "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true
     ) >/dev/null 2>&1 &
 
-    printf '%s\n' "$!" > "$AUTO_UPDATE_PID_FILE"
+    local bg_pid="$!"
+    printf '%s\n' "$bg_pid" > "$AUTO_UPDATE_PID_FILE"
+    write_auto_update_status "running" "0" "false" "" "$bg_pid" "$started_at"
 }
 
 display_and_process_menu() {
@@ -845,7 +894,9 @@ display_and_process_menu() {
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
             case "$AUTO_UPDATE_STATE" in
                 running)
-                    formatted_items_for_render+=("${CYAN}⏳ 后台静默更新检查中...${NC}")
+                    local spin
+                    spin="$(auto_update_spinner_char)"
+                    formatted_items_for_render+=("${CYAN}⏳ 后台静默更新检查中... ${spin}${NC}")
                     ;;
                 updated)
                     if [ "$AUTO_UPDATE_UPDATED_COUNT" -gt 0 ] 2>/dev/null; then
@@ -854,6 +905,9 @@ display_and_process_menu() {
                     ;;
                 updated_core)
                     PENDING_SELF_UPDATE="true"
+                    ;;
+                error_stale|error)
+                    formatted_items_for_render+=("${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}")
                     ;;
                 disabled)
                     ;;
