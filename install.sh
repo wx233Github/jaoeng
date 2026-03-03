@@ -13,6 +13,12 @@
 # --- 脚本元数据 ---
 SCRIPT_VERSION="v2.2.1"
 PENDING_SELF_UPDATE="false"
+AUTO_UPDATE_STATUS_FILE="/tmp/jb_auto_update.status"
+AUTO_UPDATE_PID_FILE="/tmp/jb_auto_update.pid"
+AUTO_UPDATE_STATE=""
+AUTO_UPDATE_UPDATED_CORE="false"
+AUTO_UPDATE_UPDATED_COUNT="0"
+AUTO_UPDATE_NOTE=""
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -669,8 +675,110 @@ on_error() {
     return "$exit_code"
 }
 
+write_auto_update_status() {
+    local state="${1:-idle}"
+    local updated_count="${2:-0}"
+    local updated_core="${3:-false}"
+    local note="${4:-}"
+    local tmp_file=""
+
+    note="${note//$'\n'/ }"
+    tmp_file="$(mktemp /tmp/jb_auto_update.status.XXXXXX)" || return 1
+    {
+        printf 'state=%s\n' "$state"
+        printf 'updated_count=%s\n' "$updated_count"
+        printf 'updated_core=%s\n' "$updated_core"
+        printf 'note=%s\n' "$note"
+    } > "$tmp_file"
+    mv -f "$tmp_file" "$AUTO_UPDATE_STATUS_FILE"
+}
+
+refresh_auto_update_state() {
+    AUTO_UPDATE_STATE=""
+    AUTO_UPDATE_UPDATED_CORE="false"
+    AUTO_UPDATE_UPDATED_COUNT="0"
+    AUTO_UPDATE_NOTE=""
+
+    if [ ! -f "$AUTO_UPDATE_STATUS_FILE" ]; then
+        return 0
+    fi
+
+    while IFS='=' read -r key value; do
+        case "$key" in
+            state) AUTO_UPDATE_STATE="$value" ;;
+            updated_count) AUTO_UPDATE_UPDATED_COUNT="$value" ;;
+            updated_core) AUTO_UPDATE_UPDATED_CORE="$value" ;;
+            note) AUTO_UPDATE_NOTE="$value" ;;
+        esac
+    done < "$AUTO_UPDATE_STATUS_FILE"
+}
+
+_can_run_background_update() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        return 1
+    fi
+    sudo -n true >/dev/null 2>&1
+}
+
+start_auto_update_background() {
+    if [ "${JB_RESTARTED:-false}" = "true" ] || [ "${JB_ENABLE_AUTO_UPDATE}" != "true" ]; then
+        write_auto_update_status "disabled" "0" "false" ""
+        return 0
+    fi
+
+    if ! _can_run_background_update; then
+        write_auto_update_status "disabled" "0" "false" "no_privilege"
+        return 0
+    fi
+
+    if [ -f "$AUTO_UPDATE_PID_FILE" ]; then
+        local old_pid=""
+        old_pid="$(cat "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true)"
+        if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+            write_auto_update_status "running" "0" "false" ""
+            return 0
+        fi
+    fi
+
+    write_auto_update_status "running" "0" "false" ""
+
+    (
+        set +e
+        local -a updated_files_list=()
+        local count=0
+        local updated_core=false
+        local file=""
+        mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
+        count="${#updated_files_list[@]}"
+        if [ "$count" -gt 0 ]; then
+            for file in "${updated_files_list[@]}"; do
+                if [ "$(basename "$file")" = "install.sh" ]; then
+                    updated_core=true
+                    break
+                fi
+            done
+        fi
+
+        if [ "$count" -eq 0 ]; then
+            write_auto_update_status "latest" "0" "false" ""
+        elif [ "$updated_core" = "true" ]; then
+            write_auto_update_status "updated_core" "$count" "true" ""
+        else
+            write_auto_update_status "updated" "$count" "false" ""
+        fi
+
+        rm -f "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+
+    printf '%s\n' "$!" > "$AUTO_UPDATE_PID_FILE"
+}
+
 display_and_process_menu() {
     while true; do
+        refresh_auto_update_state
         if should_clear_screen "install:${CURRENT_MENU_NAME}"; then clear; fi
         local menu_json; menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || true)
         if [ -z "$menu_json" ] || [ "$menu_json" = "null" ]; then 
@@ -733,6 +841,24 @@ display_and_process_menu() {
                 formatted_items_for_render+=("$(printf "%s. %s" "${func_letters[i]}" "$name")")
             fi
         done
+
+        if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
+            case "$AUTO_UPDATE_STATE" in
+                running)
+                    formatted_items_for_render+=("${CYAN}⏳ 后台静默更新检查中...${NC}")
+                    ;;
+                updated)
+                    if [ "$AUTO_UPDATE_UPDATED_COUNT" -gt 0 ] 2>/dev/null; then
+                        formatted_items_for_render+=("${GREEN}✅ 后台更新完成：${AUTO_UPDATE_UPDATED_COUNT} 个文件已更新${NC}")
+                    fi
+                    ;;
+                updated_core)
+                    PENDING_SELF_UPDATE="true"
+                    ;;
+                disabled)
+                    ;;
+            esac
+        fi
 
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$PENDING_SELF_UPDATE" = "true" ]; then
             formatted_items_for_render+=("${YELLOW}⚠ 主程序有可用更新：本次已延迟应用，下次启动生效${NC}")
@@ -838,51 +964,7 @@ main() {
     
     :
 
-    if [ "${JB_RESTARTED:-false}" != "true" ] && [ "${JB_ENABLE_AUTO_UPDATE}" = "true" ]; then
-        local -a updated_files_list
-        mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
-
-        local updated_core_files=false
-        local updated_config=false
-        local -a update_messages
-        update_messages=()
-
-        if [ "${#updated_files_list[@]}" -gt 0 ]; then
-            for file in "${updated_files_list[@]}"; do
-                local filename
-                filename=$(basename "$file")
-                if [ "$filename" = "install.sh" ]; then
-                    updated_core_files=true
-                    update_messages+=("主程序 (${GREEN}install.sh${NC}) 已更新")
-                else
-                    update_messages+=("${GREEN}${filename}${NC} 已更新")
-                fi
-                if [ "$filename" = "config.json" ]; then
-                    updated_config=true
-                fi
-            done
-            if [ "$updated_config" = true ]; then
-                update_messages+=("  > 配置文件 ${GREEN}config.json${NC} 已更新，部分默认设置可能已改变。")
-            fi
-
-            if [ "${#update_messages[@]}" -gt 0 ]; then
-                log_info "发现以下更新:"
-                for line in "${update_messages[@]}"; do
-                    log_success "$line"
-                done
-            fi
-
-            if [ "$updated_core_files" = true ]; then
-                PENDING_SELF_UPDATE="true"
-            fi
-        fi
-    else
-        if [ "${JB_RESTARTED:-false}" = "true" ]; then
-            log_info "脚本已由自身重启，跳过初始更新检查。"
-        else
-            log_info "自动更新已禁用，跳过初始更新检查。"
-        fi
-    fi
+    start_auto_update_background "${@:-}"
     
     check_sudo_privileges
     display_and_process_menu "${@:-}"
