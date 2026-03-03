@@ -21,7 +21,8 @@ AUTO_UPDATE_UPDATED_COUNT="0"
 AUTO_UPDATE_NOTE=""
 AUTO_UPDATE_PID=""
 AUTO_UPDATE_STARTED_AT=""
-AUTO_UPDATE_SPINNER_INDEX=0
+AUTO_UPDATE_LAST_HINT=""
+AUTO_UPDATE_LAST_HINT_TS=0
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -717,6 +718,8 @@ write_auto_update_status() {
 }
 
 refresh_auto_update_state() {
+    local prev_state="${AUTO_UPDATE_STATE}"
+    local prev_count="${AUTO_UPDATE_UPDATED_COUNT}"
     AUTO_UPDATE_STATE=""
     AUTO_UPDATE_UPDATED_CORE="false"
     AUTO_UPDATE_UPDATED_COUNT="0"
@@ -764,13 +767,49 @@ refresh_auto_update_state() {
             AUTO_UPDATE_NOTE="missing_pid"
         fi
     fi
+
+    if [ "$AUTO_UPDATE_STATE" != "$prev_state" ] || [ "$AUTO_UPDATE_UPDATED_COUNT" != "$prev_count" ]; then
+        auto_update_capture_transient_hint "$AUTO_UPDATE_STATE" "$AUTO_UPDATE_UPDATED_COUNT"
+    fi
 }
 
-auto_update_spinner_char() {
-    local -a chars=('|' '/' '-' '\\')
-    local idx=$((AUTO_UPDATE_SPINNER_INDEX % ${#chars[@]}))
-    AUTO_UPDATE_SPINNER_INDEX=$((AUTO_UPDATE_SPINNER_INDEX + 1))
-    printf '%s' "${chars[$idx]}"
+auto_update_capture_transient_hint() {
+    local state="${1:-}"
+    local count="${2:-0}"
+    local now
+    now=$(date +%s)
+
+    case "$state" in
+        updated)
+            if [ "$count" -gt 0 ] 2>/dev/null; then
+                AUTO_UPDATE_LAST_HINT="${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}"
+                AUTO_UPDATE_LAST_HINT_TS="$now"
+            fi
+            ;;
+        latest)
+            AUTO_UPDATE_LAST_HINT="${GREEN}✅ 已是最新版本（后台检查）${NC}"
+            AUTO_UPDATE_LAST_HINT_TS="$now"
+            ;;
+        error_stale|error)
+            AUTO_UPDATE_LAST_HINT="${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}"
+            AUTO_UPDATE_LAST_HINT_TS="$now"
+            ;;
+    esac
+}
+
+auto_update_pop_transient_hint() {
+    local now
+    now=$(date +%s)
+    if [ -z "$AUTO_UPDATE_LAST_HINT" ]; then
+        return 1
+    fi
+    if [ "$AUTO_UPDATE_LAST_HINT_TS" -gt 0 ] 2>/dev/null && [ $((now - AUTO_UPDATE_LAST_HINT_TS)) -le 6 ]; then
+        printf '%s' "$AUTO_UPDATE_LAST_HINT"
+        return 0
+    fi
+    AUTO_UPDATE_LAST_HINT=""
+    AUTO_UPDATE_LAST_HINT_TS=0
+    return 1
 }
 
 _can_run_background_update() {
@@ -909,25 +948,20 @@ display_and_process_menu() {
 
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
             case "$AUTO_UPDATE_STATE" in
-                running)
-                    local spin
-                    spin="$(auto_update_spinner_char)"
-                    formatted_items_for_render+=("${CYAN}⏳ 后台静默更新检查中... ${spin}${NC}")
-                    ;;
                 updated)
-                    if [ "$AUTO_UPDATE_UPDATED_COUNT" -gt 0 ] 2>/dev/null; then
-                        formatted_items_for_render+=("${GREEN}✅ 后台更新完成：${AUTO_UPDATE_UPDATED_COUNT} 个文件已更新${NC}")
-                    fi
                     ;;
                 updated_core)
                     PENDING_SELF_UPDATE="true"
                     ;;
-                error_stale|error)
-                    formatted_items_for_render+=("${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}")
-                    ;;
                 disabled)
                     ;;
             esac
+
+            local transient_hint=""
+            transient_hint="$(auto_update_pop_transient_hint || true)"
+            if [ -n "$transient_hint" ] && [ "$AUTO_UPDATE_STATE" != "updated_core" ]; then
+                formatted_items_for_render+=("$transient_hint")
+            fi
         fi
 
         if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$PENDING_SELF_UPDATE" = "true" ]; then
