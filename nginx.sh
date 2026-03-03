@@ -2563,6 +2563,17 @@ _handle_set_custom_config() {
     if [ -z "$new_val" ]; then return; fi
     local json_val="$new_val"
     local new_json
+
+    if [ "$update_max_body" = "false" ] && [ "$new_val" != "clear" ]; then
+        local manual_max_body
+        manual_max_body=$(_normalize_max_body_size "$new_val" 2>/dev/null || true)
+        if [ -n "$manual_max_body" ]; then
+            new_val="$manual_max_body"
+            update_max_body="true"
+            log_message INFO "检测到 client_max_body_size 指令，已自动改为请求体大小专用字段保存。"
+        fi
+    fi
+
     if [ "$update_max_body" = "true" ]; then
         local custom_body_re='^[[:space:]]*client_max_body_size[[:space:]]+.*;[[:space:]]*$'
         local old_custom_cfg
@@ -2576,6 +2587,7 @@ _handle_set_custom_config() {
                 log_message INFO "已清理 custom_config 中重复的 client_max_body_size 指令。"
             fi
         fi
+        cur=$(jq '.custom_config = ""' <<< "$cur")
         new_json=$(jq --arg mb "$new_val" '.client_max_body_size = $mb' <<< "$cur")
     else
         [ "$new_val" == "clear" ] && json_val=""
