@@ -12,6 +12,7 @@
 
 # --- 脚本元数据 ---
 SCRIPT_VERSION="v2.2.1"
+PENDING_SELF_UPDATE="false"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -43,8 +44,8 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 _log_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 # 启动器专用精简日志 (移除终端时间戳)
-echo_info() { printf "${CYAN}[启动器]${NC} %s\n" "$1" >&2; }
-echo_success() { printf "${GREEN}[启动器]${NC} %s\n" "$1" >&2; }
+echo_info() { :; }
+echo_success() { :; }
 echo_error() { printf "${RED}[启动器错误]${NC} %s\n" "$1" >&2; exit 1; }
 
 validate_noninteractive_flag() {
@@ -834,10 +835,8 @@ main() {
     :
 
     if [ "${JB_RESTARTED:-false}" != "true" ] && [ "${JB_ENABLE_AUTO_UPDATE}" = "true" ]; then
-        printf "${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
         local -a updated_files_list
         mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
-        printf "\r${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
 
         local updated_core_files=false
         local updated_config=false
@@ -870,9 +869,7 @@ main() {
             fi
 
             if [ "$updated_core_files" = true ]; then
-                log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀"
-                flock -u 200 2>/dev/null || true; trap - EXIT
-                JB_RESTARTED="true" exec_script_with_sudo "$FINAL_SCRIPT_PATH" "${@:-}"
+                PENDING_SELF_UPDATE="true"
             fi
         fi
     else
@@ -883,7 +880,11 @@ main() {
         fi
     fi
     
-    check_sudo_privileges; display_and_process_menu "${@:-}"
+    check_sudo_privileges
+    if [ "$PENDING_SELF_UPDATE" = "true" ]; then
+        log_warn "检测到主程序有可用更新，已延迟到下次启动应用（本次不自动重启）。"
+    fi
+    display_and_process_menu "${@:-}"
 }
 
 main "${@:-}"
