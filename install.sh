@@ -57,6 +57,22 @@ echo_info() { :; }
 echo_success() { :; }
 echo_error() { printf "${RED}[启动器错误]${NC} %s\n" "$1" >&2; exit 1; }
 
+starter_ensure_safe_path() {
+    local target="$1"
+    if [ -z "${target:-}" ] || [ "$target" = "/" ]; then
+        return 1
+    fi
+    return 0
+}
+
+starter_require_safe_path_or_die() {
+    local target="$1"
+    local reason="${2:-路径校验}"
+    if ! starter_ensure_safe_path "$target"; then
+        echo_error "路径不安全 (${reason}): ${target}"
+    fi
+}
+
 validate_noninteractive_flag() {
     case "${JB_NONINTERACTIVE:-false}" in
         true|false) return 0 ;;
@@ -188,10 +204,10 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
         if [ "${JB_NONINTERACTIVE}" = "true" ]; then
             echo_error "非交互模式下禁止下载/覆盖核心文件"
         fi
-        require_safe_path_or_die "$INSTALL_DIR" "安装目录"
-        require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本"
-        require_safe_path_or_die "$UTILS_PATH" "工具库"
-        require_safe_path_or_die "$CONFIG_PATH" "配置文件"
+        starter_require_safe_path_or_die "$INSTALL_DIR" "安装目录"
+        starter_require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本"
+        starter_require_safe_path_or_die "$UTILS_PATH" "工具库"
+        starter_require_safe_path_or_die "$CONFIG_PATH" "配置文件"
         echo_info "正在执行首次安装或强制刷新..."
         starter_sudo mkdir -p "$INSTALL_DIR"
         BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -210,12 +226,12 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
             rm -f "$temp_file" "${temp_file}.unix" 2>/dev/null || true
         done
 
-        require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本权限"
-        require_safe_path_or_die "$UTILS_PATH" "工具库权限"
+        starter_require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本权限"
+        starter_require_safe_path_or_die "$UTILS_PATH" "工具库权限"
         starter_sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
         echo_info "正在创建/更新快捷指令 'jb'..."
         BIN_DIR="/usr/local/bin"
-        require_safe_path_or_die "$BIN_DIR/jb" "快捷指令"
+        starter_require_safe_path_or_die "$BIN_DIR/jb" "快捷指令"
         starter_sudo bash -c "ln -sf '$FINAL_SCRIPT_PATH' '$BIN_DIR/jb'"
         echo_success "安装/更新完成。"
     fi

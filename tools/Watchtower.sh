@@ -540,8 +540,9 @@ _generate_env_file() {
             local time_format='{{ .Time.Format "2006-01-02 15:04:05 (MST)" }}'
             
             cat <<EOF | tr -d '\n' >> "$target_file"
-WATCHTOWER_NOTIFICATION_TEMPLATE={{ if .Entries }}✅ *容器自动更新成功*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* ✅ 更新完成${br}📦 *数量:* \`{{ len .Entries }} 个\`${br}⌚ *时间:* \`${time_format}\`${br}${br}🧾 *更新详情:*${br}{{ range .Entries }}• \`{{ .Name }}\` 从 \`{{ .Image.Name.Short }}\` 更新至 \`{{ .Latest.Short }}\` [详情]({{ .Image.HubLink }})${br}{{ end }}{{ end }}
+WATCHTOWER_NOTIFICATION_TEMPLATE={{- if .Report -}}{{- with .Report -}}{{- if (or .Updated .Failed) -}}✅ *容器自动更新成功*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* ✅ 更新完成${br}📦 *数量:* \`{{ len .Updated }} 个\`${br}⌚ *时间:* \`${time_format}\`${br}${br}🧾 *更新详情:*${br}{{- range .Updated }}• \`{{ .Name }}\` 从 \`{{ .ImageName }}\` 更新至 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- if .Failed }}${br}❌ *失败详情:*${br}{{- range .Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}{{- end -}}{{- end -}}{{- else -}}{{- range . }}• {{ .Message }}${br}{{- end -}}{{- end -}}
 EOF
+            echo "WATCHTOWER_NOTIFICATION_REPORT=true"
         fi
 
         if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]] && [ -n "$WATCHTOWER_SCHEDULE_CRON" ]; then
