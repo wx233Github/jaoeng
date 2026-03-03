@@ -62,6 +62,7 @@ NGINX_TEST_CACHE_TS=0
 ACME_SH_INSTALL_URL="${ACME_SH_INSTALL_URL:-https://get.acme.sh}"
 ACME_SH_INSTALL_SHA256="${ACME_SH_INSTALL_SHA256:-}"
 declare -a TMP_PAYLOAD_FILES=()
+CF_AUTO_UPDATE_ENABLED_FILE="/etc/nginx/.cf_ip_auto_update.enabled"
 
 ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
@@ -973,7 +974,7 @@ validate_args() {
     local arg
     for arg in "$@"; do
         case "$arg" in
-            --cron|--non-interactive|--check)
+            --cron|--non-interactive|--check|--cf-ip-update)
                 ;;
             *)
                 log_message ERROR "未知参数: $arg"
@@ -1114,10 +1115,22 @@ control_nginx_reload_if_needed() {
 _update_cloudflare_ips() {
     _generate_op_id
     log_message INFO "正在拉取最新的 Cloudflare IP 列表..."
+    printf '%b' "${CYAN}开始更新 Cloudflare 防御 IP 库...${NC}\n"
     local temp_allow
     temp_allow=$(mktemp)
     chmod 600 "$temp_allow"
-    if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_allow" && printf "\n" >> "$temp_allow" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 >> "$temp_allow"; then
+    local temp_v4 temp_v6
+    temp_v4=$(mktemp)
+    temp_v6=$(mktemp)
+    chmod 600 "$temp_v4" "$temp_v6"
+    if run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v4 > "$temp_v4" && run_cmd 20 curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/ips-v6 > "$temp_v6"; then
+        local count_v4 count_v6
+        count_v4=$(grep -Ec '^[0-9.]+/[0-9]+$' "$temp_v4" || printf '%s' "0")
+        count_v6=$(grep -Ec '^[0-9a-fA-F:]+/[0-9]+$' "$temp_v6" || printf '%s' "0")
+        printf '%b' "${GREEN}已获取 Cloudflare IPv4 网段: ${count_v4}${NC}\n"
+        printf '%b' "${GREEN}已获取 Cloudflare IPv6 网段: ${count_v6}${NC}\n"
+
+        cat "$temp_v4" "$temp_v6" > "$temp_allow"
         mkdir -p /etc/nginx/snippets /etc/nginx/conf.d
         local temp_cf_allow temp_cf_real temp_cf_geo
         temp_cf_allow=$(mktemp); temp_cf_real=$(mktemp); temp_cf_geo=$(mktemp)
@@ -1140,7 +1153,7 @@ _update_cloudflare_ips() {
         allow_count=$(grep -c '^allow ' "$temp_cf_allow" || printf '%s' "0")
         if [ "$allow_count" -lt 5 ]; then
             log_message ERROR "Cloudflare IP 列表异常 (${allow_count})，已放弃更新。"
-            rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
+            rm -f "$temp_allow" "$temp_v4" "$temp_v6" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
             return 1
         fi
         printf '%s\n' "deny all;" >> "$temp_cf_allow"
@@ -1153,13 +1166,26 @@ _update_cloudflare_ips() {
         mv "$temp_cf_real" /etc/nginx/conf.d/cf_real_ip.conf
         mv "$temp_cf_geo" /etc/nginx/conf.d/cf_geo.conf
         mv "$temp_cf_allow" /etc/nginx/snippets/cf_allow.conf
-    log_message SUCCESS "Cloudflare IP 列表更新完成。"
-    printf '%b' "${GREEN}Cloudflare IP 列表已更新。${NC}\n"
+        printf '%b' "${CYAN}写入文件: /etc/nginx/snippets/cf_allow.conf${NC}\n"
+        printf '%b' "${CYAN}写入文件: /etc/nginx/conf.d/cf_real_ip.conf${NC}\n"
+        printf '%b' "${CYAN}写入文件: /etc/nginx/conf.d/cf_geo.conf${NC}\n"
+        printf '%b' "${GREEN}本次生效网段(含本地环回): ${allow_count}${NC}\n"
+        log_message SUCCESS "Cloudflare IP 列表更新完成。"
+        printf '%b' "${GREEN}Cloudflare IP 列表已更新。${NC}\n"
+        if nginx -t >/dev/null 2>&1; then
+            if systemctl reload nginx >/dev/null 2>&1; then
+                printf '%b' "${GREEN}Nginx 配置检测通过并已重载。${NC}\n"
+            else
+                printf '%b' "${YELLOW}Nginx 配置检测通过，但自动重载失败，请手动执行 systemctl reload nginx。${NC}\n"
+            fi
+        else
+            printf '%b' "${YELLOW}Nginx 配置检测失败，已写入文件但未自动重载。${NC}\n"
+        fi
     else
         log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"
         printf '%b' "${RED}Cloudflare IP 列表更新失败。${NC}\n"
     fi
-    rm -f "$temp_allow" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
+    rm -f "$temp_allow" "$temp_v4" "$temp_v6" "$temp_cf_allow" "$temp_cf_real" "$temp_cf_geo" 2>/dev/null || true
 }
 
 
@@ -1226,9 +1252,12 @@ _manage_cron_jobs() {
     local has_acme=0 has_manager=0
     if crontab -l 2>/dev/null | grep -q "\.acme\.sh/acme\.sh"; then has_acme=1; fi
     if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cron"; then has_manager=1; fi
+    local has_cf_auto=0
+    if [ -f "$CF_AUTO_UPDATE_ENABLED_FILE" ] && crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH --cf-ip-update"; then has_cf_auto=1; fi
     local -a lines=()
     lines+=(" 1. acme.sh 原生续期进程 : $( [ $has_acme -eq 1 ] && printf '%b' "${GREEN}正常运行${NC}" || printf '%b' "${RED}缺失${NC}" )")
     lines+=(" 2. 本面板接管守护进程   : $( [ $has_manager -eq 1 ] && printf '%b' "${GREEN}正常运行${NC}" || printf '%b' "${RED}缺失${NC}" )")
+    lines+=(" 3. Cloudflare IP 自动更新 : $( [ $has_cf_auto -eq 1 ] && printf '%b' "${GREEN}正常运行${NC}" || printf '%b' "${YELLOW}未启用${NC}" )")
     if [ $has_acme -eq 1 ] && [ $has_manager -eq 1 ]; then lines+=("${GREEN}系统定时任务状态完全健康,无需干预。${NC}")
     else lines+=("${YELLOW}检测到必需的定时任务不完整,正在自动执行修复...${NC}"); fi
     _render_menu "系统定时任务 (Cron) 诊断与修复" "${lines[@]}"
@@ -1246,6 +1275,9 @@ _manage_cron_jobs() {
         cron_log=$(_sanitize_log_file "$LOG_FILE" 2>/dev/null || true)
         if [ -z "$cron_log" ]; then cron_log="$LOG_FILE_DEFAULT"; fi
         printf '%s\n' "0 3 * * * $SCRIPT_PATH --cron >> $cron_log 2>&1" >> "$cron_tmp"
+        if [ -f "$CF_AUTO_UPDATE_ENABLED_FILE" ]; then
+            printf '%s\n' "15 3 * * 0 $SCRIPT_PATH --cf-ip-update >> $cron_log 2>&1" >> "$cron_tmp"
+        fi
         crontab "$cron_tmp"; rm -f "$cron_tmp"
         log_message SUCCESS "定时任务修复完毕,系统级容灾续期已挂载。"
     fi
@@ -2226,7 +2258,7 @@ _gather_project_details() {
     fi
 
     if [ "$is_cert_only" == "false" ]; then
-        local cf_strict_default="n"; [ "$cf_strict" == "y" ] && cf_strict_default="y"
+        local cf_strict_default="y"; [ "$cf_strict" == "n" ] && cf_strict_default="n"
     if confirm_or_cancel "是否开启 Cloudflare 严格安全防御?" "$cf_strict_default"; then cf_strict="y"; else cf_strict="n"; fi
     CF_STRICT_MODE_CURRENT="$cf_strict"
     else
@@ -2638,8 +2670,10 @@ _show_cf_strict_status_list() {
         return 0
     fi
 
+    local idx=0
     while read -r p; do
         [ -z "$p" ] && continue
+        idx=$((idx + 1))
         local d mode strict strict_zh
         d=$(jq -r '.domain // "-"' <<< "$p")
         mode=$(jq -r '.resolved_port // "-"' <<< "$p")
@@ -2647,9 +2681,9 @@ _show_cf_strict_status_list() {
         strict_zh="关闭"
         [ "$strict" = "y" ] && strict_zh="开启"
         if [ "$mode" = "cert_only" ]; then
-            lines+=("- ${d} | 严格防御: ${strict_zh}(${strict}) | 模式: cert_only(跳过)")
+            lines+=("${idx}. ${d} | 严格防御: ${strict_zh}(${strict}) | 模式: cert_only(跳过)")
         else
-            lines+=("- ${d} | 严格防御: ${strict_zh}(${strict}) | 目标: ${mode}")
+            lines+=("${idx}. ${d} | 严格防御: ${strict_zh}(${strict}) | 目标: ${mode}")
         fi
     done <<< "$all"
 
@@ -2749,15 +2783,47 @@ _manage_cloudflare_defense() {
         printf '%b' "2. 逐项目切换 Cloudflare 严格防御\n"
         printf '%b' "3. 批量开启 Cloudflare 严格防御 (跳过 cert_only)\n"
         printf '%b' "4. 批量关闭 Cloudflare 严格防御 (跳过 cert_only)\n"
-        printf '%b' "5. 返回\n"
+        local auto_status="${RED}关闭${NC}"
+        if [ -f "$CF_AUTO_UPDATE_ENABLED_FILE" ]; then auto_status="${GREEN}开启${NC}"; fi
+        printf '%b' "5. 自动更新 Cloudflare 防御 IP 库 (每周日 03:15) [当前: ${auto_status}]\n"
+        printf '%b' "6. 返回\n"
         local c
-        if ! c=$(prompt_menu_choice "1-5" "true"); then return; fi
+        if ! c=$(prompt_menu_choice "1-6" "true"); then return; fi
         case "$c" in
             1) _update_cloudflare_ips; press_enter_to_continue ;;
             2) _toggle_cf_strict_single ;;
             3) _batch_set_cf_strict_mode "y"; press_enter_to_continue ;;
             4) _batch_set_cf_strict_mode "n"; press_enter_to_continue ;;
-            5|"") return ;;
+            5)
+                if [ -f "$CF_AUTO_UPDATE_ENABLED_FILE" ]; then
+                    if confirm_or_cancel "当前已开启自动更新，是否关闭?" "y"; then
+                        rm -f "$CF_AUTO_UPDATE_ENABLED_FILE" 2>/dev/null || true
+                        local cron_tmp_off
+                        cron_tmp_off=$(mktemp /tmp/cron.bak.XXXXXX)
+                        chmod 600 "$cron_tmp_off"
+                        crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH --cf-ip-update" > "$cron_tmp_off" || true
+                        crontab "$cron_tmp_off"; rm -f "$cron_tmp_off"
+                        log_message INFO "已关闭 Cloudflare IP 库自动更新。"
+                    fi
+                else
+                    if confirm_or_cancel "是否开启自动更新 Cloudflare 防御 IP 库? (每周日 03:15)" "y"; then
+                        touch "$CF_AUTO_UPDATE_ENABLED_FILE"
+                        chmod 600 "$CF_AUTO_UPDATE_ENABLED_FILE" 2>/dev/null || true
+                        local cron_tmp_on
+                        cron_tmp_on=$(mktemp /tmp/cron.bak.XXXXXX)
+                        chmod 600 "$cron_tmp_on"
+                        crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH --cf-ip-update" > "$cron_tmp_on" || true
+                        local cron_log_on
+                        cron_log_on=$(_sanitize_log_file "$LOG_FILE" 2>/dev/null || true)
+                        if [ -z "$cron_log_on" ]; then cron_log_on="$LOG_FILE_DEFAULT"; fi
+                        printf '%s\n' "15 3 * * 0 $SCRIPT_PATH --cf-ip-update >> $cron_log_on 2>&1" >> "$cron_tmp_on"
+                        crontab "$cron_tmp_on"; rm -f "$cron_tmp_on"
+                        log_message INFO "已开启 Cloudflare IP 库自动更新。"
+                    fi
+                fi
+                press_enter_to_continue
+                ;;
+            6|"") return ;;
             *) log_message ERROR "无效选择" ;;
         esac
     done
@@ -2870,6 +2936,7 @@ check_and_auto_renew_certs() {
     unset IFS
     NGINX_RELOAD_NEEDED="${reload_needed}"
     control_nginx_reload_if_needed || true
+
     log_message INFO "批量任务结束: $success 成功, $fail 失败。"
 }
 
@@ -2967,6 +3034,7 @@ main() {
     initialize_environment
 
     if [[ " $* " =~ " --check " ]]; then run_diagnostics; return $?; fi
+    if [[ " $* " =~ " --cf-ip-update " ]]; then _update_cloudflare_ips; return $?; fi
     if [[ " $* " =~ " --cron " ]]; then check_and_auto_renew_certs; return $?; fi
 
     if ! install_acme_sh; then
