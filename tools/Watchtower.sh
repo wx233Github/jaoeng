@@ -1615,13 +1615,23 @@ main_menu() {
 	while true; do
 		if should_clear_screen "watchtower:main_menu"; then clear; fi
 		load_config
+		local docker_ready=0
+		if command -v docker >/dev/null 2>&1; then
+			docker_ready=1
+		fi
 
 		local STATUS_RAW="未运行"
-		if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then STATUS_RAW="已启动"; fi
+		if [ "${docker_ready}" -eq 1 ]; then
+			if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' | grep -qFx 'watchtower'; then STATUS_RAW="已启动"; fi
+		else
+			STATUS_RAW="未安装"
+		fi
 
 		local STATUS_COLOR
 		if [ "$STATUS_RAW" = "已启动" ]; then
 			STATUS_COLOR="${GREEN}已启动${NC}"
+		elif [ "$STATUS_RAW" = "未安装" ]; then
+			STATUS_COLOR="${YELLOW}Docker未安装${NC}"
 		else STATUS_COLOR="${RED}未运行${NC}"; fi
 
 		local interval="" raw_logs="" schedule_env=""
@@ -1639,7 +1649,11 @@ main_menu() {
 
 		local config_mtime container_created warning_msg=""
 		config_mtime=$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)
-		container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
+		if [ "${docker_ready}" -eq 1 ]; then
+			container_created=$(JB_SUDO_LOG_QUIET="true" run_with_sudo docker inspect --format '{{.Created}}' watchtower 2>/dev/null || echo "")
+		else
+			container_created=""
+		fi
 
 		if [ "$STATUS_RAW" = "已启动" ] && [ -n "$container_created" ]; then
 			local container_ts
