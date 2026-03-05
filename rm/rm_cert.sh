@@ -36,6 +36,32 @@ run_destructive_cmd() {
 	"$@"
 }
 
+high_risk_guard() {
+	local action_title="${1:-高风险操作}"
+	local impact_summary="${2:-该操作不可逆，请谨慎确认。}"
+	local reply=""
+	if [ "${JB_NONINTERACTIVE}" = "true" ]; then
+		log_warn "非交互模式：高风险操作默认取消 (${action_title})"
+		return 1
+	fi
+	printf '%s\n' "⚠ 高风险操作: ${action_title}" >&2
+	printf '%s\n' "影响摘要: ${impact_summary}" >&2
+	read -r -p "是否继续查看二次确认? [y/N]: " reply </dev/tty
+	case "${reply,,}" in
+	y | yes) ;;
+	*)
+		log_warn "已取消操作。"
+		return 1
+		;;
+	esac
+	read -r -p "二次确认：请输入 yes 继续执行: " reply </dev/tty
+	if [ "${reply,,}" != "yes" ]; then
+		log_warn "已取消操作。"
+		return 1
+	fi
+	return 0
+}
+
 ensure_safe_path() {
 	local target="$1"
 	if [ -z "${target}" ] || [ "${target}" = "/" ]; then
@@ -89,6 +115,11 @@ set -- "${RUN_ARGS[@]}"
 log_info "=============================="
 log_info "⚠️  开始卸载 SSL 脚本相关内容"
 log_info "=============================="
+
+if ! high_risk_guard "卸载证书管理相关组件" "将删除 acme.sh、cert 模块文件、可选删除域名证书目录并清理续期任务。"; then
+	log_info "已取消执行。"
+	exit 0
+fi
 
 # 1️⃣ 删除 acme.sh
 if [ -d "$HOME/.acme.sh" ]; then

@@ -1589,6 +1589,28 @@ view_and_edit_config() {
 	done
 }
 
+config_center_menu() {
+	while true; do
+		if should_clear_screen "watchtower:config_center_menu"; then clear; fi
+		local -a items=(
+			"1. 通知与安全设置 (Telegram/别名/加密)"
+			"2. 高级参数编辑器"
+		)
+		_render_menu "⚙️ 配置中心 ⚙️" "统一管理通知、安全与高级参数" "" "${items[@]}"
+		local c
+		c=$(_prompt_for_menu_choice "1-2")
+		case "$c" in
+		1) notification_menu ;;
+		2) view_and_edit_config ;;
+		"") return 0 ;;
+		*)
+			log_warn "无效选项。"
+			sleep 1
+			;;
+		esac
+	done
+}
+
 main_menu() {
 	while true; do
 		if should_clear_screen "watchtower:main_menu"; then clear; fi
@@ -1637,16 +1659,15 @@ main_menu() {
 			""
 			"主菜单："
 			"1. 部署/重新配置服务 (核心设置)"
-			"2. 通知与安全设置 (Token/别名/加密)"
+			"2. 配置中心 (通知+高级参数)"
 			"3. 服务运维 (停止/重建)"
-			"4. 高级参数编辑器"
-			"5. 实时日志与容器看板"
+			"4. 实时日志与容器看板"
 		)
 
 		_render_menu "$header_text" "${content_array[@]}"
 
 		local choice
-		choice=$(_prompt_for_menu_choice "1-5")
+		choice=$(_prompt_for_menu_choice "1-4")
 		case "$choice" in
 		1)
 			configure_watchtower
@@ -1654,10 +1675,9 @@ main_menu() {
 			if [ "$rc" -ne "${ERR_OK}" ]; then log_warn "配置流程未正常完成 (code: $rc)"; fi
 			press_enter_to_continue
 			;;
-		2) notification_menu ;;
+		2) config_center_menu ;;
 		3) manage_tasks ;;
-		4) view_and_edit_config ;;
-		5) show_watchtower_details ;;
+		4) show_watchtower_details ;;
 		"") return "${ERR_RUNTIME}" ;;
 		*)
 			log_warn "无效选项。"

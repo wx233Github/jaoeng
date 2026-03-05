@@ -323,14 +323,83 @@ usage() {
   -h, --help    显示本帮助信息并退出
 
 命令:
+	status        仅显示当前运行状态与环境摘要（不修改系统）
+	doctor        执行环境自检（不修改系统）
   update        强制全面更新所有模块和配置
   uninstall     完全卸载本脚本及其相关组件
   [其他命令]    执行配置在菜单中的快捷操作（忽略大小写匹配）
 
 示例:
-  $(basename "$0") update
-  $(basename "$0") docker
+	$(basename "$0") update
+	$(basename "$0") status
+	$(basename "$0") doctor
+	$(basename "$0") docker
 EOF
+}
+
+run_doctor_status() {
+	local mode="${1:-status}"
+	local os_id="unknown"
+	local os_like="unknown"
+	local arch
+	arch="$(uname -m 2>/dev/null || echo unknown)"
+
+	if [ -f /etc/os-release ]; then
+		os_id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"' || echo "unknown")
+		os_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"' || echo "unknown")
+	fi
+
+	printf '%s\n' "=== jb ${mode} ==="
+	printf 'script_version=%s\n' "${SCRIPT_VERSION}"
+	printf 'install_dir=%s\n' "${INSTALL_DIR}"
+	printf 'config_path=%s\n' "${CONFIG_PATH}"
+	printf 'utils_path=%s\n' "${UTILS_PATH}"
+	printf 'log_file=%s\n' "${LOG_FILE:-$GLOBAL_LOG_FILE}"
+	printf 'os_id=%s\n' "$os_id"
+	printf 'os_like=%s\n' "$os_like"
+	printf 'arch=%s\n' "$arch"
+	printf 'user=%s\n' "$(id -un 2>/dev/null || echo unknown)"
+	printf 'uid=%s\n' "$(id -u 2>/dev/null || echo unknown)"
+
+	if command -v docker >/dev/null 2>&1; then
+		printf 'docker=present\n'
+	else
+		printf 'docker=missing\n'
+	fi
+	if command -v nginx >/dev/null 2>&1; then
+		printf 'nginx=present\n'
+	else
+		printf 'nginx=missing\n'
+	fi
+	if command -v jq >/dev/null 2>&1; then
+		printf 'jq=present\n'
+	else
+		printf 'jq=missing\n'
+	fi
+
+	if [ "$mode" = "doctor" ]; then
+		printf '%s\n' "--- checks ---"
+		if validate_env >/dev/null 2>&1; then
+			printf 'env=ok\n'
+		else
+			printf 'env=fail\n'
+		fi
+		if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+			printf 'core_dependencies=ok\n'
+		else
+			printf 'core_dependencies=fail\n'
+		fi
+		if [ -f "$CONFIG_PATH" ] && jq -e . "$CONFIG_PATH" >/dev/null 2>&1; then
+			printf 'config_json=ok\n'
+		else
+			printf 'config_json=fail\n'
+		fi
+		if [ -f "$UTILS_PATH" ]; then
+			printf 'utils_file=ok\n'
+		else
+			printf 'utils_file=fail\n'
+		fi
+	fi
 }
 
 # --- Logrotate 自动配置 ---
@@ -1189,6 +1258,14 @@ main() {
 			case "$command" in
 			-h | --help)
 				usage
+				exit 0
+				;;
+			status)
+				run_doctor_status "status"
+				exit 0
+				;;
+			doctor)
+				run_doctor_status "doctor"
 				exit 0
 				;;
 			update)

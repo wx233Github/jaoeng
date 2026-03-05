@@ -572,12 +572,13 @@ main_menu() {
 				"Docker 版本: ${DOCKER_VERSION}"
 				"Compose 版本: ${COMPOSE_VERSION}"
 				""
-				"1. 安装管理 (重装/卸载)"
+				"1. 服务管理"
 				"2. 配置镜像/用户组"
-				"3. 服务管理"
-				"4. 系统清理 (Prune)"
+				"3. 系统清理 (Prune)"
+				"4. 重新安装 Docker"
+				"5. 卸载 Docker"
 			)
-			options_map=("manage_install" "config" "service" "prune")
+			options_map=("service" "config" "prune" "reinstall" "uninstall")
 		else
 			menu_items+=(
 				"ℹ️ ${YELLOW}检测到 Docker 未安装${NC}"
@@ -600,10 +601,6 @@ main_menu() {
 
 		local action="${options_map[$((choice - 1))]}"
 		case "$action" in
-		manage_install)
-			_manage_installation
-			action_taken_in_submenu=true
-			;;
 		install) install_docker ;;
 		config) configure_docker_mirror && add_user_to_docker_group ;;
 		service)
@@ -611,6 +608,14 @@ main_menu() {
 			action_taken_in_submenu=true
 			;;
 		prune) docker_prune_system ;;
+		reinstall)
+			if confirm_action "确定要重新安装 Docker 吗? 这将先执行卸载流程。"; then
+				if uninstall_docker; then
+					install_docker
+				fi
+			fi
+			;;
+		uninstall) uninstall_docker ;;
 		esac
 
 		if [[ "$action_taken_in_submenu" == false ]]; then

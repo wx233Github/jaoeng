@@ -425,6 +425,22 @@ read_required_yes() {
 	[[ "${reply,,}" == "yes" ]]
 }
 
+high_risk_guard() {
+	local action_title="${1:-高风险操作}"
+	local impact_summary="${2:-该操作可能影响系统核心网络能力与可用性。}"
+	echo -e "${COLOR_RED}⚠ 高风险操作: ${action_title}${COLOR_RESET}"
+	echo -e "${COLOR_YELLOW}影响摘要:${COLOR_RESET} ${impact_summary}"
+	if ! read_confirm "是否继续查看二次确认? [y/N]: "; then
+		log_warn "已取消: ${action_title}"
+		return 1
+	fi
+	if ! read_required_yes "二次确认：请输入 yes 执行 ${action_title}: "; then
+		log_warn "已取消: ${action_title}"
+		return 1
+	fi
+	return 0
+}
+
 validate_args() {
 	if [[ "$#" -gt 0 ]]; then
 		log_warn "忽略额外参数: $*"
@@ -749,7 +765,7 @@ update_stock_kernel() {
 		return 0
 	fi
 
-	if ! read_confirm "是否继续更新系统仓库原版内核? [Y/n]: "; then
+	if ! high_risk_guard "更新系统仓库原版内核" "将升级内核包，可能引发驱动兼容变化，通常需要重启。"; then
 		log_warn "操作已取消。"
 		return 0
 	fi
@@ -840,7 +856,7 @@ cleanup_xanmod_kernel_packages() {
 	fi
 
 	log_warn "检测到 XanMod 包: ${xanmod_pkgs[*]}"
-	if ! read_required_yes "高风险操作：确认清理以上 XanMod 内核包? 请输入 yes 继续: "; then
+	if ! high_risk_guard "清理 XanMod 内核包" "将卸载第三方内核与头文件，若当前正在使用相关内核可能导致下次启动差异。"; then
 		log_warn "已取消 XanMod 包清理。"
 		return 0
 	fi
@@ -930,7 +946,7 @@ remove_old_kernels() {
 
 	echo "以下旧内核将被清理:"
 	printf " - %s\n" "${kernels_to_remove[@]}"
-	if ! read_required_yes "高风险操作：确认清理以上旧内核? 请输入 yes 继续: "; then
+	if ! high_risk_guard "清理冗余旧内核" "将删除非当前运行内核包，误删会降低回滚能力。"; then
 		log_warn "操作已取消。"
 		return 0
 	fi
@@ -970,8 +986,7 @@ kernel_manager() {
 }
 
 uninstall_and_restore_defaults() {
-	echo -e "${COLOR_RED}警告: 此操作将删除本脚本优化配置和备份，且不可逆！${COLOR_RESET}"
-	if ! read_required_yes "高风险操作：确认要彻底卸载吗? 请输入 yes 继续: "; then
+	if ! high_risk_guard "彻底卸载并恢复系统默认" "将删除优化配置与备份，并回退拥塞控制到系统默认值。"; then
 		log_warn "卸载操作已取消。"
 		return 0
 	fi

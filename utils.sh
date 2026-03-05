@@ -8,6 +8,7 @@
 # --- 严格模式 ---
 set -euo pipefail
 IFS=$'\n\t'
+export PATH='/usr/local/bin:/usr/bin:/bin'
 
 # --- 默认配置 ---
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
@@ -23,6 +24,27 @@ DEFAULT_ENABLE_AUTO_UPDATE="true"
 DEFAULT_NONINTERACTIVE="false"
 # shellcheck disable=SC2034
 DEFAULT_CLEAR_MODE="off"
+
+readonly -a UTILS_PUBLIC_API=(
+	"log_info"
+	"log_success"
+	"log_warn"
+	"log_err"
+	"log_debug"
+	"die"
+	"check_dependencies"
+	"validate_args"
+	"_prompt_user_input"
+	"_prompt_for_menu_choice"
+	"press_enter_to_continue"
+	"confirm_action"
+	"normalize_clear_mode"
+	"should_clear_screen"
+	"load_config"
+	"generate_line"
+	"_get_visual_width"
+	"_render_menu"
+)
 
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
@@ -102,6 +124,21 @@ log_warn() { _log_write "WARN" "$*" >&2; }
 log_err() { _log_write "ERROR" "$*" >&2; }
 log_debug() { if [ "${JB_DEBUG_MODE:-false}" = "true" ]; then _log_write "DEBUG" "$*" >&2; fi; }
 
+sanitize_noninteractive_flag() {
+	case "${JB_NONINTERACTIVE:-false}" in
+	true | false) return 0 ;;
+	*)
+		log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+		JB_NONINTERACTIVE="false"
+		return 0
+		;;
+	esac
+}
+
+utils_public_api() {
+	printf '%s\n' "${UTILS_PUBLIC_API[@]}"
+}
+
 die() {
 	local msg="$1"
 	local code="${2:-1}"
@@ -125,6 +162,9 @@ check_dependencies() {
 }
 
 validate_args() {
+	if [ "$#" -lt 3 ]; then
+		return 0
+	fi
 	local min_args="$1"
 	local max_args="$2"
 	local actual_args="$3"
@@ -237,18 +277,42 @@ confirm_action() {
 declare -A JB_SMART_CLEAR_SEEN=()
 
 normalize_clear_mode() {
-	printf '%s' "off"
+	local mode="${JB_CLEAR_MODE:-}"
+	if [ -z "$mode" ]; then
+		if [ "${JB_ENABLE_AUTO_CLEAR:-false}" = "true" ]; then
+			mode="full"
+		else
+			mode="off"
+		fi
+	fi
+	case "${mode,,}" in
+	off | false | 0) printf '%s' "off" ;;
+	full | true | 1) printf '%s' "full" ;;
+	smart) printf '%s' "smart" ;;
+	*) printf '%s' "off" ;;
+	esac
 	return 0
 }
 
 should_clear_screen() {
 	local menu_key="${1:-__default_menu__}"
-	: "${menu_key}"
+	local clear_mode
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		return 1
 	fi
-
-	return 1
+	clear_mode="$(normalize_clear_mode)"
+	case "$clear_mode" in
+	off) return 1 ;;
+	full) return 0 ;;
+	smart)
+		if [ -n "${JB_SMART_CLEAR_SEEN[$menu_key]+x}" ]; then
+			return 1
+		fi
+		JB_SMART_CLEAR_SEEN["$menu_key"]=1
+		return 0
+		;;
+	*) return 1 ;;
+	esac
 }
 
 # --- 配置加载 (优化版) ---
@@ -277,6 +341,8 @@ load_config() {
 	LOG_FILE="${LOG_FILE:-${DEFAULT_LOG_FILE}}"
 	LOG_LEVEL="${LOG_LEVEL:-${DEFAULT_LOG_LEVEL}}"
 
+	sanitize_noninteractive_flag
+
 	if [ ! -f "$config_path" ]; then
 		log_warn "配置文件 $config_path 未找到，使用默认配置。"
 		return 0
@@ -304,7 +370,7 @@ load_config() {
 	fi
 
 	# shellcheck disable=SC2034
-	JB_CLEAR_MODE="off"
+	JB_CLEAR_MODE="$(normalize_clear_mode)"
 }
 
 # --- UI 渲染 & 字符串处理 (性能优化版) ---

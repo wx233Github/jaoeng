@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================
-# 🚀 SSL 证书管理助手 (acme.sh) (v3.15.0-文案微调版)
+# 🚀 SSL 证书管理助手 (acme.sh) (v3.15.1-职责边界优化版)
 # - 优化: API Token 输入提示更符合直觉。
 # - 移除: 冗余的 CA 推荐日志信息。
 # =============================================================
 
 # --- 脚本元数据 ---
-SCRIPT_VERSION="v3.15.0"
+SCRIPT_VERSION="v3.15.1"
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -807,6 +807,7 @@ main() {
 	parse_dry_run_args "$@"
 	init_runtime
 	log_info "SSL 证书管理模块 ${SCRIPT_VERSION}"
+	log_info "模块定位：轻量证书申请/续期工具（复杂反代与防御策略请使用 nginx 模块）。"
 	_check_dependencies || return 1
 	main_menu
 }
