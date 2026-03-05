@@ -542,6 +542,7 @@ _generate_env_file() {
             cat <<EOF | tr -d '\n' >> "$target_file"
 WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}⌚ *时间:* \`${time_format}\`${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
 EOF
+            printf '\n' >> "$target_file"
             echo "WATCHTOWER_NOTIFICATION_REPORT=true"
         fi
 
@@ -549,6 +550,11 @@ EOF
             echo "WATCHTOWER_SCHEDULE=$WATCHTOWER_SCHEDULE_CRON"
         fi
     } >> "$target_file"
+
+    if grep -q 'WATCHTOWER_NOTIFICATION_TEMPLATE=.*WATCHTOWER_NOTIFICATION_REPORT=true' "$target_file" 2>/dev/null; then
+        log_error "通知模板写入异常：REPORT 开关被拼接到模板同一行，请重试。"
+        return "${ERR_CONFIG}"
+    fi
     
     chmod 600 "$target_file" || log_warn "⚠️ 无法设置环境文件权限。"
 }
