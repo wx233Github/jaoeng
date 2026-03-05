@@ -592,7 +592,10 @@ main_menu() {
 		local choice
 		choice=$(_prompt_for_menu_choice "1-${#options_map[@]}")
 
-		if [ -z "$choice" ]; then exit 10; fi
+		if [ -z "$choice" ]; then
+			log_info "非交互或空输入：已退出 Docker 菜单。"
+			return 0
+		fi
 		if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#options_map[@]} ]; then
 			log_warn "无效选项 '${choice}'。"
 			sleep 1

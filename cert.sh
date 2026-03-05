@@ -64,7 +64,7 @@ else
 		if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 			log_warn "非交互模式：返回空选项"
 			echo ""
-			return 1
+			return 0
 		fi
 		read -r -p "${prompt}" v </dev/tty
 		echo "$v"
@@ -792,7 +792,7 @@ main_menu() {
 			;;
 		2) _manage_certificates ;;
 		3) _system_maintenance ;;
-		"") return 10 ;;
+		"") return 0 ;;
 		*)
 			log_warn "无效选项。"
 			press_enter_to_continue

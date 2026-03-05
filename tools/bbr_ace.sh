@@ -63,8 +63,14 @@ readonly COLOR_CYAN='\033[0;36m'
 readonly COLOR_BLUE='\033[0;34m'
 readonly UI_BOLD='\033[1m'
 readonly UI_ORANGE='\033[38;5;208m'
+readonly BBR_ACE_RUNTIME_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 mkdir -p "${BASE_DIR}" "${BACKUP_DIR}"
+
+ensure_runtime_path() {
+	export PATH=''
+	PATH="${BBR_ACE_RUNTIME_PATH}"
+}
 
 init_utils_ui() {
 	local candidate=""
@@ -524,10 +530,14 @@ read_current_mode() {
 	if [[ -z "${mode}" ]]; then
 		local cur_cc cur_qdisc
 		local cur_rmem_max cur_slow_start_idle
-		cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "")"
-		cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf "")"
-		cur_rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || printf "")"
-		cur_slow_start_idle="$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || printf "")"
+		cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+		cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+		cur_rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || true)"
+		cur_slow_start_idle="$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || true)"
+		cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
+		cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
+		cur_rmem_max="$(printf '%s' "${cur_rmem_max}" | tr -d '[:space:]')"
+		cur_slow_start_idle="$(printf '%s' "${cur_slow_start_idle}" | tr -d '[:space:]')"
 		if [[ "${cur_cc}" == "bbr" && "${cur_qdisc}" == "fq" ]]; then
 			if [[ "${cur_rmem_max}" == "134217728" || "${cur_slow_start_idle}" == "0" ]]; then
 				mode="aggressive"
@@ -1021,8 +1031,12 @@ show_menu() {
 
 	mem_mb=$((TOTAL_MEM_KB / 1024))
 	cur_kver="$(uname -r)"
-	cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "未知")"
-	cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf "未知")"
+	cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+	cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+	cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
+	cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
+	[[ -n "${cur_cc}" ]] || cur_cc="未知"
+	[[ -n "${cur_qdisc}" ]] || cur_qdisc="未知"
 	active_conn="$(ss -tn state established 2>/dev/null | wc -l || printf "1")"
 	active_conn=$((active_conn - 1))
 	[[ "${active_conn}" -lt 0 ]] && active_conn=0
@@ -1055,6 +1069,7 @@ show_menu() {
 
 main() {
 	init_utils_ui || true
+	ensure_runtime_path
 	sanitize_noninteractive_flag
 	check_root "$@"
 	parse_dry_run_args "$@"

@@ -232,12 +232,12 @@ _prompt_for_menu_choice() {
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		log_warn "非交互模式：返回空选项"
 		echo ""
-		return 1
+		return 0
 	fi
 	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
 		log_warn "无法访问 /dev/tty，返回空选项"
 		echo ""
-		return 1
+		return 0
 	fi
 	printf '%b' "$prompt_text" >/dev/tty
 	read -r choice </dev/tty
