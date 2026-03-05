@@ -540,8 +540,9 @@ _generate_env_file() {
             local time_format='{{ .Time.Format "2006-01-02 15:04:05 (MST)" }}'
             
             cat <<EOF | tr -d '\n' >> "$target_file"
-WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}⌚ *时间:* \`${time_format}\`${br}${br}🧾 *更新详情:*${br}{{- range . }}• {{ .Message }}${br}{{- end -}}
+WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}⌚ *时间:* \`${time_format}\`${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
 EOF
+            echo "WATCHTOWER_NOTIFICATION_REPORT=true"
         fi
 
         if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]] && [ -n "$WATCHTOWER_SCHEDULE_CRON" ]; then
