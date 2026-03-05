@@ -41,6 +41,8 @@ NC='\033[0m'
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 JB_CLEAR_MODE="off"
 EXIT_MESSAGE=""
+DRY_RUN="false"
+declare -a RUN_ARGS=()
 
 : "${SCRIPT_VERSION}" "${AUTO_UPDATE_UPDATED_CORE}" "${AUTO_UPDATE_NOTE}"
 
@@ -106,6 +108,29 @@ starter_sudo() {
 	fi
 	echo_info "需要 sudo 权限，可能会提示输入密码。"
 	sudo "$@"
+}
+
+parse_dry_run_args() {
+	RUN_ARGS=()
+	local arg
+	for arg in "$@"; do
+		if [ "$arg" = "--dry-run" ]; then
+			DRY_RUN="true"
+			continue
+		fi
+		RUN_ARGS+=("$arg")
+	done
+	if [ "$DRY_RUN" = "true" ]; then
+		log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
+	fi
+}
+
+run_destructive_with_sudo() {
+	if [ "$DRY_RUN" = "true" ]; then
+		log_info "[DRY-RUN] sudo $*"
+		return 0
+	fi
+	run_with_sudo "$@"
 }
 
 build_exec_env() {
@@ -499,10 +524,10 @@ uninstall_script() {
 	read -r choice </dev/tty
 	if [ "${choice:-}" = "yes" ]; then
 		log_info "开始卸载..."
-		run_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/jb" || true
-		run_with_sudo rm -f "/etc/logrotate.d/vps_install_modules" || true
+		run_destructive_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/jb" || true
+		run_destructive_with_sudo rm -f "/etc/logrotate.d/vps_install_modules" || true
 		ensure_safe_install_dir "$INSTALL_DIR"
-		run_with_sudo rm -rf "$INSTALL_DIR" || true
+		run_destructive_with_sudo rm -rf "$INSTALL_DIR" || true
 		log_success "脚本已成功卸载。再见！"
 		exit 0
 	else
@@ -1132,6 +1157,8 @@ display_and_process_menu() {
 
 main() {
 	self_elevate_or_die "$@"
+	parse_dry_run_args "$@"
+	set -- "${RUN_ARGS[@]}"
 	load_config "$CONFIG_PATH"
 	export JB_CLEAR_MODE="off"
 	export JB_ENABLE_AUTO_CLEAR=false

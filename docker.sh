@@ -25,9 +25,7 @@ else
 	RED='\e[0;31m'
 	GREEN='\e[0;32m'
 	YELLOW='\e[0;33m'
-	CYAN='\e[0;36m'
 	NC='\e[0m'
-	ORANGE='\e[38;5;208m'
 	log_err() { echo -e "${RED}[错误] $*${NC}" >&2; }
 	log_warn() { echo -e "${YELLOW}[警告] $*${NC}" >&2; }
 	log_info() { echo -e "[信息] $*"; }
@@ -121,6 +119,29 @@ ensure_safe_path() {
 	return 0
 }
 
+parse_dry_run_args() {
+	RUN_ARGS=()
+	local arg
+	for arg in "$@"; do
+		if [ "$arg" = "--dry-run" ]; then
+			DRY_RUN="true"
+			continue
+		fi
+		RUN_ARGS+=("$arg")
+	done
+	if [ "$DRY_RUN" = "true" ]; then
+		log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
+	fi
+}
+
+run_destructive_with_sudo() {
+	if [ "$DRY_RUN" = "true" ]; then
+		log_info "[DRY-RUN] sudo $*"
+		return 0
+	fi
+	run_with_sudo "$@"
+}
+
 self_elevate_or_die() {
 	if [ "$(id -u)" -eq 0 ]; then
 		return 0
@@ -178,6 +199,8 @@ COMPOSE_VERSION=""
 DOCKER_INSTALL_URL=""
 DISTRO=""
 CODENAME=""
+DRY_RUN="false"
+declare -a RUN_ARGS=()
 
 # --- Docker 安装源配置 ---
 readonly DOCKER_URL_OFFICIAL="https://download.docker.com"
@@ -194,7 +217,7 @@ execute_with_spinner() {
 	echo -n "- ${message}"
 	"${command_to_run[@]}" >"$LOG_FILE" 2>&1 &
 	local pid=$!
-	local spinstr='|/-\'
+	local spinstr="|/-\\"
 	while ps -p $pid >/dev/null; do
 		local temp=${spinstr#?}
 		printf " [%c]  " "$spinstr"
@@ -306,6 +329,7 @@ determine_install_source() {
 
 check_distro() {
 	if [ -f /etc/os-release ]; then
+		# shellcheck disable=SC1091
 		. /etc/os-release
 		case "$ID" in
 		ubuntu | debian)
@@ -334,20 +358,20 @@ uninstall_docker() {
 	fi
 
 	log_info "🧹 开始卸载..."
-	execute_with_spinner "停止 Docker 服务..." run_with_sudo systemctl stop docker.service docker.socket
-	execute_with_spinner "卸载 Docker 和 Compose 软件包..." run_with_sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-	execute_with_spinner "清理残留软件包配置..." run_with_sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-	execute_with_spinner "自动移除不再需要的依赖..." run_with_sudo apt-get autoremove -y --purge
+	execute_with_spinner "停止 Docker 服务..." run_destructive_with_sudo systemctl stop docker.service docker.socket
+	execute_with_spinner "卸载 Docker 和 Compose 软件包..." run_destructive_with_sudo apt-get remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+	execute_with_spinner "清理残留软件包配置..." run_destructive_with_sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+	execute_with_spinner "自动移除不再需要的依赖..." run_destructive_with_sudo apt-get autoremove -y --purge
 
 	if confirm_action "是否同时删除 Docker 数据目录 (镜像, 容器, 数据卷)? 这是一个【不可逆】操作！"; then
 		ensure_safe_path "/var/lib/docker"
 		ensure_safe_path "/var/lib/containerd"
 		ensure_safe_path "/etc/docker"
-		execute_with_spinner "删除 Docker 数据和配置目录..." run_with_sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker
+		execute_with_spinner "删除 Docker 数据和配置目录..." run_destructive_with_sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker
 	fi
 	ensure_safe_path "/etc/apt/keyrings/docker.gpg"
 	ensure_safe_path "/etc/apt/sources.list.d/docker.list"
-	execute_with_spinner "清理 APT 源..." run_with_sudo rm -rf /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
+	execute_with_spinner "清理 APT 源..." run_destructive_with_sudo rm -rf /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
 
 	log_info "检查 docker 用户组残留..."
 	if getent group docker >/dev/null; then
@@ -357,12 +381,12 @@ uninstall_docker() {
 			log_warn "以下用户仍在 'docker' 组中: ${users_in_docker_group}"
 			if confirm_action "是否将他们从 'docker' 组中移除?"; then
 				for user in $users_in_docker_group; do
-					execute_with_spinner "从 'docker' 组中移除用户 '$user'..." run_with_sudo gpasswd -d "$user" docker
+					execute_with_spinner "从 'docker' 组中移除用户 '$user'..." run_destructive_with_sudo gpasswd -d "$user" docker
 				done
 			fi
 		fi
 		if [ -z "$(getent group docker | cut -d: -f4)" ]; then
-			execute_with_spinner "删除空的 'docker' 用户组..." run_with_sudo groupdel docker
+			execute_with_spinner "删除空的 'docker' 用户组..." run_destructive_with_sudo groupdel docker
 		fi
 	fi
 	log_success "✅ Docker 和 Compose 已成功卸载。"
@@ -385,7 +409,7 @@ configure_docker_mirror() {
 		execute_with_spinner "创建 Docker 配置目录..." run_with_sudo mkdir -p /etc/docker
 		execute_with_spinner "写入/更新镜像加速器配置..." \
 			update_docker_daemon_config "$DAEMON_FILE" "$MIRRORS_JSON"
-		execute_with_spinner "应用配置并重启 Docker..." run_with_sudo systemctl daemon-reload && run_with_sudo systemctl restart docker
+		execute_with_spinner "应用配置并重启 Docker..." run_destructive_with_sudo systemctl daemon-reload && run_destructive_with_sudo systemctl restart docker
 		log_success "✅ 镜像加速器配置完成！"
 	fi
 }
@@ -420,12 +444,13 @@ install_docker() {
 	determine_install_source
 	check_distro
 	log_success "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
-	execute_with_spinner "清理旧版本 Docker (如有)..." run_with_sudo apt-get remove -y docker docker-engine docker.io containerd runc
+	execute_with_spinner "清理旧版本 Docker (如有)..." run_destructive_with_sudo apt-get remove -y docker docker-engine docker.io containerd runc
 	execute_with_spinner "更新软件源..." run_with_sudo apt-get update -qq
 	execute_with_spinner "创建 APT 密钥环目录..." run_with_sudo install -m 0755 -d /etc/apt/keyrings
 	execute_with_spinner "添加 Docker GPG 密钥..." install_docker_gpg_key "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" "/etc/apt/keyrings/docker.gpg"
 	execute_with_spinner "设置 Docker GPG 密钥权限..." run_with_sudo chmod a+r /etc/apt/keyrings/docker.gpg
-	local docker_list_content="deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${CODENAME} stable"
+	local docker_list_content
+	docker_list_content="deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${CODENAME} stable"
 	execute_with_spinner "添加 Docker 软件源..." write_docker_apt_source "$docker_list_content" "/etc/apt/sources.list.d/docker.list"
 	execute_with_spinner "再次更新软件源..." run_with_sudo apt-get update -qq
 	execute_with_spinner "安装 Docker 引擎和 Compose 插件..." run_with_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
@@ -460,8 +485,8 @@ docker_service_menu() {
 		choice=$(_prompt_for_menu_choice "1-4")
 		case "$choice" in
 		1) execute_with_spinner "正在启动 Docker 服务..." run_with_sudo systemctl start docker.service ;;
-		2) execute_with_spinner "正在停止 Docker 服务..." run_with_sudo systemctl stop docker.service ;;
-		3) execute_with_spinner "正在重启 Docker 服务..." run_with_sudo systemctl restart docker.service ;;
+		2) execute_with_spinner "正在停止 Docker 服务..." run_destructive_with_sudo systemctl stop docker.service ;;
+		3) execute_with_spinner "正在重启 Docker 服务..." run_destructive_with_sudo systemctl restart docker.service ;;
 		4)
 			log_info "实时日志 (按 Ctrl+C 停止)..."
 			sleep 1
@@ -487,10 +512,10 @@ docker_prune_system() {
 
 	if confirm_action "是否同时清理【所有未被使用的数据卷】? 这是最危险的步骤!"; then
 		log_info "正在执行系统清理 (包含未使用的卷)..."
-		run_with_sudo docker system prune -a -f --volumes
+		run_destructive_with_sudo docker system prune -a -f --volumes
 	else
 		log_info "正在执行系统清理 (不包含数据卷)..."
-		run_with_sudo docker system prune -a -f
+		run_destructive_with_sudo docker system prune -a -f
 	fi
 	log_success "✅ 系统清理完成。"
 }
@@ -598,11 +623,12 @@ main_menu() {
 main() {
 	trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
 	self_elevate_or_die "$@"
+	parse_dry_run_args "$@"
 	log_info "您选择了 [Docker & Compose 管理]"
 	log_info "欢迎使用 Docker 模块 ${SCRIPT_VERSION}"
 	init_runtime
 	pre_check_dependencies
-	main_menu "$@"
+	main_menu "${RUN_ARGS[@]}"
 }
 
 main "$@"

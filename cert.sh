@@ -77,11 +77,8 @@ else
 	RED=""
 	GREEN=""
 	YELLOW=""
-	BLUE=""
 	CYAN=""
 	NC=""
-	BOLD=""
-	ORANGE=""
 fi
 
 # --- 确保 run_with_sudo 函数可用 ---
@@ -195,6 +192,27 @@ self_elevate_or_die() {
 
 # --- 全局变量 ---
 ACME_BIN="$HOME/.acme.sh/acme.sh"
+DRY_RUN="false"
+
+parse_dry_run_args() {
+	local arg
+	for arg in "$@"; do
+		if [ "$arg" = "--dry-run" ]; then
+			DRY_RUN="true"
+		fi
+	done
+	if [ "$DRY_RUN" = "true" ]; then
+		log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
+	fi
+}
+
+run_destructive_with_sudo() {
+	if [ "$DRY_RUN" = "true" ]; then
+		log_info "[DRY-RUN] sudo $*"
+		return 0
+	fi
+	run_with_sudo "$@"
+}
 
 init_runtime() {
 	sanitize_noninteractive_flag
@@ -281,7 +299,7 @@ _apply_for_certificate() {
 
 	log_info "--- 申请/重新配置证书 ---"
 
-	local DOMAIN SERVER_IP DOMAIN_IP
+	local DOMAIN
 
 	if [ -n "$PRESET_DOMAIN" ]; then
 		DOMAIN="$PRESET_DOMAIN"
@@ -653,7 +671,7 @@ _manage_certificates() {
 
 				[ "$port_conflict" == "true" ] && {
 					log_info "正在停止 $temp_stop_svc ..."
-					run_with_sudo systemctl stop "$temp_stop_svc"
+					run_destructive_with_sudo systemctl stop "$temp_stop_svc"
 				}
 
 				log_info "执行续期命令..."
@@ -682,7 +700,7 @@ _manage_certificates() {
 
 				if [ "$port_conflict" == "true" ]; then
 					log_info "正在重启 $temp_stop_svc ..."
-					run_with_sudo systemctl start "$temp_stop_svc"
+					run_destructive_with_sudo systemctl start "$temp_stop_svc"
 					if [ "$renew_success" == "true" ]; then
 						log_success "服务已启动，新证书应已生效。"
 					else
@@ -695,7 +713,7 @@ _manage_certificates() {
 				if confirm_action "⚠️  确认彻底删除 $SELECTED_DOMAIN ?"; then
 					"$ACME_BIN" --remove -d "$SELECTED_DOMAIN" --ecc || true
 					if [ -d "/etc/ssl/$SELECTED_DOMAIN" ]; then
-						run_with_sudo rm -rf "/etc/ssl/$SELECTED_DOMAIN"
+						run_destructive_with_sudo rm -rf "/etc/ssl/$SELECTED_DOMAIN"
 					fi
 					log_success "已删除。"
 					break 2
@@ -786,6 +804,7 @@ main_menu() {
 main() {
 	trap 'printf "\n操作被中断。\n" >&2; exit 10' INT
 	self_elevate_or_die "$@"
+	parse_dry_run_args "$@"
 	init_runtime
 	log_info "SSL 证书管理模块 ${SCRIPT_VERSION}"
 	_check_dependencies || return 1

@@ -81,6 +81,7 @@ NGINX_ACCESS_LOG="/var/log/nginx/access.log"
 NGINX_ERROR_LOG="/var/log/nginx/error.log"
 
 IS_INTERACTIVE_MODE="true"
+DRY_RUN="false"
 VPS_IP=""
 VPS_IPV6=""
 ACME_BIN=""
@@ -1104,21 +1105,28 @@ EOF
 
 _parse_args() {
 	IS_INTERACTIVE_MODE="true"
+	DRY_RUN="false"
 	local arg
 	for arg in "$@"; do
 		case "$arg" in
 		--cron | --non-interactive)
 			IS_INTERACTIVE_MODE="false"
 			;;
+		--dry-run)
+			DRY_RUN="true"
+			;;
 		esac
 	done
+	if [ "$DRY_RUN" = "true" ]; then
+		log_message WARN "已启用 dry-run：破坏性操作仅记录，不实际执行。"
+	fi
 }
 
 validate_args() {
 	local arg
 	for arg in "$@"; do
 		case "$arg" in
-		--cron | --non-interactive | --check | --cf-ip-update) ;;
+		--cron | --non-interactive | --check | --cf-ip-update | --dry-run) ;;
 		*)
 			log_message ERROR "未知参数: $arg"
 			return 1
@@ -1381,7 +1389,11 @@ _handle_backup_restore() {
 			[ -z "$file_path" ] && return
 			[ ! -f "$file_path" ] && log_message ERROR "文件不存在" && return
 			if confirm_or_cancel "警告:还原将覆盖当前配置,是否继续?"; then
-				systemctl stop nginx || true
+				if [ "$DRY_RUN" = "true" ]; then
+					log_message INFO "[DRY-RUN] systemctl stop nginx"
+				else
+					systemctl stop nginx || true
+				fi
 				log_message INFO "正在解压还原..."
 				if tar -xzf "$file_path" -C /; then
 					log_message SUCCESS "还原完成。"
@@ -2304,10 +2316,14 @@ EOF
 			cmd_ref+=("--webroot" "$NGINX_WEBROOT_DIR")
 		else
 			if confirm_or_cancel "是否临时停止 $temp_svc 以释放 80 端口?"; then
-				systemctl stop "$temp_svc"
-				stopped_svc_ref="$temp_svc"
-				INTERRUPT_RESUME_SERVICE="$stopped_svc_ref"
-				trap '_on_int_resume_service' INT TERM
+				if [ "$DRY_RUN" = "true" ]; then
+					log_message INFO "[DRY-RUN] systemctl stop $temp_svc"
+				else
+					systemctl stop "$temp_svc"
+					stopped_svc_ref="$temp_svc"
+					INTERRUPT_RESUME_SERVICE="$stopped_svc_ref"
+					trap '_on_int_resume_service' INT TERM
+				fi
 			fi
 			cmd_ref+=("--standalone")
 		fi
