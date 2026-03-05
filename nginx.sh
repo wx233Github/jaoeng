@@ -246,8 +246,10 @@ _acquire_lock() {
 _release_lock() {
 	local lock_file="${1:-}"
 	local lock_pid="${2:-}"
+	local lock_file_pid=""
 	if [ -z "$lock_file" ] || [ -z "$lock_pid" ]; then return 0; fi
-	if [ -f "$lock_file" ] && [ "$(<"$lock_file" 2>/dev/null || true)" = "$lock_pid" ]; then
+	lock_file_pid=$(cat "$lock_file" 2>/dev/null || true)
+	if [ -f "$lock_file" ] && [ "$lock_file_pid" = "$lock_pid" ]; then
 		rm -f "$lock_file" 2>/dev/null || true
 	fi
 }
@@ -681,9 +683,10 @@ check_root() {
 
 check_os_compatibility() {
 	if [ -f /etc/os-release ]; then
+		# shellcheck disable=SC1091
 		. /etc/os-release
 		if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
-			printf '%b' "${RED}⚠️ 警告: 检测到非 Debian/Ubuntu 系统 ($NAME)。${NC}\n"
+			printf '%b' "${RED}⚠️ 警告: 检测到非 Debian/Ubuntu 系统 (${NAME:-unknown}).${NC}\n"
 			if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
 				if ! confirm_or_cancel "是否尝试继续?"; then return 1; fi
 			else
@@ -730,10 +733,12 @@ _render_menu() {
 	shift
 	local -a lines=("$@")
 	local max_content_width=0
-	local title_width=$(_get_visual_width "$title")
+	local title_width
+	title_width=$(_get_visual_width "$title")
 	max_content_width=$title_width
 	for line in "${lines[@]}"; do
-		local current_line_visual_width=$(_get_visual_width "$line")
+		local current_line_visual_width
+		current_line_visual_width=$(_get_visual_width "$line")
 		if [ "$current_line_visual_width" -gt "$max_content_width" ]; then
 			max_content_width="$current_line_visual_width"
 		fi
@@ -747,7 +752,7 @@ _render_menu() {
 		local padding_total=$((box_inner_width - title_width))
 		local padding_left=$((padding_total / 2))
 		local padding_right=$((padding_total - padding_left))
-		printf '%b' "${GREEN}│${NC}$(printf '%*s' "$padding_left")${BOLD}${title}${NC}$(printf '%*s' "$padding_right")${GREEN}│${NC}\n"
+		printf '%b' "${GREEN}│${NC}$(printf '%*s' "$padding_left" "")${BOLD}${title}${NC}$(printf '%*s' "$padding_right" "")${GREEN}│${NC}\n"
 	fi
 	printf '%b' "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}\n"
 
@@ -775,21 +780,29 @@ _center_text() {
 
 _draw_dashboard() {
 	_generate_op_id
-	local nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)
-	local uptime_raw=$(uptime -p | sed 's/up //')
-	local count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "0")
-	local tcp_count=$(jq '. | length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "0")
+	local nginx_v
+	nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)
+	local uptime_raw
+	uptime_raw=$(uptime -p | sed 's/up //')
+	local count
+	count=$(jq '. | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "0")
+	local tcp_count
+	tcp_count=$(jq '. | length' "$TCP_PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "0")
 	local warn_count=0
 	if [ -f "$PROJECTS_METADATA_FILE" ]; then warn_count=$(jq '[.[] | select(.cert_file)] | length' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "0"); fi
-	local load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || printf '%s' "unknown")
+	local load
+	load=$(uptime | awk -F'load average:' '{print $2}' | xargs | cut -d, -f1-3 2>/dev/null || printf '%s' "unknown")
 
 	local title="Nginx 管理面板"
 	local line1="Nginx: ${nginx_v} | 运行: ${uptime_raw} | 负载: ${load}"
 	local line2="HTTP : ${count} 个 | TCP : ${tcp_count} 个 | 告警 : ${warn_count}"
 
-	local max_width=$(_get_visual_width "$title")
-	local w1=$(_get_visual_width "$line1")
-	local w2=$(_get_visual_width "$line2")
+	local max_width
+	max_width=$(_get_visual_width "$title")
+	local w1
+	w1=$(_get_visual_width "$line1")
+	local w2
+	w2=$(_get_visual_width "$line2")
 	[ "$w1" -gt "$max_width" ] && max_width=$w1
 	[ "$w2" -gt "$max_width" ] && max_width=$w2
 	[ "$max_width" -lt 50 ] && max_width=50
@@ -799,12 +812,12 @@ _draw_dashboard() {
 	local title_pad_total=$((max_width - $(_get_visual_width "$title")))
 	local title_pad_left=$((title_pad_total / 2))
 	local title_pad_right=$((title_pad_total - title_pad_left))
-	printf '%b' "${GREEN}│${NC}$(printf '%*s' "$title_pad_left")${BOLD}${title}${NC}$(printf '%*s' "$title_pad_right")${GREEN}│${NC}\n"
+	printf '%b' "${GREEN}│${NC}$(printf '%*s' "$title_pad_left" "")${BOLD}${title}${NC}$(printf '%*s' "$title_pad_right" "")${GREEN}│${NC}\n"
 	printf '%b' "${GREEN}╰$(generate_line "$max_width" "─")╯${NC}\n"
 	local pad1=$((max_width - w1))
 	local pad2=$((max_width - w2))
-	printf '%b' " ${line1}$(printf '%*s' "$pad1")\n"
-	printf '%b' " ${line2}$(printf '%*s' "$pad2")\n"
+	printf '%b' " ${line1}$(printf '%*s' "$pad1" "")\n"
+	printf '%b' " ${line2}$(printf '%*s' "$pad2" "")\n"
 	printf '%b' "${GREEN}$(generate_line $((max_width + 2)) "─")${NC}\n"
 }
 
@@ -935,8 +948,10 @@ _send_tg_notify() {
 	fi
 	if [[ -z "${TG_BOT_TOKEN:-}" || -z "${TG_CHAT_ID:-}" ]]; then return 0; fi
 	get_vps_ip
-	local display_ip=$(_mask_ip "$VPS_IP")
-	local display_ipv6=$(_mask_ip "$VPS_IPV6")
+	local display_ip
+	display_ip=$(_mask_ip "$VPS_IP")
+	local display_ipv6
+	display_ipv6=$(_mask_ip "$VPS_IPV6")
 	local title="" status_text="" emoji=""
 	if [ "$status_type" == "success" ]; then
 		title="证书续期成功"
@@ -1116,7 +1131,9 @@ validate_args() {
 initialize_environment() {
 	ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
 	if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
-	export PATH="$(dirname "$ACME_BIN"):$PATH"
+	local acme_bin_dir
+	acme_bin_dir=$(dirname "$ACME_BIN")
+	export PATH="${acme_bin_dir}:$PATH"
 
 	mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$CONF_BACKUP_DIR"
 	mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
@@ -1344,7 +1361,8 @@ _handle_backup_restore() {
 		if ! bc=$(prompt_menu_choice "1-3" "true"); then return; fi
 		case "$bc" in
 		1)
-			local ts=$(date +%Y%m%d_%H%M%S)
+			local ts
+			ts=$(date +%Y%m%d_%H%M%S)
 			local backup_file="$BACKUP_DIR/nginx_manager_backup_$ts.tar.gz"
 			log_message INFO "正在打包备份..."
 			if tar -czf "$backup_file" -C / "$PROJECTS_METADATA_FILE" "$TCP_PROJECTS_METADATA_FILE" "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$SSL_CERTS_BASE_DIR" 2>/dev/null; then log_message SUCCESS "备份成功: $backup_file"; else log_message ERROR "备份失败。"; fi
@@ -1559,6 +1577,7 @@ _apply_nginx_conf_with_validation() {
 		log_message ERROR "检测到非法字面量 \\n，已回滚配置 (snapshot: ${rollback_conf_literal:-none})"
 		return $ERR_CFG_VALIDATE
 	fi
+	# shellcheck disable=SC2016
 	if grep -Fq '\$cf_ip' "$target_conf" 2>/dev/null; then
 		local rollback_conf_cf
 		rollback_conf_cf=$(_get_latest_conf_backup "$name" "$type" || true)
@@ -1567,7 +1586,7 @@ _apply_nginx_conf_with_validation() {
 		else
 			rm -f "$target_conf"
 		fi
-		log_message ERROR "检测到非法转义变量 \\$cf_ip，已回滚配置 (snapshot: ${rollback_conf_cf:-none})"
+		log_message ERROR "$(printf '检测到非法转义变量 \\$cf_ip，已回滚配置 (snapshot: %s)' "${rollback_conf_cf:-none}")"
 		return $ERR_CFG_VALIDATE
 	fi
 	_mark_nginx_conf_changed
@@ -2095,7 +2114,8 @@ configure_tcp_proxy() {
 	local ssl_key=""
 	if confirm_or_cancel "是否开启 TLS/SSL 加密卸载?"; then
 		tls_enabled="y"
-		local http_projects=$(jq -c '.[] | select(.cert_file != null and .cert_file != "")' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
+		local http_projects
+		http_projects=$(jq -c '.[] | select(.cert_file != null and .cert_file != "")' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
 		if [ -z "$http_projects" ]; then
 			log_message ERROR "未发现可用证书。"
 			return 1
@@ -2121,7 +2141,8 @@ configure_tcp_proxy() {
 			else log_message ERROR "序号越界"; fi
 		done
 	fi
-	local json=$(jq -n --arg n "$name" --arg lp "$l_port" --arg t "$target" --arg te "$tls_enabled" --arg sc "$ssl_cert" --arg sk "$ssl_key" '{name:$n, listen_port:$lp, target:$t, tls_enabled:$te, ssl_cert:$sc, ssl_key:$sk}')
+	local json
+	json=$(jq -n --arg n "$name" --arg lp "$l_port" --arg t "$target" --arg te "$tls_enabled" --arg sc "$ssl_cert" --arg sk "$ssl_key" '{name:$n, listen_port:$lp, target:$t, tls_enabled:$te, ssl_cert:$sc, ssl_key:$sk}')
 	if _write_and_enable_tcp_config "$l_port" "$json"; then
 		NGINX_RELOAD_NEEDED="true"
 		if control_nginx_reload_if_needed; then
@@ -2274,6 +2295,7 @@ server { listen 80; server_name ${domain}; location /.well-known/acme-challenge/
 EOF
 				ln -sf "$temp_conf_ref" "$NGINX_SITES_ENABLED_DIR/"
 				systemctl reload nginx || true
+				# shellcheck disable=SC2034
 				temp_conf_created_ref="true"
 			fi
 			mkdir -p "$NGINX_WEBROOT_DIR"
@@ -2293,6 +2315,7 @@ EOF
 }
 
 _run_acme_issue_command() {
+	# shellcheck disable=SC2178
 	local -n cmd_ref="$1"
 	local -n log_temp_ref="$2"
 	local -n ret_ref="$3"
@@ -2302,7 +2325,7 @@ _run_acme_issue_command() {
 	printf '%b' "${YELLOW}正在通信 (约 30-60 秒,请勿中断)... ${NC}"
 	run_cmd 90 "${cmd_ref[@]}" >"$log_temp" 2>&1 &
 	local pid=$!
-	local spinstr='|/-\'
+	local spinstr="|/-\\"
 	while kill -0 $pid 2>/dev/null; do
 		local temp=${spinstr#?}
 		printf " [%c]  " "$spinstr"
@@ -2312,7 +2335,9 @@ _run_acme_issue_command() {
 	done
 	printf "    \b\b\b\b"
 	wait $pid
+	# shellcheck disable=SC2034
 	ret_ref=$?
+	# shellcheck disable=SC2034
 	log_temp_ref="$log_temp"
 }
 
@@ -2360,7 +2385,6 @@ _issue_and_install_certificate() {
 	LAST_CERT_CERT=""
 	LAST_CERT_KEY=""
 	if [ "$method" == "reuse" ]; then
-		local cert_info
 		IFS=$'\t' read -r LAST_CERT_CERT LAST_CERT_KEY < <(jq -r '[.cert_file, .key_file] | @tsv' <<<"$json")
 	fi
 	if [ "$method" == "http-01" ]; then
@@ -2394,8 +2418,10 @@ _issue_and_install_certificate() {
 	if [ "$method" = "dns-01" ]; then
 		if [ "$provider" = "dns_cf" ]; then
 			if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
-				local saved_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
-				local saved_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
+				local saved_t
+				saved_t=$(grep "^SAVED_CF_Token=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
+				local saved_a
+				saved_a=$(grep "^SAVED_CF_Account_ID=" "$HOME/.acme.sh/account.conf" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
 				local use_saved="false"
 				if [[ -n "$saved_t" && -n "$saved_a" ]]; then
 					printf '%b' "${CYAN}检测到已保存的 Cloudflare 凭证:${NC}\n"
@@ -2424,7 +2450,7 @@ _issue_and_install_certificate() {
 	printf '%b' "${YELLOW}正在通信 (约 30-60 秒,请勿中断)... ${NC}"
 	run_cmd 90 "${cmd[@]}" >"$log_temp" 2>&1 &
 	local pid=$!
-	local spinstr='|/-\'
+	local spinstr="|/-\\"
 	while kill -0 $pid 2>/dev/null; do
 		local temp=${spinstr#?}
 		printf " [%c]  " "$spinstr"
@@ -2518,7 +2544,8 @@ _gather_project_details() {
 
 	local wc_match=""
 	if [ "$skip_cert" == "false" ]; then
-		local all_wcs=$(jq -c '.[] | select(.use_wildcard == "y" and .cert_file != null)' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
+		local all_wcs
+		all_wcs=$(jq -c '.[] | select(.use_wildcard == "y" and .cert_file != null)' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
 		while read -r wp; do
 			[ -z "$wp" ] && continue
 			local wd
@@ -2746,7 +2773,8 @@ _display_projects_list() {
 		local target_str="Port:$port"
 		[ "$type" = "docker" ] && target_str="Docker:$port"
 		[ "$port" == "cert_only" ] && target_str="CertOnly"
-		local display_target=$(printf "%-${w_target}s" "$target_str")
+		local display_target
+		display_target=$(printf "%-${w_target}s" "$target_str")
 		local renew_date="-"
 		if [ "$method" == "reuse" ]; then
 			renew_date="跟随主域"
@@ -2754,7 +2782,8 @@ _display_projects_list() {
 			local conf_file="$HOME/.acme.sh/${domain}_ecc/${domain}.conf"
 			[ ! -f "$conf_file" ] && conf_file="$HOME/.acme.sh/${domain}/${domain}.conf"
 			if [ -f "$conf_file" ]; then
-				local next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"" || true)
+				local next_ts
+				next_ts=$(grep "^Le_NextRenewTime=" "$conf_file" | cut -d= -f2- | tr -d "'\"" || true)
 				[ -n "$next_ts" ] && renew_date=$(date -d "@$next_ts" +%F 2>/dev/null || printf '%s' "Err")
 			fi
 		fi
@@ -2764,9 +2793,12 @@ _display_projects_list() {
 			status_text="未安装"
 			color_code="${GRAY}"
 		else
-			local end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
-			local end_ts=$(date -d "$end" +%s 2>/dev/null || printf '%s' "0")
-			local now_ts=$(date +%s)
+			local end
+			end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)
+			local end_ts
+			end_ts=$(date -d "$end" +%s 2>/dev/null || printf '%s' "0")
+			local now_ts
+			now_ts=$(date +%s)
 			local days=$(((end_ts - now_ts) / 86400))
 			if ((days < 0)); then
 				status_text="过期 ${days#-}天"
@@ -2789,7 +2821,7 @@ _display_projects_list() {
 		local s_right=$((s_pad - s_left))
 		line+="%${s_left}s${color_code}${status_text}${NC}%${s_right}s "
 		line+="$(_center_text "$renew_date" "$w_renew")"
-		printf "$line\n" "" ""
+		printf '%b\n' "$line"
 	done
 	printf '%b' "\n"
 }
@@ -2848,7 +2880,8 @@ _manage_tcp_actions() {
 				rm -f "$NGINX_STREAM_ENABLED_DIR/tcp_${selected_port}.conf"
 			fi
 			snapshot_json "$TCP_PROJECTS_METADATA_FILE"
-			local temp=$(mktemp)
+			local temp
+			temp=$(mktemp)
 			chmod 600 "$temp"
 			jq --arg p "$selected_port" 'del(.[] | select(.listen_port == $p))' "$TCP_PROJECTS_METADATA_FILE" >"$temp" && mv "$temp" "$TCP_PROJECTS_METADATA_FILE"
 			NGINX_RELOAD_NEEDED="true"
@@ -2887,7 +2920,8 @@ manage_configs() {
 
 _handle_renew_cert() {
 	local d="${1:-}"
-	local p=$(_get_project_json "$d")
+	local p
+	p=$(_get_project_json "$d")
 	[ -z "$p" ] && return
 	_generate_op_id
 	NGINX_RELOAD_NEEDED="true"
@@ -2925,7 +2959,8 @@ _handle_delete_project() {
 _handle_view_config() { _view_nginx_config "${1:-}"; }
 _handle_reconfigure_project() {
 	local d="${1:-}"
-	local cur=$(_get_project_json "$d")
+	local cur
+	cur=$(_get_project_json "$d")
 	log_message INFO "正在重配 $d ..."
 	_generate_op_id
 	local port
@@ -3413,7 +3448,8 @@ _handle_toggle_cf_strict() {
 }
 _handle_cert_details() {
 	local d="${1:-}"
-	local cur=$(_get_project_json "$d")
+	local cur
+	cur=$(_get_project_json "$d")
 	local cert="$SSL_CERTS_BASE_DIR/$d.cer"
 	_generate_op_id
 	local key_path="${SSL_CERTS_BASE_DIR}/${d}.key"
@@ -3430,12 +3466,17 @@ _handle_cert_details() {
 	fi
 	if [ -f "$cert" ]; then
 		local -a lines=()
-		local issuer=$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null | sed -n 's/.*O = \([^,]*\).*/\1/p' || printf '%s' "未知")
-		local subject=$(openssl x509 -in "$cert" -noout -subject 2>/dev/null | sed -n 's/.*CN = \([^,]*\).*/\1/p' || printf '%s' "未知")
-		local end_date=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)
-		local end_ts=$(date -d "$end_date" +%s 2>/dev/null || printf '%s' "0")
+		local issuer
+		issuer=$(openssl x509 -in "$cert" -noout -issuer 2>/dev/null | sed -n 's/.*O = \([^,]*\).*/\1/p' || printf '%s' "未知")
+		local subject
+		subject=$(openssl x509 -in "$cert" -noout -subject 2>/dev/null | sed -n 's/.*CN = \([^,]*\).*/\1/p' || printf '%s' "未知")
+		local end_date
+		end_date=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2)
+		local end_ts
+		end_ts=$(date -d "$end_date" +%s 2>/dev/null || printf '%s' "0")
 		local days=$(((end_ts - $(date +%s)) / 86400))
-		local dns_names=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -oP 'DNS:\K[^,]+' | xargs | sed 's/ /, /g' || printf '%s' "无")
+		local dns_names
+		dns_names=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null | grep -oP 'DNS:\K[^,]+' | xargs | sed 's/ /, /g' || printf '%s' "无")
 		local provider
 		local method_zh="未知"
 		provider=$(jq -r '.dns_api_provider // ""' <<<"$cur")
@@ -3592,7 +3633,11 @@ main_menu() {
 			_render_menu "查看日志" "1. Nginx 全局访问/错误日志" "2. acme.sh 证书运行日志"
 			local log_c
 			if log_c=$(prompt_menu_choice "1-2" "true"); then
-				[ "$log_c" = "1" ] && _view_nginx_global_log || _view_acme_log
+				if [ "$log_c" = "1" ]; then
+					_view_nginx_global_log
+				else
+					_view_acme_log
+				fi
 				press_enter_to_continue
 			fi
 			;;
