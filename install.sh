@@ -1009,9 +1009,9 @@ auto_update_pop_transient_hint() {
 	return 1
 }
 
-auto_update_status_line() {
-	local state="${AUTO_UPDATE_STATE:-unknown}"
-	local count="${AUTO_UPDATE_UPDATED_COUNT:-0}"
+auto_update_status_text_for_state() {
+	local state="${1:-unknown}"
+	local count="${2:-0}"
 	case "$state" in
 	latest)
 		printf '%b' "${GREEN}✅ 最新版本${NC}"
@@ -1041,8 +1041,18 @@ auto_update_status_line() {
 	esac
 }
 
+auto_update_status_line() {
+	auto_update_status_text_for_state "${AUTO_UPDATE_STATE:-unknown}" "${AUTO_UPDATE_UPDATED_COUNT:-0}"
+}
+
 auto_update_version_line() {
 	printf '版本: %b %b' "${SCRIPT_VERSION}" "$(auto_update_status_line)"
+}
+
+auto_update_version_line_for_state() {
+	local state="${1:-unknown}"
+	local count="${2:-0}"
+	printf '版本: %b %b' "${SCRIPT_VERSION}" "$(auto_update_status_text_for_state "$state" "$count")"
 }
 
 start_auto_update_notifier() {
@@ -1059,6 +1069,7 @@ start_auto_update_notifier() {
 	local main_pid="$$"
 	(
 		local last_key=""
+		local last_message=""
 		while kill -0 "$main_pid" 2>/dev/null; do
 			local state=""
 			local count="0"
@@ -1073,22 +1084,25 @@ start_auto_update_notifier() {
 
 			local current_key="${state}:${count}"
 			if [ "$current_key" != "$last_key" ]; then
+				local message=""
 				case "$state" in
 				updated)
 					if [ "$count" -gt 0 ] 2>/dev/null; then
-						printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
-						last_key="$current_key"
+						message="$(auto_update_version_line_for_state "$state" "$count")"
 					fi
 					;;
 				latest)
-					printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
-					last_key="$current_key"
+					message="$(auto_update_version_line_for_state "$state" "$count")"
 					;;
 				error | error_stale)
-					printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
-					last_key="$current_key"
+					message="$(auto_update_version_line_for_state "$state" "$count")"
 					;;
 				esac
+				if [ -n "$message" ] && [ "$message" != "$last_message" ]; then
+					printf '\n%b\n' "$message" >/dev/tty
+					last_message="$message"
+				fi
+				last_key="$current_key"
 			fi
 			sleep 1
 		done
