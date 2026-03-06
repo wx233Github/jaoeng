@@ -1055,6 +1055,19 @@ auto_update_version_line_for_state() {
 	printf '版本: %b %b' "${SCRIPT_VERSION}" "$(auto_update_status_text_for_state "$state" "$count")"
 }
 
+install_menu_refresh_hook() {
+	if [ "${CURRENT_MENU_NAME}" != "MAIN_MENU" ]; then
+		return 1
+	fi
+	local prev_state="${AUTO_UPDATE_STATE}"
+	local prev_count="${AUTO_UPDATE_UPDATED_COUNT}"
+	refresh_auto_update_state
+	if [ "$AUTO_UPDATE_STATE" != "$prev_state" ] || [ "$AUTO_UPDATE_UPDATED_COUNT" != "$prev_count" ]; then
+		return 0
+	fi
+	return 1
+}
+
 start_auto_update_notifier() {
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		return 0
@@ -1301,7 +1314,15 @@ display_and_process_menu() {
 		fi
 
 		local choice
+		# shellcheck disable=SC2034
+		JB_PROMPT_REFRESH_HOOK_FN="install_menu_refresh_hook"
 		choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
+		# shellcheck disable=SC2034
+		JB_PROMPT_REFRESH_HOOK_FN=""
+
+		if [ "$choice" = "__JB_REFRESH__" ]; then
+			continue
+		fi
 
 		if [ -z "${choice:-}" ]; then
 			if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
@@ -1442,7 +1463,6 @@ main() {
 	:
 
 	start_auto_update_background "${@:-}"
-	start_auto_update_notifier
 
 	check_sudo_privileges
 	display_and_process_menu "${@:-}"

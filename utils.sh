@@ -213,6 +213,7 @@ _prompt_user_input() {
 _prompt_for_menu_choice() {
 	local numeric_range="$1"
 	local func_options="${2:-}"
+	local refresh_hook="${JB_PROMPT_REFRESH_HOOK_FN:-}"
 	local prompt_text="${ORANGE}>${NC} 选项 "
 
 	if [ -n "$numeric_range" ]; then
@@ -248,6 +249,31 @@ _prompt_for_menu_choice() {
 		echo ""
 		return 0
 	fi
+	if [ -n "$refresh_hook" ] && declare -f "$refresh_hook" >/dev/null 2>&1; then
+		while true; do
+			printf '%b' "$prompt_text" >/dev/tty
+			if read -r -t 1 choice </dev/tty; then
+				echo "$choice"
+				return 0
+			fi
+
+			local read_rc=$?
+			if [ "$read_rc" -ne 1 ] && [ "$read_rc" -ne 142 ]; then
+				if read -r choice </dev/tty; then
+					echo "$choice"
+					return 0
+				fi
+				echo ""
+				return 0
+			fi
+
+			if "$refresh_hook"; then
+				echo "__JB_REFRESH__"
+				return 0
+			fi
+		done
+	fi
+
 	printf '%b' "$prompt_text" >/dev/tty
 	read -r choice </dev/tty
 	echo "$choice"
