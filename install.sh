@@ -1009,6 +1009,38 @@ auto_update_pop_transient_hint() {
 	return 1
 }
 
+auto_update_status_line() {
+	local state="${AUTO_UPDATE_STATE:-unknown}"
+	local count="${AUTO_UPDATE_UPDATED_COUNT:-0}"
+	case "$state" in
+	latest)
+		printf '%b' "${GREEN}✅ 已是最新版本（后台检查）${NC}"
+		;;
+	updated)
+		if [ "$count" -gt 0 ] 2>/dev/null; then
+			printf '%b' "${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}"
+		else
+			printf '%b' "${GREEN}✅ 后台更新完成${NC}"
+		fi
+		;;
+	updated_core)
+		printf '%b' "${YELLOW}⚠ 主程序有可用更新：下次启动生效${NC}"
+		;;
+	running)
+		printf '%b' "${CYAN}🔄 后台更新检查中${NC}"
+		;;
+	error | error_stale)
+		printf '%b' "${YELLOW}⚠ 后台更新检查异常（不影响使用）${NC}"
+		;;
+	disabled)
+		printf '%b' "${YELLOW}ℹ 后台更新已禁用${NC}"
+		;;
+	*)
+		printf '%b' "${YELLOW}ℹ 后台更新状态未知${NC}"
+		;;
+	esac
+}
+
 start_auto_update_notifier() {
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		return 0
@@ -1216,6 +1248,9 @@ display_and_process_menu() {
 		done
 
 		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
+			formatted_items_for_render+=("更新状态: $(auto_update_status_line)")
+			formatted_items_for_render+=("")
+
 			case "$AUTO_UPDATE_STATE" in
 			updated) ;;
 			updated_core)
