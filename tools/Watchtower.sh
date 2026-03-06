@@ -341,7 +341,7 @@ _apply_config_kv() {
 
 load_config() {
 	if [ ! -f "$CONFIG_FILE" ]; then
-		WATCHTOWER_EXCLUDE_LIST="portainer,portainer_agent"
+		WATCHTOWER_EXCLUDE_LIST=""
 		WATCHTOWER_CONFIG_INTERVAL="21600"
 		WATCHTOWER_HOST_ALIAS=$(hostname | cut -d'.' -f1 | tr -d '\n')
 		[ "${#WATCHTOWER_HOST_ALIAS}" -gt 15 ] && WATCHTOWER_HOST_ALIAS="DockerNode"
@@ -379,7 +379,7 @@ load_config() {
 		TG_BOT_TOKEN="$decrypted_token"
 	fi
 
-	WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-portainer,portainer_agent}"
+	WATCHTOWER_EXCLUDE_LIST="${WATCHTOWER_EXCLUDE_LIST:-}"
 	WATCHTOWER_EXTRA_ARGS="${WATCHTOWER_EXTRA_ARGS:-}"
 	WATCHTOWER_DEBUG_ENABLED="${WATCHTOWER_DEBUG_ENABLED:-false}"
 	WATCHTOWER_CONFIG_INTERVAL="${WATCHTOWER_CONFIG_INTERVAL:-21600}"
@@ -850,11 +850,27 @@ _prompt_rebuild_if_needed() {
 }
 
 run_watchtower_once() {
+	local before_mode before_interval before_cron
+	before_mode="${WATCHTOWER_RUN_MODE:-}"
+	before_interval="${WATCHTOWER_CONFIG_INTERVAL:-}"
+	before_cron="${WATCHTOWER_SCHEDULE_CRON:-}"
+
 	if ! confirm_action "确定要运行一次 Watchtower 来更新所有容器吗?"; then
 		log_info "操作已取消。"
 		return "${ERR_OK}"
 	fi
-	_start_watchtower_container_logic "" "" true
+	if ! _start_watchtower_container_logic "" "" true; then
+		return "${ERR_RUNTIME}"
+	fi
+
+	if [ "${WATCHTOWER_RUN_MODE:-}" != "$before_mode" ] || [ "${WATCHTOWER_CONFIG_INTERVAL:-}" != "$before_interval" ] || [ "${WATCHTOWER_SCHEDULE_CRON:-}" != "$before_cron" ]; then
+		WATCHTOWER_RUN_MODE="$before_mode"
+		WATCHTOWER_CONFIG_INTERVAL="$before_interval"
+		WATCHTOWER_SCHEDULE_CRON="$before_cron"
+		log_warn "检测到手动扫描期间调度参数被改动，已自动恢复。"
+	fi
+
+	return "${ERR_OK}"
 }
 
 # --- 菜单函数 ---
