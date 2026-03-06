@@ -1014,13 +1014,13 @@ auto_update_status_line() {
 	local count="${AUTO_UPDATE_UPDATED_COUNT:-0}"
 	case "$state" in
 	latest)
-		printf '%b' "${GREEN}✅ 已是最新版本（后台检查）${NC}"
+		printf '%b' "${GREEN}✅ 最新版本${NC}"
 		;;
 	updated)
 		if [ "$count" -gt 0 ] 2>/dev/null; then
-			printf '%b' "${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}"
+			printf '%b' "${GREEN}✅ 更新：${count} 个文件已更新${NC}"
 		else
-			printf '%b' "${GREEN}✅ 后台更新完成${NC}"
+			printf '%b' "${GREEN}✅ 更新完成${NC}"
 		fi
 		;;
 	updated_core)
@@ -1248,7 +1248,7 @@ display_and_process_menu() {
 		done
 
 		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-			formatted_items_for_render+=("更新状态: $(auto_update_status_line)")
+			formatted_items_for_render=("版本: ${SCRIPT_VERSION} $(auto_update_status_line)" "" "${formatted_items_for_render[@]:-}")
 			formatted_items_for_render+=("")
 
 			case "$AUTO_UPDATE_STATE" in
