@@ -215,24 +215,41 @@ execute_with_spinner() {
 	local command_to_run=("$@")
 	local LOG_FILE
 	LOG_FILE=$(mktemp)
-	echo -n "- ${message}"
+	local spinner_enabled="true"
+	if [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ]; then
+		spinner_enabled="false"
+	fi
+
+	if [ "$spinner_enabled" = "true" ]; then
+		printf '%b' "\r\033[2K- ${message} [ ]"
+	else
+		printf '%s\n' "- ${message}"
+	fi
 	"${command_to_run[@]}" >"$LOG_FILE" 2>&1 &
 	local pid=$!
-	local spinstr="|/-\\"
-	while ps -p $pid >/dev/null; do
-		local temp=${spinstr#?}
-		printf " [%c]  " "$spinstr"
-		spinstr=$temp${spinstr%"$temp"}
+	local -a frames=("|" "/" "-" "\\")
+	local frame_idx=0
+	while ps -p "$pid" >/dev/null 2>&1; do
+		if [ "$spinner_enabled" = "true" ]; then
+			printf '%b' "\r\033[2K- ${message} [${frames[$frame_idx]}]"
+			frame_idx=$(((frame_idx + 1) % ${#frames[@]}))
+		fi
 		sleep 0.1
-		printf "\b\b\b\b\b"
 	done
-	wait $pid
+	wait "$pid"
 	local rc=$?
-	printf "     \b\b\b\b\b"
-	if [ $rc -eq 0 ]; then
-		echo -e "${GREEN}✓ 完成${NC}"
+	if [ "$rc" -eq 0 ]; then
+		if [ "$spinner_enabled" = "true" ]; then
+			printf '%b\n' "\r\033[2K- ${message} ${GREEN}✓ 完成${NC}"
+		else
+			printf '%b\n' "${GREEN}✓ 完成${NC}"
+		fi
 	else
-		echo -e "${RED}✗ 失败${NC}"
+		if [ "$spinner_enabled" = "true" ]; then
+			printf '%b\n' "\r\033[2K- ${message} ${RED}✗ 失败${NC}"
+		else
+			printf '%b\n' "${RED}✗ 失败${NC}"
+		fi
 		echo "-------------------- 错误日志 --------------------"
 		cat "$LOG_FILE"
 		echo "--------------------------------------------------"
