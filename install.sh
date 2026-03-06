@@ -1036,7 +1036,7 @@ auto_update_status_line() {
 		printf '%b' "${YELLOW}ℹ 后台更新已禁用${NC}"
 		;;
 	*)
-		printf '%b' "${YELLOW}ℹ 后台更新状态未知${NC}"
+		printf '%b' "${CYAN}🔄 后台更新检查中${NC}"
 		;;
 	esac
 }
