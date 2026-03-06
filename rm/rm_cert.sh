@@ -7,6 +7,8 @@ IFS=$'\n\t'
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 BACKUP_ROOT="/root/ssl_backup"
 DRY_RUN="false"
+DOMAINS_CSV=""
+BACKUP_MODE="ask"
 declare -a RUN_ARGS=()
 
 log_info() { printf '%s\n' "$*"; }
@@ -21,6 +23,20 @@ parse_dry_run_args() {
 			DRY_RUN="true"
 			continue
 		fi
+		case "$arg" in
+		--domains=*)
+			DOMAINS_CSV="${arg#--domains=}"
+			continue
+			;;
+		--backup=always)
+			BACKUP_MODE="always"
+			continue
+			;;
+		--backup=never)
+			BACKUP_MODE="never"
+			continue
+			;;
+		esac
 		RUN_ARGS+=("$arg")
 	done
 	if [ "$DRY_RUN" = "true" ]; then
@@ -142,8 +158,10 @@ fi
 
 # 3️⃣ 交互式输入要删除的域名证书目录
 DOMAINS=()
-if [ "${JB_NONINTERACTIVE}" = "true" ]; then
-	log_warn "非交互模式：跳过证书删除步骤"
+if [ -n "${DOMAINS_CSV}" ]; then
+	IFS=',' read -r -a DOMAINS <<<"${DOMAINS_CSV}"
+elif [ "${JB_NONINTERACTIVE}" = "true" ]; then
+	log_warn "非交互模式：跳过证书删除步骤（可使用 --domains=example.com 指定）"
 	DOMAINS=()
 else
 	while true; do
@@ -159,16 +177,22 @@ if [ ${#DOMAINS[@]} -eq 0 ]; then
 	log_info "ℹ️ 未输入任何域名，跳过证书删除步骤。"
 else
 	mkdir -p "$BACKUP_ROOT"
+	local_backup_choice="${BACKUP_MODE}"
+	if [ "${local_backup_choice}" = "ask" ] && [ "${JB_NONINTERACTIVE}" != "true" ]; then
+		read -r -p "是否统一备份所有域名证书到 ${BACKUP_ROOT} ? [y/N]: " BACKUP_ALL </dev/tty
+		if [[ "${BACKUP_ALL}" =~ ^[Yy]$ ]]; then
+			local_backup_choice="always"
+		else
+			local_backup_choice="never"
+		fi
+	fi
 
 	for DOMAIN in "${DOMAINS[@]}"; do
+		DOMAIN="$(printf '%s' "$DOMAIN" | xargs)"
+		[ -z "$DOMAIN" ] && continue
 		CERT_DIR="/etc/ssl/$DOMAIN"
 		if [ -d "$CERT_DIR" ]; then
-			if [ "${JB_NONINTERACTIVE}" = "true" ]; then
-				BACKUP=""
-			else
-				read -r -p "是否备份 $DOMAIN 证书到 $BACKUP_ROOT/$DOMAIN ? [y/N]: " BACKUP </dev/tty
-			fi
-			if [[ "$BACKUP" =~ ^[Yy]$ ]]; then
+			if [ "${local_backup_choice}" = "always" ]; then
 				DEST="$BACKUP_ROOT/$DOMAIN"
 				mkdir -p "$DEST"
 				cp -r "$CERT_DIR"/* "$DEST"/

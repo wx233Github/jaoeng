@@ -1026,6 +1026,8 @@ show_menu() {
 	local cur_kver=""
 	local cur_cc=""
 	local cur_qdisc=""
+	local cur_cc_reason=""
+	local cur_qdisc_reason=""
 	local active_conn=0
 	local current_mode=""
 
@@ -1035,8 +1037,16 @@ show_menu() {
 	cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
 	cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
 	cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
-	[[ -n "${cur_cc}" ]] || cur_cc="未知"
-	[[ -n "${cur_qdisc}" ]] || cur_qdisc="未知"
+	if [[ -z "${cur_cc}" ]]; then
+		cur_cc_reason="$(sysctl -n net.ipv4.tcp_congestion_control 2>&1 || true)"
+		cur_cc_reason="$(printf '%s' "${cur_cc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
+		cur_cc="未知"
+	fi
+	if [[ -z "${cur_qdisc}" ]]; then
+		cur_qdisc_reason="$(sysctl -n net.core.default_qdisc 2>&1 || true)"
+		cur_qdisc_reason="$(printf '%s' "${cur_qdisc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
+		cur_qdisc="未知"
+	fi
 	active_conn="$(ss -tn state established 2>/dev/null | wc -l || printf "1")"
 	active_conn=$((active_conn - 1))
 	[[ "${active_conn}" -lt 0 ]] && active_conn=0
@@ -1047,6 +1057,9 @@ show_menu() {
 	lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}")
 	lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    活跃连接: ${COLOR_GREEN}${active_conn}${COLOR_RESET}")
 	lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}")
+	if [[ -n "${cur_cc_reason}" || -n "${cur_qdisc_reason}" ]]; then
+		lines+=("   读取说明: ${COLOR_YELLOW}${cur_cc_reason:-cc-ok}${COLOR_RESET} | ${COLOR_YELLOW}${cur_qdisc_reason:-qdisc-ok}${COLOR_RESET}")
+	fi
 	lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}")
 	lines+=(" ")
 	lines+=(" ${COLOR_CYAN}模式选择${COLOR_RESET}")

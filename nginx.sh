@@ -1126,7 +1126,7 @@ validate_args() {
 	local arg
 	for arg in "$@"; do
 		case "$arg" in
-		--cron | --non-interactive | --check | --cf-ip-update | --dry-run) ;;
+		--cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run) ;;
 		*)
 			log_message ERROR "未知参数: $arg"
 			return 1
@@ -3684,12 +3684,13 @@ main() {
 	if ! check_dependencies; then
 		install_dependencies
 	fi
-	initialize_environment
 
-	if [[ " $* " =~ " --check " ]]; then
+	if [[ " $* " =~ " --check " ]] || [[ " $* " =~ " --audit-only " ]]; then
 		run_diagnostics
 		return $?
 	fi
+	initialize_environment
+
 	if [[ " $* " =~ " --cf-ip-update " ]]; then
 		_update_cloudflare_ips
 		return $?

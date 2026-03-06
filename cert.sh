@@ -193,17 +193,56 @@ self_elevate_or_die() {
 # --- 全局变量 ---
 ACME_BIN="$HOME/.acme.sh/acme.sh"
 DRY_RUN="false"
+declare -a RUN_ARGS=()
 
 parse_dry_run_args() {
+	RUN_ARGS=()
 	local arg
 	for arg in "$@"; do
 		if [ "$arg" = "--dry-run" ]; then
 			DRY_RUN="true"
+			continue
 		fi
+		RUN_ARGS+=("$arg")
 	done
 	if [ "$DRY_RUN" = "true" ]; then
 		log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
 	fi
+}
+
+cert_usage() {
+	printf '%s\n' "用法: $(basename "$0") [--dry-run] [--health-check]"
+}
+
+run_cert_health_check() {
+	if ! [ -f "$ACME_BIN" ]; then
+		log_warn "acme.sh 未安装，无法执行证书体检。"
+		return 0
+	fi
+	log_info "开始证书体检..."
+	local raw_list
+	raw_list=$("$ACME_BIN" --list 2>/dev/null || true)
+	if [ -z "$raw_list" ]; then
+		log_info "未发现证书记录。"
+		return 0
+	fi
+	local line domain cert_file
+	while IFS= read -r line; do
+		[[ "$line" == Main_Domain* ]] && continue
+		domain=$(printf '%s' "$line" | awk '{print $1}')
+		[ -z "$domain" ] && continue
+		cert_file="/etc/ssl/${domain}/${domain}.crt"
+		if [ ! -f "$cert_file" ]; then
+			printf '%s\n' "[MISSING] ${domain} (证书文件不存在)"
+			continue
+		fi
+		if openssl x509 -checkend $((30 * 86400)) -noout -in "$cert_file" >/dev/null 2>&1; then
+			printf '%s\n' "[OK] ${domain} (30天内不会过期)"
+		else
+			printf '%s\n' "[WARN] ${domain} (30天内即将过期或已过期)"
+		fi
+	done <<<"$raw_list"
+	return 0
 }
 
 run_destructive_with_sudo() {
@@ -809,6 +848,18 @@ main() {
 	log_info "SSL 证书管理模块 ${SCRIPT_VERSION}"
 	log_info "模块定位：轻量证书申请/续期工具（复杂反代与防御策略请使用 nginx 模块）。"
 	_check_dependencies || return 1
+	if [ "${#RUN_ARGS[@]}" -gt 0 ]; then
+		case "${RUN_ARGS[0]}" in
+		--health-check)
+			run_cert_health_check
+			return $?
+			;;
+		-h | --help)
+			cert_usage
+			return 0
+			;;
+		esac
+	fi
 	main_menu
 }
 

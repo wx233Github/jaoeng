@@ -44,6 +44,7 @@ readonly -a UTILS_PUBLIC_API=(
 	"generate_line"
 	"_get_visual_width"
 	"_render_menu"
+	"utils_api_contract"
 )
 
 # --- 颜色定义 ---
@@ -137,6 +138,14 @@ sanitize_noninteractive_flag() {
 
 utils_public_api() {
 	printf '%s\n' "${UTILS_PUBLIC_API[@]}"
+}
+
+utils_api_contract() {
+	printf '%s\n' "公共 API 稳定层（向后兼容承诺）:"
+	printf '%s\n' "- 日志: log_info/log_warn/log_err/log_debug"
+	printf '%s\n' "- 交互: _prompt_user_input/_prompt_for_menu_choice/confirm_action"
+	printf '%s\n' "- UI: _render_menu/press_enter_to_continue/should_clear_screen"
+	printf '%s\n' "- 配置: load_config"
 }
 
 die() {
@@ -334,6 +343,14 @@ load_config() {
 	JB_TIMEZONE="${JB_TIMEZONE:-$DEFAULT_TIMEZONE}"
 	CONFIG_PATH="$config_path"
 	JB_LOG_WITH_TIMESTAMP="${JB_LOG_WITH_TIMESTAMP:-$DEFAULT_LOG_WITH_TIMESTAMP}"
+	if [ -n "${JB_LOG_LEVEL_OVERRIDE:-}" ]; then
+		case "${JB_LOG_LEVEL_OVERRIDE}" in
+		ERROR | WARN | INFO | DEBUG)
+			LOG_LEVEL="${JB_LOG_LEVEL_OVERRIDE}"
+			log_info "应用临时日志级别覆盖: ${LOG_LEVEL}"
+			;;
+		esac
+	fi
 	JB_ENABLE_AUTO_UPDATE="${JB_ENABLE_AUTO_UPDATE:-$DEFAULT_ENABLE_AUTO_UPDATE}"
 	JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-$DEFAULT_NONINTERACTIVE}"
 	# shellcheck disable=SC2034

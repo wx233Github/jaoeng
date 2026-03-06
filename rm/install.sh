@@ -7,6 +7,8 @@ set -euo pipefail
 IFS=$'\n\t'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
+DOWNLOAD_ONLY="false"
+BASE_URL="${JB_BASE_URL:-https://raw.githubusercontent.com/wx233Github/jaoeng/main}"
 
 log_info() { printf '%s\n' "$*"; }
 log_warn() { printf '%s\n' "$*" >&2; }
@@ -52,8 +54,21 @@ self_elevate_or_die() {
 
 self_elevate_or_die "$@"
 
-# GitHub 仓库基础 URL
-BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+parse_cli_flags() {
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--download-only)
+			DOWNLOAD_ONLY="true"
+			;;
+		--base-url=*)
+			BASE_URL="${1#--base-url=}"
+			;;
+		esac
+		shift
+	done
+}
+
+parse_cli_flags "$@"
 
 # 格式: "显示名:真实路径"
 SCRIPTS=(
@@ -97,6 +112,9 @@ main_menu() {
 		log_info "================================"
 		log_info "  🚀 VPS GitHub 一键脚本入口"
 		log_info "================================"
+		if [ "$DOWNLOAD_ONLY" = "true" ]; then
+			log_info "  模式: 仅下载，不执行"
+		fi
 		log_info "0. 退出"
 		i=1
 		for entry in "${SCRIPTS[@]}"; do
@@ -127,8 +145,12 @@ main_menu() {
 
 			log_info "🔽 正在拉取 [$name] ..."
 			download "$file" # 仅打印信息
-			log_info "🚀 执行 [$name]"
-			./"$script_file"
+			if [ "$DOWNLOAD_ONLY" = "true" ]; then
+				log_info "📦 已下载 [$name]，按模式配置不自动执行。"
+			else
+				log_info "🚀 执行 [$name]"
+				./"$script_file"
+			fi
 		else
 			log_warn "❌ 无效选项，请重新输入"
 		fi

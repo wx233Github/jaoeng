@@ -321,6 +321,7 @@ usage() {
 
 选项:
   -h, --help    显示本帮助信息并退出
+  --json        与 status/doctor 搭配输出 JSON
 
 命令:
 	status        仅显示当前运行状态与环境摘要（不修改系统）
@@ -331,7 +332,7 @@ usage() {
 
 示例:
 	$(basename "$0") update
-	$(basename "$0") status
+	$(basename "$0") status --json
 	$(basename "$0") doctor
 	$(basename "$0") docker
 EOF
@@ -339,9 +340,18 @@ EOF
 
 run_doctor_status() {
 	local mode="${1:-status}"
+	local output_format="${2:-text}"
 	local os_id="unknown"
 	local os_like="unknown"
 	local arch
+	local docker_state="missing"
+	local nginx_state="missing"
+	local jq_state="missing"
+	local env_state="n/a"
+	local deps_state="n/a"
+	local config_state="n/a"
+	local utils_state="n/a"
+	local doctor_exit=0
 	arch="$(uname -m 2>/dev/null || echo unknown)"
 
 	if [ -f /etc/os-release ]; then
@@ -349,57 +359,65 @@ run_doctor_status() {
 		os_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"' || echo "unknown")
 	fi
 
-	printf '%s\n' "=== jb ${mode} ==="
-	printf 'script_version=%s\n' "${SCRIPT_VERSION}"
-	printf 'install_dir=%s\n' "${INSTALL_DIR}"
-	printf 'config_path=%s\n' "${CONFIG_PATH}"
-	printf 'utils_path=%s\n' "${UTILS_PATH}"
-	printf 'log_file=%s\n' "${LOG_FILE:-$GLOBAL_LOG_FILE}"
-	printf 'os_id=%s\n' "$os_id"
-	printf 'os_like=%s\n' "$os_like"
-	printf 'arch=%s\n' "$arch"
-	printf 'user=%s\n' "$(id -un 2>/dev/null || echo unknown)"
-	printf 'uid=%s\n' "$(id -u 2>/dev/null || echo unknown)"
-
-	if command -v docker >/dev/null 2>&1; then
-		printf 'docker=present\n'
-	else
-		printf 'docker=missing\n'
-	fi
-	if command -v nginx >/dev/null 2>&1; then
-		printf 'nginx=present\n'
-	else
-		printf 'nginx=missing\n'
-	fi
-	if command -v jq >/dev/null 2>&1; then
-		printf 'jq=present\n'
-	else
-		printf 'jq=missing\n'
-	fi
+	if command -v docker >/dev/null 2>&1; then docker_state="present"; fi
+	if command -v nginx >/dev/null 2>&1; then nginx_state="present"; fi
+	if command -v jq >/dev/null 2>&1; then jq_state="present"; fi
 
 	if [ "$mode" = "doctor" ]; then
-		printf '%s\n' "--- checks ---"
 		if validate_env >/dev/null 2>&1; then
-			printf 'env=ok\n'
+			env_state="ok"
 		else
-			printf 'env=fail\n'
+			env_state="fail"
+			doctor_exit=70
 		fi
 		if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-			printf 'core_dependencies=ok\n'
+			deps_state="ok"
 		else
-			printf 'core_dependencies=fail\n'
+			deps_state="fail"
+			if [ "$doctor_exit" -eq 0 ]; then doctor_exit=69; fi
 		fi
 		if [ -f "$CONFIG_PATH" ] && jq -e . "$CONFIG_PATH" >/dev/null 2>&1; then
-			printf 'config_json=ok\n'
+			config_state="ok"
 		else
-			printf 'config_json=fail\n'
+			config_state="fail"
+			if [ "$doctor_exit" -eq 0 ]; then doctor_exit=65; fi
 		fi
 		if [ -f "$UTILS_PATH" ]; then
-			printf 'utils_file=ok\n'
+			utils_state="ok"
 		else
-			printf 'utils_file=fail\n'
+			utils_state="fail"
+			if [ "$doctor_exit" -eq 0 ]; then doctor_exit=66; fi
 		fi
 	fi
+
+	if [ "$output_format" = "json" ]; then
+		printf '{"mode":"%s","script_version":"%s","install_dir":"%s","config_path":"%s","utils_path":"%s","log_file":"%s","os_id":"%s","os_like":"%s","arch":"%s","user":"%s","uid":%s,"docker":"%s","nginx":"%s","jq":"%s","checks":{"env":"%s","core_dependencies":"%s","config_json":"%s","utils_file":"%s"}}\n' \
+			"$mode" "${SCRIPT_VERSION}" "${INSTALL_DIR}" "${CONFIG_PATH}" "${UTILS_PATH}" "${LOG_FILE:-$GLOBAL_LOG_FILE}" "$os_id" "$os_like" "$arch" "$(id -un 2>/dev/null || echo unknown)" "$(id -u 2>/dev/null || echo 0)" "$docker_state" "$nginx_state" "$jq_state" "$env_state" "$deps_state" "$config_state" "$utils_state"
+	else
+		printf '%s\n' "=== jb ${mode} ==="
+		printf 'script_version=%s\n' "${SCRIPT_VERSION}"
+		printf 'install_dir=%s\n' "${INSTALL_DIR}"
+		printf 'config_path=%s\n' "${CONFIG_PATH}"
+		printf 'utils_path=%s\n' "${UTILS_PATH}"
+		printf 'log_file=%s\n' "${LOG_FILE:-$GLOBAL_LOG_FILE}"
+		printf 'os_id=%s\n' "$os_id"
+		printf 'os_like=%s\n' "$os_like"
+		printf 'arch=%s\n' "$arch"
+		printf 'user=%s\n' "$(id -un 2>/dev/null || echo unknown)"
+		printf 'uid=%s\n' "$(id -u 2>/dev/null || echo unknown)"
+		printf 'docker=%s\n' "$docker_state"
+		printf 'nginx=%s\n' "$nginx_state"
+		printf 'jq=%s\n' "$jq_state"
+		if [ "$mode" = "doctor" ]; then
+			printf '%s\n' "--- checks ---"
+			printf 'env=%s\n' "$env_state"
+			printf 'core_dependencies=%s\n' "$deps_state"
+			printf 'config_json=%s\n' "$config_state"
+			printf 'utils_file=%s\n' "$utils_state"
+		fi
+	fi
+
+	return "$doctor_exit"
 }
 
 # --- Logrotate 自动配置 ---
@@ -1261,12 +1279,18 @@ main() {
 				exit 0
 				;;
 			status)
-				run_doctor_status "status"
+				if [ "${1:-}" = "--json" ]; then
+					shift
+					run_doctor_status "status" "json"
+				else run_doctor_status "status" "text"; fi
 				exit 0
 				;;
 			doctor)
-				run_doctor_status "doctor"
-				exit 0
+				if [ "${1:-}" = "--json" ]; then
+					shift
+					run_doctor_status "doctor" "json"
+				else run_doctor_status "doctor" "text"; fi
+				exit $?
 				;;
 			update)
 				log_info "正在以 Headless 模式更新所有脚本..."

@@ -46,7 +46,7 @@ trap _cleanup_temp_files EXIT INT TERM
 watchtower_validate_args() {
 	local arg="${1:-}"
 	case "$arg" in
-	"" | --run-once | --systemd-start | --systemd-stop | --generate-systemd-service)
+	"" | --run-once | --systemd-start | --systemd-stop | --generate-systemd-service | --diagnose | --export-config | --import-config)
 		return "${ERR_OK}"
 		;;
 	--help | -h)
@@ -57,11 +57,14 @@ watchtower_validate_args() {
 		echo "  --systemd-start           Start the service (for systemd)"
 		echo "  --systemd-stop            Stop the service (for systemd)"
 		echo "  --generate-systemd-service  Generate and install the systemd service file"
+		echo "  --diagnose                Print runtime diagnostics"
+		echo "  --export-config           Export current config to timestamp file"
+		echo "  --import-config <file>    Import config from specified file"
 		exit "${ERR_OK}"
 		;;
 	*)
 		log_error "未知参数: $arg"
-		echo "Usage: $0 [--run-once|--systemd-start|--systemd-stop|--generate-systemd-service]" >&2
+		echo "Usage: $0 [--run-once|--systemd-start|--systemd-stop|--generate-systemd-service|--diagnose|--export-config|--import-config <file>]" >&2
 		exit "${ERR_USAGE}"
 		;;
 	esac
@@ -435,6 +438,54 @@ EOF
 
 	chmod 600 "$temp_config"
 	mv "$temp_config" "$CONFIG_FILE" || log_warn "移动配置文件失败"
+}
+
+watchtower_export_config() {
+	if [ ! -f "$CONFIG_FILE" ]; then
+		log_warn "未找到配置文件: ${CONFIG_FILE}"
+		return "${ERR_CONFIG}"
+	fi
+	local out_file
+	out_file="${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+	cp -f "$CONFIG_FILE" "$out_file"
+	chmod 600 "$out_file" || true
+	log_success "配置已导出: ${out_file}"
+	return "${ERR_OK}"
+}
+
+watchtower_import_config() {
+	local in_file="${1:-}"
+	if [ -z "$in_file" ] || [ ! -f "$in_file" ]; then
+		log_error "导入文件不存在: ${in_file}"
+		return "${ERR_CONFIG}"
+	fi
+	mkdir -p "$(dirname "$CONFIG_FILE")"
+	cp -f "$in_file" "$CONFIG_FILE"
+	chmod 600 "$CONFIG_FILE" || true
+	log_success "配置已导入: ${CONFIG_FILE}"
+	return "${ERR_OK}"
+}
+
+watchtower_diagnose() {
+	printf 'watchtower_script_version=%s\n' "$SCRIPT_VERSION"
+	printf 'config_file=%s\n' "$CONFIG_FILE"
+	if [ -f "$CONFIG_FILE" ]; then
+		printf 'config_exists=yes\n'
+	else
+		printf 'config_exists=no\n'
+	fi
+	if command -v docker >/dev/null 2>&1; then
+		printf 'docker=present\n'
+		if JB_SUDO_LOG_QUIET="true" run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower'; then
+			printf 'watchtower_container=running\n'
+		else
+			printf 'watchtower_container=not_running\n'
+		fi
+	else
+		printf 'docker=missing\n'
+		printf 'watchtower_container=n/a\n'
+	fi
+	return "${ERR_OK}"
 }
 
 # --- 增强的 IP 地址获取函数 ---
@@ -1709,6 +1760,18 @@ main() {
 	[ -f "$CONFIG_FILE" ] && load_config
 
 	case "${1:-}" in
+	--diagnose)
+		watchtower_diagnose
+		exit $?
+		;;
+	--export-config)
+		watchtower_export_config
+		exit $?
+		;;
+	--import-config)
+		watchtower_import_config "${2:-}"
+		exit $?
+		;;
 	--run-once)
 		run_watchtower_once
 		exit $?

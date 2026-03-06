@@ -520,6 +520,18 @@ docker_prune_system() {
 	log_success "✅ 系统清理完成。"
 }
 
+repair_docker_service() {
+	if [ "$DOCKER_INSTALLED" != "true" ]; then
+		log_warn "Docker 未安装，无法执行服务修复。"
+		return 0
+	fi
+	log_info "开始执行服务快速修复（不重装、不改镜像源）..."
+	run_destructive_with_sudo systemctl daemon-reload || true
+	run_destructive_with_sudo systemctl restart docker.service || true
+	get_docker_status
+	log_info "修复后服务状态: ${DOCKER_SERVICE_STATUS}"
+}
+
 _manage_installation() {
 	while true; do
 		if should_clear_screen "docker:manage_installation"; then clear; fi
@@ -577,8 +589,9 @@ main_menu() {
 				"3. 系统清理 (Prune)"
 				"4. 重新安装 Docker"
 				"5. 卸载 Docker"
+				"6. 快速修复服务状态"
 			)
-			options_map=("service" "config" "prune" "reinstall" "uninstall")
+			options_map=("service" "config" "prune" "reinstall" "uninstall" "repair")
 		else
 			menu_items+=(
 				"ℹ️ ${YELLOW}检测到 Docker 未安装${NC}"
@@ -612,6 +625,7 @@ main_menu() {
 			;;
 		prune) docker_prune_system ;;
 		reinstall)
+			log_warn "影响摘要: 将先卸载后重装 Docker，可能中断容器服务。"
 			if confirm_action "确定要重新安装 Docker 吗? 这将先执行卸载流程。"; then
 				if uninstall_docker; then
 					install_docker
@@ -619,6 +633,7 @@ main_menu() {
 			fi
 			;;
 		uninstall) uninstall_docker ;;
+		repair) repair_docker_service ;;
 		esac
 
 		if [[ "$action_taken_in_submenu" == false ]]; then
