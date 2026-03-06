@@ -360,6 +360,22 @@ cleanup_docker_apt_source() {
 	run_destructive_with_sudo rm -f /etc/apt/keyrings/docker.gpg
 }
 
+remove_legacy_docker_packages() {
+	local -a legacy_pkgs=(docker docker-engine docker.io containerd runc)
+	local -a installed_pkgs=()
+	local pkg
+	for pkg in "${legacy_pkgs[@]}"; do
+		if dpkg -s "$pkg" >/dev/null 2>&1; then
+			installed_pkgs+=("$pkg")
+		fi
+	done
+	if [ ${#installed_pkgs[@]} -eq 0 ]; then
+		log_info "未发现需清理的旧版 Docker 包。"
+		return 0
+	fi
+	run_destructive_with_sudo apt-get remove -y "${installed_pkgs[@]}"
+}
+
 resolve_docker_repo_codename() {
 	DOCKER_REPO_CODENAME="$CODENAME"
 	if [ "$DISTRO" = "debian" ] && [ "$CODENAME" = "trixie" ]; then
@@ -484,8 +500,8 @@ install_docker() {
 	check_distro
 	resolve_docker_repo_codename
 	log_success "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
-	execute_with_spinner "清理旧版本 Docker (如有)..." run_destructive_with_sudo apt-get remove -y docker docker-engine docker.io containerd runc
 	execute_with_spinner "清理历史 Docker APT 源 (防止版本冲突)..." cleanup_docker_apt_source
+	execute_with_spinner "清理旧版本 Docker (如有)..." remove_legacy_docker_packages
 	execute_with_spinner "更新软件源..." run_with_sudo apt-get update -qq
 	execute_with_spinner "创建 APT 密钥环目录..." run_with_sudo install -m 0755 -d /etc/apt/keyrings
 	execute_with_spinner "添加 Docker GPG 密钥..." install_docker_gpg_key "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" "/etc/apt/keyrings/docker.gpg"
