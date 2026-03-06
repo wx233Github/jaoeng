@@ -490,8 +490,8 @@ configure_docker_mirror() {
 
 add_user_to_docker_group() {
 	local user_to_add=""
-	if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-		user_to_add=$SUDO_USER
+	if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
+		user_to_add="${SUDO_USER:-}"
 		if ! confirm_action "👤 检测到您使用 sudo 运行，是否将用户 '$user_to_add' 加入 docker 组？"; then user_to_add=""; fi
 	else
 		user_to_add=$(_prompt_user_input "🤔 是否要将某个普通用户加入 docker 组以便无 sudo 使用 docker？(请输入用户名，或直接回车跳过): " "")
