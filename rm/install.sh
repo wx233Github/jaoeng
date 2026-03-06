@@ -130,7 +130,7 @@ main_menu() {
 
 		if [ -z "$choice" ]; then
 			log_info "👋 回车退出"
-			exit 10
+			exit 0
 		elif ! [[ "$choice" =~ ^[0-9]+$ ]]; then
 			log_warn "❌ 请输入数字选项"
 			continue

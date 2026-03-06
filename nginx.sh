@@ -3665,7 +3665,7 @@ main_menu() {
 			setup_tg_notifier
 			press_enter_to_continue
 			;;
-		"") exit 10 ;;
+		"") return 0 ;;
 		*) log_message ERROR "无效选择" ;;
 		esac
 	done
