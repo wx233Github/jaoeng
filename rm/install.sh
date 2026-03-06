@@ -123,7 +123,6 @@ main_menu() {
 			((i++))
 		done
 		if [ "${JB_NONINTERACTIVE}" = "true" ]; then
-			log_warn "非交互模式：已退出"
 			exit 0
 		fi
 		read -r -p "请选择要执行的脚本 (0-${#SCRIPTS[@]}，回车退出): " choice </dev/tty

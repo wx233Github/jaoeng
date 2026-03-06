@@ -606,7 +606,6 @@ main_menu() {
 		choice=$(_prompt_for_menu_choice "1-${#options_map[@]}")
 
 		if [ -z "$choice" ]; then
-			log_info "非交互或空输入：已退出 Docker 菜单。"
 			return 10
 		fi
 		if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#options_map[@]} ]; then

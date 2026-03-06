@@ -1093,7 +1093,6 @@ main() {
 	while true; do
 		show_menu
 		if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-			log_warn "非交互模式：已退出"
 			exit 0
 		fi
 

@@ -696,7 +696,7 @@ run_module() {
 	set -e
 
 	if [ "$exit_code" -eq 0 ]; then
-		log_success "模块 [${module_name}] 执行完毕。"
+		:
 	elif [ "$exit_code" -eq 10 ]; then
 		:
 	elif [ "$exit_code" -eq 130 ]; then
@@ -1311,7 +1311,7 @@ display_and_process_menu() {
 
 		if [ -z "${choice:-}" ]; then
 			if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-				EXIT_MESSAGE="已退出。"
+				EXIT_MESSAGE="已退出"
 				exit 0
 			else
 				CURRENT_MENU_NAME="MAIN_MENU"
@@ -1352,7 +1352,7 @@ display_and_process_menu() {
 		esac
 
 		if [ "$type" = "item" ] && { [ "$exit_code" -eq 10 ] || [ "$exit_code" -eq 130 ]; }; then
-			EXIT_MESSAGE="已退出。"
+			EXIT_MESSAGE="已退出"
 			exit 0
 		fi
 
