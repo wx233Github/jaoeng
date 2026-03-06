@@ -2183,6 +2183,23 @@ configure_tcp_proxy() {
 	fi
 }
 
+_display_tcp_projects_list() {
+	local json="${1:-}"
+	printf '%b' "\n"
+	printf "${BOLD}%-4s %-10s %-5s %-12s %-22s${NC}\n" "ID" "端口" "TLS" "备注" "目标地址"
+	printf '%b' "──────────────────────────────────────────────────────────\n"
+	local idx=0
+	jq -r '.[] | [(.listen_port // ""), (.name // "-"), (.target // ""), (.tls_enabled // "n")] | @tsv' <<<"$json" | while IFS=$'\t' read -r port name target tls; do
+		idx=$((idx + 1))
+		local short_target="${target:0:22}"
+		[ ${#target} -gt 22 ] && short_target="${target:0:19}..."
+		local tls_str="${RED}否${NC}"
+		[ "$tls" == "y" ] && tls_str="${GREEN}是${NC}"
+		printf "%-4d ${GREEN}%-10s${NC} %-14s %-12s %-22s\n" "$idx" "$port" "$tls_str" "${name:0:10}" "$short_target"
+	done
+	printf '%b' "\n"
+}
+
 manage_tcp_configs() {
 	_generate_op_id
 	if ! acquire_tcp_lock; then return 1; fi
@@ -2194,20 +2211,7 @@ manage_tcp_configs() {
 			log_message WARN "暂无 TCP 项目。"
 			break
 		fi
-		printf '%b' "\n"
-		printf "${BOLD}%-4s %-10s %-5s %-12s %-22s${NC}\n" "ID" "端口" "TLS" "备注" "目标地址"
-		printf '%b' "──────────────────────────────────────────────────────────\n"
-		local idx=0
-		jq -r '.[] | [(.listen_port // ""), (.name // "-"), (.target // ""), (.tls_enabled // "n")] | @tsv' <<<"$all" | while IFS=$'\t' read -r port name target tls; do
-			idx=$((idx + 1))
-			local short_target="${target:0:22}"
-			[ ${#target} -gt 22 ] && short_target="${target:0:19}..."
-			local tls_str="${RED}否${NC}"
-			[ "$tls" == "y" ] && tls_str="${GREEN}是${NC}"
-			printf "%-4d ${GREEN}%-10s${NC} %-14s %-12s %-22s\n" "$idx" "$port" "$tls_str" "${name:0:10}" "$short_target"
-		done
-		printf '%b' "\n"
-		if ! select_item_and_act "$all" "$count" "请输入序号选择 TCP 项目 (回车返回)" "listen_port" _manage_tcp_actions; then break; fi
+		if ! select_item_and_act "$all" "$count" "请输入序号选择 TCP 项目 (回车返回)" "listen_port" _manage_tcp_actions _display_tcp_projects_list; then break; fi
 	done
 }
 
@@ -2857,8 +2861,11 @@ _display_projects_list() {
 }
 
 select_item_and_act() {
-	local list_json="${1:-}" count="${2:-0}" prompt_text="${3:-}" id_field="${4:-}" action_fn="${5:-}"
+	local list_json="${1:-}" count="${2:-0}" prompt_text="${3:-}" id_field="${4:-}" action_fn="${5:-}" list_render_fn="${6:-}"
 	while true; do
+		if [ -n "$list_render_fn" ] && declare -f "$list_render_fn" >/dev/null 2>&1; then
+			"$list_render_fn" "$list_json"
+		fi
 		local choice_idx
 		if ! choice_idx=$(prompt_input "$prompt_text" "" "^[0-9]*$" "无效序号" "true"); then return 0; fi
 		if [ -z "$choice_idx" ] || [ "$choice_idx" == "0" ]; then return 1; fi
@@ -2942,9 +2949,7 @@ manage_configs() {
 			log_message WARN "暂无项目。"
 			break
 		fi
-		printf '%b' "\n"
-		_display_projects_list "$all"
-		if ! select_item_and_act "$all" "$count" "请输入序号选择项目 (回车返回)" "domain" _manage_http_actions; then break; fi
+		if ! select_item_and_act "$all" "$count" "请输入序号选择项目 (回车返回)" "domain" _manage_http_actions _display_projects_list; then break; fi
 	done
 }
 
@@ -3677,7 +3682,7 @@ main_menu() {
 			setup_tg_notifier
 			press_enter_to_continue
 			;;
-		"") return 0 ;;
+		"") return 10 ;;
 		*) log_message ERROR "无效选择" ;;
 		esac
 	done

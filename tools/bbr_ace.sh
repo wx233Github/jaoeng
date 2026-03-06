@@ -1100,7 +1100,7 @@ main() {
 		local c=""
 		c="$(ui_prompt_choice "1-8" "请选择操作")"
 		case "${c}" in
-		"") exit 0 ;;
+		"") exit 10 ;;
 		1) apply_profile "stock" ;;
 		2) apply_profile "aggressive" ;;
 		3) manage_ipv4_precedence "enable" ;;

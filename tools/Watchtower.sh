@@ -1742,7 +1742,7 @@ main_menu() {
 		2) config_center_menu ;;
 		3) manage_tasks ;;
 		4) show_watchtower_details ;;
-		"") return "${ERR_OK}" ;;
+		"") return "${ERR_RUNTIME}" ;;
 		*)
 			log_warn "无效选项。"
 			sleep 1
