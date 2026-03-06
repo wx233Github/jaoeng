@@ -514,7 +514,15 @@ _get_ip_address() {
 		if [ "$ver" = "4" ]; then
 			ip=$(hostname -I 2>/dev/null | awk '{print $1}')
 		else
-			ip=$($ip_cmd addr show 2>/dev/null | awk -v v="$match_pattern" '/scope global/ {print $2}' | cut -d'/' -f1 | head -n1)
+			ip=$($ip_cmd addr show 2>/dev/null | awk -v v="$match_pattern" '/scope global/ && $2 !~ /^fe80:/ {print $2}' | cut -d'/' -f1 | head -n1)
+		fi
+	fi
+
+	if [ -z "$ip" ]; then
+		if [ "$ver" = "4" ] && command -v curl >/dev/null 2>&1; then
+			ip=$(timeout 3s curl -4 -fsSL https://api.ipify.org 2>/dev/null || true)
+		elif [ "$ver" = "6" ] && command -v curl >/dev/null 2>&1; then
+			ip=$(timeout 3s curl -6 -fsSL https://api64.ipify.org 2>/dev/null || true)
 		fi
 	fi
 
@@ -539,6 +547,23 @@ _format_seconds_to_human() {
 	[ "$minutes" -gt 0 ] && result+="${minutes}分钟"
 	[ "$seconds" -gt 0 ] && result+="${seconds}秒"
 	echo "${result:-0秒}"
+}
+
+_mask_ip() {
+	local ip="${1:-}"
+	if [ -z "$ip" ] || [ "$ip" = "N/A" ]; then
+		printf '%s\n' "N/A"
+		return 0
+	fi
+	if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		IFS='.' read -r a b _c _d <<<"$ip"
+		printf '%s\n' "${a}.${b}.*.*"
+	elif [[ "$ip" =~ .*:.* ]]; then
+		IFS=':' read -r a b _rest <<<"$ip"
+		printf '%s\n' "${a}:${b}::***"
+	else
+		printf '%s\n' "***"
+	fi
 }
 _escape_markdown() {
 	local input="${1:-}"
@@ -624,10 +649,15 @@ _generate_env_file() {
 	local target_file="${1:-$ENV_FILE}"
 	local alias_name
 	alias_name=$(echo "${WATCHTOWER_HOST_ALIAS:-DockerNode}" | tr -d '\n\r')
+	local alias_masked
+	alias_masked=$(_mask_string "$alias_name" 2)
 
 	local ipv4_address ipv6_address
 	ipv4_address=$(_get_ip_address 4 "${WATCHTOWER_IPV4_INTERFACE}")
 	ipv6_address=$(_get_ip_address 6 "${WATCHTOWER_IPV6_INTERFACE}")
+	local ipv4_masked ipv6_masked
+	ipv4_masked=$(_mask_ip "$ipv4_address")
+	ipv6_masked=$(_mask_ip "$ipv6_address")
 
 	rm -f "$target_file"
 
@@ -640,9 +670,11 @@ _generate_env_file() {
 			echo "WATCHTOWER_NO_STARTUP_MESSAGE=true"
 
 			local br='{{ "\n" }}'
+			local template_time
+			template_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 			cat <<EOF | tr -d '\n' >>"$target_file"
-WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_name}\`${br}🌐 *IPv4:* \`${ipv4_address}\`${br}🌐 *IPv6:* \`${ipv6_address}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
+WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_masked}\`${br}🌐 *IPv4:* \`${ipv4_masked}\`${br}🌐 *IPv6:* \`${ipv6_masked}\`${br}⌚ *时间:* \`${template_time}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
 EOF
 			printf '\n' >>"$target_file"
 			echo "WATCHTOWER_NOTIFICATION_REPORT=true"
