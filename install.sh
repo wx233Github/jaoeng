@@ -1041,6 +1041,10 @@ auto_update_status_line() {
 	esac
 }
 
+auto_update_version_line() {
+	printf '版本: %b %b' "${SCRIPT_VERSION}" "$(auto_update_status_line)"
+}
+
 start_auto_update_notifier() {
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		return 0
@@ -1072,16 +1076,16 @@ start_auto_update_notifier() {
 				case "$state" in
 				updated)
 					if [ "$count" -gt 0 ] 2>/dev/null; then
-						printf '\n%b\n' "${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}" >/dev/tty
+						printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
 						last_key="$current_key"
 					fi
 					;;
 				latest)
-					printf '\n%b\n' "${GREEN}✅ 已是最新版本（后台检查）${NC}" >/dev/tty
+					printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
 					last_key="$current_key"
 					;;
 				error | error_stale)
-					printf '\n%b\n' "${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}" >/dev/tty
+					printf '\n%b\n' "$(auto_update_version_line)" >/dev/tty
 					last_key="$current_key"
 					;;
 				esac
@@ -1248,8 +1252,7 @@ display_and_process_menu() {
 		done
 
 		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-			formatted_items_for_render=("版本: ${SCRIPT_VERSION} $(auto_update_status_line)" "" "${formatted_items_for_render[@]:-}")
-			formatted_items_for_render+=("")
+			formatted_items_for_render=("$(auto_update_version_line)" "${formatted_items_for_render[@]:-}")
 
 			case "$AUTO_UPDATE_STATE" in
 			updated) ;;
