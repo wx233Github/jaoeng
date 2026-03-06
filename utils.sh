@@ -251,6 +251,7 @@ _prompt_for_menu_choice() {
 	printf '%b' "$prompt_text" >/dev/tty
 	read -r choice </dev/tty
 	echo "$choice"
+	return 0
 }
 
 press_enter_to_continue() {

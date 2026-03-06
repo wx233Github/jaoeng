@@ -23,6 +23,7 @@ AUTO_UPDATE_PID=""
 AUTO_UPDATE_STARTED_AT=""
 AUTO_UPDATE_LAST_HINT=""
 AUTO_UPDATE_LAST_HINT_TS=0
+AUTO_UPDATE_NOTIFIER_PID=""
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -1008,6 +1009,65 @@ auto_update_pop_transient_hint() {
 	return 1
 }
 
+start_auto_update_notifier() {
+	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+		return 0
+	fi
+	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+		return 0
+	fi
+	if [ -n "${AUTO_UPDATE_NOTIFIER_PID:-}" ] && kill -0 "$AUTO_UPDATE_NOTIFIER_PID" 2>/dev/null; then
+		return 0
+	fi
+
+	local main_pid="$$"
+	(
+		local last_key=""
+		while kill -0 "$main_pid" 2>/dev/null; do
+			local state=""
+			local count="0"
+			if [ -f "$AUTO_UPDATE_STATUS_FILE" ]; then
+				while IFS='=' read -r key value; do
+					case "$key" in
+					state) state="$value" ;;
+					updated_count) count="$value" ;;
+					esac
+				done <"$AUTO_UPDATE_STATUS_FILE"
+			fi
+
+			local current_key="${state}:${count}"
+			if [ "$current_key" != "$last_key" ]; then
+				case "$state" in
+				updated)
+					if [ "$count" -gt 0 ] 2>/dev/null; then
+						printf '\n%b\n' "${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}" >/dev/tty
+						last_key="$current_key"
+					fi
+					;;
+				latest)
+					printf '\n%b\n' "${GREEN}✅ 已是最新版本（后台检查）${NC}" >/dev/tty
+					last_key="$current_key"
+					;;
+				error | error_stale)
+					printf '\n%b\n' "${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}" >/dev/tty
+					last_key="$current_key"
+					;;
+				esac
+			fi
+			sleep 1
+		done
+	) >/dev/null 2>&1 &
+	AUTO_UPDATE_NOTIFIER_PID="$!"
+}
+
+stop_auto_update_notifier() {
+	if [[ "${AUTO_UPDATE_NOTIFIER_PID:-}" =~ ^[0-9]+$ ]]; then
+		kill "$AUTO_UPDATE_NOTIFIER_PID" 2>/dev/null || true
+		wait "$AUTO_UPDATE_NOTIFIER_PID" 2>/dev/null || true
+		AUTO_UPDATE_NOTIFIER_PID=""
+	fi
+}
+
 _can_run_background_update() {
 	if [ "$(id -u)" -eq 0 ]; then
 		return 0
@@ -1260,7 +1320,7 @@ main() {
 
 	# 显式设置 trap，强化对中止信号和退出的兜底
 	trap 'on_error "$?" "$LINENO"' ERR
-	trap 'exit_code=$?; cleanup_temp_files; flock -u 200 2>/dev/null || true; cleanup_lock_file; if [ -n "${EXIT_MESSAGE:-}" ]; then log_info "${EXIT_MESSAGE}"; elif [ "$exit_code" -ne 0 ]; then log_info "脚本已退出 (代码: ${exit_code})"; fi' EXIT INT TERM
+	trap 'exit_code=$?; stop_auto_update_notifier; cleanup_temp_files; flock -u 200 2>/dev/null || true; cleanup_lock_file; if [ -n "${EXIT_MESSAGE:-}" ]; then log_info "${EXIT_MESSAGE}"; elif [ "$exit_code" -ne 0 ]; then log_info "脚本已退出 (代码: ${exit_code})"; fi' EXIT INT TERM
 
 	exec 200>"${LOCK_FILE}"
 	if ! flock -n 200; then
@@ -1330,6 +1390,7 @@ main() {
 	:
 
 	start_auto_update_background "${@:-}"
+	start_auto_update_notifier
 
 	check_sudo_privileges
 	display_and_process_menu "${@:-}"
