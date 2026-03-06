@@ -199,6 +199,7 @@ COMPOSE_VERSION=""
 DOCKER_INSTALL_URL=""
 DISTRO=""
 CODENAME=""
+DOCKER_REPO_CODENAME=""
 DRY_RUN="false"
 declare -a RUN_ARGS=()
 
@@ -339,6 +340,7 @@ check_distro() {
 				log_err "无法从此系统获取到发行版代号 (Version Codename)，无法继续。"
 				exit 1
 			fi
+			DOCKER_REPO_CODENAME="$CODENAME"
 			;;
 		*)
 			log_err "不支持的系统: $ID。"
@@ -349,6 +351,43 @@ check_distro() {
 		log_err "无法检测到系统发行版信息。"
 		exit 1
 	fi
+}
+
+cleanup_docker_apt_source() {
+	ensure_safe_path "/etc/apt/sources.list.d/docker.list"
+	ensure_safe_path "/etc/apt/keyrings/docker.gpg"
+	run_destructive_with_sudo rm -f /etc/apt/sources.list.d/docker.list
+	run_destructive_with_sudo rm -f /etc/apt/keyrings/docker.gpg
+}
+
+resolve_docker_repo_codename() {
+	DOCKER_REPO_CODENAME="$CODENAME"
+	if [ "$DISTRO" = "debian" ] && [ "$CODENAME" = "trixie" ]; then
+		log_warn "检测到 Debian trixie，Docker 官方源可能尚未提供该代号，尝试回退到 bookworm 仓库。"
+		DOCKER_REPO_CODENAME="bookworm"
+	fi
+}
+
+write_docker_repo_and_update() {
+	local docker_list_content
+	docker_list_content="deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${DOCKER_REPO_CODENAME} stable"
+	execute_with_spinner "添加 Docker 软件源 (${DISTRO}/${DOCKER_REPO_CODENAME})..." write_docker_apt_source "$docker_list_content" "/etc/apt/sources.list.d/docker.list"
+	execute_with_spinner "再次更新软件源..." run_with_sudo apt-get update -qq
+}
+
+ensure_docker_repo_ready() {
+	if write_docker_repo_and_update; then
+		return 0
+	fi
+
+	if [ "$DISTRO" = "debian" ] && [ "$DOCKER_REPO_CODENAME" = "bookworm" ]; then
+		log_warn "bookworm 回退源仍不可用，尝试使用 bullseye 兼容仓库。"
+		DOCKER_REPO_CODENAME="bullseye"
+		write_docker_repo_and_update
+		return $?
+	fi
+
+	return 1
 }
 
 uninstall_docker() {
@@ -443,16 +482,15 @@ install_docker() {
 	log_info "🚀 开始安装 Docker & Docker Compose..."
 	determine_install_source
 	check_distro
+	resolve_docker_repo_codename
 	log_success "✅ 系统: $DISTRO ($CODENAME)，安装源已确定，准备就绪！"
 	execute_with_spinner "清理旧版本 Docker (如有)..." run_destructive_with_sudo apt-get remove -y docker docker-engine docker.io containerd runc
+	execute_with_spinner "清理历史 Docker APT 源 (防止版本冲突)..." cleanup_docker_apt_source
 	execute_with_spinner "更新软件源..." run_with_sudo apt-get update -qq
 	execute_with_spinner "创建 APT 密钥环目录..." run_with_sudo install -m 0755 -d /etc/apt/keyrings
 	execute_with_spinner "添加 Docker GPG 密钥..." install_docker_gpg_key "${DOCKER_URL_OFFICIAL}/linux/${DISTRO}/gpg" "/etc/apt/keyrings/docker.gpg"
 	execute_with_spinner "设置 Docker GPG 密钥权限..." run_with_sudo chmod a+r /etc/apt/keyrings/docker.gpg
-	local docker_list_content
-	docker_list_content="deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_INSTALL_URL}/linux/${DISTRO} ${CODENAME} stable"
-	execute_with_spinner "添加 Docker 软件源..." write_docker_apt_source "$docker_list_content" "/etc/apt/sources.list.d/docker.list"
-	execute_with_spinner "再次更新软件源..." run_with_sudo apt-get update -qq
+	ensure_docker_repo_ready
 	execute_with_spinner "安装 Docker 引擎和 Compose 插件..." run_with_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 	execute_with_spinner "启动 Docker 并设置开机自启..." run_with_sudo systemctl enable --now docker
 	execute_with_spinner "运行 hello-world 容器进行功能测试..." run_with_sudo docker run --rm hello-world
