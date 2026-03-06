@@ -358,6 +358,25 @@ cleanup_docker_apt_source() {
 	ensure_safe_path "/etc/apt/keyrings/docker.gpg"
 	run_destructive_with_sudo rm -f /etc/apt/sources.list.d/docker.list
 	run_destructive_with_sudo rm -f /etc/apt/keyrings/docker.gpg
+
+	local src_file
+	for src_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+		[ -f "$src_file" ] || continue
+		if grep -Eq 'download\.docker\.com/linux|mirrors\.ustc\.edu\.cn/docker-ce' "$src_file"; then
+			local tmp_file
+			tmp_file=$(mktemp "/tmp/apt_source_clean_XXXXXX")
+			awk '!/download\.docker\.com\/linux/ && !/mirrors\.ustc\.edu\.cn\/docker-ce/' "$src_file" >"$tmp_file"
+			run_with_sudo install -m 0644 "$tmp_file" "$src_file"
+			rm -f "$tmp_file"
+		fi
+	done
+
+	for src_file in /etc/apt/sources.list.d/*.sources; do
+		[ -f "$src_file" ] || continue
+		if grep -Eq 'download\.docker\.com/linux|mirrors\.ustc\.edu\.cn/docker-ce' "$src_file"; then
+			run_destructive_with_sudo rm -f "$src_file"
+		fi
+	done
 }
 
 remove_legacy_docker_packages() {
