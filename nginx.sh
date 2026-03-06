@@ -8,6 +8,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
+export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 
@@ -781,8 +782,11 @@ _center_text() {
 
 _draw_dashboard() {
 	_generate_op_id
-	local nginx_v
-	nginx_v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)
+	local nginx_v="unknown"
+	if command -v nginx >/dev/null 2>&1; then
+		nginx_v=$(nginx -v 2>&1 | sed -n 's#^.*/\([^[:space:]]\+\).*$#\1#p' | head -n1)
+		[ -z "$nginx_v" ] && nginx_v="unknown"
+	fi
 	local uptime_raw
 	uptime_raw=$(uptime -p | sed 's/up //')
 	local count
@@ -1726,6 +1730,10 @@ _normalize_max_body_size() {
 	fi
 
 	normalized="${normalized,,}"
+	if [[ "$normalized" =~ ^0[kmg]?$ ]]; then
+		printf '%s\n' "0"
+		return 0
+	fi
 
 	if [[ "$normalized" =~ ^[1-9][0-9]*[kKmMgG]?$ ]] || [[ "$normalized" =~ ^0$ ]]; then
 		printf '%s\n' "$normalized"
@@ -1904,6 +1912,9 @@ _write_and_enable_nginx_config() {
 		fi
 		body_cfg="client_max_body_size ${normalized_max_body};"
 	fi
+	if [ -z "$body_cfg" ]; then
+		body_cfg="client_max_body_size 0;"
+	fi
 	local extra_cfg=""
 	if [ -n "$custom_cfg" ] && [ "$custom_cfg" != "null" ]; then
 		if _is_valid_custom_directive_silent "$custom_cfg"; then
@@ -1951,6 +1962,7 @@ server {
     server_name ${domain};
     ssl_certificate ${cert}; ssl_certificate_key ${key};
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ecdh_curve X25519:prime256v1:secp384r1;
     ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';
     add_header Strict-Transport-Security "max-age=31536000;" always;
     ${body_cfg}${cf_strict_cfg}
@@ -2075,7 +2087,7 @@ _write_and_enable_tcp_config() {
 	if [ "$tls_enabled" == "y" ]; then
 		: "ssl_cert/ssl_key already set"
 		listen_flag="ssl"
-		ssl_block="\n    ssl_certificate ${ssl_cert};\n    ssl_certificate_key ${ssl_key};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';"
+		ssl_block="\n    ssl_certificate ${ssl_cert};\n    ssl_certificate_key ${ssl_key};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    ssl_ecdh_curve X25519:prime256v1:secp384r1;\n    ssl_ciphers 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE+AESGCM:ECDHE+CHACHA20';"
 	fi
 	local upstream_block=""
 	local proxy_pass_target="${target}"
@@ -2837,7 +2849,7 @@ _display_projects_list() {
 		local s_pad=$((w_status - status_len))
 		local s_left=$((s_pad / 2))
 		local s_right=$((s_pad - s_left))
-		line+="%${s_left}s${color_code}${status_text}${NC}%${s_right}s "
+		line+="$(printf '%*s' "$s_left" "")${color_code}${status_text}${NC}$(printf '%*s' "$s_right" "") "
 		line+="$(_center_text "$renew_date" "$w_renew")"
 		printf '%b\n' "$line"
 	done
