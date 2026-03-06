@@ -12,7 +12,6 @@
 
 # --- 脚本元数据 ---
 SCRIPT_VERSION="v2.2.1"
-PENDING_SELF_UPDATE="false"
 AUTO_UPDATE_STATUS_FILE="/tmp/jb_auto_update.status"
 AUTO_UPDATE_PID_FILE="/tmp/jb_auto_update.pid"
 AUTO_UPDATE_STATE=""
@@ -24,6 +23,7 @@ AUTO_UPDATE_STARTED_AT=""
 AUTO_UPDATE_LAST_HINT=""
 AUTO_UPDATE_LAST_HINT_TS=0
 AUTO_UPDATE_NOTIFIER_PID=""
+JB_FORCE_REFRESH=0
 
 # --- 严格模式与环境设定 ---
 set -euo pipefail
@@ -1055,17 +1055,24 @@ auto_update_version_line_for_state() {
 	printf '版本: %b %b' "${SCRIPT_VERSION}" "$(auto_update_status_text_for_state "$state" "$count")"
 }
 
-install_menu_refresh_hook() {
-	if [ "${CURRENT_MENU_NAME}" != "MAIN_MENU" ]; then
-		return 1
-	fi
-	local prev_state="${AUTO_UPDATE_STATE}"
-	local prev_count="${AUTO_UPDATE_UPDATED_COUNT}"
+show_log_info() {
+	if should_clear_screen "install:log_info"; then clear; fi
 	refresh_auto_update_state
-	if [ "$AUTO_UPDATE_STATE" != "$prev_state" ] || [ "$AUTO_UPDATE_UPDATED_COUNT" != "$prev_count" ]; then
-		return 0
+	local update_text=""
+	update_text="$(auto_update_status_text_for_state "${AUTO_UPDATE_STATE:-unknown}" "${AUTO_UPDATE_UPDATED_COUNT:-0}")"
+	log_info "📄 日志信息"
+	log_info "- 脚本版本: ${SCRIPT_VERSION}"
+	log_info "- 日志文件: ${LOG_FILE:-$GLOBAL_LOG_FILE}"
+	if [ -f "${LOG_FILE:-$GLOBAL_LOG_FILE}" ]; then
+		log_info "- 日志状态: 存在"
+	else
+		log_warn "- 日志状态: 不存在"
 	fi
-	return 1
+	log_info "- 后台更新状态: ${AUTO_UPDATE_STATE:-unknown} (${update_text})"
+	if [[ "${AUTO_UPDATE_UPDATED_COUNT:-0}" =~ ^[0-9]+$ ]]; then
+		log_info "- 后台更新数量: ${AUTO_UPDATE_UPDATED_COUNT}"
+	fi
+	return 0
 }
 
 start_auto_update_notifier() {
@@ -1082,7 +1089,6 @@ start_auto_update_notifier() {
 	local main_pid="$$"
 	(
 		local last_key=""
-		local last_message=""
 		while kill -0 "$main_pid" 2>/dev/null; do
 			local state=""
 			local count="0"
@@ -1097,24 +1103,7 @@ start_auto_update_notifier() {
 
 			local current_key="${state}:${count}"
 			if [ "$current_key" != "$last_key" ]; then
-				local message=""
-				case "$state" in
-				updated)
-					if [ "$count" -gt 0 ] 2>/dev/null; then
-						message="$(auto_update_version_line_for_state "$state" "$count")"
-					fi
-					;;
-				latest)
-					message="$(auto_update_version_line_for_state "$state" "$count")"
-					;;
-				error | error_stale)
-					message="$(auto_update_version_line_for_state "$state" "$count")"
-					;;
-				esac
-				if [ -n "$message" ] && [ "$message" != "$last_message" ]; then
-					printf '\n%b\n' "$message" >/dev/tty
-					last_message="$message"
-				fi
+				kill -USR1 "$main_pid" 2>/dev/null || true
 				last_key="$current_key"
 			fi
 			sleep 1
@@ -1279,25 +1268,7 @@ display_and_process_menu() {
 		done
 
 		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-			formatted_items_for_render=("$(auto_update_version_line)" "${formatted_items_for_render[@]:-}")
-
-			case "$AUTO_UPDATE_STATE" in
-			updated) ;;
-			updated_core)
-				PENDING_SELF_UPDATE="true"
-				;;
-			disabled) ;;
-			esac
-
-			local transient_hint=""
-			transient_hint="$(auto_update_pop_transient_hint || true)"
-			if [ -n "$transient_hint" ] && [ "$AUTO_UPDATE_STATE" != "updated_core" ]; then
-				formatted_items_for_render+=("$transient_hint")
-			fi
-		fi
-
-		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$PENDING_SELF_UPDATE" = "true" ]; then
-			formatted_items_for_render+=("${YELLOW}⚠ 主程序有可用更新：本次已延迟应用，下次启动生效${NC}")
+			formatted_items_for_render+=("f. 📄 日志信息")
 		fi
 
 		_render_menu "$menu_title" "${formatted_items_for_render[@]:-}"
@@ -1312,15 +1283,29 @@ display_and_process_menu() {
 			for ((i = 0; i < ${#func_items[@]}; i++)); do temp_func_str+="${func_letters[i]},"; done
 			func_choices_str="${temp_func_str%,}"
 		fi
+		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
+			if [ -n "$func_choices_str" ]; then
+				func_choices_str+=" ,f"
+			else
+				func_choices_str="f"
+			fi
+			func_choices_str="${func_choices_str// /}"
+		fi
 
 		local choice
-		# shellcheck disable=SC2034
-		JB_PROMPT_REFRESH_HOOK_FN="install_menu_refresh_hook"
 		choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
-		# shellcheck disable=SC2034
-		JB_PROMPT_REFRESH_HOOK_FN=""
+		if [ "${JB_FORCE_REFRESH:-0}" = "1" ]; then
+			JB_FORCE_REFRESH=0
+			continue
+		fi
 
 		if [ "$choice" = "__JB_REFRESH__" ]; then
+			continue
+		fi
+
+		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$choice" = "f" ]; then
+			show_log_info
+			press_enter_to_continue
 			continue
 		fi
 
@@ -1393,6 +1378,7 @@ main() {
 
 	# 显式设置 trap，强化对中止信号和退出的兜底
 	trap 'on_error "$?" "$LINENO"' ERR
+	trap 'JB_FORCE_REFRESH=1' USR1
 	trap 'exit_code=$?; stop_auto_update_notifier; cleanup_temp_files; flock -u 200 2>/dev/null || true; cleanup_lock_file; if [ -n "${EXIT_MESSAGE:-}" ]; then log_info "${EXIT_MESSAGE}"; elif [ "$exit_code" -ne 0 ]; then log_info "脚本已退出 (代码: ${exit_code})"; fi' EXIT INT TERM
 
 	exec 200>"${LOCK_FILE}"
