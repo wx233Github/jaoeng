@@ -1,0 +1,71 @@
+# MCP PTY 本地部署说明
+
+该目录用于 `mcp/pty` 一键入口，默认执行“本地搭建”流程，`opencode` 关联为可选项。
+
+---
+
+## 入口
+
+- 菜单入口：`mcp/pty`
+- Headless 入口：
+  - `bash install.sh mcp/pty`
+  - 或安装后：`jb mcp/pty`
+
+---
+
+## 默认行为（不带参数）
+
+执行 `MCP/pty/setup_mcp_pty.sh` 时，默认会：
+
+1. 检测并安装 `uv`（若未安装）
+2. 立即加载 `~/.cargo/env`（若存在）
+3. 准备本地目录：`~/mcp/mcp-pty`
+4. 从远端下载 `MCP/pty/pty-runner.py` 到本地：`~/mcp/mcp-pty/server.py`
+5. 设置执行权限：`chmod 755 ~/mcp/mcp-pty/server.py`
+
+默认不会修改 `~/.config/opencode/opencode.json`。
+
+---
+
+## 可选：关联 opencode
+
+启用参数：
+
+```bash
+bash MCP/pty/setup_mcp_pty.sh --with-opencode
+```
+
+额外会执行：
+
+1. 从远端下载 `MCP/pty/pty.md` 到本地：
+   `~/.config/opencode/instructions/pty.md`
+2. 原子更新 `~/.config/opencode/opencode.json`：
+   - 写入 `mcp["pty-runner"]` 为 `uv run --script {env:HOME}/mcp/mcp-pty/server.py`
+   - `PATH` 使用 `{env:HOME}/.cargo/bin` 前缀，并附加 `LANG/LC_ALL`
+   - 追加并去重 `instructions` 路径（目标为 `{env:HOME}/.config/opencode/instructions/pty.md`）
+
+---
+
+## 常用参数
+
+- `--with-opencode`：启用 opencode 配置写入
+- `--remote-raw-base <url>`：覆盖远端 raw 基址
+- `--local-dir <path>`：覆盖本地安装目录
+- `--opencode-config <path>`：覆盖 opencode.json 路径
+- `--opencode-instruction-path <path>`：覆盖 pty.md 本地路径
+- `--dry-run`：仅打印动作，不实际写入
+
+---
+
+## 验证建议
+
+1. `uv --version`
+2. `opencode mcp list`（应看到 `pty-runner connected`）
+3. 对话测试：
+   - “使用 pty-runner 运行 `echo 'Hello from uv'` 并读取输出。”
+
+---
+
+## 远端缓存说明
+
+脚本下载远端文件时附带时间戳查询参数（`?_=<unix_ts>`），用于规避 CDN/缓存延迟。
