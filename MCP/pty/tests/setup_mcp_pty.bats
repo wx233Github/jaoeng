@@ -131,6 +131,24 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "resolve_opencode_bin 支持 ~/.opencode-i18n/bin/opencode" {
+  run bash <<'EOF'
+set -euo pipefail
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
+
+tmp_home="$(mktemp -d)"
+mkdir -p "${tmp_home}/.opencode-i18n/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"${tmp_home}/.opencode-i18n/bin/opencode"
+chmod 755 "${tmp_home}/.opencode-i18n/bin/opencode"
+
+HOME="$tmp_home"
+OPENCODE_BIN=""
+resolve_opencode_bin
+[ "$OPENCODE_BIN" = "${tmp_home}/.opencode-i18n/bin/opencode" ]
+EOF
+  [ "$status" -eq 0 ]
+}
+
 @test "JB_NONINTERACTIVE=true 时跳过交互确认" {
   run bash <<'EOF'
 set -euo pipefail

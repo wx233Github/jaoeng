@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VERSION: 1.3.0
+# VERSION: 1.3.1
 # DESCRIPTION: MCP PTY 本地部署脚本（可选关联 opencode 配置）
 # DEPENDENCIES: bash curl cp mktemp mv chmod mkdir dirname flock date（jq: --with-opencode 时必需）
 
@@ -7,7 +7,7 @@ set -euo pipefail
 IFS=$'\n\t'
 export PATH='/usr/local/bin:/usr/bin:/bin'
 
-readonly VERSION="1.3.0"
+readonly VERSION="1.3.1"
 readonly DESCRIPTION="MCP PTY 本地部署脚本（可选关联 opencode 配置）"
 readonly DEPENDENCIES="bash curl cp mktemp mv chmod mkdir dirname flock date (jq optional)"
 
@@ -33,6 +33,7 @@ OPENCODE_CONFIG_PATH="${HOME:-/root}/.config/opencode/opencode.json"
 OPENCODE_INSTRUCTIONS_PATH="${HOME:-/root}/.config/opencode/instructions/pty.md"
 SERVER_LOCAL_PATH=""
 UV_BIN=""
+OPENCODE_BIN=""
 declare -a TEMP_FILES=()
 
 _now() {
@@ -170,8 +171,12 @@ check_optional_dependencies() {
     die "模式 ${MODE} 需要 jq 支持" "$EX_UNAVAILABLE"
   fi
 
-  if [ "$MODE" = "opencode" ] && ! command -v opencode >/dev/null 2>&1; then
-    log_warn "未检测到 opencode 命令，可在安装后手动执行 opencode mcp list 验证。"
+  if [ "$MODE" = "opencode" ]; then
+    if ! resolve_opencode_bin; then
+      log_warn "未检测到 opencode 命令（已检查 PATH、~/.opencode-i18n/bin、~/.local/bin），可在安装后手动执行 opencode mcp list 验证。"
+    else
+      log_info "已检测到 opencode: ${OPENCODE_BIN}"
+    fi
   fi
 }
 
@@ -306,6 +311,22 @@ resolve_uv_bin() {
   fi
   if [ -x "${HOME:-/root}/.cargo/bin/uv" ]; then
     UV_BIN="${HOME:-/root}/.cargo/bin/uv"
+    return 0
+  fi
+  return 1
+}
+
+resolve_opencode_bin() {
+  if command -v opencode >/dev/null 2>&1; then
+    OPENCODE_BIN="$(command -v opencode)"
+    return 0
+  fi
+  if [ -x "${HOME:-/root}/.opencode-i18n/bin/opencode" ]; then
+    OPENCODE_BIN="${HOME:-/root}/.opencode-i18n/bin/opencode"
+    return 0
+  fi
+  if [ -x "${HOME:-/root}/.local/bin/opencode" ]; then
+    OPENCODE_BIN="${HOME:-/root}/.local/bin/opencode"
     return 0
   fi
   return 1
