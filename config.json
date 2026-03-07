@@ -31,7 +31,7 @@
       "items": [
         { "type": "item", "name": "Docker", "icon": "🐳", "action": "docker.sh" },
         { "type": "item", "name": "Nginx", "icon": "🌐", "action": "nginx.sh" },
-        { "type": "item", "name": "mcp/pty", "icon": "🧩", "action": "MCP/pty/setup_mcp_pty.sh" },
+        { "type": "item", "name": "mcp", "icon": "🧩", "action": "MCP/mcp_pty.sh" },
         { "type": "submenu", "name": "常用工具", "icon": "🛠️", "action": "TOOLS_MENU" },
         { "type": "item", "name": "证书申请", "icon": "📜", "action": "cert.sh" },
         { "type": "func", "name": "强制重置", "icon": "⚙️", "action": "confirm_and_force_update" },

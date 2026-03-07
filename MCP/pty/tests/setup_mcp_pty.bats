@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
-  export TARGET_SCRIPT="/root/jb/jaoeng/MCP/pty/setup_mcp_pty.sh"
+  export TARGET_SCRIPT="/root/jb/jaoeng/MCP/mcp_pty.sh"
 }
 
 @test "--help 可正常输出" {
@@ -18,7 +18,7 @@ setup() {
 
 @test "参数解析支持可选模式与路径覆盖" {
   run bash <<'EOF'
-source "/root/jb/jaoeng/MCP/pty/setup_mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/mcp_pty.sh"
 WITH_OPENCODE="false"
 DRY_RUN="false"
 REMOTE_RAW_BASE=""
@@ -43,7 +43,7 @@ EOF
 
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/pty/setup_mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/mcp_pty.sh"
 DRY_RUN="false"
 
 tmp_home="$(mktemp -d)"
@@ -58,7 +58,7 @@ update_opencode_config "$config_path" "$server_path" "$instruction_path"
 
 jq -e --arg server "$server_path" --arg ins "$instruction_path" '
   .mcp["pty-runner"].command == ["uv", "run", "--script", $server]
-  and .mcp["pty-runner"].environment.PATH == "{env:HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  and .mcp["pty-runner"].environment.PATH == "{env:HOME}/.local/bin:{env:HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   and .mcp["pty-runner"].environment.LANG == "C.UTF-8"
   and .mcp["pty-runner"].environment.LC_ALL == "C.UTF-8"
   and (.instructions | index($ins) != null)
@@ -74,7 +74,7 @@ EOF
 
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/pty/setup_mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/mcp_pty.sh"
 DRY_RUN="false"
 
 tmp_home="$(mktemp -d)"
@@ -99,6 +99,35 @@ jq -e '
   and (.instructions | index("{env:HOME}/.config/opencode/instructions/pty.md") != null)
   and (.instructions | index("${HOME}/.config/opencode/instructions/pty.md") == null)
 ' "$config_path" >/dev/null
+EOF
+  [ "$status" -eq 0 ]
+}
+
+@test "resolve_uv_bin 支持 ~/.local/bin/uv" {
+  run bash <<'EOF'
+set -euo pipefail
+source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+
+tmp_home="$(mktemp -d)"
+mkdir -p "${tmp_home}/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' >"${tmp_home}/.local/bin/uv"
+chmod 755 "${tmp_home}/.local/bin/uv"
+
+HOME="$tmp_home"
+UV_BIN=""
+resolve_uv_bin
+[ "$UV_BIN" = "${tmp_home}/.local/bin/uv" ]
+EOF
+  [ "$status" -eq 0 ]
+}
+
+@test "JB_NONINTERACTIVE=true 时跳过交互确认" {
+  run bash <<'EOF'
+set -euo pipefail
+source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+
+JB_NONINTERACTIVE="true"
+confirm_run_if_needed
 EOF
   [ "$status" -eq 0 ]
 }
