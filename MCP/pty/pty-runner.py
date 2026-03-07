@@ -24,7 +24,7 @@ def _log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 def _log_limited(key: str, *a, interval_sec: float = 5.0):
-    now = time.time()
+    现在 = time.time()
     last = _log_rate.get(key, 0.0)
     if now - last >= interval_sec:
         _log_rate[key] = now
