@@ -1,21 +1,21 @@
 # MCP PTY 本地部署说明
 
-该目录用于 `mcp` 一键入口的资源文件目录（`pty-runner.py` / `pty.md`），默认执行“本地搭建”流程，`opencode` 关联为可选项。
+该目录用于 `mcp` 子菜单中的 `mcp_pty` 入口与资源文件（`pty-runner.py` / `pty.md`），默认执行“本地搭建”流程，`opencode` 关联为可选项。
 
 ---
 
 ## 入口
 
-- 菜单入口：`mcp`
+- 菜单入口：`mcp -> mcp_pty`
 - Headless 入口：
-  - `bash install.sh mcp`
-  - 或安装后：`jb mcp`
+  - `bash install.sh mcp_pty`
+  - 或安装后：`jb mcp_pty`
 
 ---
 
 ## 默认行为（不带参数）
 
-执行 `MCP/mcp_pty.sh` 时，默认会：
+执行 `MCP/pty/mcp_pty.sh` 时，默认会：
 
 1. 检测并安装 `uv`（若未安装）
 2. 立即加载 `~/.cargo/env`（若存在）
@@ -32,7 +32,7 @@
 启用参数：
 
 ```bash
-bash MCP/mcp_pty.sh --with-opencode
+bash MCP/pty/mcp_pty.sh --with-opencode
 ```
 
 额外会执行：

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
-  export TARGET_SCRIPT="/root/jb/jaoeng/MCP/mcp_pty.sh"
+  export TARGET_SCRIPT="/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 }
 
 @test "--help 可正常输出" {
@@ -18,7 +18,7 @@ setup() {
 
 @test "参数解析支持可选模式与路径覆盖" {
   run bash <<'EOF'
-source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 WITH_OPENCODE="false"
 DRY_RUN="false"
 REMOTE_RAW_BASE=""
@@ -43,7 +43,7 @@ EOF
 
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 DRY_RUN="false"
 
 tmp_home="$(mktemp -d)"
@@ -74,7 +74,7 @@ EOF
 
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 DRY_RUN="false"
 
 tmp_home="$(mktemp -d)"
@@ -106,7 +106,7 @@ EOF
 @test "resolve_uv_bin 支持 ~/.local/bin/uv" {
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 
 tmp_home="$(mktemp -d)"
 mkdir -p "${tmp_home}/.local/bin"
@@ -124,7 +124,7 @@ EOF
 @test "JB_NONINTERACTIVE=true 时跳过交互确认" {
   run bash <<'EOF'
 set -euo pipefail
-source "/root/jb/jaoeng/MCP/mcp_pty.sh"
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 
 JB_NONINTERACTIVE="true"
 confirm_run_if_needed
