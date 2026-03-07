@@ -19,19 +19,29 @@ setup() {
 @test "参数解析支持可选模式与路径覆盖" {
   run bash <<'EOF'
 source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
-WITH_OPENCODE="false"
 DRY_RUN="false"
+MODE=""
 REMOTE_RAW_BASE=""
 LOCAL_BASE_DIR=""
 OPENCODE_CONFIG_PATH=""
 OPENCODE_INSTRUCTIONS_PATH=""
 parse_args --with-opencode --dry-run --remote-raw-base "https://example.com/raw" --local-dir "/tmp/mcp-pty" --opencode-config "/tmp/opencode.json" --opencode-instruction-path "/tmp/pty.md"
-[ "$WITH_OPENCODE" = "true" ]
+[ "$MODE" = "opencode" ]
 [ "$DRY_RUN" = "true" ]
 [ "$REMOTE_RAW_BASE" = "https://example.com/raw" ]
 [ "$LOCAL_BASE_DIR" = "/tmp/mcp-pty" ]
 [ "$OPENCODE_CONFIG_PATH" = "/tmp/opencode.json" ]
 [ "$OPENCODE_INSTRUCTIONS_PATH" = "/tmp/pty.md" ]
+EOF
+  [ "$status" -eq 0 ]
+}
+
+@test "--uninstall 参数可切换到卸载模式" {
+  run bash <<'EOF'
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
+MODE=""
+parse_args --uninstall
+[ "$MODE" = "uninstall" ]
 EOF
   [ "$status" -eq 0 ]
 }
@@ -128,6 +138,48 @@ source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
 
 JB_NONINTERACTIVE="true"
 confirm_run_if_needed
+EOF
+  [ "$status" -eq 0 ]
+}
+
+@test "卸载清理会删除 opencode 中 pty-runner 与 instructions 关联" {
+  if ! command -v jq >/dev/null 2>&1; then
+    skip "jq 不存在，跳过此测试"
+  fi
+
+  run bash <<'EOF'
+set -euo pipefail
+source "/root/jb/jaoeng/MCP/pty/mcp_pty.sh"
+DRY_RUN="false"
+
+tmp_home="$(mktemp -d)"
+config_path="${tmp_home}/.config/opencode/opencode.json"
+instruction_path="${tmp_home}/.config/opencode/instructions/pty.md"
+
+mkdir -p "$(dirname "$config_path")" "$(dirname "$instruction_path")"
+printf "x" >"$instruction_path"
+
+cat >"$config_path" <<JSON
+{
+  "mcp": {
+    "pty-runner": {
+      "type": "local"
+    }
+  },
+  "instructions": [
+    "${instruction_path}",
+    "{env:HOME}/.config/opencode/instructions/pty.md",
+    "other.md"
+  ]
+}
+JSON
+
+cleanup_opencode_config "$config_path" "$instruction_path"
+
+jq -e --arg ins "$instruction_path" '
+  (.mcp | has("pty-runner") | not)
+  and (.instructions | index($ins) == null)
+' "$config_path" >/dev/null
 EOF
   [ "$status" -eq 0 ]
 }

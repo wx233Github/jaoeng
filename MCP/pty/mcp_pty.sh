@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VERSION: 1.2.0
+# VERSION: 1.3.0
 # DESCRIPTION: MCP PTY 本地部署脚本（可选关联 opencode 配置）
 # DEPENDENCIES: bash curl cp mktemp mv chmod mkdir dirname flock date（jq: --with-opencode 时必需）
 
@@ -7,7 +7,7 @@ set -euo pipefail
 IFS=$'\n\t'
 export PATH='/usr/local/bin:/usr/bin:/bin'
 
-readonly VERSION="1.2.0"
+readonly VERSION="1.3.0"
 readonly DESCRIPTION="MCP PTY 本地部署脚本（可选关联 opencode 配置）"
 readonly DEPENDENCIES="bash curl cp mktemp mv chmod mkdir dirname flock date (jq optional)"
 
@@ -25,6 +25,7 @@ readonly DEFAULT_LOCK_FILE="/tmp/mcp_pty_setup.lock"
 
 WITH_OPENCODE="false"
 DRY_RUN="false"
+MODE=""
 REMOTE_RAW_BASE="${DEFAULT_REMOTE_RAW_BASE}"
 LOCAL_BASE_DIR="${HOME:-/root}/mcp/mcp-pty"
 LOCK_FILE="${DEFAULT_LOCK_FILE}"
@@ -71,11 +72,16 @@ usage() {
   mcp_pty.sh [选项]
 
 说明:
-  默认执行“本地搭建”流程，仅安装 uv + 拉取本地 server.py。
-  若需要写入 opencode 配置，请显式传入 --with-opencode。
+  单脚本支持三种用途：
+  1) install  : 本地搭建（默认）
+  2) opencode : 本地搭建 + 关联 opencode 配置
+  3) uninstall: 卸载 mcp_pty 相关本地文件与 opencode 关联
 
 选项:
+  --mode <install|opencode|uninstall>
+                                  指定运行模式
   --with-opencode                 启用 opencode 配置与 instructions 关联
+  --uninstall                     卸载模式（仅清理 mcp_pty 相关内容，不卸载 uv）
   --remote-raw-base <url>         远端 raw 基地址 (默认: GitHub MCP/pty)
   --local-dir <path>              本地目录 (默认: ~/mcp/mcp-pty)
   --opencode-config <path>        opencode.json 路径 (默认: ~/.config/opencode/opencode.json)
@@ -86,8 +92,10 @@ usage() {
 
 示例:
   mcp_pty.sh
+  mcp_pty.sh --mode opencode
+  mcp_pty.sh --mode uninstall
   mcp_pty.sh --with-opencode
-  mcp_pty.sh --with-opencode --dry-run
+  mcp_pty.sh --uninstall --dry-run
 EOF
 }
 
@@ -154,17 +162,28 @@ check_core_dependencies() {
 }
 
 check_optional_dependencies() {
-  if [ "$WITH_OPENCODE" = "true" ] && ! command -v jq >/dev/null 2>&1; then
+  if [ "$MODE" != "install" ] && ! command -v jq >/dev/null 2>&1; then
     if [ "$DRY_RUN" = "true" ]; then
       log_warn "dry-run 模式：未检测到 jq，跳过 opencode JSON 写入校验。"
       return 0
     fi
-    die "启用 --with-opencode 时必须安装 jq" "$EX_UNAVAILABLE"
+    die "模式 ${MODE} 需要 jq 支持" "$EX_UNAVAILABLE"
   fi
 
-  if [ "$WITH_OPENCODE" = "true" ] && ! command -v opencode >/dev/null 2>&1; then
+  if [ "$MODE" = "opencode" ] && ! command -v opencode >/dev/null 2>&1; then
     log_warn "未检测到 opencode 命令，可在安装后手动执行 opencode mcp list 验证。"
   fi
+}
+
+is_mode_valid() {
+  case "$1" in
+  install | opencode | uninstall)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
 }
 
 format_command_for_log() {
@@ -469,11 +488,32 @@ print_next_steps() {
   printf '%s\n' "3) 对话测试：使用 pty-runner 运行 echo 'Hello from uv' 并读取输出"
 }
 
+print_uninstall_next_steps() {
+  printf '\n'
+  printf '%s\n' "=== MCP PTY 卸载完成 ==="
+  printf '%s\n' "版本: ${VERSION}"
+  printf '%s\n' "本地目录: ${LOCAL_BASE_DIR}"
+  printf '%s\n' "入口脚本: ${SERVER_LOCAL_PATH}"
+  printf '%s\n' "opencode 配置: ${OPENCODE_CONFIG_PATH}"
+  printf '%s\n' "instructions: ${OPENCODE_INSTRUCTIONS_PATH}"
+  printf '%s\n' "说明: 仅清理 mcp_pty 相关内容，不会卸载 uv。"
+}
+
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
+    --mode)
+      [ "$#" -ge 2 ] || die "参数 --mode 缺少值" "$EX_USAGE"
+      is_mode_valid "$2" || die "不支持的模式: $2" "$EX_USAGE"
+      MODE="$2"
+      shift 2
+      ;;
     --with-opencode)
-      WITH_OPENCODE="true"
+      MODE="opencode"
+      shift
+      ;;
+    --uninstall)
+      MODE="uninstall"
       shift
       ;;
     --remote-raw-base)
@@ -540,6 +580,41 @@ should_skip_confirmation() {
   return 1
 }
 
+select_mode_if_needed() {
+  local choice=""
+
+  if [ -n "$MODE" ]; then
+    return 0
+  fi
+
+  if should_skip_confirmation; then
+    MODE="install"
+    return 0
+  fi
+
+  printf '%s\n' "请选择 mcp_pty 运行模式:" >/dev/tty
+  printf '%s\n' "  1) install   - 本地搭建" >/dev/tty
+  printf '%s\n' "  2) opencode  - 本地搭建并关联 opencode" >/dev/tty
+  printf '%s\n' "  3) uninstall - 卸载 mcp_pty 相关内容" >/dev/tty
+  printf '%s' "选项 [1-3] (默认 1): " >/dev/tty
+  read -r choice </dev/tty || choice=""
+
+  case "${choice:-1}" in
+  1)
+    MODE="install"
+    ;;
+  2)
+    MODE="opencode"
+    ;;
+  3)
+    MODE="uninstall"
+    ;;
+  *)
+    die "无效选项: ${choice}" "$EX_USAGE"
+    ;;
+  esac
+}
+
 confirm_run_if_needed() {
   local answer=""
   if should_skip_confirmation; then
@@ -547,7 +622,20 @@ confirm_run_if_needed() {
     return 0
   fi
 
-  printf '%s' "确认执行 mcp 安装/配置流程? [Y/n]: " >/dev/tty
+  case "$MODE" in
+  install)
+    printf '%s' "确认执行 mcp_pty 本地搭建? [Y/n]: " >/dev/tty
+    ;;
+  opencode)
+    printf '%s' "确认执行 mcp_pty 搭建并关联 opencode? [Y/n]: " >/dev/tty
+    ;;
+  uninstall)
+    printf '%s' "确认执行 mcp_pty 卸载（不卸载 uv）? [Y/n]: " >/dev/tty
+    ;;
+  *)
+    die "未知运行模式: ${MODE}" "$EX_SOFTWARE"
+    ;;
+  esac
   read -r answer </dev/tty || answer=""
   case "${answer:-Y}" in
   [nN] | [nN][oO])
@@ -560,14 +648,105 @@ confirm_run_if_needed() {
   esac
 }
 
+initialize_runtime_paths() {
+  LOCAL_BASE_DIR="$(expand_home_path "$LOCAL_BASE_DIR")"
+  SERVER_LOCAL_PATH="${LOCAL_BASE_DIR%/}/server.py"
+  OPENCODE_CONFIG_PATH="$(expand_home_path "$OPENCODE_CONFIG_PATH")"
+  OPENCODE_INSTRUCTIONS_PATH="$(expand_home_path "$OPENCODE_INSTRUCTIONS_PATH")"
+}
+
+uninstall_file_if_exists() {
+  local target="$1"
+  if [ -f "$target" ]; then
+    run_mutating rm -f -- "$target"
+    log_info "已删除文件: ${target}"
+    return 0
+  fi
+  log_info "文件不存在，跳过: ${target}"
+}
+
+uninstall_empty_dir_if_exists() {
+  local target="$1"
+  if [ ! -d "$target" ]; then
+    return 0
+  fi
+  if [ -n "$(ls -A "$target" 2>/dev/null || true)" ]; then
+    log_info "目录非空，保留: ${target}"
+    return 0
+  fi
+  run_mutating rmdir "$target" || true
+}
+
+cleanup_opencode_config() {
+  local config_path="$1"
+  local instruction_path_abs="$2"
+  local instruction_path_env=""
+  local instruction_path_shell=""
+  local base_tmp=""
+  local out_tmp=""
+
+  if [ ! -f "$config_path" ]; then
+    log_info "opencode 配置不存在，跳过: ${config_path}"
+    return 0
+  fi
+
+  instruction_path_env="$(to_opencode_home_var_path "$instruction_path_abs")"
+  instruction_path_shell="$(to_shell_home_expr_path "$instruction_path_abs")"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY-RUN] 清理 opencode 配置关联: ${config_path}"
+    return 0
+  fi
+
+  base_tmp="$(mktemp /tmp/mcp_pty_opencode_uninstall_base.XXXXXX)" || die "创建 opencode 卸载临时文件失败" "$EX_CANTCREAT"
+  out_tmp="$(mktemp /tmp/mcp_pty_opencode_uninstall_out.XXXXXX)" || die "创建 opencode 卸载输出文件失败" "$EX_CANTCREAT"
+  register_tmp_file "$base_tmp"
+  register_tmp_file "$out_tmp"
+
+  cp -f -- "$config_path" "$base_tmp" || die "复制 opencode 配置失败" "$EX_IOERR"
+  jq -e . "$base_tmp" >/dev/null 2>&1 || die "opencode 配置不是合法 JSON: ${config_path}" "$EX_DATAERR"
+
+  if ! jq --arg ins_abs "$instruction_path_abs" --arg ins_env "$instruction_path_env" --arg ins_shell "$instruction_path_shell" '
+    del(.mcp["pty-runner"])
+    | .instructions = ((.instructions // []) | map(select(. != $ins_abs and . != $ins_env and . != $ins_shell)))
+  ' "$base_tmp" >"$out_tmp"; then
+    die "生成卸载后的 opencode 配置失败" "$EX_SOFTWARE"
+  fi
+
+  jq -e . "$out_tmp" >/dev/null 2>&1 || die "卸载后 opencode 配置非法" "$EX_SOFTWARE"
+  mv -f -- "$out_tmp" "$config_path" || die "写入 opencode 配置失败: ${config_path}" "$EX_IOERR"
+  chmod 600 "$config_path" 2>/dev/null || log_warn "无法设置 opencode 配置权限为 600"
+}
+
+uninstall_flow() {
+  initialize_runtime_paths
+
+  uninstall_file_if_exists "$SERVER_LOCAL_PATH"
+  uninstall_empty_dir_if_exists "$LOCAL_BASE_DIR"
+  uninstall_file_if_exists "$OPENCODE_INSTRUCTIONS_PATH"
+  cleanup_opencode_config "$OPENCODE_CONFIG_PATH" "$OPENCODE_INSTRUCTIONS_PATH"
+}
+
 main() {
   parse_args "$@"
   validate_inputs
+  select_mode_if_needed
+  if [ "$MODE" = "opencode" ]; then
+    WITH_OPENCODE="true"
+  fi
   confirm_run_if_needed || return $?
 
   check_core_dependencies
   check_optional_dependencies
   acquire_lock
+
+  initialize_runtime_paths
+
+  if [ "$MODE" = "uninstall" ]; then
+    uninstall_flow
+    print_uninstall_next_steps
+    return 0
+  fi
 
   install_uv_if_needed
   load_uv_env_if_present

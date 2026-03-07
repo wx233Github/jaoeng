@@ -1,6 +1,7 @@
 # MCP PTY 本地部署说明
 
-该目录用于 `mcp` 子菜单中的 `mcp_pty` 入口与资源文件（`pty-runner.py` / `pty.md`），默认执行“本地搭建”流程，`opencode` 关联为可选项。
+该目录用于 `mcp` 子菜单中的 `mcp_pty` 入口与资源文件（`pty-runner.py` / `pty.md`）。
+`mcp_pty` 单脚本支持三种用途：本地搭建、关联 opencode、卸载相关配置。
 
 ---
 
@@ -13,9 +14,15 @@
 
 ---
 
-## 默认行为（不带参数）
+## 运行模式
 
-执行 `MCP/pty/mcp_pty.sh` 时，默认会：
+执行 `MCP/pty/mcp_pty.sh` 时，支持以下三种模式：
+
+1. `install`（默认）：本地搭建
+2. `opencode`：本地搭建 + 关联 opencode
+3. `uninstall`：仅卸载 mcp_pty 相关内容（不卸载 uv）
+
+默认模式 `install` 会：
 
 1. 检测并安装 `uv`（若未安装）
 2. 立即加载 `~/.cargo/env`（若存在）
@@ -27,12 +34,13 @@
 
 ---
 
-## 可选：关联 opencode
+## 关联 opencode（模式二）
 
 启用参数：
 
 ```bash
 bash MCP/pty/mcp_pty.sh --with-opencode
+bash MCP/pty/mcp_pty.sh --mode opencode
 ```
 
 额外会执行：
@@ -48,12 +56,33 @@ bash MCP/pty/mcp_pty.sh --with-opencode
 
 ## 常用参数
 
+- `--mode <install|opencode|uninstall>`：指定运行模式
 - `--with-opencode`：启用 opencode 配置写入
+- `--uninstall`：卸载 mcp_pty 相关内容（不卸载 uv）
 - `--remote-raw-base <url>`：覆盖远端 raw 基址
 - `--local-dir <path>`：覆盖本地安装目录
 - `--opencode-config <path>`：覆盖 opencode.json 路径
 - `--opencode-instruction-path <path>`：覆盖 pty.md 本地路径
 - `--dry-run`：仅打印动作，不实际写入
+
+---
+
+## 卸载模式（模式三）
+
+```bash
+bash MCP/pty/mcp_pty.sh --mode uninstall
+# 或
+bash MCP/pty/mcp_pty.sh --uninstall
+```
+
+卸载会清理：
+
+1. `~/mcp/mcp-pty/server.py`
+2. `~/.config/opencode/instructions/pty.md`
+3. `~/.config/opencode/opencode.json` 中的 `mcp["pty-runner"]`
+4. `instructions` 中 `pty.md` 的关联路径（含 `{env:HOME}` / `${HOME}` / 绝对路径变体）
+
+不会卸载 `uv`。
 
 ---
 
