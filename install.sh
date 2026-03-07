@@ -246,7 +246,7 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
 		starter_require_safe_path_or_die "$CONFIG_PATH" "配置文件"
 		echo_info "正在执行首次安装或强制刷新..."
 		starter_sudo mkdir -p "$INSTALL_DIR"
-		BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+		BASE_URL="https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main"
 
 		declare -A core_files=(["主程序"]="install.sh" ["工具库"]="utils.sh" ["配置文件"]="config.json")
 		for name in "${!core_files[@]}"; do
@@ -858,7 +858,7 @@ validate_env() {
 		return 1
 	fi
 	case "$base_url" in
-	https://raw.githubusercontent.com/wx233Github/jaoeng/*) ;;
+	https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/*) ;;
 	*)
 		log_err "BASE_URL 不在允许白名单: ${base_url}"
 		return 1

@@ -1,4 +1,4 @@
-# Jaoeng VPS 一键安装与运维脚本
+# vps-kit-mcp VPS 一键安装与运维脚本
 
 一个以 Debian/Ubuntu 为主、部分模块兼容更多发行版的 VPS 自动化脚本集合，提供 Docker、Nginx、证书、Watchtower、TCP 优化等常用运维能力。
 
@@ -22,19 +22,19 @@
 ### 1) 直接运行（推荐）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/install.sh)
 ```
 
 ### 2) 强制拉取最新脚本（调试/修复场景）
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s
+curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s
 ```
 
 ### 3) 执行并落盘日志到当前目录
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/wx233Github/jaoeng/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee "jb_$(date +%Y%m%d_%H%M%S).log"
+curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/install.sh?_=$(date +%s)" | FORCE_REFRESH=true bash -s 2>&1 | tee "jb_$(date +%Y%m%d_%H%M%S).log"
 ```
 
 ---
@@ -76,7 +76,7 @@ sudo rm -f /opt/vps_install_modules/config.json
 ## 卸载入口
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/jaoeng/main/rm/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/rm/install.sh)
 ```
 
 ---

@@ -1,6 +1,6 @@
 {
   "comment_base_url": "脚本文件下载的基础URL",
-  "base_url": "https://raw.githubusercontent.com/wx233Github/jaoeng/main",
+  "base_url": "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main",
   "comment_install_dir": "脚本模块安装目录",
   "install_dir": "/opt/vps_install_modules",
   "comment_bin_dir": "快捷命令安装目录",

@@ -11,14 +11,14 @@ IFS=$'\n\t'
 export PATH='/usr/local/bin:/usr/bin:/bin'
 
 # --- 默认配置 ---
-DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/jaoeng/main"
+DEFAULT_BASE_URL="https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main"
 DEFAULT_INSTALL_DIR="/opt/vps_install_modules"
 DEFAULT_BIN_DIR="/usr/local/bin"
 DEFAULT_LOCK_FILE="/tmp/vps_install_modules.lock"
 DEFAULT_TIMEZONE="Asia/Shanghai"
 DEFAULT_CONFIG_PATH="${DEFAULT_INSTALL_DIR}/config.json"
 DEFAULT_LOG_WITH_TIMESTAMP="false"
-DEFAULT_LOG_FILE="/var/log/jaoeng-utils.log"
+DEFAULT_LOG_FILE="/var/log/vps-kit-mcp-utils.log"
 DEFAULT_LOG_LEVEL="INFO"
 DEFAULT_ENABLE_AUTO_UPDATE="true"
 DEFAULT_NONINTERACTIVE="false"

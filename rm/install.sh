@@ -8,7 +8,7 @@ IFS=$'\n\t'
 
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 DOWNLOAD_ONLY="false"
-BASE_URL="${JB_BASE_URL:-https://raw.githubusercontent.com/wx233Github/jaoeng/main}"
+BASE_URL="${JB_BASE_URL:-https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main}"
 
 log_info() { printf '%s\n' "$*"; }
 log_warn() { printf '%s\n' "$*" >&2; }
