@@ -394,6 +394,29 @@ load_config() {
 	WATCHTOWER_SCHEDULE_CRON="${WATCHTOWER_SCHEDULE_CRON:-}"
 	WATCHTOWER_IPV4_INTERFACE="${WATCHTOWER_IPV4_INTERFACE:-}"
 	WATCHTOWER_IPV6_INTERFACE="${WATCHTOWER_IPV6_INTERFACE:-}"
+
+	if [ -n "${WATCHTOWER_EXCLUDE_LIST:-}" ]; then
+		local old_ifs migrated_list=""
+		old_ifs="${IFS:-}"
+		IFS=',' read -r -a _exclude_items <<<"${WATCHTOWER_EXCLUDE_LIST}"
+		IFS="${old_ifs}"
+		local item normalized
+		for item in "${_exclude_items[@]}"; do
+			normalized="$(printf '%s' "$item" | tr -d '[:space:]')"
+			[ -z "$normalized" ] && continue
+			case "$normalized" in
+			portainer | portainer_agent) ;;
+			*)
+				if [ -z "$migrated_list" ]; then
+					migrated_list="$normalized"
+				else
+					migrated_list+=" ,$normalized"
+				fi
+				;;
+			esac
+		done
+		WATCHTOWER_EXCLUDE_LIST="${migrated_list// /}"
+	fi
 }
 
 save_config() {
@@ -674,10 +697,9 @@ _generate_env_file() {
 			template_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 			cat <<EOF | tr -d '\n' >>"$target_file"
-WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_masked}\`${br}🌐 *IPv4:* \`${ipv4_masked}\`${br}🌐 *IPv6:* \`${ipv6_masked}\`${br}⌚ *时间:* \`${template_time}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
+WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_masked}\`${br}🌐 *IPv4:* \`${ipv4_masked}\`${br}🌐 *IPv6:* \`${ipv6_masked}\`${br}⌚ *时间:* \`${template_time}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}🧹 *清理状态:* {{- if gt (len .Report.Failed) 0 }}\`需人工检查（存在更新失败）\`{{- else }}\`已执行（--cleanup）\`{{- end }}${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
 EOF
 			printf '\n' >>"$target_file"
-			echo "WATCHTOWER_NOTIFICATION_REPORT=true"
 		fi
 
 		if [[ "$WATCHTOWER_RUN_MODE" == "cron" || "$WATCHTOWER_RUN_MODE" == "aligned" ]] && [ -n "$WATCHTOWER_SCHEDULE_CRON" ]; then
@@ -685,8 +707,8 @@ EOF
 		fi
 	} >>"$target_file"
 
-	if grep -q 'WATCHTOWER_NOTIFICATION_TEMPLATE=.*WATCHTOWER_NOTIFICATION_REPORT=true' "$target_file" 2>/dev/null; then
-		log_error "通知模板写入异常：REPORT 开关被拼接到模板同一行，请重试。"
+	if grep -qE 'WATCHTOWER_NOTIFICATION_TEMPLATE=.*WATCHTOWER_[A-Z_]+' "$target_file" 2>/dev/null; then
+		log_error "通知模板写入异常：检测到环境变量被拼接到模板同一行，请重试。"
 		return "${ERR_CONFIG}"
 	fi
 
@@ -727,6 +749,16 @@ _wait_for_container_healthy() {
 	done
 
 	log_error "健康检查超时！容器 '$container_name' 在 ${timeout} 秒内未能进入 'running' 状态。"
+	return "${ERR_RUNTIME}"
+}
+
+prune_dangling_images() {
+	log_info "清理悬挂镜像 (docker image prune -f)..."
+	if JB_SUDO_LOG_QUIET="true" run_with_sudo docker image prune -f >/dev/null 2>&1; then
+		log_success "悬挂镜像清理完成。"
+		return "${ERR_OK}"
+	fi
+	log_warn "悬挂镜像清理失败或被跳过。"
 	return "${ERR_RUNTIME}"
 }
 
@@ -783,6 +815,7 @@ _start_watchtower_container_logic() {
 			log_error "手动扫描执行失败"
 			return "${ERR_RUNTIME}"
 		}
+		prune_dangling_images || true
 		log_success "手动更新扫描任务已结束"
 		return "${ERR_OK}"
 	else
@@ -818,6 +851,8 @@ _rebuild_watchtower() {
 		save_config
 		return "${ERR_RUNTIME}"
 	fi
+
+	prune_dangling_images || true
 
 	log_success "Watchtower 重建成功！"
 	return "${ERR_OK}"
