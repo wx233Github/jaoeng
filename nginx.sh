@@ -1523,11 +1523,29 @@ control_nginx() {
 		nginx -t || true
 		return 1
 	fi
-	systemctl "$action" nginx || {
-		log_message ERROR "Nginx $action 失败"
-		return 1
-	}
-	return 0
+	if systemctl "$action" nginx >/dev/null 2>&1; then
+		return 0
+	fi
+	if [ "$action" = "reload" ]; then
+		local master_cmd=""
+		local conf_path=""
+		master_cmd=$(pgrep -af 'nginx: master process' | head -n1 | cut -d' ' -f2- || true)
+		if [[ "$master_cmd" == *" -c "* ]]; then
+			conf_path=$(sed -n 's/.* -c \([^[:space:]]\+\).*/\1/p' <<<"$master_cmd")
+		fi
+		if [ -n "$conf_path" ]; then
+			if run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
+				log_message WARN "systemctl reload nginx 失败，已回退为 nginx -c ${conf_path} -s reload。"
+				return 0
+			fi
+		fi
+		if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
+			log_message WARN "systemctl reload nginx 失败，已回退为 nginx -s reload。"
+			return 0
+		fi
+	fi
+	log_message ERROR "Nginx $action 失败"
+	return 1
 }
 
 control_nginx_reload_if_needed() {
