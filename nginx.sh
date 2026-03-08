@@ -1389,15 +1389,30 @@ _zerossl_account_has_email() {
 	return 1
 }
 
+_get_zerossl_account_email() {
+	local f1="$HOME/.acme.sh/account.conf"
+	local f2="$HOME/.acme.sh/ca/acme.zerossl.com/v2/DV90/account.conf"
+	local email=""
+	if [ -f "$f2" ]; then
+		email=$(grep -E '^ACCOUNT_EMAIL=' "$f2" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d "'\"" || true)
+	fi
+	if [ -z "$email" ] && [ -f "$f1" ]; then
+		email=$(grep -E '^ACCOUNT_EMAIL=' "$f1" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d "'\"" || true)
+	fi
+	printf '%s\n' "$email"
+}
+
 _ensure_zerossl_account_email() {
 	local ca_url="${1:-}"
 	local email="${ZEROSSL_EMAIL:-}"
+	local saved_email=""
 	local log_temp=""
 	if [ "$ca_url" != "https://acme.zerossl.com/v2/DV90" ]; then
 		return 0
 	fi
-	if _zerossl_account_has_email; then
-		return 0
+	saved_email=$(_get_zerossl_account_email)
+	if [ -z "$email" ]; then
+		email="$saved_email"
 	fi
 	if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "${JB_NONINTERACTIVE:-false}" != "true" ]; then
 		if ! email=$(prompt_input "ZeroSSL 注册邮箱" "$email" "^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$" "邮箱格式无效" "false"); then
@@ -1407,6 +1422,9 @@ _ensure_zerossl_account_email() {
 	if [ -z "$email" ]; then
 		log_message ERROR "ZeroSSL 需要邮箱注册账号。"
 		return 1
+	fi
+	if [ -n "$saved_email" ] && [ "$email" = "$saved_email" ]; then
+		return 0
 	fi
 	log_temp=$(mktemp /tmp/acme_register_log.XXXXXX)
 	chmod 600 "$log_temp"
