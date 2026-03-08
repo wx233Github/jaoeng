@@ -11,7 +11,8 @@
       "id": "hsts",
       "name": "HSTS 严格 HTTPS",
       "snippet_file": "snippets/hsts.conf.tpl",
-      "single": true
+      "single": true,
+      "requires": ["security_headers"]
     },
     {
       "id": "reverse_proxy_enhanced",

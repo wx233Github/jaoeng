@@ -13,10 +13,18 @@
         "type": "object",
         "required": ["id", "name", "snippet_file"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
           "name": { "type": "string", "minLength": 1 },
           "snippet_file": { "type": "string", "pattern": "^snippets/.+\\.conf\\.tpl$" },
-          "single": { "type": "boolean" }
+          "single": { "type": "boolean" },
+          "requires": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z0-9_]+$" }
+          },
+          "conflicts": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z0-9_]+$" }
+          }
         },
         "additionalProperties": true
       }
@@ -28,7 +36,7 @@
         "type": "object",
         "required": ["id", "name", "templates"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
           "name": { "type": "string", "minLength": 1 },
           "templates": {
             "type": "array",

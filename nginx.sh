@@ -75,6 +75,7 @@ ERR_CFG_WRITE=21
 EX_USAGE=64
 EX_DATAERR=65
 EX_SOFTWARE=70
+EX_CONFIG=78
 
 RENEW_THRESHOLD_DAYS=30
 DEPS_MARK_FILE="$HOME/.nginx_ssl_manager_deps_v3"
@@ -108,6 +109,12 @@ TEMPLATE_CLEANUP_MODE=""
 TEMPLATE_DRY_RUN="false"
 TEMPLATE_BATCH_AUTO_CONFIRM="false"
 TEMPLATE_MANIFEST_CACHE=""
+TEMPLATE_PRECHECK="false"
+TEMPLATE_FAIL_FAST="false"
+TEMPLATE_CONTINUE_ON_ERROR="false"
+TEMPLATE_OUTPUT_JSON="false"
+TEMPLATE_DEFER_RELOAD="false"
+QUIET_MODE="false"
 SHOW_HELP="false"
 
 SAFE_PATH_ROOTS+=("${SCRIPT_DIR}" "${SCRIPT_DIR}/templates" "/opt/vps_install_modules" "/opt/vps_install_modules/templates")
@@ -375,6 +382,9 @@ _log_emit() {
 	if ! _log_should_emit "$level"; then return 0; fi
 	_resolve_log_file
 	printf '%s\n' "$plain_line" >>"$LOG_FILE"
+	if [ "${QUIET_MODE:-false}" = "true" ] && [ "$level" != "ERROR" ]; then
+		return 0
+	fi
 	if [ "$IS_INTERACTIVE_MODE" = "true" ]; then
 		case "$level" in
 		ERROR | WARN) printf '%s\n' "$plain_line" >&2 ;;
@@ -1221,6 +1231,12 @@ _parse_args() {
 	TEMPLATE_CLEANUP_MODE=""
 	TEMPLATE_DRY_RUN="false"
 	TEMPLATE_BATCH_AUTO_CONFIRM="false"
+	TEMPLATE_PRECHECK="false"
+	TEMPLATE_FAIL_FAST="false"
+	TEMPLATE_CONTINUE_ON_ERROR="false"
+	TEMPLATE_OUTPUT_JSON="false"
+	TEMPLATE_DEFER_RELOAD="false"
+	QUIET_MODE="false"
 	local i=1
 	while [ "$i" -le "$#" ]; do
 		local arg="${!i}"
@@ -1266,6 +1282,26 @@ _parse_args() {
 			TEMPLATE_DRY_RUN="true"
 			i=$((i + 1))
 			;;
+		--template-precheck)
+			TEMPLATE_PRECHECK="true"
+			i=$((i + 1))
+			;;
+		--fail-fast)
+			TEMPLATE_FAIL_FAST="true"
+			i=$((i + 1))
+			;;
+		--continue-on-error)
+			TEMPLATE_CONTINUE_ON_ERROR="true"
+			i=$((i + 1))
+			;;
+		--json)
+			TEMPLATE_OUTPUT_JSON="true"
+			i=$((i + 1))
+			;;
+		--quiet)
+			QUIET_MODE="true"
+			i=$((i + 1))
+			;;
 		*)
 			i=$((i + 1))
 			;;
@@ -1285,7 +1321,7 @@ validate_args() {
 			continue
 		fi
 		case "$arg" in
-		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run) ;;
+		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet) ;;
 		--template-mode | --template-ids | --template-domain | --template-apply-mode | --template-cleanup-mode)
 			skip_next="true"
 			;;
@@ -1336,6 +1372,10 @@ validate_args() {
 				;;
 			esac
 		fi
+		if [ "$TEMPLATE_FAIL_FAST" = "true" ] && [ "$TEMPLATE_CONTINUE_ON_ERROR" = "true" ]; then
+			log_message ERROR "--fail-fast 与 --continue-on-error 不能同时使用"
+			return 1
+		fi
 	fi
 
 	return 0
@@ -1351,6 +1391,7 @@ print_usage() {
   --cf-ip-update                 仅更新 Cloudflare 防御 IP 库
   --check, --audit-only          仅执行诊断
   --dry-run                      全局干跑（破坏性操作仅记录）
+  --quiet                        控制台仅输出关键错误（日志文件不受影响）
   -h, --help                     显示帮助
 
 模板中心 CLI:
@@ -1360,11 +1401,16 @@ print_usage() {
   --template-apply-mode <append|replace>
   --template-cleanup-mode <all|ids>
   --template-dry-run
+  --template-precheck            仅校验模板与匹配，不执行写入
+  --fail-fast                    批量模式遇错立即停止
+  --continue-on-error            批量模式忽略失败继续执行
+  --json                         模板 CLI 输出 JSON 摘要
 
 模板 CLI 示例:
   nginx.sh --template-mode default --template-domain example.com --template-ids general_reverse_proxy --template-apply-mode append --template-dry-run --non-interactive
   nginx.sh --template-mode custom --template-domain "*.api.example.com,!admin.api.example.com" --template-ids security_headers,reverse_proxy_enhanced --template-apply-mode replace --non-interactive
   nginx.sh --template-mode cleanup --template-domain example.com --template-cleanup-mode ids --template-ids hsts --non-interactive
+  nginx.sh --template-mode custom --template-domain "*.example.com,!admin.example.com" --template-ids security_headers --template-precheck --json --non-interactive
 
 退出码(模板CLI):
   64 参数错误
@@ -3472,6 +3518,7 @@ _nginx_template_snippet_by_id() {
 	local snippet_rel=""
 	local snippet_path=""
 	_ensure_template_manifest_available || return 1
+	# shellcheck disable=SC2016
 	snippet_rel=$(_manifest_query --arg id "$template_id" '.templates[] | select(.id == $id) | .snippet_file' 2>/dev/null || true)
 	if [ -z "$snippet_rel" ] || [ "$snippet_rel" = "null" ]; then
 		return 1
@@ -3490,9 +3537,12 @@ _nginx_template_snippet_by_id() {
 _template_block_wrap() {
 	local template_id="${1:-}"
 	local payload="${2:-}"
+	local payload_hash=""
+	payload_hash=$(_template_payload_hash "$payload")
 	cat <<EOF
 # NGINX_TEMPLATE_START:${template_id}
 # Template: $(_template_id_to_name "$template_id")
+# Hash: ${payload_hash}
 ${payload}
 # NGINX_TEMPLATE_END:${template_id}
 EOF
@@ -3610,15 +3660,120 @@ _dedupe_template_ids() {
 	printf '%s\n' "${uniq[*]}"
 }
 
+_json_escape() {
+	printf '%s' "${1:-}" | jq -Rsa .
+}
+
+_emit_template_cli_summary() {
+	local mode="${1:-}"
+	local domain_expr="${2:-}"
+	local matched="${3:-0}"
+	local ok="${4:-0}"
+	local fail="${5:-0}"
+	local code="${6:-0}"
+	local precheck="${7:-false}"
+	if [ "${TEMPLATE_OUTPUT_JSON:-false}" != "true" ]; then
+		return 0
+	fi
+	printf '{"mode":%s,"domain_expr":%s,"matched":%s,"ok":%s,"fail":%s,"precheck":%s,"exit_code":%s}\n' \
+		"$(_json_escape "$mode")" \
+		"$(_json_escape "$domain_expr")" \
+		"$matched" \
+		"$ok" \
+		"$fail" \
+		"$precheck" \
+		"$code"
+}
+
+_rotate_template_audit_log_if_needed() {
+	local log_path="${1:-}"
+	local max_size=$((1024 * 1024))
+	local keep=5
+	local idx=0
+	[ -z "$log_path" ] && return 0
+	[ ! -f "$log_path" ] && return 0
+	local size
+	size=$(wc -c <"$log_path" 2>/dev/null || printf '%s' "0")
+	if [ "$size" -lt "$max_size" ]; then
+		return 0
+	fi
+	for ((idx = keep; idx >= 1; idx--)); do
+		if [ -f "${log_path}.${idx}" ]; then
+			if [ "$idx" -eq "$keep" ]; then
+				rm -f -- "${log_path}.${idx}" 2>/dev/null || true
+			else
+				mv "${log_path}.${idx}" "${log_path}.$((idx + 1))" 2>/dev/null || true
+			fi
+		fi
+	done
+	mv "$log_path" "${log_path}.1" 2>/dev/null || true
+	touch "$log_path" 2>/dev/null || true
+}
+
 _append_template_audit_log() {
 	local action="${1:-unknown}"
 	local domain="${2:-unknown}"
 	local detail="${3:-}"
+	local rc="${4:-0}"
+	local elapsed_ms="${5:-0}"
+	local actor="${SUDO_USER:-${USER:-unknown}}"
 	local log_path
 	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
 	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
 	mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
-	printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$action" "$domain" "$detail" >>"$log_path" 2>/dev/null || true
+	_rotate_template_audit_log_if_needed "$log_path"
+	printf '%s\t%s\t%s\top=%s\tactor=%s\trc=%s\telapsed_ms=%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$action" "$domain" "${OP_ID:-NA}" "$actor" "$rc" "$elapsed_ms" "$detail" >>"$log_path" 2>/dev/null || true
+}
+
+_validate_template_selection() {
+	local id=""
+	local requires=""
+	local conflict=""
+	local -a selected=("$@")
+	local -a missing=()
+	local -a conflict_hits=()
+	for id in "${selected[@]}"; do
+		if [ -z "$id" ]; then
+			continue
+		fi
+		# shellcheck disable=SC2016
+		if [ "$(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | .id // ""' 2>/dev/null || true)" = "" ]; then
+			log_message ERROR "模板不存在: ${id}"
+			return 1
+		fi
+		# shellcheck disable=SC2016
+		requires=$(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | (.requires // []) | join(" ")' 2>/dev/null || true)
+		for conflict in $requires; do
+			if ! _template_contains_id "$conflict" "${selected[@]}"; then
+				missing+=("${id}->${conflict}")
+			fi
+		done
+		# shellcheck disable=SC2016
+		conflict=$(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | (.conflicts // []) | join(" ")' 2>/dev/null || true)
+		for requires in $conflict; do
+			if _template_contains_id "$requires" "${selected[@]}"; then
+				conflict_hits+=("${id}<->${requires}")
+			fi
+		done
+	done
+	if [ "${#missing[@]}" -gt 0 ]; then
+		log_message ERROR "模板依赖缺失: ${missing[*]}"
+		return 1
+	fi
+	if [ "${#conflict_hits[@]}" -gt 0 ]; then
+		log_message ERROR "模板冲突: ${conflict_hits[*]}"
+		return 1
+	fi
+	return 0
+}
+
+_template_payload_hash() {
+	local payload="${1:-}"
+	if command -v sha256sum >/dev/null 2>&1; then
+		printf '%s' "$payload" | sha256sum | awk '{print $1}'
+		return 0
+	fi
+	printf '%s' "$payload" | cksum | awk '{print $1}'
 }
 
 _template_id_to_name() {
@@ -3628,6 +3783,7 @@ _template_id_to_name() {
 		printf '%s\n' "$template_id"
 		return 0
 	}
+	# shellcheck disable=SC2016
 	name=$(_manifest_query --arg id "$template_id" '.templates[] | select(.id == $id) | .name' 2>/dev/null || true)
 	if [ -z "$name" ] || [ "$name" = "null" ]; then
 		printf '%s\n' "$template_id"
@@ -3672,10 +3828,14 @@ _ensure_template_manifest_available() {
     (.version | type == "number") and
     (.templates | type == "array" and length > 0) and
     (.default_combos | type == "array" and length > 0) and
-    (all(.templates[]; has("id") and has("name") and has("snippet_file"))) and
+    (all(.templates[]; has("id") and has("name") and has("snippet_file") and (.id | type == "string") and (.id | test("^[a-z0-9_]+$")))) and
     (all(.default_combos[]; has("id") and has("name") and (.templates | type == "array" and length > 0)))
   ' <<<"$manifest_json" >/dev/null 2>&1; then
 		log_message ERROR "模板清单结构校验失败: ${NGINX_TEMPLATE_MANIFEST}"
+		return 1
+	fi
+	if ! jq -e '([.templates[].id] | length) == ([.templates[].id] | unique | length)' <<<"$manifest_json" >/dev/null 2>&1; then
+		log_message ERROR "模板清单中存在重复模板 ID"
 		return 1
 	fi
 	if ! jq -e '
@@ -3683,6 +3843,13 @@ _ensure_template_manifest_available() {
     | all(.default_combos[].templates[]; ($ids | index(.) != null))
   ' <<<"$manifest_json" >/dev/null 2>&1; then
 		log_message ERROR "默认模板组合引用了不存在的模板 ID"
+		return 1
+	fi
+	if ! jq -e '
+    ([.templates[].id] | unique) as $ids
+    | all(.templates[]; ((.requires // []) + (.conflicts // [])) | all(.[]; ($ids | index(.) != null)))
+  ' <<<"$manifest_json" >/dev/null 2>&1; then
+		log_message ERROR "模板 requires/conflicts 引用了不存在的模板 ID"
 		return 1
 	fi
 	while IFS= read -r snippet_rel; do
@@ -3725,7 +3892,8 @@ _render_nginx_template_root_menu() {
 		"7. 批量应用模板（glob域名匹配）" \
 		"8. 查看模板状态" \
 		"9. 查看模板审计日志" \
-		"10. 返回"
+		"10. 按模板反查域名" \
+		"11. 返回"
 }
 
 _render_nginx_template_custom_menu() {
@@ -3752,6 +3920,7 @@ _template_combo_by_choice() {
 	local idx=$((choice - 1))
 	local combo_ids=""
 	_ensure_template_manifest_available || return 1
+	# shellcheck disable=SC2016
 	combo_ids=$(_manifest_query --argjson i "$idx" '.default_combos[$i].templates // [] | join(" ")' 2>/dev/null || true)
 	if [ -z "$combo_ids" ] || [ "$combo_ids" = "null" ]; then
 		return 1
@@ -3785,6 +3954,7 @@ _parse_custom_template_multi_select() {
 			log_message ERROR "自定义模板多选包含越界项: ${token}"
 			return 1
 		fi
+		# shellcheck disable=SC2016
 		id=$(_manifest_query --argjson i "$((token - 1))" '[.templates[] | select(.single == true)] | .[$i].id // ""' 2>/dev/null || true)
 		[ -z "$id" ] && continue
 		if [ -n "$id" ]; then out+=("$id"); fi
@@ -3848,6 +4018,10 @@ _apply_templates_to_domain() {
 	local new_json=""
 	local ids_text=""
 	local cert_path=""
+	local started_at=0
+	local finished_at=0
+	local elapsed_ms=0
+	started_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
 
 	cur=$(_get_project_json "$d")
 	if [ -z "$cur" ]; then
@@ -3862,6 +4036,9 @@ _apply_templates_to_domain() {
 	local deduped_ids
 	deduped_ids=$(_dedupe_template_ids "${template_ids[@]}")
 	IFS=' ' read -r -a template_ids <<<"$deduped_ids"
+	if ! _validate_template_selection "${template_ids[@]}"; then
+		return "$EX_DATAERR"
+	fi
 
 	if ! payload=$(_render_templates_payload "${template_ids[@]}"); then
 		return 1
@@ -3918,6 +4095,9 @@ _apply_templates_to_domain() {
 
 	if [ "$TEMPLATE_DRY_RUN" = "true" ]; then
 		log_message INFO "template dry-run: 仅预览，不写入。"
+		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+		elapsed_ms=$((finished_at - started_at))
+		_append_template_audit_log "apply-dry-run" "$d" "mode=${mode};ids=${ids_text}" 0 "$elapsed_ms"
 		return 0
 	fi
 
@@ -3925,9 +4105,19 @@ _apply_templates_to_domain() {
 	snapshot_project_json "$d" "$cur"
 	if _save_project_json "$new_json"; then
 		NGINX_RELOAD_NEEDED="true"
-		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
+		if _write_and_enable_nginx_config "$d" "$new_json"; then
+			if [ "${TEMPLATE_DEFER_RELOAD:-false}" != "true" ] && ! control_nginx_reload_if_needed; then
+				log_message ERROR "模板应用后 Nginx 重载失败。"
+				_save_project_json "$cur" || true
+				_write_and_enable_nginx_config "$d" "$cur" || true
+				NGINX_RELOAD_NEEDED="true"
+				control_nginx_reload_if_needed || true
+				return 1
+			fi
 			log_message SUCCESS "模板应用成功: ${d} ($mode, ${ids_text})"
-			_append_template_audit_log "apply" "$d" "mode=${mode};ids=${ids_text}"
+			finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+			elapsed_ms=$((finished_at - started_at))
+			_append_template_audit_log "apply" "$d" "mode=${mode};ids=${ids_text}" 0 "$elapsed_ms"
 			printf '%b' "已应用模板组合: ${ids_text}\n"
 			printf '%b' "模式: $([ "$mode" = "replace" ] && printf '%s' "Site替换（覆盖）" || printf '%s' "Block追加（推荐）")\n"
 			return 0
@@ -3937,6 +4127,9 @@ _apply_templates_to_domain() {
 		_write_and_enable_nginx_config "$d" "$cur" || true
 		NGINX_RELOAD_NEEDED="true"
 		control_nginx_reload_if_needed || true
+		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+		elapsed_ms=$((finished_at - started_at))
+		_append_template_audit_log "apply-failed" "$d" "mode=${mode};ids=${ids_text}" "$EX_SOFTWARE" "$elapsed_ms"
 		return 1
 	fi
 
@@ -3953,6 +4146,10 @@ _cleanup_template_blocks_for_domain() {
 	local current_custom=""
 	local cleaned_custom=""
 	local new_json=""
+	local started_at=0
+	local finished_at=0
+	local elapsed_ms=0
+	started_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
 
 	cur=$(_get_project_json "$d")
 	if [ -z "$cur" ]; then
@@ -3990,6 +4187,9 @@ _cleanup_template_blocks_for_domain() {
 
 	if [ "$TEMPLATE_DRY_RUN" = "true" ]; then
 		log_message INFO "template dry-run: 仅预览清理，不写入。"
+		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+		elapsed_ms=$((finished_at - started_at))
+		_append_template_audit_log "cleanup-dry-run" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" 0 "$elapsed_ms"
 		return 0
 	fi
 
@@ -4002,9 +4202,19 @@ _cleanup_template_blocks_for_domain() {
 	snapshot_project_json "$d" "$cur"
 	if _save_project_json "$new_json"; then
 		NGINX_RELOAD_NEEDED="true"
-		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
+		if _write_and_enable_nginx_config "$d" "$new_json"; then
+			if [ "${TEMPLATE_DEFER_RELOAD:-false}" != "true" ] && ! control_nginx_reload_if_needed; then
+				log_message ERROR "模板清理后 Nginx 重载失败。"
+				_save_project_json "$cur" || true
+				_write_and_enable_nginx_config "$d" "$cur" || true
+				NGINX_RELOAD_NEEDED="true"
+				control_nginx_reload_if_needed || true
+				return 1
+			fi
 			log_message SUCCESS "模板注释块清理成功: ${d}"
-			_append_template_audit_log "cleanup" "$d" "mode=${clean_mode};ids=${ids[*]:-all}"
+			finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+			elapsed_ms=$((finished_at - started_at))
+			_append_template_audit_log "cleanup" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" 0 "$elapsed_ms"
 			return 0
 		fi
 		log_message ERROR "模板清理应用失败，开始回滚。"
@@ -4012,6 +4222,9 @@ _cleanup_template_blocks_for_domain() {
 		_write_and_enable_nginx_config "$d" "$cur" || true
 		NGINX_RELOAD_NEEDED="true"
 		control_nginx_reload_if_needed || true
+		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+		elapsed_ms=$((finished_at - started_at))
+		_append_template_audit_log "cleanup-failed" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" "$EX_SOFTWARE" "$elapsed_ms"
 		return 1
 	fi
 
@@ -4114,6 +4327,43 @@ _view_template_audit_history() {
 	press_enter_to_continue
 }
 
+_view_template_domains_by_template() {
+	local all=""
+	local domain=""
+	local cfg=""
+	local id=""
+	local ids_text=""
+	local -a lines=()
+	_ensure_template_manifest_available || return 1
+	all=$(jq -r '.[].domain // empty' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
+	if [ -z "$all" ]; then
+		log_message WARN "暂无 HTTP 项目。"
+		press_enter_to_continue
+		return 0
+	fi
+	while IFS=$'\t' read -r id name; do
+		[ -z "$id" ] && continue
+		local matched=0
+		local -a ds=()
+		while IFS= read -r domain; do
+			[ -z "$domain" ] && continue
+			cfg=$(jq -r --arg d "$domain" '.[] | select(.domain == $d) | .custom_config // empty' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
+			ids_text=$(_extract_template_ids_from_content "$cfg")
+			if [[ " $ids_text " == *" $id "* ]]; then
+				ds+=("$domain")
+				matched=$((matched + 1))
+			fi
+		done <<<"$all"
+		if [ "$matched" -eq 0 ]; then
+			lines+=("${name} (${id}) -> -")
+		else
+			lines+=("${name} (${id}) -> ${ds[*]}")
+		fi
+	done < <(_manifest_query '.templates[] | [.id, .name] | @tsv' 2>/dev/null)
+	_render_menu "按模板反查域名" "${lines[@]}"
+	press_enter_to_continue
+}
+
 _handle_nginx_template_batch_apply_for_domain_glob() {
 	local domain_expr=""
 	local source_choice=""
@@ -4212,7 +4462,7 @@ _handle_nginx_template_center_for_domain() {
 
 	while true; do
 		_render_nginx_template_root_menu
-		if ! root_choice=$(prompt_menu_choice "1-10" "true"); then return 0; fi
+		if ! root_choice=$(prompt_menu_choice "1-11" "true"); then return 0; fi
 		case "$root_choice" in
 		1 | 2 | 3 | 4)
 			combo_ids=$(_template_combo_by_choice "$root_choice") || {
@@ -4251,7 +4501,10 @@ _handle_nginx_template_center_for_domain() {
 		9)
 			_view_template_audit_history
 			;;
-		10 | "") return 0 ;;
+		10)
+			_view_template_domains_by_template
+			;;
+		11 | "") return 0 ;;
 		*)
 			log_message ERROR "无效模板中心选项"
 			continue
@@ -4286,14 +4539,19 @@ _run_template_cli_mode() {
 	local fail=0
 	local ok=0
 	local domain=""
+	local final_code=0
 	local -a ids=()
 	local -a domains=()
 
 	if [ -z "$mode" ]; then
-		return "$EX_USAGE"
+		final_code="$EX_USAGE"
+		_emit_template_cli_summary "$mode" "$d" 0 0 0 "$final_code" "false"
+		return "$final_code"
 	fi
 	if ! _ensure_template_manifest_available; then
-		return "$EX_DATAERR"
+		final_code="$EX_CONFIG"
+		_emit_template_cli_summary "$mode" "$d" 0 0 0 "$final_code" "false"
+		return "$final_code"
 	fi
 
 	if _is_glob_domain_expr "$d"; then
@@ -4303,49 +4561,93 @@ _run_template_cli_mode() {
 		done < <(_match_domains_by_glob_expr "$d" || true)
 		if [ "${#domains[@]}" -eq 0 ]; then
 			log_message ERROR "模板 CLI 未匹配到任何域名: ${d}"
-			return "$EX_DATAERR"
+			final_code="$EX_DATAERR"
+			_emit_template_cli_summary "$mode" "$d" 0 0 0 "$final_code" "false"
+			return "$final_code"
 		fi
 		TEMPLATE_BATCH_AUTO_CONFIRM="true"
 	else
 		domains+=("$d")
 	fi
 
+	if [ "${TEMPLATE_CONTINUE_ON_ERROR:-false}" = "true" ]; then
+		TEMPLATE_FAIL_FAST="false"
+	fi
+	if [ "${#domains[@]}" -gt 1 ]; then
+		TEMPLATE_DEFER_RELOAD="true"
+	fi
+
 	case "$mode" in
 	default)
 		if [ -z "$ids_raw" ]; then
 			log_message ERROR "default 模式需要 --template-ids <combo_id>"
-			return "$EX_USAGE"
+			final_code="$EX_USAGE"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
 		fi
+		# shellcheck disable=SC2016
 		resolved=$(_manifest_query --arg id "$ids_raw" '.default_combos[] | select(.id == $id) | .templates | join(" ")' 2>/dev/null || true)
 		if [ -z "$resolved" ] || [ "$resolved" = "null" ]; then
 			log_message ERROR "未找到默认模板组合: ${ids_raw}"
-			return "$EX_DATAERR"
+			final_code="$EX_DATAERR"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
 		fi
 		IFS=' ' read -r -a ids <<<"$resolved"
+		if ! _validate_template_selection "${ids[@]}"; then
+			final_code="$EX_DATAERR"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
+		fi
+		if [ "${TEMPLATE_PRECHECK:-false}" = "true" ]; then
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
+			return 0
+		fi
 		for domain in "${domains[@]}"; do
 			if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
 				ok=$((ok + 1))
 			else
 				fail=$((fail + 1))
+				if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+					break
+				fi
 			fi
 		done
 		;;
 	custom)
 		if [ -z "$ids_raw" ]; then
 			log_message ERROR "custom 模式需要 --template-ids <id1,id2>"
-			return "$EX_USAGE"
+			final_code="$EX_USAGE"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
 		fi
 		ids_raw="${ids_raw//,/ }"
 		IFS=' ' read -r -a ids <<<"$ids_raw"
+		if ! _validate_template_selection "${ids[@]}"; then
+			final_code="$EX_DATAERR"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
+		fi
+		if [ "${TEMPLATE_PRECHECK:-false}" = "true" ]; then
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
+			return 0
+		fi
 		for domain in "${domains[@]}"; do
 			if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
 				ok=$((ok + 1))
 			else
 				fail=$((fail + 1))
+				if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+					break
+				fi
 			fi
 		done
 		;;
 	cleanup)
+		if [ "${TEMPLATE_PRECHECK:-false}" = "true" ]; then
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
+			return 0
+		fi
 		case "$TEMPLATE_CLEANUP_MODE" in
 		all)
 			for domain in "${domains[@]}"; do
@@ -4353,13 +4655,18 @@ _run_template_cli_mode() {
 					ok=$((ok + 1))
 				else
 					fail=$((fail + 1))
+					if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+						break
+					fi
 				fi
 			done
 			;;
 		ids)
 			if [ -z "$ids_raw" ]; then
 				log_message ERROR "cleanup ids 模式需要 --template-ids <id1,id2>"
-				return "$EX_USAGE"
+				final_code="$EX_USAGE"
+				_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+				return "$final_code"
 			fi
 			ids_raw="${ids_raw//,/ }"
 			IFS=' ' read -r -a ids <<<"$ids_raw"
@@ -4368,28 +4675,45 @@ _run_template_cli_mode() {
 					ok=$((ok + 1))
 				else
 					fail=$((fail + 1))
+					if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+						break
+					fi
 				fi
 			done
 			;;
 		*)
 			log_message ERROR "cleanup 模式缺少合法 --template-cleanup-mode"
-			return "$EX_USAGE"
+			final_code="$EX_USAGE"
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+			return "$final_code"
 			;;
 		esac
 		;;
 	*)
 		log_message ERROR "未知模板模式: ${mode}"
-		return "$EX_USAGE"
+		final_code="$EX_USAGE"
+		_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 "$final_code" "false"
+		return "$final_code"
 		;;
 	esac
 
+	if [ "${TEMPLATE_DEFER_RELOAD:-false}" = "true" ] && [ "$ok" -gt 0 ] && [ "${TEMPLATE_DRY_RUN:-false}" != "true" ]; then
+		if ! control_nginx_reload_if_needed; then
+			log_message ERROR "批量模板应用后统一重载失败"
+			fail=$((fail + 1))
+		fi
+	fi
+	TEMPLATE_DEFER_RELOAD="false"
 	if [ "$TEMPLATE_BATCH_AUTO_CONFIRM" = "true" ]; then
 		log_message INFO "模板 CLI 批量执行完成: 成功=${ok}, 失败=${fail}"
 	fi
 	TEMPLATE_BATCH_AUTO_CONFIRM="false"
 	if [ "$fail" -gt 0 ]; then
-		return "$EX_SOFTWARE"
+		final_code="$EX_SOFTWARE"
+		_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" "$ok" "$fail" "$final_code" "false"
+		return "$final_code"
 	fi
+	_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" "$ok" "$fail" 0 "false"
 	return 0
 }
 

@@ -54,6 +54,11 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "requires/conflicts 引用的模板 ID 均存在" {
+  run jq -e '([.templates[].id] | unique) as $ids | all(.templates[]; ((.requires // []) + (.conflicts // [])) | all(.[]; ($ids | index(.) != null)))' "$MANIFEST_PATH"
+  [ "$status" -eq 0 ]
+}
+
 @test "--help 返回成功并包含模板 CLI 说明" {
   run bash "$SCRIPT_PATH" --help
   [ "$status" -eq 0 ]
@@ -84,4 +89,34 @@ teardown() {
 @test "glob 批量: 未匹配域名返回 EX_DATAERR(65)" {
   run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.none.example.com" --template-ids security_headers --template-apply-mode append --template-dry-run --non-interactive
   [ "$status" -eq 65 ]
+}
+
+@test "precheck + json 输出返回成功" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.example.com,!admin.api.example.com" --template-ids security_headers --template-precheck --json --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"precheck":true'* ]]
+  [[ "$output" == *'"mode":"custom"'* ]]
+}
+
+@test "依赖约束: hsts 单独应用返回 EX_DATAERR(65)" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids hsts --template-dry-run --non-interactive
+  [ "$status" -eq 65 ]
+}
+
+@test "参数约束: fail-fast 与 continue-on-error 互斥" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --fail-fast --continue-on-error --template-dry-run --non-interactive
+  [ "$status" -ne 0 ]
+}
+
+@test "cleanup + glob 可执行 dry-run" {
+  run bash "$SCRIPT_PATH" --template-mode cleanup --template-domain "*.example.com" --template-cleanup-mode all --template-dry-run --non-interactive
+  [ "$status" -eq 0 ]
+}
+
+@test "manifest 非法时返回 EX_CONFIG(78)" {
+  bad_manifest="$(mktemp /tmp/nginx.manifest.bad.XXXXXX.json)"
+  printf '%s\n' '{bad json' >"$bad_manifest"
+  run env NGINX_TEMPLATE_MANIFEST="$bad_manifest" bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-dry-run --non-interactive
+  [ "$status" -eq 78 ]
+  rm -f "$bad_manifest"
 }

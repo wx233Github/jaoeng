@@ -53,6 +53,23 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
 
 ## 常见维护命令
 
+### Nginx 模板中心 CLI（非交互）
+
+- 预检查（不写入）：
+  - `--template-precheck`
+- 批量匹配（glob + 排除）：
+  - `--template-domain "*.example.com,!admin.example.com"`
+- 批量失败策略：
+  - `--fail-fast`（遇错即停）
+  - `--continue-on-error`（遇错继续）
+- 输出模式：
+  - `--json`（机器可读摘要）
+  - `--quiet`（减少控制台输出）
+
+示例：
+
+`bash nginx.sh --template-mode custom --template-domain "*.example.com,!admin.example.com" --template-ids security_headers --template-precheck --json --non-interactive`
+
 ### 调试主脚本
 
 ```bash
