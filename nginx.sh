@@ -1256,6 +1256,70 @@ _parse_args() {
 	tm_parse_args "$@"
 }
 
+_get_active_nginx_main_conf() {
+	local master_cmd=""
+	local conf=""
+	master_cmd=$(pgrep -af 'nginx: master process' | head -n1 | cut -d' ' -f2- || true)
+	if [[ "$master_cmd" == *" -c "* ]]; then
+		conf=$(sed -n 's/.* -c \([^[:space:]]\+\).*/\1/p' <<<"$master_cmd")
+	fi
+	if [ -z "$conf" ]; then
+		conf="/etc/nginx/nginx.conf"
+	fi
+	printf '%s\n' "$conf"
+}
+
+_ensure_active_nginx_http_include_sites_enabled() {
+	local active_conf=""
+	active_conf=$(_get_active_nginx_main_conf)
+	if [ -z "$active_conf" ] || [ ! -f "$active_conf" ]; then
+		return 0
+	fi
+	if [ "$active_conf" = "/etc/nginx/nginx.conf" ]; then
+		return 0
+	fi
+	if grep -Eq 'include[[:space:]]+/etc/nginx/sites-enabled/\*\.conf;' "$active_conf" 2>/dev/null; then
+		return 0
+	fi
+	log_message WARN "检测到 Nginx 使用自定义主配置: ${active_conf}，正在自动接入 /etc/nginx/sites-enabled/*.conf"
+	local backup tmp_file
+	backup="${active_conf}.bak.$(date +%Y%m%d_%H%M%S)"
+	tmp_file=$(mktemp /tmp/nginx.main.include.XXXXXX)
+	chmod 600 "$tmp_file"
+	cp "$active_conf" "$backup" || true
+	awk '
+		BEGIN{in_http=0; depth=0; inserted=0}
+		{
+			line=$0
+			if (line ~ /^[ \t]*http[ \t]*\{[ \t]*$/) { in_http=1; depth=1; print line; next }
+			if (in_http==1) {
+				opens=gsub(/\{/, "{", line)
+				closes=gsub(/\}/, "}", line)
+				if (depth==1 && closes>0 && inserted==0) {
+					print "    # Auto-injected: make /etc/nginx/sites-enabled configs effective"
+					print "    include /etc/nginx/sites-enabled/*.conf;"
+					inserted=1
+				}
+				depth += opens - closes
+				if (depth<=0) { in_http=0; depth=0 }
+			}
+			print line
+		}
+	' "$active_conf" >"$tmp_file"
+	if ! _require_safe_path "$active_conf" "更新自定义 nginx 主配置"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
+	mv "$tmp_file" "$active_conf"
+	if ! nginx -t -c "$active_conf" >/dev/null 2>&1; then
+		log_message ERROR "接入 sites-enabled 后配置校验失败，已回滚: ${active_conf}"
+		cp "$backup" "$active_conf" || true
+		return 1
+	fi
+	log_message SUCCESS "已将 /etc/nginx/sites-enabled/*.conf 接入 ${active_conf}"
+	return 0
+}
+
 _stream_module_available() {
 	if nginx -V 2>&1 | grep -Eq -- '--with-stream($|[[:space:]])'; then
 		return 0
@@ -1320,6 +1384,7 @@ initialize_environment() {
 
 	mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR" "$SSL_CERTS_BASE_DIR" "$BACKUP_DIR" "$CONF_BACKUP_DIR"
 	mkdir -p "$JSON_BACKUP_DIR" "$NGINX_STREAM_AVAILABLE_DIR" "$NGINX_STREAM_ENABLED_DIR"
+	_ensure_active_nginx_http_include_sites_enabled || true
 	_renew_fail_db_init
 	if [ ! -f "$PROJECTS_METADATA_FILE" ] || ! jq -e . "$PROJECTS_METADATA_FILE" >/dev/null 2>&1; then
 		if ! _require_safe_path "$PROJECTS_METADATA_FILE" "初始化项目配置"; then return 1; fi
@@ -3035,10 +3100,17 @@ _gather_project_details() {
 
 	if [ "$is_cert_only" == "false" ]; then
 		name=$(jq -r '.name // ""' <<<"$cur")
-		[ "$name" == "证书" ] && name=""
+		local old_type old_port target_default
+		old_type=$(jq -r '.type // "local_port"' <<<"$cur")
+		old_port=$(jq -r '.resolved_port // ""' <<<"$cur")
+		target_default="$name"
+		if [ "$old_type" = "local_port" ] && [ -n "$old_port" ] && [ "$old_port" != "null" ] && [ "$old_port" != "cert_only" ]; then
+			target_default="$old_port"
+		fi
+		[ "$target_default" == "证书" ] && target_default=""
 		while true; do
 			local target
-			if ! target=$(prompt_input "后端目标 (容器名/端口)" "$name" "" "" "false"); then
+			if ! target=$(prompt_input "后端目标 (容器名/端口)" "$target_default" "" "" "false"); then
 				exec 1>&3
 				return 1
 			fi
