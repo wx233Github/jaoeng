@@ -62,6 +62,8 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
   - `--json` 时包含域名级“模板块/指令变化”摘要
 - 按操作ID回滚：
   - `--template-rollback-op <op_id>`
+- 审计统计：
+  - `--template-audit-report`（可配合 `--json`）
 - 批量匹配（glob + 排除）：
   - `--template-domain "*.example.com,!admin.example.com"`
 - 模板变量注入（受 manifest 白名单约束）：

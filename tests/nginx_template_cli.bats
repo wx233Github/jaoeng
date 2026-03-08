@@ -140,10 +140,37 @@ teardown() {
 }
 
 @test "rollback-op 在无审计日志时返回 EX_DATAERR(65)" {
-  audit_file="/tmp/nginx_template_audit.missing.$$"
+  audit_file="/var/log/nginx_template_audit.missing.$$"
   rm -f "$audit_file"
   run env NGINX_TEMPLATE_AUDIT_LOG="$audit_file" bash "$SCRIPT_PATH" --template-rollback-op op_test --json --non-interactive
   [ "$status" -eq 65 ]
+}
+
+@test "audit-report 在无审计日志时返回 EX_DATAERR(65)" {
+  audit_file="/var/log/nginx_template_audit.missing.report.$$"
+  rm -f "$audit_file"
+  run env NGINX_TEMPLATE_AUDIT_LOG="$audit_file" bash "$SCRIPT_PATH" --template-audit-report --json --non-interactive
+  [ "$status" -eq 65 ]
+}
+
+@test "audit-report 可输出统计 JSON" {
+  audit_file="/var/log/nginx_template_audit.sample.$$"
+  cat >"$audit_file" <<'EOF'
+2026-03-08 10:00:00	apply	api.example.com	op=op_a	actor=root	rc=0	elapsed_ms=12	mode=append;ids=security_headers
+2026-03-08 10:01:00	cleanup	api.example.com	op=op_b	actor=root	rc=0	elapsed_ms=10	mode=all;ids=all
+2026-03-08 10:02:00	rollback	api.example.com	op=op_c	actor=root	rc=0	elapsed_ms=8	from_op=op_a
+EOF
+  run env NGINX_TEMPLATE_AUDIT_LOG="$audit_file" bash "$SCRIPT_PATH" --template-audit-report --json --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"apply_ok":1'* ]]
+  [[ "$output" == *'"cleanup_ok":1'* ]]
+  [[ "$output" == *'"rollback_ok":1'* ]]
+  rm -f "$audit_file"
+}
+
+@test "参数约束: template-mode 与 template-audit-report 互斥" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-audit-report --non-interactive
+  [ "$status" -ne 0 ]
 }
 
 @test "template-vars 可覆盖 hsts 默认变量" {

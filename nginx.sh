@@ -117,6 +117,7 @@ TEMPLATE_OUTPUT_JSON="false"
 TEMPLATE_DEFER_RELOAD="false"
 TEMPLATE_IMPACT_REPORT="false"
 TEMPLATE_ROLLBACK_OP=""
+TEMPLATE_AUDIT_REPORT="false"
 QUIET_MODE="false"
 SHOW_HELP="false"
 declare -A TEMPLATE_VARS=()
@@ -1243,6 +1244,7 @@ _parse_args() {
 	TEMPLATE_DEFER_RELOAD="false"
 	TEMPLATE_IMPACT_REPORT="false"
 	TEMPLATE_ROLLBACK_OP=""
+	TEMPLATE_AUDIT_REPORT="false"
 	QUIET_MODE="false"
 	TEMPLATE_VARS=()
 	local i=1
@@ -1320,6 +1322,10 @@ _parse_args() {
 			TEMPLATE_ROLLBACK_OP="${!i:-}"
 			i=$((i + 1))
 			;;
+		--template-audit-report)
+			TEMPLATE_AUDIT_REPORT="true"
+			i=$((i + 1))
+			;;
 		--quiet)
 			QUIET_MODE="true"
 			i=$((i + 1))
@@ -1343,7 +1349,7 @@ validate_args() {
 			continue
 		fi
 		case "$arg" in
-		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet | --template-impact-report) ;;
+		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet | --template-impact-report | --template-audit-report) ;;
 		--template-mode | --template-ids | --template-domain | --template-vars | --template-apply-mode | --template-cleanup-mode | --template-rollback-op)
 			skip_next="true"
 			;;
@@ -1355,6 +1361,10 @@ validate_args() {
 	done
 
 	if [ -n "$TEMPLATE_MODE" ]; then
+		if [ "${TEMPLATE_AUDIT_REPORT:-false}" = "true" ]; then
+			log_message ERROR "--template-audit-report 与 --template-mode 不能同时使用"
+			return 1
+		fi
 		if [ -n "$TEMPLATE_ROLLBACK_OP" ]; then
 			log_message ERROR "--template-mode 与 --template-rollback-op 不能同时使用"
 			return 1
@@ -1418,6 +1428,10 @@ validate_args() {
 		return 1
 	fi
 	if [ -n "$TEMPLATE_ROLLBACK_OP" ]; then
+		if [ "${TEMPLATE_AUDIT_REPORT:-false}" = "true" ]; then
+			log_message ERROR "--template-rollback-op 与 --template-audit-report 不能同时使用"
+			return 1
+		fi
 		if ! [[ "$TEMPLATE_ROLLBACK_OP" =~ ^[A-Za-z0-9._:-]+$ ]]; then
 			log_message ERROR "--template-rollback-op 格式非法"
 			return 1
@@ -1451,6 +1465,7 @@ print_usage() {
   --template-precheck            仅校验模板与匹配，不执行写入
   --template-impact-report       输出影响分析（不写入）
   --template-rollback-op <op_id> 按操作ID回滚模板变更
+  --template-audit-report        输出模板审计统计摘要
   --fail-fast                    批量模式遇错立即停止
   --continue-on-error            批量模式忽略失败继续执行
   --json                         模板 CLI 输出 JSON 摘要
@@ -1463,6 +1478,7 @@ print_usage() {
   nginx.sh --template-mode custom --template-domain example.com --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-dry-run --non-interactive
   nginx.sh --template-mode default --template-domain "*.example.com" --template-ids https_production --template-impact-report --json --non-interactive
   nginx.sh --template-rollback-op 20260308_120001_1234_5678 --json --non-interactive
+  nginx.sh --template-audit-report --json --non-interactive
 
 退出码(模板CLI):
   64 参数错误
@@ -4102,6 +4118,71 @@ _rollback_templates_by_op() {
 	return 0
 }
 
+_template_audit_report() {
+	local log_path=""
+	local combined=""
+	local files=""
+	local total=0
+	local apply_ok=0
+	local apply_fail=0
+	local cleanup_ok=0
+	local cleanup_fail=0
+	local rollback_ok=0
+	local rollback_fail=0
+	local recent_ops=""
+	local f=""
+
+	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
+	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
+
+	if [ -f "$log_path" ]; then
+		files="$log_path"
+	fi
+	local i=1
+	for ((i = 1; i <= 5; i++)); do
+		if [ -f "${log_path}.${i}" ]; then
+			files+=" ${log_path}.${i}"
+		fi
+	done
+	if [ -z "$files" ]; then
+		log_message ERROR "模板审计日志不存在: ${log_path}"
+		if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
+			printf '{"error":"audit_log_not_found","path":%s}\n' "$(_json_escape "$log_path")"
+		fi
+		return "$EX_DATAERR"
+	fi
+
+	for f in $files; do
+		combined+="$(cat "$f" 2>/dev/null || true)"
+		combined+=$'\n'
+	done
+	if [ -z "$combined" ]; then
+		if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
+			printf '{"total":0,"apply_ok":0,"apply_fail":0,"cleanup_ok":0,"cleanup_fail":0,"rollback_ok":0,"rollback_fail":0}\n'
+		else
+			log_message INFO "模板审计日志为空。"
+		fi
+		return 0
+	fi
+
+	total=$(awk 'END{print NR+0}' <<<"$combined")
+	apply_ok=$(grep -Ec $'\tapply\t' <<<"$combined" || printf '%s' "0")
+	apply_fail=$(grep -Ec $'\tapply-failed\t' <<<"$combined" || printf '%s' "0")
+	cleanup_ok=$(grep -Ec $'\tcleanup\t' <<<"$combined" || printf '%s' "0")
+	cleanup_fail=$(grep -Ec $'\tcleanup-failed\t' <<<"$combined" || printf '%s' "0")
+	rollback_ok=$(grep -Ec $'\trollback\t' <<<"$combined" || printf '%s' "0")
+	rollback_fail=$(grep -Ec $'\trollback-failed\t' <<<"$combined" || printf '%s' "0")
+	recent_ops=$(awk -F '\top=' '{if (NF>1){split($2,a,"\t"); print a[1]}}' <<<"$combined" | sed '/^$/d' | sort | uniq | tail -n 10 | tr '\n' ' ')
+
+	if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
+		printf '{"total":%s,"apply_ok":%s,"apply_fail":%s,"cleanup_ok":%s,"cleanup_fail":%s,"rollback_ok":%s,"rollback_fail":%s,"recent_ops":%s}\n' \
+			"$total" "$apply_ok" "$apply_fail" "$cleanup_ok" "$cleanup_fail" "$rollback_ok" "$rollback_fail" "$(_json_escape "${recent_ops%% }")"
+	else
+		log_message INFO "模板审计统计: total=${total}, apply_ok=${apply_ok}, apply_fail=${apply_fail}, cleanup_ok=${cleanup_ok}, cleanup_fail=${cleanup_fail}, rollback_ok=${rollback_ok}, rollback_fail=${rollback_fail}"
+	fi
+	return 0
+}
+
 _validate_template_selection() {
 	local id=""
 	local requires=""
@@ -4986,6 +5067,10 @@ _manage_nginx_template_center() {
 }
 
 _run_template_cli_mode() {
+	if [ "${TEMPLATE_AUDIT_REPORT:-false}" = "true" ]; then
+		_template_audit_report
+		return $?
+	fi
 	if [ -n "${TEMPLATE_ROLLBACK_OP:-}" ]; then
 		_rollback_templates_by_op "$TEMPLATE_ROLLBACK_OP"
 		return $?
@@ -5702,7 +5787,7 @@ main() {
 		check_and_auto_renew_certs
 		return $?
 	fi
-	if [ -n "$TEMPLATE_MODE" ] || [ -n "${TEMPLATE_ROLLBACK_OP:-}" ]; then
+	if [ -n "$TEMPLATE_MODE" ] || [ -n "${TEMPLATE_ROLLBACK_OP:-}" ] || [ "${TEMPLATE_AUDIT_REPORT:-false}" = "true" ]; then
 		_run_template_cli_mode
 		return $?
 	fi
