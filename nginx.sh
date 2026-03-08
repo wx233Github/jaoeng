@@ -1321,10 +1321,6 @@ install_acme_sh() {
 	_generate_op_id
 	if [ -f "$ACME_BIN" ]; then return 0; fi
 	log_message WARN "acme.sh 未安装,开始安装..."
-	local email
-	if ! email=$(prompt_input "注册邮箱" "" "" "" "true"); then return 1; fi
-	local email_arg=""
-	if [ -n "$email" ]; then email_arg="email=$email"; fi
 	if [[ "$ACME_SH_INSTALL_URL" != https://* ]]; then
 		log_message ERROR "acme.sh 安装地址必须为 https://"
 		return 1
@@ -1354,19 +1350,11 @@ install_acme_sh() {
 			return 1
 		fi
 	fi
-	if [ -n "$email_arg" ]; then
-		sh "$install_script" "$email_arg" || {
-			rm -f "$install_script"
-			log_message ERROR "acme.sh 安装失败"
-			return 1
-		}
-	else
-		sh "$install_script" || {
-			rm -f "$install_script"
-			log_message ERROR "acme.sh 安装失败"
-			return 1
-		}
-	fi
+	sh "$install_script" || {
+		rm -f "$install_script"
+		log_message ERROR "acme.sh 安装失败"
+		return 1
+	}
 	rm -f "$install_script"
 	if [ -d "$HOME/.acme.sh" ]; then
 		ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" -print -quit 2>/dev/null || true)
@@ -1387,6 +1375,18 @@ install_acme_sh() {
 	rm -f "$cron_tmp"
 	log_message SUCCESS "acme.sh 安装成功。"
 	return 0
+}
+
+_zerossl_account_has_email() {
+	local f1="$HOME/.acme.sh/account.conf"
+	local f2="$HOME/.acme.sh/ca/acme.zerossl.com/v2/DV90/account.conf"
+	if [ -f "$f1" ] && grep -Eq '^ACCOUNT_EMAIL=.+' "$f1" 2>/dev/null; then
+		return 0
+	fi
+	if [ -f "$f2" ] && grep -Eq '^ACCOUNT_EMAIL=.+' "$f2" 2>/dev/null; then
+		return 0
+	fi
+	return 1
 }
 
 control_nginx() {
@@ -2680,6 +2680,10 @@ _issue_and_install_certificate() {
 	local wildcard
 	local ca
 	IFS=$'\t' read -r provider wildcard ca < <(jq -r '[.dns_api_provider, .use_wildcard, .ca_server_url] | @tsv' <<<"$json")
+	if [ "$ca" = "https://acme.zerossl.com/v2/DV90" ] && ! _zerossl_account_has_email; then
+		log_message INFO "ZeroSSL 未检测到注册邮箱，自动切换到 Let's Encrypt。"
+		ca="https://acme-v02.api.letsencrypt.org/directory"
+	fi
 	local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
 	local key="$SSL_CERTS_BASE_DIR/$domain.key"
 	local start_ts
