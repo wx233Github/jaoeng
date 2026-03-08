@@ -183,6 +183,14 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "兼容性校验: min_nginx_version 过高应失败" {
+  custom_manifest="$(mktemp "${REPO_ROOT}/templates/nginx/manifest.test.XXXX.json")"
+  jq '.templates |= map(if .id == "security_headers" then . + {min_nginx_version:"99.0.0"} else . end)' "$MANIFEST_PATH" >"$custom_manifest"
+  run env NGINX_TEMPLATE_MANIFEST="$custom_manifest" bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-precheck --non-interactive
+  [ "$status" -eq 65 ]
+  rm -f "$custom_manifest"
+}
+
 @test "template-vars 可覆盖 hsts 默认变量" {
   run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-precheck --json --non-interactive
   [ "$status" -eq 0 ]

@@ -45,6 +45,18 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+@test "审批钩子执行: 返回非零应拒绝" {
+  hook="$(mktemp /tmp/template_hook_deny.XXXXXX.sh)"
+  cat >"$hook" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$hook"
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-approval-hook "$hook" --non-interactive
+  [ "$status" -eq 70 ]
+  rm -f "$hook"
+}
+
 @test "审计统计包含平均耗时与失败域摘要" {
   audit_file="/var/log/nginx_template_audit.integration.$$"
   cat >"$audit_file" <<'EOF'

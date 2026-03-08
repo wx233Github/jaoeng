@@ -128,6 +128,11 @@ declare -A TEMPLATE_VARS=()
 
 SAFE_PATH_ROOTS+=("${SCRIPT_DIR}" "${SCRIPT_DIR}/templates" "/opt/vps_install_modules" "/opt/vps_install_modules/templates")
 
+# shellcheck source=lib/template_manifest.sh
+source "${SCRIPT_DIR}/lib/template_manifest.sh"
+# shellcheck source=lib/template_audit.sh
+source "${SCRIPT_DIR}/lib/template_audit.sh"
+
 # ==============================================================================
 # SECTION: 核心工具函数与信号捕获
 # ==============================================================================
@@ -3731,24 +3736,7 @@ _handle_set_custom_config() {
 }
 
 _nginx_template_snippet_by_id() {
-	local template_id="${1:-}"
-	local snippet_rel=""
-	local snippet_path=""
-	_ensure_template_manifest_available || return 1
-	# shellcheck disable=SC2016
-	snippet_rel=$(_manifest_query --arg id "$template_id" '.templates[] | select(.id == $id) | .snippet_file' 2>/dev/null || true)
-	if [ -z "$snippet_rel" ] || [ "$snippet_rel" = "null" ]; then
-		return 1
-	fi
-	snippet_path="${NGINX_TEMPLATE_DIR%/}/${snippet_rel}"
-	if ! _require_safe_path "$snippet_path" "读取模板文件"; then
-		return 1
-	fi
-	if [ ! -f "$snippet_path" ]; then
-		log_message ERROR "模板文件不存在: ${snippet_path}"
-		return 1
-	fi
-	cat "$snippet_path"
+	tm_nginx_template_snippet_by_id "$@"
 }
 
 _template_block_wrap() {
@@ -3972,7 +3960,7 @@ _render_snippet_with_template_vars() {
 }
 
 _json_escape() {
-	printf '%s' "${1:-}" | jq -Rsa .
+	tm_json_escape "$@"
 }
 
 _emit_template_cli_summary() {
@@ -3997,43 +3985,11 @@ _emit_template_cli_summary() {
 }
 
 _rotate_template_audit_log_if_needed() {
-	local log_path="${1:-}"
-	local max_size=$((1024 * 1024))
-	local keep=5
-	local idx=0
-	[ -z "$log_path" ] && return 0
-	[ ! -f "$log_path" ] && return 0
-	local size
-	size=$(wc -c <"$log_path" 2>/dev/null || printf '%s' "0")
-	if [ "$size" -lt "$max_size" ]; then
-		return 0
-	fi
-	for ((idx = keep; idx >= 1; idx--)); do
-		if [ -f "${log_path}.${idx}" ]; then
-			if [ "$idx" -eq "$keep" ]; then
-				rm -f -- "${log_path}.${idx}" 2>/dev/null || true
-			else
-				mv "${log_path}.${idx}" "${log_path}.$((idx + 1))" 2>/dev/null || true
-			fi
-		fi
-	done
-	mv "$log_path" "${log_path}.1" 2>/dev/null || true
-	touch "$log_path" 2>/dev/null || true
+	tm_rotate_template_audit_log_if_needed "$@"
 }
 
 _append_template_audit_log() {
-	local action="${1:-unknown}"
-	local domain="${2:-unknown}"
-	local detail="${3:-}"
-	local rc="${4:-0}"
-	local elapsed_ms="${5:-0}"
-	local actor="${SUDO_USER:-${USER:-unknown}}"
-	local log_path
-	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
-	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
-	mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
-	_rotate_template_audit_log_if_needed "$log_path"
-	printf '%s\t%s\t%s\top=%s\tactor=%s\trc=%s\telapsed_ms=%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$action" "$domain" "${OP_ID:-NA}" "$actor" "$rc" "$elapsed_ms" "$detail" >>"$log_path" 2>/dev/null || true
+	tm_append_template_audit_log "$@"
 }
 
 _snapshot_epoch_from_file() {
@@ -4280,72 +4236,7 @@ _rollback_templates_by_op() {
 }
 
 _template_audit_report() {
-	local log_path=""
-	local combined=""
-	local files=""
-	local total=0
-	local apply_ok=0
-	local apply_fail=0
-	local cleanup_ok=0
-	local cleanup_fail=0
-	local rollback_ok=0
-	local rollback_fail=0
-	local recent_ops=""
-	local top_failed_domains=""
-	local avg_elapsed_ms=0
-	local f=""
-
-	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
-	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
-
-	if [ -f "$log_path" ]; then
-		files="$log_path"
-	fi
-	local i=1
-	for ((i = 1; i <= 5; i++)); do
-		if [ -f "${log_path}.${i}" ]; then
-			files+=" ${log_path}.${i}"
-		fi
-	done
-	if [ -z "$files" ]; then
-		log_message ERROR "模板审计日志不存在: ${log_path}"
-		if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
-			printf '{"error":"audit_log_not_found","path":%s}\n' "$(_json_escape "$log_path")"
-		fi
-		return "$EX_DATAERR"
-	fi
-
-	for f in $files; do
-		combined+="$(cat "$f" 2>/dev/null || true)"
-		combined+=$'\n'
-	done
-	if [ -z "$combined" ]; then
-		if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
-			printf '{"total":0,"apply_ok":0,"apply_fail":0,"cleanup_ok":0,"cleanup_fail":0,"rollback_ok":0,"rollback_fail":0}\n'
-		else
-			log_message INFO "模板审计日志为空。"
-		fi
-		return 0
-	fi
-
-	total=$(awk 'END{print NR+0}' <<<"$combined")
-	apply_ok=$(grep -Ec $'\tapply\t' <<<"$combined" || printf '%s' "0")
-	apply_fail=$(grep -Ec $'\tapply-failed\t' <<<"$combined" || printf '%s' "0")
-	cleanup_ok=$(grep -Ec $'\tcleanup\t' <<<"$combined" || printf '%s' "0")
-	cleanup_fail=$(grep -Ec $'\tcleanup-failed\t' <<<"$combined" || printf '%s' "0")
-	rollback_ok=$(grep -Ec $'\trollback\t' <<<"$combined" || printf '%s' "0")
-	rollback_fail=$(grep -Ec $'\trollback-failed\t' <<<"$combined" || printf '%s' "0")
-	recent_ops=$(awk -F '\top=' '{if (NF>1){split($2,a,"\t"); print a[1]}}' <<<"$combined" | sed '/^$/d' | sort | uniq | tail -n 10 | tr '\n' ' ')
-	top_failed_domains=$(awk -F '\t' '($2 ~ /-failed$/){cnt[$3]++} END{for (d in cnt) printf "%s:%d\n", d, cnt[d]}' <<<"$combined" | sort -t: -k2,2nr | head -n 5 | tr '\n' ' ')
-	avg_elapsed_ms=$(awk -F 'elapsed_ms=' 'NF>1{split($2,a,"\t"); if (a[1] ~ /^[0-9]+$/){sum+=a[1]; n++}} END{if(n>0) printf "%d", sum/n; else printf "0"}' <<<"$combined")
-
-	if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
-		printf '{"total":%s,"apply_ok":%s,"apply_fail":%s,"cleanup_ok":%s,"cleanup_fail":%s,"rollback_ok":%s,"rollback_fail":%s,"avg_elapsed_ms":%s,"recent_ops":%s,"top_failed_domains":%s}\n' \
-			"$total" "$apply_ok" "$apply_fail" "$cleanup_ok" "$cleanup_fail" "$rollback_ok" "$rollback_fail" "$avg_elapsed_ms" "$(_json_escape "${recent_ops%% }")" "$(_json_escape "${top_failed_domains%% }")"
-	else
-		log_message INFO "模板审计统计: total=${total}, apply_ok=${apply_ok}, apply_fail=${apply_fail}, cleanup_ok=${cleanup_ok}, cleanup_fail=${cleanup_fail}, rollback_ok=${rollback_ok}, rollback_fail=${rollback_fail}, avg_elapsed_ms=${avg_elapsed_ms}"
-	fi
-	return 0
+	tm_template_audit_report
 }
 
 _validate_template_selection() {
@@ -4456,19 +4347,7 @@ _emit_template_impact_domain_json() {
 }
 
 _template_id_to_name() {
-	local template_id="${1:-}"
-	local name=""
-	_ensure_template_manifest_available || {
-		printf '%s\n' "$template_id"
-		return 0
-	}
-	# shellcheck disable=SC2016
-	name=$(_manifest_query --arg id "$template_id" '.templates[] | select(.id == $id) | .name' 2>/dev/null || true)
-	if [ -z "$name" ] || [ "$name" = "null" ]; then
-		printf '%s\n' "$template_id"
-	else
-		printf '%s\n' "$name"
-	fi
+	tm_template_id_to_name "$@"
 }
 
 _ensure_template_manifest_available() {
@@ -4551,11 +4430,7 @@ _ensure_template_manifest_available() {
 }
 
 _manifest_query() {
-	if [ "$#" -gt 0 ]; then
-		jq -r "$@" <<<"${TEMPLATE_MANIFEST_CACHE:-{}}"
-	else
-		jq -r . <<<"${TEMPLATE_MANIFEST_CACHE:-{}}"
-	fi
+	tm_manifest_query "$@"
 }
 
 _render_nginx_template_root_menu() {
