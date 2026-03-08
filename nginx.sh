@@ -91,6 +91,7 @@ SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 NGINX_TEMPLATE_DIR="${NGINX_TEMPLATE_DIR:-${SCRIPT_DIR}/templates/nginx}"
 NGINX_TEMPLATE_MANIFEST="${NGINX_TEMPLATE_MANIFEST:-${NGINX_TEMPLATE_DIR}/manifest.json}"
 NGINX_TEMPLATE_SNIPPETS_DIR="${NGINX_TEMPLATE_SNIPPETS_DIR:-${NGINX_TEMPLATE_DIR}/snippets}"
+NGINX_TEMPLATE_AUDIT_LOG="${NGINX_TEMPLATE_AUDIT_LOG:-/var/log/nginx_template_audit.log}"
 
 TEMPLATE_MODE=""
 TEMPLATE_IDS=""
@@ -3434,6 +3435,39 @@ _print_template_diff_summary() {
 	printf '%b' "${CYAN}变更摘要:${NC} 模板块 ${before_blocks} -> ${after_blocks}，行数 ${before_lines} -> ${after_lines}\n"
 }
 
+_template_operation_confirm_or_auto() {
+	local prompt_text="${1:-确认继续?}"
+	local default_yesno="${2:-y}"
+	if [ "$IS_INTERACTIVE_MODE" != "true" ] && [ -n "$TEMPLATE_MODE" ]; then
+		log_message INFO "非交互模板模式：自动确认执行。"
+		return 0
+	fi
+	confirm_or_cancel "$prompt_text" "$default_yesno"
+}
+
+_template_contains_id() {
+	local target="${1:-}"
+	shift || true
+	local id=""
+	for id in "$@"; do
+		if [ "$id" = "$target" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+_append_template_audit_log() {
+	local action="${1:-unknown}"
+	local domain="${2:-unknown}"
+	local detail="${3:-}"
+	local log_path
+	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
+	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
+	mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
+	printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$action" "$domain" "$detail" >>"$log_path" 2>/dev/null || true
+}
+
 _template_id_to_name() {
 	local template_id="${1:-}"
 	local name=""
@@ -3598,6 +3632,7 @@ _apply_templates_to_domain() {
 	local merged_custom=""
 	local new_json=""
 	local ids_text=""
+	local cert_path=""
 
 	cur=$(_get_project_json "$d")
 	if [ -z "$cur" ]; then
@@ -3636,15 +3671,29 @@ _apply_templates_to_domain() {
 		fi
 	fi
 
+	if _template_contains_id "hsts" "${template_ids[@]}"; then
+		cert_path=$(jq -r '.cert_file // empty' <<<"$cur")
+		if [ -z "$cert_path" ] || [ ! -f "$cert_path" ]; then
+			log_message WARN "检测到 hsts 模板，但当前项目证书文件不存在: ${cert_path:-未设置}"
+			if ! _template_operation_confirm_or_auto "仍要继续应用 HSTS 模板吗?" "n"; then
+				return 0
+			fi
+		fi
+	fi
+
 	if ! _is_valid_custom_directive_silent "$merged_custom"; then
 		log_message ERROR "模板合并结果校验失败，已拒绝写入。"
 		return 1
 	fi
 
 	ids_text="${template_ids[*]}"
+	if [ "$merged_custom" = "$current_custom" ]; then
+		log_message INFO "模板应用结果无变化，已跳过写入。"
+		return 0
+	fi
 	_print_template_diff_summary "$current_custom" "$merged_custom"
 	printf '%b' "\n${CYAN}预览(${mode}):${NC}\n${merged_custom}\n"
-	if ! confirm_or_cancel "确认应用模板组合 [${ids_text}] 到 ${d}?" "y"; then
+	if ! _template_operation_confirm_or_auto "确认应用模板组合 [${ids_text}] 到 ${d}?" "y"; then
 		log_message WARN "用户取消模板应用。"
 		return 0
 	fi
@@ -3660,6 +3709,7 @@ _apply_templates_to_domain() {
 		NGINX_RELOAD_NEEDED="true"
 		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
 			log_message SUCCESS "模板应用成功: ${d} ($mode, ${ids_text})"
+			_append_template_audit_log "apply" "$d" "mode=${mode};ids=${ids_text}"
 			printf '%b' "已应用模板组合: ${ids_text}\n"
 			printf '%b' "模式: $([ "$mode" = "replace" ] && printf '%s' "Site替换（覆盖）" || printf '%s' "Block追加（推荐）")\n"
 			return 0
@@ -3715,7 +3765,7 @@ _cleanup_template_blocks_for_domain() {
 
 	_print_template_diff_summary "$current_custom" "$cleaned_custom"
 	printf '%b' "\n${CYAN}清理预览:${NC}\n${cleaned_custom}\n"
-	if ! confirm_or_cancel "确认执行模板块清理?" "y"; then
+	if ! _template_operation_confirm_or_auto "确认执行模板块清理?" "y"; then
 		log_message WARN "用户取消模板清理。"
 		return 0
 	fi
@@ -3736,6 +3786,7 @@ _cleanup_template_blocks_for_domain() {
 		NGINX_RELOAD_NEEDED="true"
 		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
 			log_message SUCCESS "模板注释块清理成功: ${d}"
+			_append_template_audit_log "cleanup" "$d" "mode=${clean_mode};ids=${ids[*]:-all}"
 			return 0
 		fi
 		log_message ERROR "模板清理应用失败，开始回滚。"
