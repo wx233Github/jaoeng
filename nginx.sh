@@ -1389,6 +1389,40 @@ _zerossl_account_has_email() {
 	return 1
 }
 
+_ensure_zerossl_account_email() {
+	local ca_url="${1:-}"
+	local email="${ZEROSSL_EMAIL:-}"
+	local log_temp=""
+	if [ "$ca_url" != "https://acme.zerossl.com/v2/DV90" ]; then
+		return 0
+	fi
+	if _zerossl_account_has_email; then
+		return 0
+	fi
+	if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "${JB_NONINTERACTIVE:-false}" != "true" ]; then
+		if ! email=$(prompt_input "ZeroSSL 注册邮箱" "$email" "^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$" "邮箱格式无效" "false"); then
+			return 1
+		fi
+	fi
+	if [ -z "$email" ]; then
+		log_message ERROR "ZeroSSL 需要邮箱注册账号。"
+		return 1
+	fi
+	log_temp=$(mktemp /tmp/acme_register_log.XXXXXX)
+	chmod 600 "$log_temp"
+	if ! run_cmd 90 "$ACME_BIN" --register-account -m "$email" --server "$ca_url" --log >"$log_temp" 2>&1; then
+		log_message ERROR "ZeroSSL 账号邮箱注册失败。"
+		printf '%b' "${CYAN}--- 注册错误详情 (已脱敏) ---${NC}\n"
+		_mask_sensitive_data <"$log_temp"
+		printf '%b' "${CYAN}------------------------------${NC}\n"
+		rm -f "$log_temp"
+		return 1
+	fi
+	rm -f "$log_temp"
+	log_message SUCCESS "ZeroSSL 账号邮箱注册成功。"
+	return 0
+}
+
 control_nginx() {
 	local action="${1:-reload}"
 	if [ "${SKIP_NGINX_TEST_IN_APPLY:-false}" != "true" ] && ! _nginx_test_cached; then
@@ -2469,6 +2503,7 @@ _mask_sensitive_data() {
 	# 使用 sed 正则替换常见的敏感 Key 和 Token
 	# 匹配模式: Key='value', Key="value", Key=value, Key: 'value'
 	sed -E \
+		-e 's/^\[[A-Za-z]{3} [A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]][0-9:]{8}[[:space:]][A-Z]{2,5}[[:space:]][0-9]{4}\][[:space:]]*//' \
 		-e "s/(CF_Token(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
 		-e "s/(CF_Account_ID(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
 		-e "s/(CF_Zone_ID(=|':\s*'|=\s*'))([^ '\"]+)/\1***MASKED***/g" \
@@ -2680,9 +2715,18 @@ _issue_and_install_certificate() {
 	local wildcard
 	local ca
 	IFS=$'\t' read -r provider wildcard ca < <(jq -r '[.dns_api_provider, .use_wildcard, .ca_server_url] | @tsv' <<<"$json")
-	if [ "$ca" = "https://acme.zerossl.com/v2/DV90" ] && ! _zerossl_account_has_email; then
-		log_message INFO "ZeroSSL 未检测到注册邮箱，自动切换到 Let's Encrypt。"
-		ca="https://acme-v02.api.letsencrypt.org/directory"
+	if [ "$ca" = "https://acme.zerossl.com/v2/DV90" ] && ! _ensure_zerossl_account_email "$ca"; then
+		if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "${JB_NONINTERACTIVE:-false}" != "true" ]; then
+			if confirm_or_cancel "ZeroSSL 邮箱注册失败，是否自动切换 Let's Encrypt?" "y"; then
+				log_message INFO "ZeroSSL 注册失败，自动切换到 Let's Encrypt。"
+				ca="https://acme-v02.api.letsencrypt.org/directory"
+			else
+				return 1
+			fi
+		else
+			log_message INFO "ZeroSSL 注册失败（非交互），自动切换到 Let's Encrypt。"
+			ca="https://acme-v02.api.letsencrypt.org/directory"
+		fi
 	fi
 	local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
 	local key="$SSL_CERTS_BASE_DIR/$domain.key"
