@@ -2412,7 +2412,8 @@ server {
     location / { return 301 https://\$host\$request_uri; }
 }
 server {
-    listen 443 ssl http2; $([[ -n "$VPS_IPV6" ]] && printf '%s' "listen [::]:443 ssl http2;")
+    listen 443 ssl; $([[ -n "$VPS_IPV6" ]] && printf '%s' "listen [::]:443 ssl;")
+    http2 on;
     server_name ${domain};
     ssl_certificate ${cert}; ssl_certificate_key ${key};
     ssl_protocols TLSv1.2 TLSv1.3;
