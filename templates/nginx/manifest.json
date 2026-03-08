@@ -5,7 +5,8 @@
       "id": "security_headers",
       "name": "安全响应头基线",
       "snippet_file": "snippets/security_headers.conf.tpl",
-      "single": true
+      "single": true,
+      "min_nginx_version": "1.7.5"
     },
     {
       "id": "hsts",

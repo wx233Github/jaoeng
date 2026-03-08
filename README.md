@@ -71,9 +71,16 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
 - 批量失败策略：
   - `--fail-fast`（遇错即停）
   - `--continue-on-error`（遇错继续）
+- 批量并行（仅 dry-run/precheck/impact）：
+  - `--template-parallelism 4`
 - 输出模式：
   - `--json`（机器可读摘要）
   - `--quiet`（减少控制台输出）
+- 审批门禁：
+  - `--template-approval-hook /abs/path/to/hook`
+- 精准回滚：
+  - `--template-rollback-domain <domain>`
+  - `--template-rollback-before "YYYY-MM-DD HH:MM:SS"`
 
 示例：
 

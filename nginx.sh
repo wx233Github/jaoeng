@@ -107,6 +107,7 @@ TEMPLATE_DOMAIN=""
 TEMPLATE_VARS_RAW=""
 TEMPLATE_APPLY_MODE="append"
 TEMPLATE_CLEANUP_MODE=""
+TEMPLATE_PARALLELISM=1
 TEMPLATE_DRY_RUN="false"
 TEMPLATE_BATCH_AUTO_CONFIRM="false"
 TEMPLATE_MANIFEST_CACHE=""
@@ -117,7 +118,10 @@ TEMPLATE_OUTPUT_JSON="false"
 TEMPLATE_DEFER_RELOAD="false"
 TEMPLATE_IMPACT_REPORT="false"
 TEMPLATE_ROLLBACK_OP=""
+TEMPLATE_ROLLBACK_DOMAIN=""
+TEMPLATE_ROLLBACK_BEFORE=""
 TEMPLATE_AUDIT_REPORT="false"
+TEMPLATE_APPROVAL_HOOK=""
 QUIET_MODE="false"
 SHOW_HELP="false"
 declare -A TEMPLATE_VARS=()
@@ -1235,6 +1239,7 @@ _parse_args() {
 	TEMPLATE_VARS_RAW=""
 	TEMPLATE_APPLY_MODE="append"
 	TEMPLATE_CLEANUP_MODE=""
+	TEMPLATE_PARALLELISM=1
 	TEMPLATE_DRY_RUN="false"
 	TEMPLATE_BATCH_AUTO_CONFIRM="false"
 	TEMPLATE_PRECHECK="false"
@@ -1244,7 +1249,10 @@ _parse_args() {
 	TEMPLATE_DEFER_RELOAD="false"
 	TEMPLATE_IMPACT_REPORT="false"
 	TEMPLATE_ROLLBACK_OP=""
+	TEMPLATE_ROLLBACK_DOMAIN=""
+	TEMPLATE_ROLLBACK_BEFORE=""
 	TEMPLATE_AUDIT_REPORT="false"
+	TEMPLATE_APPROVAL_HOOK=""
 	QUIET_MODE="false"
 	TEMPLATE_VARS=()
 	local i=1
@@ -1293,6 +1301,11 @@ _parse_args() {
 			TEMPLATE_CLEANUP_MODE="${!i:-}"
 			i=$((i + 1))
 			;;
+		--template-parallelism)
+			i=$((i + 1))
+			TEMPLATE_PARALLELISM="${!i:-1}"
+			i=$((i + 1))
+			;;
 		--template-dry-run)
 			TEMPLATE_DRY_RUN="true"
 			i=$((i + 1))
@@ -1322,8 +1335,23 @@ _parse_args() {
 			TEMPLATE_ROLLBACK_OP="${!i:-}"
 			i=$((i + 1))
 			;;
+		--template-rollback-domain)
+			i=$((i + 1))
+			TEMPLATE_ROLLBACK_DOMAIN="${!i:-}"
+			i=$((i + 1))
+			;;
+		--template-rollback-before)
+			i=$((i + 1))
+			TEMPLATE_ROLLBACK_BEFORE="${!i:-}"
+			i=$((i + 1))
+			;;
 		--template-audit-report)
 			TEMPLATE_AUDIT_REPORT="true"
+			i=$((i + 1))
+			;;
+		--template-approval-hook)
+			i=$((i + 1))
+			TEMPLATE_APPROVAL_HOOK="${!i:-}"
 			i=$((i + 1))
 			;;
 		--quiet)
@@ -1350,7 +1378,7 @@ validate_args() {
 		fi
 		case "$arg" in
 		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet | --template-impact-report | --template-audit-report) ;;
-		--template-mode | --template-ids | --template-domain | --template-vars | --template-apply-mode | --template-cleanup-mode | --template-rollback-op)
+		--template-mode | --template-ids | --template-domain | --template-vars | --template-apply-mode | --template-cleanup-mode | --template-parallelism | --template-rollback-op | --template-rollback-domain | --template-rollback-before | --template-approval-hook)
 			skip_next="true"
 			;;
 		*)
@@ -1412,6 +1440,18 @@ validate_args() {
 			log_message ERROR "--fail-fast 与 --continue-on-error 不能同时使用"
 			return 1
 		fi
+		if ! [[ "${TEMPLATE_PARALLELISM:-1}" =~ ^[0-9]+$ ]] || [ "${TEMPLATE_PARALLELISM:-1}" -lt 1 ]; then
+			log_message ERROR "--template-parallelism 必须为 >=1 的整数"
+			return 1
+		fi
+		if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ] && [ "$TEMPLATE_DRY_RUN" != "true" ] && [ "$TEMPLATE_PRECHECK" != "true" ] && [ "${TEMPLATE_IMPACT_REPORT:-false}" != "true" ]; then
+			log_message ERROR "并行模式仅支持 dry-run/precheck/impact-report，写入模式请使用串行"
+			return 1
+		fi
+		if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ] && [ "$TEMPLATE_FAIL_FAST" = "true" ]; then
+			log_message ERROR "并行模式不支持 --fail-fast"
+			return 1
+		fi
 	fi
 	if [ -n "$TEMPLATE_VARS_RAW" ]; then
 		if [ -z "$TEMPLATE_MODE" ] || { [ "$TEMPLATE_MODE" != "default" ] && [ "$TEMPLATE_MODE" != "custom" ]; }; then
@@ -1434,6 +1474,20 @@ validate_args() {
 		fi
 		if ! [[ "$TEMPLATE_ROLLBACK_OP" =~ ^[A-Za-z0-9._:-]+$ ]]; then
 			log_message ERROR "--template-rollback-op 格式非法"
+			return 1
+		fi
+		if [ -n "$TEMPLATE_ROLLBACK_DOMAIN" ] && ! _require_valid_domain "$TEMPLATE_ROLLBACK_DOMAIN"; then
+			log_message ERROR "--template-rollback-domain 非法"
+			return 1
+		fi
+		if [ -n "$TEMPLATE_ROLLBACK_BEFORE" ] && ! date -d "$TEMPLATE_ROLLBACK_BEFORE" +%s >/dev/null 2>&1; then
+			log_message ERROR "--template-rollback-before 时间格式非法"
+			return 1
+		fi
+	fi
+	if [ -n "$TEMPLATE_APPROVAL_HOOK" ]; then
+		if [[ "$TEMPLATE_APPROVAL_HOOK" != /* ]] || [ ! -x "$TEMPLATE_APPROVAL_HOOK" ]; then
+			log_message ERROR "--template-approval-hook 必须是可执行绝对路径"
 			return 1
 		fi
 	fi
@@ -1461,11 +1515,15 @@ print_usage() {
   --template-vars <KEY=VALUE[,KEY=VALUE...]>
   --template-apply-mode <append|replace>
   --template-cleanup-mode <all|ids>
+  --template-parallelism <N>
   --template-dry-run
   --template-precheck            仅校验模板与匹配，不执行写入
   --template-impact-report       输出影响分析（不写入）
   --template-rollback-op <op_id> 按操作ID回滚模板变更
+  --template-rollback-domain <domain>
+  --template-rollback-before <"YYYY-MM-DD HH:MM:SS">
   --template-audit-report        输出模板审计统计摘要
+  --template-approval-hook </abs/path/to/hook>
   --fail-fast                    批量模式遇错立即停止
   --continue-on-error            批量模式忽略失败继续执行
   --json                         模板 CLI 输出 JSON 摘要
@@ -1478,6 +1536,7 @@ print_usage() {
   nginx.sh --template-mode custom --template-domain example.com --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-dry-run --non-interactive
   nginx.sh --template-mode default --template-domain "*.example.com" --template-ids https_production --template-impact-report --json --non-interactive
   nginx.sh --template-rollback-op 20260308_120001_1234_5678 --json --non-interactive
+  nginx.sh --template-rollback-op 20260308_120001_1234_5678 --template-rollback-domain api.example.com --template-rollback-before "2026-03-08 12:10:00" --json --non-interactive
   nginx.sh --template-audit-report --json --non-interactive
 
 退出码(模板CLI):
@@ -2067,6 +2126,96 @@ _is_valid_custom_directive_silent() {
 		esac
 	done <<<"$val"
 
+	return 0
+}
+
+_normalize_custom_config_text() {
+	local content="${1:-}"
+	if [ -z "$content" ]; then
+		printf '%s\n' ""
+		return 0
+	fi
+	awk '
+    {
+      gsub(/[ \t]+$/, "", $0)
+      lines[++n]=$0
+    }
+    END {
+      start=1
+      while (start<=n && lines[start] ~ /^[ \t]*$/) start++
+      end=n
+      while (end>=start && lines[end] ~ /^[ \t]*$/) end--
+      blank=0
+      for (i=start; i<=end; i++) {
+        if (lines[i] ~ /^[ \t]*$/) {
+          blank++
+          if (blank > 1) continue
+          print ""
+        } else {
+          blank=0
+          print lines[i]
+        }
+      }
+    }
+  ' <<<"$content"
+}
+
+_version_ge() {
+	local a="${1:-0}"
+	local b="${2:-0}"
+	local first
+	first=$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)
+	[ "$first" = "$b" ]
+}
+
+_detect_nginx_version() {
+	local raw=""
+	raw=$(nginx -v 2>&1 || true)
+	if [[ "$raw" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	if [[ "$raw" =~ ([0-9]+\.[0-9]+) ]]; then
+		printf '%s\n' "${BASH_REMATCH[1]}.0"
+		return 0
+	fi
+	return 1
+}
+
+_check_template_compatibility() {
+	local id=""
+	local nginx_ver=""
+	local min_ver=""
+	nginx_ver=$(_detect_nginx_version 2>/dev/null || true)
+	[ -z "$nginx_ver" ] && return 0
+	for id in "$@"; do
+		[ -z "$id" ] && continue
+		# shellcheck disable=SC2016
+		min_ver=$(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | (.min_nginx_version // "")' 2>/dev/null || true)
+		if [ -n "$min_ver" ] && ! _version_ge "$nginx_ver" "$min_ver"; then
+			log_message ERROR "模板 ${id} 要求 Nginx >= ${min_ver}，当前版本 ${nginx_ver}"
+			return 1
+		fi
+	done
+	return 0
+}
+
+_template_approval_gate() {
+	local action="${1:-apply}"
+	local domain="${2:-}"
+	local ids="${3:-}"
+	local mode="${4:-}"
+	if [ -z "${TEMPLATE_APPROVAL_HOOK:-}" ]; then
+		return 0
+	fi
+	if [ ! -x "$TEMPLATE_APPROVAL_HOOK" ]; then
+		log_message ERROR "审批钩子不可执行: ${TEMPLATE_APPROVAL_HOOK}"
+		return 1
+	fi
+	if ! TEMPLATE_ACTION="$action" TEMPLATE_DOMAIN="$domain" TEMPLATE_IDS="$ids" TEMPLATE_MODE="$mode" OP_ID="${OP_ID:-NA}" "$TEMPLATE_APPROVAL_HOOK" >/dev/null 2>&1; then
+		log_message ERROR "审批钩子拒绝本次操作: action=${action}, domain=${domain}"
+		return 1
+	fi
 	return 0
 }
 
@@ -4036,18 +4185,24 @@ _template_impact_report() {
 
 _rollback_templates_by_op() {
 	local op_id="${1:-}"
+	local domain_filter="${2:-}"
+	local before_ts="${3:-}"
 	local log_path=""
 	local line=""
 	local ts_str=""
 	local action=""
 	local domain=""
 	local target_epoch=0
+	local before_epoch=0
 	local snap=""
 	local snap_json=""
 	local matched=0
 	local ok=0
 	local fail=0
 	local -a domains=()
+	if [ -n "$before_ts" ]; then
+		before_epoch=$(date -d "$before_ts" +%s 2>/dev/null || printf '%s' "0")
+	fi
 	local -a processed=()
 
 	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
@@ -4063,6 +4218,13 @@ _rollback_templates_by_op() {
 		ts_str=$(awk -F '\t' '{print $1}' <<<"$line")
 		action=$(awk -F '\t' '{print $2}' <<<"$line")
 		domain=$(awk -F '\t' '{print $3}' <<<"$line")
+		if [ -n "$domain_filter" ] && [ "$domain" != "$domain_filter" ]; then
+			continue
+		fi
+		target_epoch=$(date -d "$ts_str" +%s 2>/dev/null || printf '%s' "0")
+		if [ "$before_epoch" -gt 0 ] && [ "$target_epoch" -gt "$before_epoch" ]; then
+			continue
+		fi
 		if [ "$action" != "apply" ] && [ "$action" != "cleanup" ]; then
 			continue
 		fi
@@ -4072,7 +4234,6 @@ _rollback_templates_by_op() {
 		if _template_contains_id "$domain" "${processed[@]}"; then
 			continue
 		fi
-		target_epoch=$(date -d "$ts_str" +%s 2>/dev/null || printf '%s' "0")
 		matched=$((matched + 1))
 		snap=$(_find_best_snapshot_for_domain "$domain" "$target_epoch" 2>/dev/null || true)
 		if [ -z "$snap" ] || [ ! -f "$snap" ]; then
@@ -4130,6 +4291,8 @@ _template_audit_report() {
 	local rollback_ok=0
 	local rollback_fail=0
 	local recent_ops=""
+	local top_failed_domains=""
+	local avg_elapsed_ms=0
 	local f=""
 
 	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
@@ -4173,12 +4336,14 @@ _template_audit_report() {
 	rollback_ok=$(grep -Ec $'\trollback\t' <<<"$combined" || printf '%s' "0")
 	rollback_fail=$(grep -Ec $'\trollback-failed\t' <<<"$combined" || printf '%s' "0")
 	recent_ops=$(awk -F '\top=' '{if (NF>1){split($2,a,"\t"); print a[1]}}' <<<"$combined" | sed '/^$/d' | sort | uniq | tail -n 10 | tr '\n' ' ')
+	top_failed_domains=$(awk -F '\t' '($2 ~ /-failed$/){cnt[$3]++} END{for (d in cnt) printf "%s:%d\n", d, cnt[d]}' <<<"$combined" | sort -t: -k2,2nr | head -n 5 | tr '\n' ' ')
+	avg_elapsed_ms=$(awk -F 'elapsed_ms=' 'NF>1{split($2,a,"\t"); if (a[1] ~ /^[0-9]+$/){sum+=a[1]; n++}} END{if(n>0) printf "%d", sum/n; else printf "0"}' <<<"$combined")
 
 	if [ "${TEMPLATE_OUTPUT_JSON:-false}" = "true" ]; then
-		printf '{"total":%s,"apply_ok":%s,"apply_fail":%s,"cleanup_ok":%s,"cleanup_fail":%s,"rollback_ok":%s,"rollback_fail":%s,"recent_ops":%s}\n' \
-			"$total" "$apply_ok" "$apply_fail" "$cleanup_ok" "$cleanup_fail" "$rollback_ok" "$rollback_fail" "$(_json_escape "${recent_ops%% }")"
+		printf '{"total":%s,"apply_ok":%s,"apply_fail":%s,"cleanup_ok":%s,"cleanup_fail":%s,"rollback_ok":%s,"rollback_fail":%s,"avg_elapsed_ms":%s,"recent_ops":%s,"top_failed_domains":%s}\n' \
+			"$total" "$apply_ok" "$apply_fail" "$cleanup_ok" "$cleanup_fail" "$rollback_ok" "$rollback_fail" "$avg_elapsed_ms" "$(_json_escape "${recent_ops%% }")" "$(_json_escape "${top_failed_domains%% }")"
 	else
-		log_message INFO "模板审计统计: total=${total}, apply_ok=${apply_ok}, apply_fail=${apply_fail}, cleanup_ok=${cleanup_ok}, cleanup_fail=${cleanup_fail}, rollback_ok=${rollback_ok}, rollback_fail=${rollback_fail}"
+		log_message INFO "模板审计统计: total=${total}, apply_ok=${apply_ok}, apply_fail=${apply_fail}, cleanup_ok=${cleanup_ok}, cleanup_fail=${cleanup_fail}, rollback_ok=${rollback_ok}, rollback_fail=${rollback_fail}, avg_elapsed_ms=${avg_elapsed_ms}"
 	fi
 	return 0
 }
@@ -4223,6 +4388,9 @@ _validate_template_selection() {
 		return 1
 	fi
 	if ! _validate_template_vars_for_selection "${selected[@]}"; then
+		return 1
+	fi
+	if ! _check_template_compatibility "${selected[@]}"; then
 		return 1
 	fi
 	return 0
@@ -4340,6 +4508,7 @@ _ensure_template_manifest_available() {
     (.templates | type == "array" and length > 0) and
     (.default_combos | type == "array" and length > 0) and
     (all(.templates[]; has("id") and has("name") and has("snippet_file") and (.id | type == "string") and (.id | test("^[a-z0-9_]+$")))) and
+    (all(.templates[]; ((.min_nginx_version // "") | type == "string") and (((.min_nginx_version // "") == "") or ((.min_nginx_version // "") | test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$"))))) and
     (all(.templates[]; ((.vars // {}) | type == "object"))) and
     (all(.templates[]; ((.vars // {}) | to_entries | all(.[]; (.key | test("^[A-Z][A-Z0-9_]*$")) and (((.value.default // "") | type) == "string") and (((.value.pattern // "") | type) == "string")))) ) and
     (all(.default_combos[]; has("id") and has("name") and (.templates | type == "array" and length > 0)))
@@ -4556,12 +4725,17 @@ _apply_templates_to_domain() {
 	if ! _validate_template_selection "${template_ids[@]}"; then
 		return "$EX_DATAERR"
 	fi
+	if ! _check_template_compatibility "${template_ids[@]}"; then
+		return "$EX_DATAERR"
+	fi
 
 	if ! payload=$(_render_templates_payload "${template_ids[@]}"); then
 		return 1
 	fi
 
 	current_custom=$(jq -r '.custom_config // empty' <<<"$cur")
+	current_custom=$(_normalize_custom_config_text "$current_custom")
+	current_custom=$(_normalize_custom_config_text "$current_custom")
 	if ! _template_block_marker_balance_ok "$current_custom"; then
 		log_message ERROR "检测到模板注释块边界不成对，已拒绝应用。请先执行模板清理。"
 		return 1
@@ -4582,6 +4756,7 @@ _apply_templates_to_domain() {
 			merged_custom="$payload"
 		fi
 	fi
+	merged_custom=$(_normalize_custom_config_text "$merged_custom")
 
 	if _template_contains_id "hsts" "${template_ids[@]}"; then
 		cert_path=$(jq -r '.cert_file // empty' <<<"$cur")
@@ -4616,6 +4791,9 @@ _apply_templates_to_domain() {
 		elapsed_ms=$((finished_at - started_at))
 		_append_template_audit_log "apply-dry-run" "$d" "mode=${mode};ids=${ids_text}" 0 "$elapsed_ms"
 		return 0
+	fi
+	if ! _template_approval_gate "apply" "$d" "$ids_text" "$mode"; then
+		return "$EX_SOFTWARE"
 	fi
 
 	new_json=$(jq --arg v "$merged_custom" '.custom_config = $v' <<<"$cur")
@@ -4689,6 +4867,7 @@ _cleanup_template_blocks_for_domain() {
 	else
 		cleaned_custom=$(_extract_template_blocks_by_ids "$current_custom" "${ids[@]}")
 	fi
+	cleaned_custom=$(_normalize_custom_config_text "$cleaned_custom")
 
 	if [ "$cleaned_custom" = "$current_custom" ]; then
 		log_message WARN "未匹配到可清理的模板注释块。"
@@ -4708,6 +4887,9 @@ _cleanup_template_blocks_for_domain() {
 		elapsed_ms=$((finished_at - started_at))
 		_append_template_audit_log "cleanup-dry-run" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" 0 "$elapsed_ms"
 		return 0
+	fi
+	if ! _template_approval_gate "cleanup" "$d" "${ids[*]:-all}" "$clean_mode"; then
+		return "$EX_SOFTWARE"
 	fi
 
 	if [ -n "$cleaned_custom" ] && ! _is_valid_custom_directive_silent "$cleaned_custom"; then
@@ -5066,13 +5248,54 @@ _manage_nginx_template_center() {
 	select_item_and_act "$all" "$count" "请输入序号选择项目进入模板中心 (回车返回)" "domain" _handle_nginx_template_center_for_domain _display_projects_list || true
 }
 
+_template_parallel_execute() {
+	local op_type="${1:-apply}"
+	local op_mode="${2:-append}"
+	local ids_text="${3:-}"
+	shift 3 || true
+	local -a domain_list=("$@")
+	local -a ids=()
+	local -a pids=()
+	local pid=""
+	local ok=0
+	local fail=0
+	local parallelism="${TEMPLATE_PARALLELISM:-1}"
+	if [ "$parallelism" -le 1 ]; then
+		printf '%s\n' "0 0"
+		return 1
+	fi
+	if [ -n "$ids_text" ]; then
+		IFS=' ' read -r -a ids <<<"$ids_text"
+	fi
+	for domain in "${domain_list[@]}"; do
+		while [ "$(jobs -pr | wc -l)" -ge "$parallelism" ]; do
+			sleep 0.1
+		done
+		if [ "$op_type" = "apply" ]; then
+			(_apply_templates_to_domain "$domain" "$op_mode" "${ids[@]}") &
+		else
+			(_cleanup_template_blocks_for_domain "$domain" "$op_mode" "${ids[@]}") &
+		fi
+		pids+=("$!")
+	done
+	for pid in "${pids[@]}"; do
+		if wait "$pid"; then
+			ok=$((ok + 1))
+		else
+			fail=$((fail + 1))
+		fi
+	done
+	printf '%s %s\n' "$ok" "$fail"
+	return 0
+}
+
 _run_template_cli_mode() {
 	if [ "${TEMPLATE_AUDIT_REPORT:-false}" = "true" ]; then
 		_template_audit_report
 		return $?
 	fi
 	if [ -n "${TEMPLATE_ROLLBACK_OP:-}" ]; then
-		_rollback_templates_by_op "$TEMPLATE_ROLLBACK_OP"
+		_rollback_templates_by_op "$TEMPLATE_ROLLBACK_OP" "${TEMPLATE_ROLLBACK_DOMAIN:-}" "${TEMPLATE_ROLLBACK_BEFORE:-}"
 		return $?
 	fi
 	local d="${TEMPLATE_DOMAIN:-}"
@@ -5084,6 +5307,7 @@ _run_template_cli_mode() {
 	local ok=0
 	local domain=""
 	local final_code=0
+	local batch_result=""
 	local -a ids=()
 	local -a domains=()
 
@@ -5156,16 +5380,22 @@ _run_template_cli_mode() {
 			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
 			return 0
 		fi
-		for domain in "${domains[@]}"; do
-			if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
-				ok=$((ok + 1))
-			else
-				fail=$((fail + 1))
-				if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
-					break
+		if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ]; then
+			batch_result=$(_template_parallel_execute "apply" "$apply_mode" "${ids[*]}" "${domains[@]}")
+			ok=$(awk '{print $1}' <<<"$batch_result")
+			fail=$(awk '{print $2}' <<<"$batch_result")
+		else
+			for domain in "${domains[@]}"; do
+				if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
+					ok=$((ok + 1))
+				else
+					fail=$((fail + 1))
+					if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+						break
+					fi
 				fi
-			fi
-		done
+			done
+		fi
 		;;
 	custom)
 		if [ -z "$ids_raw" ]; then
@@ -5185,26 +5415,13 @@ _run_template_cli_mode() {
 			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
 			return 0
 		fi
-		for domain in "${domains[@]}"; do
-			if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
-				ok=$((ok + 1))
-			else
-				fail=$((fail + 1))
-				if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
-					break
-				fi
-			fi
-		done
-		;;
-	cleanup)
-		if [ "${TEMPLATE_PRECHECK:-false}" = "true" ]; then
-			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
-			return 0
-		fi
-		case "$TEMPLATE_CLEANUP_MODE" in
-		all)
+		if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ]; then
+			batch_result=$(_template_parallel_execute "apply" "$apply_mode" "${ids[*]}" "${domains[@]}")
+			ok=$(awk '{print $1}' <<<"$batch_result")
+			fail=$(awk '{print $2}' <<<"$batch_result")
+		else
 			for domain in "${domains[@]}"; do
-				if _cleanup_template_blocks_for_domain "$domain" "all"; then
+				if _apply_templates_to_domain "$domain" "$apply_mode" "${ids[@]}"; then
 					ok=$((ok + 1))
 				else
 					fail=$((fail + 1))
@@ -5213,6 +5430,31 @@ _run_template_cli_mode() {
 					fi
 				fi
 			done
+		fi
+		;;
+	cleanup)
+		if [ "${TEMPLATE_PRECHECK:-false}" = "true" ]; then
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 0 0 "true"
+			return 0
+		fi
+		case "$TEMPLATE_CLEANUP_MODE" in
+		all)
+			if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ]; then
+				batch_result=$(_template_parallel_execute "cleanup" "all" "" "${domains[@]}")
+				ok=$(awk '{print $1}' <<<"$batch_result")
+				fail=$(awk '{print $2}' <<<"$batch_result")
+			else
+				for domain in "${domains[@]}"; do
+					if _cleanup_template_blocks_for_domain "$domain" "all"; then
+						ok=$((ok + 1))
+					else
+						fail=$((fail + 1))
+						if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+							break
+						fi
+					fi
+				done
+			fi
 			;;
 		ids)
 			if [ -z "$ids_raw" ]; then
@@ -5223,16 +5465,22 @@ _run_template_cli_mode() {
 			fi
 			ids_raw="${ids_raw//,/ }"
 			IFS=' ' read -r -a ids <<<"$ids_raw"
-			for domain in "${domains[@]}"; do
-				if _cleanup_template_blocks_for_domain "$domain" "ids" "${ids[@]}"; then
-					ok=$((ok + 1))
-				else
-					fail=$((fail + 1))
-					if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
-						break
+			if [ "${TEMPLATE_PARALLELISM:-1}" -gt 1 ]; then
+				batch_result=$(_template_parallel_execute "cleanup" "ids" "${ids[*]}" "${domains[@]}")
+				ok=$(awk '{print $1}' <<<"$batch_result")
+				fail=$(awk '{print $2}' <<<"$batch_result")
+			else
+				for domain in "${domains[@]}"; do
+					if _cleanup_template_blocks_for_domain "$domain" "ids" "${ids[@]}"; then
+						ok=$((ok + 1))
+					else
+						fail=$((fail + 1))
+						if [ "${TEMPLATE_FAIL_FAST:-false}" = "true" ]; then
+							break
+						fi
 					fi
-				fi
-			done
+				done
+			fi
 			;;
 		*)
 			log_message ERROR "cleanup 模式缺少合法 --template-cleanup-mode"

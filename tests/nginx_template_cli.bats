@@ -173,6 +173,16 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "参数约束: 并行模式不允许 fail-fast" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.example.com" --template-ids security_headers --template-dry-run --template-parallelism 2 --fail-fast --non-interactive
+  [ "$status" -ne 0 ]
+}
+
+@test "参数约束: rollback-before 时间格式校验" {
+  run bash "$SCRIPT_PATH" --template-rollback-op op_test --template-rollback-before bad-time --json --non-interactive
+  [ "$status" -ne 0 ]
+}
+
 @test "template-vars 可覆盖 hsts 默认变量" {
   run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-precheck --json --non-interactive
   [ "$status" -eq 0 ]
