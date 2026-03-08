@@ -1642,67 +1642,83 @@ _validate_custom_directive() {
 	local val="${1:-}"
 	local semicolon_re=';[[:space:]]*$'
 	local full_re='^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]].*;[[:space:]]*$'
+	local line=""
+	local directive=""
 	if [ -z "$val" ]; then
 		return 1
 	fi
-	if [[ "$val" == *$'\n'* ]] || [[ "$val" == *$'\r'* ]]; then
-		log_message ERROR "自定义指令仅支持单行输入。"
+	if [[ "$val" == *$'\r'* ]]; then
+		log_message ERROR "自定义指令不允许 CR 字符。"
 		return 1
 	fi
 	if [[ "$val" == *"{"* ]] || [[ "$val" == *"}"* ]]; then
 		log_message ERROR "禁止输入块级配置(包含 { 或 })。"
 		return 1
 	fi
-	if [[ ! "$val" =~ $semicolon_re ]]; then
-		log_message ERROR "指令必须以分号结尾。"
-		return 1
-	fi
-	if [[ ! "$val" =~ $full_re ]]; then
-		log_message ERROR "指令格式无效。"
-		return 1
-	fi
-	local directive
-	directive="${val%%[[:space:]]*}"
-	case "$directive" in
-	client_max_body_size | proxy_read_timeout | proxy_send_timeout | proxy_connect_timeout | send_timeout | keepalive_timeout | add_header | proxy_set_header)
-		return 0
-		;;
-	*)
-		log_message ERROR "当前仅允许常用安全指令，拒绝未知指令: ${directive}"
-		return 1
-		;;
-	esac
+	while IFS= read -r line; do
+		line="${line#"${line%%[![:space:]]*}"}"
+		line="${line%"${line##*[![:space:]]}"}"
+		[ -z "$line" ] && continue
+
+		if [[ ! "$line" =~ $semicolon_re ]]; then
+			log_message ERROR "指令必须以分号结尾: ${line}"
+			return 1
+		fi
+		if [[ ! "$line" =~ $full_re ]]; then
+			log_message ERROR "指令格式无效: ${line}"
+			return 1
+		fi
+
+		directive="${line%%[[:space:]]*}"
+		case "$directive" in
+		client_max_body_size | proxy_read_timeout | proxy_send_timeout | proxy_connect_timeout | send_timeout | keepalive_timeout | add_header | proxy_set_header) ;;
+		*)
+			log_message ERROR "当前仅允许常用安全指令，拒绝未知指令: ${directive}"
+			return 1
+			;;
+		esac
+	done <<<"$val"
+
+	return 0
 }
 
 _is_valid_custom_directive_silent() {
 	local val="${1:-}"
 	local semicolon_re=';[[:space:]]*$'
 	local full_re='^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]].*;[[:space:]]*$'
+	local line=""
+	local directive=""
 	if [ -z "$val" ]; then
 		return 1
 	fi
-	if [[ "$val" == *$'\n'* ]] || [[ "$val" == *$'\r'* ]]; then
+	if [[ "$val" == *$'\r'* ]]; then
 		return 1
 	fi
 	if [[ "$val" == *"{"* ]] || [[ "$val" == *"}"* ]]; then
 		return 1
 	fi
-	if [[ ! "$val" =~ $semicolon_re ]]; then
-		return 1
-	fi
-	if [[ ! "$val" =~ $full_re ]]; then
-		return 1
-	fi
-	local directive
-	directive="${val%%[[:space:]]*}"
-	case "$directive" in
-	client_max_body_size | proxy_read_timeout | proxy_send_timeout | proxy_connect_timeout | send_timeout | keepalive_timeout | add_header | proxy_set_header)
-		return 0
-		;;
-	*)
-		return 1
-		;;
-	esac
+	while IFS= read -r line; do
+		line="${line#"${line%%[![:space:]]*}"}"
+		line="${line%"${line##*[![:space:]]}"}"
+		[ -z "$line" ] && continue
+
+		if [[ ! "$line" =~ $semicolon_re ]]; then
+			return 1
+		fi
+		if [[ ! "$line" =~ $full_re ]]; then
+			return 1
+		fi
+
+		directive="${line%%[[:space:]]*}"
+		case "$directive" in
+		client_max_body_size | proxy_read_timeout | proxy_send_timeout | proxy_connect_timeout | send_timeout | keepalive_timeout | add_header | proxy_set_header) ;;
+		*)
+			return 1
+			;;
+		esac
+	done <<<"$val"
+
+	return 0
 }
 
 _normalize_max_body_size() {
@@ -2883,9 +2899,9 @@ select_item_and_act() {
 
 _manage_http_actions() {
 	local selected_domain="${1:-}"
-	_render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令"
+	_render_menu "管理: $selected_domain" "1. 查看证书详情 (中文诊断)" "2. 手动续期" "3. 删除项目" "4. 查看 Nginx 配置" "5. 重新配置 (目标/防御/Hook等)" "6. 修改证书申请与续期设置" "7. 添加自定义指令" "8. 配置模板中心 (Block追加/Site替换)"
 	local cc
-	if ! cc=$(prompt_menu_choice "1-7" "true"); then return 0; fi
+	if ! cc=$(prompt_menu_choice "1-8" "true"); then return 0; fi
 	case "$cc" in
 	1) _handle_cert_details "$selected_domain" ;;
 	2) _handle_renew_cert "$selected_domain" ;;
@@ -2897,6 +2913,7 @@ _manage_http_actions() {
 	5) _handle_reconfigure_project "$selected_domain" ;;
 	6) _handle_modify_renew_settings "$selected_domain" ;;
 	7) _handle_set_custom_config "$selected_domain" ;;
+	8) _handle_nginx_template_center_for_domain "$selected_domain" ;;
 	"") return 0 ;;
 	esac
 	return 0
@@ -3213,6 +3230,200 @@ _handle_set_custom_config() {
 		fi
 	fi
 	press_enter_to_continue
+}
+
+_nginx_template_snippet_by_id() {
+	local template_id="${1:-}"
+	case "$template_id" in
+	security_headers)
+		cat <<'EOF'
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+EOF
+		;;
+	hsts)
+		cat <<'EOF'
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+EOF
+		;;
+	reverse_proxy_enhanced)
+		cat <<'EOF'
+proxy_set_header X-Forwarded-Host $host;
+proxy_connect_timeout 60s;
+proxy_send_timeout 600s;
+proxy_read_timeout 600s;
+EOF
+		;;
+	wordpress_basic)
+		cat <<'EOF'
+client_max_body_size 64m;
+proxy_read_timeout 300s;
+proxy_send_timeout 300s;
+EOF
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+_template_id_to_name() {
+	local template_id="${1:-}"
+	case "$template_id" in
+	security_headers) printf '%s\n' "安全响应头基线" ;;
+	hsts) printf '%s\n' "HSTS 严格 HTTPS" ;;
+	reverse_proxy_enhanced) printf '%s\n' "反代增强（超时/转发头）" ;;
+	wordpress_basic) printf '%s\n' "WordPress 基础优化" ;;
+	*) printf '%s\n' "$template_id" ;;
+	esac
+}
+
+_render_nginx_template_menu() {
+	_render_menu "配置模板中心" \
+		"1. 安全响应头基线 (security_headers)" \
+		"2. HSTS 严格 HTTPS (hsts)" \
+		"3. 反代增强（超时/转发头）(reverse_proxy_enhanced)" \
+		"4. WordPress 基础优化 (wordpress_basic)" \
+		"5. 返回"
+}
+
+_apply_template_to_domain() {
+	local d="${1:-}"
+	local mode="${2:-append}"
+	local template_id="${3:-}"
+	local cur=""
+	local snippet=""
+	local current_custom=""
+	local merged_custom=""
+	local new_json=""
+
+	cur=$(_get_project_json "$d")
+	if [ -z "$cur" ]; then
+		log_message ERROR "项目不存在: ${d}"
+		return 1
+	fi
+
+	if ! snippet=$(_nginx_template_snippet_by_id "$template_id"); then
+		log_message ERROR "未知模板: ${template_id}"
+		return 1
+	fi
+
+	if ! _is_valid_custom_directive_silent "$snippet"; then
+		log_message ERROR "内置模板未通过安全校验，已阻止应用。"
+		return 1
+	fi
+
+	current_custom=$(jq -r '.custom_config // empty' <<<"$cur")
+	if [ -n "$current_custom" ] && ! _is_valid_custom_directive_silent "$current_custom"; then
+		log_message WARN "检测到历史 custom_config 非法，已自动清空后继续。"
+		cur=$(jq '.custom_config = ""' <<<"$cur")
+		current_custom=""
+	fi
+
+	if [ "$mode" = "replace" ]; then
+		merged_custom="$snippet"
+	else
+		if [ -n "$current_custom" ]; then
+			merged_custom="${current_custom}"$'\n'"${snippet}"
+		else
+			merged_custom="$snippet"
+		fi
+	fi
+
+	if ! _is_valid_custom_directive_silent "$merged_custom"; then
+		log_message ERROR "模板合并结果校验失败，已拒绝写入。"
+		return 1
+	fi
+
+	printf '%b' "\n${CYAN}预览(${mode}):${NC}\n${merged_custom}\n"
+	if ! confirm_or_cancel "确认应用模板 '$(_template_id_to_name "$template_id")' 到 ${d}?" "y"; then
+		log_message WARN "用户取消模板应用。"
+		return 0
+	fi
+
+	new_json=$(jq --arg v "$merged_custom" '.custom_config = $v' <<<"$cur")
+	snapshot_project_json "$d" "$cur"
+	if _save_project_json "$new_json"; then
+		NGINX_RELOAD_NEEDED="true"
+		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
+			log_message SUCCESS "模板应用成功: ${d} ($mode, $template_id)"
+			printf '%b' "已应用模板: $(_template_id_to_name "$template_id")\n"
+			printf '%b' "模式: $([ "$mode" = "replace" ] && printf '%s' "Site替换（覆盖）" || printf '%s' "Block追加（推荐）")\n"
+			return 0
+		fi
+		log_message ERROR "模板应用失败，开始回滚。"
+		_save_project_json "$cur" || true
+		_write_and_enable_nginx_config "$d" "$cur" || true
+		NGINX_RELOAD_NEEDED="true"
+		control_nginx_reload_if_needed || true
+		return 1
+	fi
+
+	log_message ERROR "保存项目 JSON 失败，模板未应用。"
+	return 1
+}
+
+_handle_nginx_template_center_for_domain() {
+	local d="${1:-}"
+	local template_choice=""
+	local template_id=""
+	local mode_choice=""
+	local mode="append"
+
+	while true; do
+		_render_nginx_template_menu
+		if ! template_choice=$(prompt_menu_choice "1-5" "true"); then return 0; fi
+		case "$template_choice" in
+		1) template_id="security_headers" ;;
+		2) template_id="hsts" ;;
+		3) template_id="reverse_proxy_enhanced" ;;
+		4) template_id="wordpress_basic" ;;
+		5 | "") return 0 ;;
+		*)
+			log_message ERROR "无效模板选项"
+			continue
+			;;
+		esac
+
+		_render_menu "模板应用模式" \
+			"1. Block追加（推荐，保留已有自定义配置）" \
+			"2. Site替换（覆盖 custom_config）" \
+			"3. 返回"
+		if ! mode_choice=$(prompt_menu_choice "1-3" "true"); then return 0; fi
+		case "$mode_choice" in
+		1) mode="append" ;;
+		2)
+			mode="replace"
+			printf '%b' "${YELLOW}警告: Site替换会覆盖当前项目的 custom_config 字段。${NC}\n"
+			if ! confirm_or_cancel "确认继续 Site替换?" "n"; then
+				continue
+			fi
+			;;
+		3 | "") continue ;;
+		*)
+			log_message ERROR "无效模式选项"
+			continue
+			;;
+		esac
+
+		_apply_template_to_domain "$d" "$mode" "$template_id"
+		press_enter_to_continue
+	done
+}
+
+_manage_nginx_template_center() {
+	_generate_op_id
+	local all count
+	all=$(jq . "$PROJECTS_METADATA_FILE")
+	count=$(jq 'length' <<<"$all")
+	if [ "$count" -eq 0 ]; then
+		log_message WARN "暂无 HTTP 项目，无法应用模板。"
+		press_enter_to_continue
+		return 0
+	fi
+	select_item_and_act "$all" "$count" "请输入序号选择项目进入模板中心 (回车返回)" "domain" _handle_nginx_template_center_for_domain _display_projects_list || true
 }
 
 _set_cf_strict_mode_for_domain() {
@@ -3640,9 +3851,10 @@ main_menu() {
 		printf '%b' " 8. ${BRIGHT_RED}${BOLD}Cloudflare 防御中心 (状态/更新/切换)${NC}\n"
 		printf '%b' " 9. 备份/还原与配置重建\n"
 		printf '%b' "10. 设置 Telegram 机器人通知\n"
+		printf '%b' "11. 配置模板中心 (Block追加/Site替换)\n"
 		printf '%b' "\n"
 		local c
-		if ! c=$(prompt_menu_choice "1-10" "true"); then
+		if ! c=$(prompt_menu_choice "1-11" "true"); then
 			exit 10
 		fi
 		case "$c" in
@@ -3682,6 +3894,7 @@ main_menu() {
 			setup_tg_notifier
 			press_enter_to_continue
 			;;
+		11) _manage_nginx_template_center ;;
 		"") return 10 ;;
 		*) log_message ERROR "无效选择" ;;
 		esac
