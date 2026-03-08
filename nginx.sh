@@ -1257,8 +1257,13 @@ _parse_args() {
 }
 
 _stream_module_available() {
-	if nginx -V 2>&1 | grep -q -- '--with-stream'; then
+	if nginx -V 2>&1 | grep -Eq -- '--with-stream($|[[:space:]])'; then
 		return 0
+	fi
+	if nginx -V 2>&1 | grep -q -- '--with-stream=dynamic'; then
+		if [ -f /usr/lib/nginx/modules/ngx_stream_module.so ] && grep -Rqs 'ngx_stream_module\.so' /etc/nginx/modules-enabled 2>/dev/null; then
+			return 0
+		fi
 	fi
 	if [ -f /etc/nginx/modules-enabled/50-mod-stream.conf ] || [ -f /etc/nginx/modules-enabled/mod-stream.conf ]; then
 		return 0
