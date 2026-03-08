@@ -100,6 +100,8 @@ TEMPLATE_APPLY_MODE="append"
 TEMPLATE_CLEANUP_MODE=""
 TEMPLATE_DRY_RUN="false"
 
+SAFE_PATH_ROOTS+=("${SCRIPT_DIR}" "${SCRIPT_DIR}/templates" "/opt/vps_install_modules" "/opt/vps_install_modules/templates")
+
 # ==============================================================================
 # SECTION: 核心工具函数与信号捕获
 # ==============================================================================
@@ -1124,6 +1126,7 @@ _parse_args() {
 	DRY_RUN="false"
 	TEMPLATE_MODE=""
 	TEMPLATE_IDS=""
+	TEMPLATE_DOMAIN=""
 	TEMPLATE_APPLY_MODE="append"
 	TEMPLATE_CLEANUP_MODE=""
 	TEMPLATE_DRY_RUN="false"
