@@ -655,9 +655,8 @@ _domain_uses_cloudflare() {
 
 _prompt_update_cf_ips_if_missing() {
 	if _get_cf_allow_file >/dev/null; then return 0; fi
-	if confirm_or_cancel "未检测到 Cloudflare IP 库，是否现在更新?" "n"; then
-		_update_cloudflare_ips || return 1
-	fi
+	log_message INFO "未检测到 Cloudflare IP 库，自动执行更新。"
+	_update_cloudflare_ips || return 1
 	return 0
 }
 
@@ -1369,7 +1368,11 @@ install_acme_sh() {
 		}
 	fi
 	rm -f "$install_script"
-	ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
+	if [ -d "$HOME/.acme.sh" ]; then
+		ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" -print -quit 2>/dev/null || true)
+	else
+		ACME_BIN=""
+	fi
 	if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
 	"$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
 	local cron_tmp
@@ -1476,7 +1479,10 @@ _update_cloudflare_ips() {
 		printf '%b' "${GREEN}本次生效网段(含本地环回): ${allow_count}${NC}\n"
 		log_message SUCCESS "Cloudflare IP 列表更新完成。"
 		printf '%b' "${GREEN}Cloudflare IP 列表已更新。${NC}\n"
-		if nginx -t >/dev/null 2>&1; then
+		local test_output=""
+		local test_rc=0
+		test_output=$(nginx -t 2>&1) || test_rc=$?
+		if [ "$test_rc" -eq 0 ]; then
 			if systemctl reload nginx >/dev/null 2>&1; then
 				printf '%b' "${GREEN}Nginx 配置检测通过并已重载。${NC}\n"
 			else
@@ -1484,6 +1490,7 @@ _update_cloudflare_ips() {
 			fi
 		else
 			printf '%b' "${YELLOW}Nginx 配置检测失败，已写入文件但未自动重载。${NC}\n"
+			printf '%b' "${YELLOW}失败原因: ${test_output}${NC}\n"
 		fi
 	else
 		log_message ERROR "获取 Cloudflare IP 列表失败,请检查 VPS 的国际网络连通性。"
