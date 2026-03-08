@@ -591,11 +591,64 @@ download_module_to_cache() {
 		if [ "$mode" != "auto" ]; then log_success "     模块 (${script_name}) 已更新。"; fi
 		run_with_sudo mv "$tmp_file" "$local_file"
 		run_with_sudo chmod +x "$local_file"
+		if ! ensure_module_sidecar_libs "$script_name" "$mode"; then
+			return 1
+		fi
 		return 0
 	else
 		rm -f "$tmp_file"
+		if ! ensure_module_sidecar_libs "$script_name" "$mode"; then
+			return 1
+		fi
 		return 1
 	fi
+}
+
+ensure_module_sidecar_libs() {
+	local script_name="$1"
+	local mode="${2:-}"
+	local rel=""
+	local tmp_file=""
+	local local_path=""
+	local remote_hash=""
+	local local_hash=""
+	local -a required=()
+
+	case "$script_name" in
+	nginx.sh)
+		required=("lib/template_manifest.sh" "lib/template_audit.sh" "lib/template_ops.sh" "lib/template_cli.sh")
+		;;
+	*)
+		return 0
+		;;
+	esac
+
+	for rel in "${required[@]}"; do
+		if ! sanitize_module_script "$rel"; then
+			log_err "模块依赖路径非法，拒绝下载: ${rel}"
+			return 1
+		fi
+		local_path="${INSTALL_DIR}/${rel}"
+		run_with_sudo mkdir -p "$(dirname "$local_path")"
+		tmp_file=$(create_temp_file)
+		if ! curl -fsSL --connect-timeout 10 --max-time 30 "${BASE_URL}/${rel}?_=$(date +%s)" -o "$tmp_file"; then
+			log_err "下载模块依赖失败: ${rel}"
+			return 1
+		fi
+		remote_hash=$(sed 's/\r$//' <"$tmp_file" | sha256sum | awk '{print $1}')
+		local_hash="no_local_file"
+		[ -f "$local_path" ] && local_hash=$(sed 's/\r$//' <"$local_path" | sha256sum | awk '{print $1}' || echo "no_local_file")
+		if [ "$local_hash" != "$remote_hash" ]; then
+			run_with_sudo mv "$tmp_file" "$local_path"
+			run_with_sudo chmod +x "$local_path"
+			if [ "$mode" != "auto" ]; then
+				log_info "     已同步模块依赖: ${rel}"
+			fi
+		else
+			rm -f "$tmp_file"
+		fi
+	done
+	return 0
 }
 
 uninstall_script() {
