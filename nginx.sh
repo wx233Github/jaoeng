@@ -104,6 +104,7 @@ NGINX_TEMPLATE_AUDIT_LOG="${NGINX_TEMPLATE_AUDIT_LOG:-/var/log/nginx_template_au
 TEMPLATE_MODE=""
 TEMPLATE_IDS=""
 TEMPLATE_DOMAIN=""
+TEMPLATE_VARS_RAW=""
 TEMPLATE_APPLY_MODE="append"
 TEMPLATE_CLEANUP_MODE=""
 TEMPLATE_DRY_RUN="false"
@@ -118,6 +119,7 @@ TEMPLATE_IMPACT_REPORT="false"
 TEMPLATE_ROLLBACK_OP=""
 QUIET_MODE="false"
 SHOW_HELP="false"
+declare -A TEMPLATE_VARS=()
 
 SAFE_PATH_ROOTS+=("${SCRIPT_DIR}" "${SCRIPT_DIR}/templates" "/opt/vps_install_modules" "/opt/vps_install_modules/templates")
 
@@ -1229,6 +1231,7 @@ _parse_args() {
 	TEMPLATE_MODE=""
 	TEMPLATE_IDS=""
 	TEMPLATE_DOMAIN=""
+	TEMPLATE_VARS_RAW=""
 	TEMPLATE_APPLY_MODE="append"
 	TEMPLATE_CLEANUP_MODE=""
 	TEMPLATE_DRY_RUN="false"
@@ -1241,6 +1244,7 @@ _parse_args() {
 	TEMPLATE_IMPACT_REPORT="false"
 	TEMPLATE_ROLLBACK_OP=""
 	QUIET_MODE="false"
+	TEMPLATE_VARS=()
 	local i=1
 	while [ "$i" -le "$#" ]; do
 		local arg="${!i}"
@@ -1270,6 +1274,11 @@ _parse_args() {
 		--template-domain)
 			i=$((i + 1))
 			TEMPLATE_DOMAIN="${!i:-}"
+			i=$((i + 1))
+			;;
+		--template-vars)
+			i=$((i + 1))
+			TEMPLATE_VARS_RAW="${!i:-}"
 			i=$((i + 1))
 			;;
 		--template-apply-mode)
@@ -1335,7 +1344,7 @@ validate_args() {
 		fi
 		case "$arg" in
 		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet | --template-impact-report) ;;
-		--template-mode | --template-ids | --template-domain | --template-apply-mode | --template-cleanup-mode | --template-rollback-op)
+		--template-mode | --template-ids | --template-domain | --template-vars | --template-apply-mode | --template-cleanup-mode | --template-rollback-op)
 			skip_next="true"
 			;;
 		*)
@@ -1394,6 +1403,16 @@ validate_args() {
 			return 1
 		fi
 	fi
+	if [ -n "$TEMPLATE_VARS_RAW" ]; then
+		if [ -z "$TEMPLATE_MODE" ] || { [ "$TEMPLATE_MODE" != "default" ] && [ "$TEMPLATE_MODE" != "custom" ]; }; then
+			log_message ERROR "--template-vars 仅支持 default/custom 模式"
+			return 1
+		fi
+		if ! _parse_template_vars_raw "$TEMPLATE_VARS_RAW"; then
+			log_message ERROR "--template-vars 格式非法，应为 KEY=VALUE,KEY2=VALUE2"
+			return 1
+		fi
+	fi
 	if [ "${TEMPLATE_IMPACT_REPORT:-false}" = "true" ] && [ -z "$TEMPLATE_MODE" ]; then
 		log_message ERROR "--template-impact-report 仅支持与 --template-mode 一起使用"
 		return 1
@@ -1425,6 +1444,7 @@ print_usage() {
   --template-mode <default|custom|cleanup>
   --template-domain <domain|glob-expression>
   --template-ids <id[,id...]>
+  --template-vars <KEY=VALUE[,KEY=VALUE...]>
   --template-apply-mode <append|replace>
   --template-cleanup-mode <all|ids>
   --template-dry-run
@@ -1440,6 +1460,7 @@ print_usage() {
   nginx.sh --template-mode custom --template-domain "*.api.example.com,!admin.api.example.com" --template-ids security_headers,reverse_proxy_enhanced --template-apply-mode replace --non-interactive
   nginx.sh --template-mode cleanup --template-domain example.com --template-cleanup-mode ids --template-ids hsts --non-interactive
   nginx.sh --template-mode custom --template-domain "*.example.com,!admin.example.com" --template-ids security_headers --template-precheck --json --non-interactive
+  nginx.sh --template-mode custom --template-domain example.com --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-dry-run --non-interactive
   nginx.sh --template-mode default --template-domain "*.example.com" --template-ids https_production --template-impact-report --json --non-interactive
   nginx.sh --template-rollback-op 20260308_120001_1234_5678 --json --non-interactive
 
@@ -3691,6 +3712,100 @@ _dedupe_template_ids() {
 	printf '%s\n' "${uniq[*]}"
 }
 
+_parse_template_vars_raw() {
+	local raw="${1:-}"
+	local token=""
+	local key=""
+	local val=""
+	TEMPLATE_VARS=()
+	raw="${raw// /}"
+	[ -z "$raw" ] && return 0
+	IFS=',' read -r -a parts <<<"$raw"
+	for token in "${parts[@]}"; do
+		[ -z "$token" ] && continue
+		if [[ "$token" != *=* ]]; then
+			return 1
+		fi
+		key="${token%%=*}"
+		val="${token#*=}"
+		if ! [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+			return 1
+		fi
+		if ! [[ "$val" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+			return 1
+		fi
+		TEMPLATE_VARS["$key"]="$val"
+	done
+	return 0
+}
+
+_validate_template_vars_for_selection() {
+	local -a selected=("$@")
+	local id=""
+	local key=""
+	local allowed=""
+	local vkey=""
+	if [ "${#TEMPLATE_VARS[@]}" -eq 0 ]; then
+		return 0
+	fi
+	for id in "${selected[@]}"; do
+		[ -z "$id" ] && continue
+		# shellcheck disable=SC2016
+		allowed+=" $(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | (.vars // {} | keys | join(" "))' 2>/dev/null || true)"
+	done
+	for vkey in "${!TEMPLATE_VARS[@]}"; do
+		if [[ " $allowed " != *" $vkey "* ]]; then
+			log_message ERROR "模板变量未被当前模板集合声明: ${vkey}"
+			return 1
+		fi
+	done
+	for id in "${selected[@]}"; do
+		[ -z "$id" ] && continue
+		# shellcheck disable=SC2016
+		while IFS=$'\t' read -r key pattern; do
+			[ -z "$key" ] && continue
+			if [ -n "${TEMPLATE_VARS[$key]+x}" ] && [ -n "$pattern" ] && ! [[ "${TEMPLATE_VARS[$key]}" =~ $pattern ]]; then
+				log_message ERROR "模板变量校验失败: ${key}=${TEMPLATE_VARS[$key]} 不匹配 ${pattern}"
+				return 1
+			fi
+		done < <(_manifest_query --arg id "$id" '.templates[] | select(.id == $id) | (.vars // {}) | to_entries[]? | [.key, (.value.pattern // "")] | @tsv' 2>/dev/null)
+	done
+	return 0
+}
+
+_render_snippet_with_template_vars() {
+	local template_id="${1:-}"
+	local snippet="${2:-}"
+	local rendered="${2:-}"
+	local key=""
+	local def=""
+	local pattern=""
+	local val=""
+	# shellcheck disable=SC2016
+	while IFS=$'\t' read -r key def pattern; do
+		[ -z "$key" ] && continue
+		if [ -n "${TEMPLATE_VARS[$key]+x}" ]; then
+			val="${TEMPLATE_VARS[$key]}"
+		else
+			val="$def"
+		fi
+		if [ -z "$val" ]; then
+			log_message ERROR "模板变量缺失: ${key}"
+			return 1
+		fi
+		if [ -n "$pattern" ] && ! [[ "$val" =~ $pattern ]]; then
+			log_message ERROR "模板变量校验失败: ${key}=${val} 不匹配 ${pattern}"
+			return 1
+		fi
+		rendered="${rendered//\{\{$key\}\}/$val}"
+	done < <(_manifest_query --arg id "$template_id" '.templates[] | select(.id == $id) | (.vars // {}) | to_entries[]? | [.key, (.value.default // ""), (.value.pattern // "")] | @tsv' 2>/dev/null)
+	if grep -Eq '\{\{[A-Z0-9_]+\}\}' <<<"$rendered"; then
+		log_message ERROR "模板变量未完全替换: ${template_id}"
+		return 1
+	fi
+	printf '%s\n' "$rendered"
+}
+
 _json_escape() {
 	printf '%s' "${1:-}" | jq -Rsa .
 }
@@ -4009,6 +4124,9 @@ _validate_template_selection() {
 		log_message ERROR "模板冲突: ${conflict_hits[*]}"
 		return 1
 	fi
+	if ! _validate_template_vars_for_selection "${selected[@]}"; then
+		return 1
+	fi
 	return 0
 }
 
@@ -4074,6 +4192,8 @@ _ensure_template_manifest_available() {
     (.templates | type == "array" and length > 0) and
     (.default_combos | type == "array" and length > 0) and
     (all(.templates[]; has("id") and has("name") and has("snippet_file") and (.id | type == "string") and (.id | test("^[a-z0-9_]+$")))) and
+    (all(.templates[]; ((.vars // {}) | type == "object"))) and
+    (all(.templates[]; ((.vars // {}) | to_entries | all(.[]; (.key | test("^[A-Z][A-Z0-9_]*$")) and (((.value.default // "") | type) == "string") and (((.value.pattern // "") | type) == "string")))) ) and
     (all(.default_combos[]; has("id") and has("name") and (.templates | type == "array" and length > 0)))
   ' <<<"$manifest_json" >/dev/null 2>&1; then
 		log_message ERROR "模板清单结构校验失败: ${NGINX_TEMPLATE_MANIFEST}"
@@ -4236,6 +4356,9 @@ _render_templates_payload() {
 	for id in "${ids[@]}"; do
 		if ! snippet=$(_nginx_template_snippet_by_id "$id"); then
 			log_message ERROR "未知模板: ${id}"
+			return 1
+		fi
+		if ! snippet=$(_render_snippet_with_template_vars "$id" "$snippet"); then
 			return 1
 		fi
 		if ! _is_valid_custom_directive_silent "$snippet"; then

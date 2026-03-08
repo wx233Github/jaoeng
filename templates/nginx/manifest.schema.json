@@ -24,6 +24,20 @@
           "conflicts": {
             "type": "array",
             "items": { "type": "string", "pattern": "^[a-z0-9_]+$" }
+          },
+          "vars": {
+            "type": "object",
+            "patternProperties": {
+              "^[A-Z][A-Z0-9_]*$": {
+                "type": "object",
+                "properties": {
+                  "default": { "type": "string" },
+                  "pattern": { "type": "string" }
+                },
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": true

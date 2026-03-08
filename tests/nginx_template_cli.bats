@@ -138,3 +138,18 @@ teardown() {
   run env NGINX_TEMPLATE_AUDIT_LOG="$audit_file" bash "$SCRIPT_PATH" --template-rollback-op op_test --json --non-interactive
   [ "$status" -eq 65 ]
 }
+
+@test "template-vars 可覆盖 hsts 默认变量" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=86400 --template-precheck --json --non-interactive
+  [ "$status" -eq 0 ]
+}
+
+@test "template-vars 未声明变量应失败" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-vars HSTS_MAX_AGE=86400 --template-dry-run --non-interactive
+  [ "$status" -eq 65 ]
+}
+
+@test "template-vars 值不匹配 pattern 应失败" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=abc --template-dry-run --non-interactive
+  [ "$status" -eq 65 ]
+}

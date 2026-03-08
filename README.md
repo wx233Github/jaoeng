@@ -63,6 +63,8 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
   - `--template-rollback-op <op_id>`
 - 批量匹配（glob + 排除）：
   - `--template-domain "*.example.com,!admin.example.com"`
+- 模板变量注入（受 manifest 白名单约束）：
+  - `--template-vars HSTS_MAX_AGE=86400`
 - 批量失败策略：
   - `--fail-fast`（遇错即停）
   - `--continue-on-error`（遇错继续）
