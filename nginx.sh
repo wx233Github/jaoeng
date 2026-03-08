@@ -35,6 +35,8 @@ LOG_FILE_FALLBACK="/tmp/nginx_ssl_manager.log"
 LOG_LEVEL_DEFAULT="INFO"
 LOG_LEVEL="${LOG_LEVEL:-$LOG_LEVEL_DEFAULT}"
 LOG_FILE="${LOG_FILE:-$LOG_FILE_DEFAULT}"
+LOG_WITH_TIMESTAMP="${LOG_WITH_TIMESTAMP:-false}"
+LOG_WITH_OP_TAG="${LOG_WITH_OP_TAG:-false}"
 ALLOW_UNSAFE_HOOKS="${ALLOW_UNSAFE_HOOKS:-false}"
 SAFE_PATH_ROOTS=("/etc/nginx" "/etc/ssl" "/var/www" "/var/log" "/var/lib/nginx_ssl_manager" "/root/nginx_ssl_backups" "/etc/nginx/projects_backups" "/etc/nginx/conf_backups")
 HOOK_WHITELIST=("systemctl restart s-ui" "systemctl restart x-ui" "systemctl restart v2ray" "systemctl restart xray" "systemctl reload nginx" "systemctl restart nginx")
@@ -396,7 +398,13 @@ _log_emit() {
 	local ts op_tag
 	ts="$(date +"%Y-%m-%d %H:%M:%S")"
 	op_tag="${OP_ID:-NA}"
-	local plain_line="[${ts}] [${level}] [op:${op_tag}] ${message}"
+	local plain_line="[${level}] ${message}"
+	if [ "${LOG_WITH_OP_TAG:-false}" = "true" ]; then
+		plain_line="[${level}] [op:${op_tag}] ${message}"
+	fi
+	if [ "${LOG_WITH_TIMESTAMP:-false}" = "true" ]; then
+		plain_line="[${ts}] ${plain_line}"
+	fi
 	if ! _log_should_emit "$level"; then return 0; fi
 	_resolve_log_file
 	printf '%s\n' "$plain_line" >>"$LOG_FILE"
