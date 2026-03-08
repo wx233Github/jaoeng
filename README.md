@@ -59,6 +59,7 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
   - `--template-precheck`
 - 影响分析（不写入）：
   - `--template-impact-report`
+  - `--json` 时包含域名级“模板块/指令变化”摘要
 - 按操作ID回滚：
   - `--template-rollback-op <op_id>`
 - 批量匹配（glob + 排除）：

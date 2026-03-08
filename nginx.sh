@@ -3933,6 +3933,11 @@ _template_impact_report() {
 	local -a ids=()
 	local matched=0
 	local predicted_changes=0
+	local before_blocks=0
+	local after_blocks=0
+	local before_dirs=0
+	local after_dirs=0
+	local changed_dirs=0
 
 	case "$mode" in
 	default)
@@ -3981,7 +3986,13 @@ _template_impact_report() {
 			if [ "$merged_custom" != "$current_custom" ]; then
 				predicted_changes=$((predicted_changes + 1))
 			fi
-			log_message INFO "影响分析 ${domain}: 模板块 $(_count_template_blocks "$current_custom") -> $(_count_template_blocks "$merged_custom")"
+			before_blocks=$(_count_template_blocks "$current_custom")
+			after_blocks=$(_count_template_blocks "$merged_custom")
+			before_dirs=$(_count_unique_directives "$current_custom")
+			after_dirs=$(_count_unique_directives "$merged_custom")
+			changed_dirs=$(_count_changed_directives "$current_custom" "$merged_custom")
+			log_message INFO "影响分析 ${domain}: 模板块 ${before_blocks} -> ${after_blocks}, 指令 ${before_dirs} -> ${after_dirs}, 变更指令=${changed_dirs}"
+			_emit_template_impact_domain_json "$domain" "$before_blocks" "$after_blocks" "$before_dirs" "$after_dirs" "$changed_dirs"
 			;;
 		cleanup)
 			if [ "$cleanup_mode" = "all" ]; then
@@ -3992,7 +4003,13 @@ _template_impact_report() {
 			if [ "$cleaned_custom" != "$current_custom" ]; then
 				predicted_changes=$((predicted_changes + 1))
 			fi
-			log_message INFO "影响分析 ${domain}: 模板块 $(_count_template_blocks "$current_custom") -> $(_count_template_blocks "$cleaned_custom")"
+			before_blocks=$(_count_template_blocks "$current_custom")
+			after_blocks=$(_count_template_blocks "$cleaned_custom")
+			before_dirs=$(_count_unique_directives "$current_custom")
+			after_dirs=$(_count_unique_directives "$cleaned_custom")
+			changed_dirs=$(_count_changed_directives "$current_custom" "$cleaned_custom")
+			log_message INFO "影响分析 ${domain}: 模板块 ${before_blocks} -> ${after_blocks}, 指令 ${before_dirs} -> ${after_dirs}, 变更指令=${changed_dirs}"
+			_emit_template_impact_domain_json "$domain" "$before_blocks" "$after_blocks" "$before_dirs" "$after_dirs" "$changed_dirs"
 			;;
 		esac
 	done
@@ -4137,6 +4154,56 @@ _template_payload_hash() {
 		return 0
 	fi
 	printf '%s' "$payload" | cksum | awk '{print $1}'
+}
+
+_extract_directive_names() {
+	local content="${1:-}"
+	awk '
+    {
+      line=$0
+      gsub(/^[ \t]+|[ \t]+$/, "", line)
+      if (line == "" || line ~ /^#/) next
+      sub(/;.*/, "", line)
+      split(line, a, /[ \t]+/)
+      if (a[1] != "") print a[1]
+    }
+  ' <<<"$content" | sort -u
+}
+
+_count_unique_directives() {
+	local content="${1:-}"
+	local count=0
+	count=$(_extract_directive_names "$content" | awk 'END{print NR+0}')
+	printf '%s\n' "$count"
+}
+
+_count_changed_directives() {
+	local before="${1:-}"
+	local after="${2:-}"
+	local tmp_before=""
+	local tmp_after=""
+	local delta=0
+	tmp_before=$(mktemp /tmp/tmpl.before.XXXXXX)
+	tmp_after=$(mktemp /tmp/tmpl.after.XXXXXX)
+	printf '%s\n' "$(_extract_directive_names "$before")" >"$tmp_before"
+	printf '%s\n' "$(_extract_directive_names "$after")" >"$tmp_after"
+	delta=$(cat "$tmp_before" "$tmp_after" | sed '/^$/d' | sort | uniq -u | awk 'END{print NR+0}')
+	rm -f -- "$tmp_before" "$tmp_after" 2>/dev/null || true
+	printf '%s\n' "$delta"
+}
+
+_emit_template_impact_domain_json() {
+	local domain="${1:-}"
+	local before_blocks="${2:-0}"
+	local after_blocks="${3:-0}"
+	local before_dirs="${4:-0}"
+	local after_dirs="${5:-0}"
+	local changed_dirs="${6:-0}"
+	if [ "${TEMPLATE_OUTPUT_JSON:-false}" != "true" ]; then
+		return 0
+	fi
+	printf '{"domain":%s,"before_blocks":%s,"after_blocks":%s,"before_directives":%s,"after_directives":%s,"changed_directives":%s}\n' \
+		"$(_json_escape "$domain")" "$before_blocks" "$after_blocks" "$before_dirs" "$after_dirs" "$changed_dirs"
 }
 
 _template_id_to_name() {

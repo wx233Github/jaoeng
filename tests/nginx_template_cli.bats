@@ -132,6 +132,13 @@ teardown() {
   [[ "$output" == *'"precheck":true'* ]]
 }
 
+@test "impact-report json 包含域名级指令变化摘要" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers --template-impact-report --json --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"domain":"api.example.com"'* ]]
+  [[ "$output" == *'"changed_directives":'* ]]
+}
+
 @test "rollback-op 在无审计日志时返回 EX_DATAERR(65)" {
   audit_file="/tmp/nginx_template_audit.missing.$$"
   rm -f "$audit_file"
