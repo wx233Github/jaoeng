@@ -1421,6 +1421,7 @@ _ensure_zerossl_account_email() {
 		return 0
 	fi
 	saved_email=$(_get_zerossl_account_email)
+	saved_email=$(printf '%s' "$saved_email" | tr -d '\r' | xargs)
 	if [ "$saved_email" = "my@example.com" ]; then
 		saved_email=""
 	fi
@@ -1428,6 +1429,7 @@ _ensure_zerossl_account_email() {
 		email="$saved_email"
 	fi
 	if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "${JB_NONINTERACTIVE:-false}" != "true" ]; then
+		log_message INFO "ZeroSSL 需要邮箱进行账号注册。"
 		if ! email=$(prompt_input "ZeroSSL 注册邮箱" "$email" "^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$" "邮箱格式无效" "false"); then
 			return 1
 		fi
