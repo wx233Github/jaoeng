@@ -2745,17 +2745,30 @@ _issue_and_install_certificate() {
 	local wildcard
 	local ca
 	IFS=$'\t' read -r provider wildcard ca < <(jq -r '[.dns_api_provider, .use_wildcard, .ca_server_url] | @tsv' <<<"$json")
+	ca=$(printf '%s' "$ca" | tr -d '\r' | xargs)
+	if [ -z "$ca" ] || [ "$ca" = "null" ]; then
+		ca="https://acme-v02.api.letsencrypt.org/directory"
+	fi
+	local ca_selector="$ca"
+	case "$ca" in
+	https://acme-v02.api.letsencrypt.org/directory) ca_selector="letsencrypt" ;;
+	https://acme.zerossl.com/v2/DV90) ca_selector="zerossl" ;;
+	google) ca_selector="google" ;;
+	esac
+	run_cmd 20 "$ACME_BIN" --set-default-ca --server "$ca_selector" >/dev/null 2>&1 || true
 	if [ "$ca" = "https://acme.zerossl.com/v2/DV90" ] && ! _ensure_zerossl_account_email "$ca"; then
 		if [ "$IS_INTERACTIVE_MODE" = "true" ] && [ "${JB_NONINTERACTIVE:-false}" != "true" ]; then
 			if confirm_or_cancel "ZeroSSL 邮箱注册失败，是否自动切换 Let's Encrypt?" "y"; then
 				log_message INFO "ZeroSSL 注册失败，自动切换到 Let's Encrypt。"
 				ca="https://acme-v02.api.letsencrypt.org/directory"
+				run_cmd 20 "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 			else
 				return 1
 			fi
 		else
 			log_message INFO "ZeroSSL 注册失败（非交互），自动切换到 Let's Encrypt。"
 			ca="https://acme-v02.api.letsencrypt.org/directory"
+			run_cmd 20 "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 		fi
 	fi
 	local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
@@ -2763,7 +2776,7 @@ _issue_and_install_certificate() {
 	local start_ts
 	start_ts=$(date +%s)
 
-	log_message INFO "正在为 $domain 申请证书 ($method)..."
+	log_message INFO "正在为 $domain 申请证书 ($method, CA: ${ca})..."
 	local cmd=("$ACME_BIN" --issue --force --ecc -d "$domain" --server "$ca" --log)
 	[ "$wildcard" = "y" ] && cmd+=("-d" "*.$domain")
 
