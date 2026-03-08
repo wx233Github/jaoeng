@@ -60,8 +60,12 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 _log_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 # 启动器专用精简日志 (移除终端时间戳)
-echo_info() { :; }
-echo_success() { :; }
+echo_info() {
+	printf "${CYAN}[启动器]${NC} %s\n" "$1" >&2
+}
+echo_success() {
+	printf "${GREEN}[启动器]${NC} %s\n" "$1" >&2
+}
 echo_error() {
 	printf "${RED}[启动器错误]${NC} %s\n" "$1" >&2
 	exit 1
@@ -1298,16 +1302,32 @@ display_and_process_menu() {
 			fi
 		done
 
-		for i in "${!first_cols_content[@]}"; do
+		for ((i = 0; i < ${#first_cols_content[@]}; i++)); do
 			local first_col="${first_cols_content[i]}"
 			local second_col="${second_cols_content[i]:-}"
+			if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$i" -eq 3 ] && [ "${#first_cols_content[@]}" -ge 5 ]; then
+				local left_item right_item left_width merge_padding
+				left_item="$first_col"
+				right_item="${first_cols_content[4]}"
+				left_width=$(_get_visual_width "$left_item")
+				if [ "$max_first_col_width" -gt "$left_width" ]; then
+					merge_padding=$((max_first_col_width - left_width + 2))
+				else
+					merge_padding=2
+				fi
+				formatted_items_for_render+=("${left_item}$(printf '%*s' "$merge_padding" "")${right_item}")
+				i=4
+				continue
+			fi
 			if [ -n "$second_col" ]; then
 				local first_col_visual_width
 				local padding
 				first_col_visual_width=$(_get_visual_width "$first_col")
 				padding=$((max_first_col_width - first_col_visual_width))
 				formatted_items_for_render+=("${first_col}$(printf '%*s' "$padding" "") ${CYAN}- ${NC}${second_col}")
-			else formatted_items_for_render+=("${first_col}"); fi
+			else
+				formatted_items_for_render+=("${first_col}")
+			fi
 		done
 
 		local func_letters=(a b c d e f g h i j k l m n o p q r s t u v w x y z)
@@ -1319,10 +1339,6 @@ display_and_process_menu() {
 				formatted_items_for_render+=("$(printf "%s. %s" "${func_letters[i]}" "$name")")
 			fi
 		done
-
-		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-			formatted_items_for_render+=("f. 📄 日志信息")
-		fi
 
 		_render_menu "$menu_title" "${formatted_items_for_render[@]:-}"
 
@@ -1336,15 +1352,6 @@ display_and_process_menu() {
 			for ((i = 0; i < ${#func_items[@]}; i++)); do temp_func_str+="${func_letters[i]},"; done
 			func_choices_str="${temp_func_str%,}"
 		fi
-		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ]; then
-			if [ -n "$func_choices_str" ]; then
-				func_choices_str+=" ,f"
-			else
-				func_choices_str="f"
-			fi
-			func_choices_str="${func_choices_str// /}"
-		fi
-
 		local choice
 		choice=$(_prompt_for_menu_choice "$numeric_range_str" "$func_choices_str")
 		if [ "${JB_FORCE_REFRESH:-0}" = "1" ]; then
@@ -1353,12 +1360,6 @@ display_and_process_menu() {
 		fi
 
 		if [ "$choice" = "__JB_REFRESH__" ]; then
-			continue
-		fi
-
-		if [ "$CURRENT_MENU_NAME" = "MAIN_MENU" ] && [ "$choice" = "f" ]; then
-			show_log_info
-			press_enter_to_continue
 			continue
 		fi
 

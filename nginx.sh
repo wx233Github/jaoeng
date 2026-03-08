@@ -1183,25 +1183,32 @@ install_dependencies() {
 	if [ -f "$DEPS_MARK_FILE" ]; then return 0; fi
 	local -a deps=(nginx curl socat openssl jq idn dnsutils nano coreutils util-linux)
 	local -a missing_deps=()
+	local missing_display=""
+	local -a apt_env=(env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a)
+	local -a apt_opts=(-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 	local pkg
 	for pkg in "${deps[@]}"; do
 		if ! dpkg -s "$pkg" &>/dev/null; then missing_deps+=("$pkg"); fi
 	done
 	if ((${#missing_deps[@]} > 0)); then
-		log_message WARN "检测到缺失依赖: ${missing_deps[*]}，正在批量安装..."
+		missing_display=$(printf '%s ' "${missing_deps[@]}")
+		missing_display="${missing_display% }"
+		log_message WARN "检测到缺失依赖: ${missing_display}"
+		log_message INFO "正在安装依赖（步骤1/2）：刷新软件源..."
 		if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 			log_message ERROR "非交互模式禁止自动安装依赖"
 			return 1
 		fi
-		if run_cmd 60 sudo -n apt-get update >/dev/null 2>&1 || run_cmd 60 apt-get update >/dev/null 2>&1; then
-			if run_cmd 120 sudo -n apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1 || run_cmd 120 apt-get install -y "${missing_deps[@]}" >/dev/null 2>&1; then
+		if run_cmd 300 sudo -n "${apt_env[@]}" apt-get update || run_cmd 300 "${apt_env[@]}" apt-get update; then
+			log_message INFO "正在安装依赖（步骤2/2）：批量安装 ${missing_display} ..."
+			if run_cmd 900 sudo -n "${apt_env[@]}" apt-get install "${apt_opts[@]}" "${missing_deps[@]}" || run_cmd 900 "${apt_env[@]}" apt-get install "${apt_opts[@]}" "${missing_deps[@]}"; then
 				log_message SUCCESS "依赖安装成功。"
 			else
 				log_message ERROR "依赖安装失败"
 				return 1
 			fi
 		else
-			log_message ERROR "apt-get update 失败"
+			log_message ERROR "apt-get update 失败（请检查网络/源可用性/apt锁）"
 			return 1
 		fi
 	fi
