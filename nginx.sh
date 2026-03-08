@@ -1258,7 +1258,11 @@ print_usage() {
 }
 
 initialize_environment() {
-	ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" 2>/dev/null | head -n 1)
+	if [ -d "$HOME/.acme.sh" ]; then
+		ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" -print -quit 2>/dev/null || true)
+	else
+		ACME_BIN=""
+	fi
 	if [[ -z "$ACME_BIN" ]]; then ACME_BIN="$HOME/.acme.sh/acme.sh"; fi
 	local acme_bin_dir
 	acme_bin_dir=$(dirname "$ACME_BIN")

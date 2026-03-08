@@ -269,10 +269,12 @@ if [ "$REAL_SCRIPT_PATH" != "$FINAL_SCRIPT_PATH" ]; then
 		starter_require_safe_path_or_die "$FINAL_SCRIPT_PATH" "主脚本权限"
 		starter_require_safe_path_or_die "$UTILS_PATH" "工具库权限"
 		starter_sudo chmod +x "$FINAL_SCRIPT_PATH" "$UTILS_PATH" 2>/dev/null || true
-		echo_info "正在创建/更新快捷指令 'jb'..."
+		echo_info "正在创建/更新快捷指令 'jb/sb'..."
 		BIN_DIR="/usr/local/bin"
 		starter_require_safe_path_or_die "$BIN_DIR/jb" "快捷指令"
+		starter_require_safe_path_or_die "$BIN_DIR/sb" "快捷指令"
 		starter_sudo ln -sfn -- "$FINAL_SCRIPT_PATH" "$BIN_DIR/jb"
+		starter_sudo ln -sfn -- "$FINAL_SCRIPT_PATH" "$BIN_DIR/sb"
 		echo_success "安装/更新完成。"
 	fi
 
@@ -326,6 +328,7 @@ usage() {
 
 选项:
   -h, --help    显示本帮助信息并退出
+  -u, --uninstall  一键清理所有脚本（含 Y/n 确认）
   --json        与 status/doctor 搭配输出 JSON
 
 命令:
@@ -659,25 +662,31 @@ uninstall_script() {
 	log_warn "警告: 这将从您的系统中彻底移除本脚本及其所有组件！"
 	log_warn "  - 安装目录: ${INSTALL_DIR}"
 	log_warn "  - 日志文件: ${GLOBAL_LOG_FILE}"
-	log_warn "  - 快捷方式: ${BIN_DIR:-/usr/local/bin}/jb"
+	log_warn "  - 快捷方式: ${BIN_DIR:-/usr/local/bin}/jb, ${BIN_DIR:-/usr/local/bin}/sb"
 	local choice
 	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
 		log_err "无法访问 /dev/tty，无法执行交互式卸载。"
 		exit 1
 	fi
-	printf "%b" "${RED}这是一个不可逆的操作, 您确定要继续吗? (请输入 'yes' 确认): ${NC}" >/dev/tty
+	printf "%b" "${RED}确认执行一键清理所有脚本? [Y/n]: ${NC}" >/dev/tty
 	read -r choice </dev/tty
-	if [ "${choice:-}" = "yes" ]; then
+	case "${choice:-Y}" in
+	Y | y | "")
 		log_info "开始卸载..."
 		run_destructive_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/jb" || true
+		run_destructive_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/sb" || true
 		run_destructive_with_sudo rm -f "/etc/logrotate.d/vps_install_modules" || true
 		ensure_safe_install_dir "$INSTALL_DIR"
 		run_destructive_with_sudo rm -rf "$INSTALL_DIR" || true
+		run_destructive_with_sudo rm -f "/tmp/jb.lock" "/tmp/jb_auto_update.status" "/tmp/jb_auto_update.pid" || true
+		run_destructive_with_sudo rm -f /tmp/jb_temp_* || true
 		log_success "脚本已成功卸载。再见！"
 		exit 0
-	else
+		;;
+	*)
 		log_info "卸载操作已取消。"
-	fi
+		;;
+	esac
 }
 
 confirm_and_force_update() {
@@ -939,6 +948,16 @@ validate_env() {
 	if [ ! -d "$lock_dir" ]; then
 		run_with_sudo mkdir -p "$lock_dir" 2>/dev/null || true
 	fi
+	return 0
+}
+
+ensure_cli_symlinks() {
+	local bin_dir="${BIN_DIR:-/usr/local/bin}"
+	require_safe_path_or_die "${bin_dir}/jb" "快捷命令 jb" || return 1
+	require_safe_path_or_die "${bin_dir}/sb" "快捷命令 sb" || return 1
+	run_with_sudo mkdir -p "$bin_dir"
+	run_with_sudo ln -sfn -- "$FINAL_SCRIPT_PATH" "${bin_dir}/jb"
+	run_with_sudo ln -sfn -- "$FINAL_SCRIPT_PATH" "${bin_dir}/sb"
 	return 0
 }
 
@@ -1425,6 +1444,7 @@ main() {
 	LOG_LEVEL="${LOG_LEVEL:-INFO}"
 	JB_DEBUG_MODE="${JB_DEBUG_MODE:-${JB_DEBUG:-false}}"
 	validate_env
+	ensure_cli_symlinks
 	validate_autoupdate_flag
 	validate_noninteractive_flag
 	setup_logrotate
@@ -1449,6 +1469,11 @@ main() {
 			case "$command" in
 			-h | --help)
 				usage
+				exit 0
+				;;
+			-u | --uninstall)
+				log_info "正在以 Headless 模式执行卸载..."
+				uninstall_script
 				exit 0
 				;;
 			status)
