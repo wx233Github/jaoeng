@@ -114,6 +114,8 @@ TEMPLATE_FAIL_FAST="false"
 TEMPLATE_CONTINUE_ON_ERROR="false"
 TEMPLATE_OUTPUT_JSON="false"
 TEMPLATE_DEFER_RELOAD="false"
+TEMPLATE_IMPACT_REPORT="false"
+TEMPLATE_ROLLBACK_OP=""
 QUIET_MODE="false"
 SHOW_HELP="false"
 
@@ -1236,6 +1238,8 @@ _parse_args() {
 	TEMPLATE_CONTINUE_ON_ERROR="false"
 	TEMPLATE_OUTPUT_JSON="false"
 	TEMPLATE_DEFER_RELOAD="false"
+	TEMPLATE_IMPACT_REPORT="false"
+	TEMPLATE_ROLLBACK_OP=""
 	QUIET_MODE="false"
 	local i=1
 	while [ "$i" -le "$#" ]; do
@@ -1298,6 +1302,15 @@ _parse_args() {
 			TEMPLATE_OUTPUT_JSON="true"
 			i=$((i + 1))
 			;;
+		--template-impact-report)
+			TEMPLATE_IMPACT_REPORT="true"
+			i=$((i + 1))
+			;;
+		--template-rollback-op)
+			i=$((i + 1))
+			TEMPLATE_ROLLBACK_OP="${!i:-}"
+			i=$((i + 1))
+			;;
 		--quiet)
 			QUIET_MODE="true"
 			i=$((i + 1))
@@ -1321,8 +1334,8 @@ validate_args() {
 			continue
 		fi
 		case "$arg" in
-		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet) ;;
-		--template-mode | --template-ids | --template-domain | --template-apply-mode | --template-cleanup-mode)
+		-h | --help | --cron | --non-interactive | --check | --audit-only | --cf-ip-update | --dry-run | --template-dry-run | --template-precheck | --fail-fast | --continue-on-error | --json | --quiet | --template-impact-report) ;;
+		--template-mode | --template-ids | --template-domain | --template-apply-mode | --template-cleanup-mode | --template-rollback-op)
 			skip_next="true"
 			;;
 		*)
@@ -1333,6 +1346,10 @@ validate_args() {
 	done
 
 	if [ -n "$TEMPLATE_MODE" ]; then
+		if [ -n "$TEMPLATE_ROLLBACK_OP" ]; then
+			log_message ERROR "--template-mode 与 --template-rollback-op 不能同时使用"
+			return 1
+		fi
 		if [ -z "$TEMPLATE_DOMAIN" ]; then
 			log_message ERROR "模板 CLI 模式必须提供 --template-domain"
 			return 1
@@ -1377,6 +1394,16 @@ validate_args() {
 			return 1
 		fi
 	fi
+	if [ "${TEMPLATE_IMPACT_REPORT:-false}" = "true" ] && [ -z "$TEMPLATE_MODE" ]; then
+		log_message ERROR "--template-impact-report 仅支持与 --template-mode 一起使用"
+		return 1
+	fi
+	if [ -n "$TEMPLATE_ROLLBACK_OP" ]; then
+		if ! [[ "$TEMPLATE_ROLLBACK_OP" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+			log_message ERROR "--template-rollback-op 格式非法"
+			return 1
+		fi
+	fi
 
 	return 0
 }
@@ -1402,6 +1429,8 @@ print_usage() {
   --template-cleanup-mode <all|ids>
   --template-dry-run
   --template-precheck            仅校验模板与匹配，不执行写入
+  --template-impact-report       输出影响分析（不写入）
+  --template-rollback-op <op_id> 按操作ID回滚模板变更
   --fail-fast                    批量模式遇错立即停止
   --continue-on-error            批量模式忽略失败继续执行
   --json                         模板 CLI 输出 JSON 摘要
@@ -1411,6 +1440,8 @@ print_usage() {
   nginx.sh --template-mode custom --template-domain "*.api.example.com,!admin.api.example.com" --template-ids security_headers,reverse_proxy_enhanced --template-apply-mode replace --non-interactive
   nginx.sh --template-mode cleanup --template-domain example.com --template-cleanup-mode ids --template-ids hsts --non-interactive
   nginx.sh --template-mode custom --template-domain "*.example.com,!admin.example.com" --template-ids security_headers --template-precheck --json --non-interactive
+  nginx.sh --template-mode default --template-domain "*.example.com" --template-ids https_production --template-impact-report --json --non-interactive
+  nginx.sh --template-rollback-op 20260308_120001_1234_5678 --json --non-interactive
 
 退出码(模板CLI):
   64 参数错误
@@ -3725,6 +3756,220 @@ _append_template_audit_log() {
 	printf '%s\t%s\t%s\top=%s\tactor=%s\trc=%s\telapsed_ms=%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$action" "$domain" "${OP_ID:-NA}" "$actor" "$rc" "$elapsed_ms" "$detail" >>"$log_path" 2>/dev/null || true
 }
 
+_snapshot_epoch_from_file() {
+	local file_name="${1:-}"
+	local base=""
+	local stamp=""
+	base=$(basename "$file_name" .json.bak)
+	stamp="${base##*_}"
+	if [[ ! "$stamp" =~ ^[0-9]{8}_[0-9]{6}$ ]]; then
+		return 1
+	fi
+	date -d "${stamp:0:8} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s 2>/dev/null
+}
+
+_find_best_snapshot_for_domain() {
+	local domain="${1:-}"
+	local target_epoch="${2:-0}"
+	local file=""
+	local best_file=""
+	local best_epoch=0
+	local ts=0
+	local newest_file=""
+	local newest_epoch=0
+	shopt -s nullglob
+	for file in "$JSON_BACKUP_DIR"/project_"$domain"_*.json.bak; do
+		ts=$(_snapshot_epoch_from_file "$file" 2>/dev/null || printf '%s' "0")
+		if [ "$ts" -gt "$newest_epoch" ]; then
+			newest_epoch="$ts"
+			newest_file="$file"
+		fi
+		if [ "$target_epoch" -gt 0 ] && [ "$ts" -le "$target_epoch" ] && [ "$ts" -ge "$best_epoch" ]; then
+			best_epoch="$ts"
+			best_file="$file"
+		fi
+	done
+	shopt -u nullglob
+	if [ -n "$best_file" ]; then
+		printf '%s\n' "$best_file"
+		return 0
+	fi
+	if [ -n "$newest_file" ]; then
+		printf '%s\n' "$newest_file"
+		return 0
+	fi
+	return 1
+}
+
+_template_impact_report() {
+	local mode="${1:-}"
+	local apply_mode="${2:-append}"
+	local cleanup_mode="${3:-all}"
+	shift 3 || true
+	local -a domains=("$@")
+	local ids_raw="${TEMPLATE_IDS:-}"
+	local resolved=""
+	local domain=""
+	local cur=""
+	local current_custom=""
+	local merged_custom=""
+	local cleaned_custom=""
+	local payload=""
+	local -a ids=()
+	local matched=0
+	local predicted_changes=0
+
+	case "$mode" in
+	default)
+		# shellcheck disable=SC2016
+		resolved=$(_manifest_query --arg id "$ids_raw" '.default_combos[] | select(.id == $id) | .templates | join(" ")' 2>/dev/null || true)
+		IFS=' ' read -r -a ids <<<"$resolved"
+		;;
+	custom)
+		ids_raw="${ids_raw//,/ }"
+		IFS=' ' read -r -a ids <<<"$ids_raw"
+		;;
+	cleanup)
+		if [ "$cleanup_mode" = "ids" ]; then
+			ids_raw="${ids_raw//,/ }"
+			IFS=' ' read -r -a ids <<<"$ids_raw"
+		fi
+		;;
+	esac
+
+	if [ "$mode" = "default" ] || [ "$mode" = "custom" ]; then
+		if ! _validate_template_selection "${ids[@]}"; then
+			return "$EX_DATAERR"
+		fi
+		if ! payload=$(_render_templates_payload "${ids[@]}"); then
+			return "$EX_DATAERR"
+		fi
+	fi
+
+	for domain in "${domains[@]}"; do
+		[ -z "$domain" ] && continue
+		matched=$((matched + 1))
+		cur=$(_get_project_json "$domain")
+		current_custom=$(jq -r '.custom_config // empty' <<<"$cur")
+		case "$mode" in
+		default | custom)
+			if [ "$apply_mode" = "replace" ]; then
+				merged_custom="$payload"
+			else
+				merged_custom="$(_extract_template_blocks_by_ids "$current_custom" "${ids[@]}")"
+				if [ -n "$merged_custom" ]; then
+					merged_custom="${merged_custom}"$'\n'"${payload}"
+				else
+					merged_custom="$payload"
+				fi
+			fi
+			if [ "$merged_custom" != "$current_custom" ]; then
+				predicted_changes=$((predicted_changes + 1))
+			fi
+			log_message INFO "影响分析 ${domain}: 模板块 $(_count_template_blocks "$current_custom") -> $(_count_template_blocks "$merged_custom")"
+			;;
+		cleanup)
+			if [ "$cleanup_mode" = "all" ]; then
+				cleaned_custom=$(_extract_all_template_blocks "$current_custom")
+			else
+				cleaned_custom=$(_extract_template_blocks_by_ids "$current_custom" "${ids[@]}")
+			fi
+			if [ "$cleaned_custom" != "$current_custom" ]; then
+				predicted_changes=$((predicted_changes + 1))
+			fi
+			log_message INFO "影响分析 ${domain}: 模板块 $(_count_template_blocks "$current_custom") -> $(_count_template_blocks "$cleaned_custom")"
+			;;
+		esac
+	done
+
+	_emit_template_cli_summary "$mode" "${TEMPLATE_DOMAIN:-}" "$matched" "$predicted_changes" 0 0 "true"
+	return 0
+}
+
+_rollback_templates_by_op() {
+	local op_id="${1:-}"
+	local log_path=""
+	local line=""
+	local ts_str=""
+	local action=""
+	local domain=""
+	local target_epoch=0
+	local snap=""
+	local snap_json=""
+	local matched=0
+	local ok=0
+	local fail=0
+	local -a domains=()
+	local -a processed=()
+
+	log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
+	[ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
+	if [ ! -f "$log_path" ]; then
+		log_message ERROR "模板审计日志不存在，无法按操作ID回滚: ${log_path}"
+		_emit_template_cli_summary "rollback" "$op_id" 0 0 1 "$EX_DATAERR" "false"
+		return "$EX_DATAERR"
+	fi
+
+	while IFS= read -r line; do
+		[[ "$line" != *"op=${op_id}"* ]] && continue
+		ts_str=$(awk -F '\t' '{print $1}' <<<"$line")
+		action=$(awk -F '\t' '{print $2}' <<<"$line")
+		domain=$(awk -F '\t' '{print $3}' <<<"$line")
+		if [ "$action" != "apply" ] && [ "$action" != "cleanup" ]; then
+			continue
+		fi
+		if ! _template_contains_id "$domain" "${domains[@]}"; then
+			domains+=("$domain")
+		fi
+		if _template_contains_id "$domain" "${processed[@]}"; then
+			continue
+		fi
+		target_epoch=$(date -d "$ts_str" +%s 2>/dev/null || printf '%s' "0")
+		matched=$((matched + 1))
+		snap=$(_find_best_snapshot_for_domain "$domain" "$target_epoch" 2>/dev/null || true)
+		if [ -z "$snap" ] || [ ! -f "$snap" ]; then
+			log_message ERROR "未找到可回滚快照: ${domain}"
+			fail=$((fail + 1))
+			continue
+		fi
+		snap_json=$(cat "$snap" 2>/dev/null || true)
+		if [ -z "$snap_json" ] || ! jq -e . >/dev/null 2>&1 <<<"$snap_json"; then
+			log_message ERROR "快照 JSON 非法: ${snap}"
+			fail=$((fail + 1))
+			continue
+		fi
+		if ! _save_project_json "$snap_json"; then
+			log_message ERROR "恢复项目 JSON 失败: ${domain}"
+			fail=$((fail + 1))
+			continue
+		fi
+		if ! _write_and_enable_nginx_config "$domain" "$snap_json"; then
+			log_message ERROR "恢复 Nginx 配置失败: ${domain}"
+			fail=$((fail + 1))
+			continue
+		fi
+		ok=$((ok + 1))
+		processed+=("$domain")
+		_append_template_audit_log "rollback" "$domain" "from_op=${op_id};snapshot=$(basename "$snap")" 0 0
+		NGINX_RELOAD_NEEDED="true"
+	done <"$log_path"
+
+	if [ "$matched" -eq 0 ]; then
+		log_message ERROR "未找到操作ID对应模板变更: ${op_id}"
+		_emit_template_cli_summary "rollback" "$op_id" 0 0 1 "$EX_DATAERR" "false"
+		return "$EX_DATAERR"
+	fi
+	if [ "$ok" -gt 0 ] && ! control_nginx_reload_if_needed; then
+		fail=$((fail + 1))
+	fi
+	if [ "$fail" -gt 0 ]; then
+		_emit_template_cli_summary "rollback" "$op_id" "$matched" "$ok" "$fail" "$EX_SOFTWARE" "false"
+		return "$EX_SOFTWARE"
+	fi
+	_emit_template_cli_summary "rollback" "$op_id" "$matched" "$ok" "$fail" 0 "false"
+	return 0
+}
+
 _validate_template_selection() {
 	local id=""
 	local requires=""
@@ -3893,7 +4138,8 @@ _render_nginx_template_root_menu() {
 		"8. 查看模板状态" \
 		"9. 查看模板审计日志" \
 		"10. 按模板反查域名" \
-		"11. 返回"
+		"11. 按操作ID回滚模板变更" \
+		"12. 返回"
 }
 
 _render_nginx_template_custom_menu() {
@@ -4364,6 +4610,22 @@ _view_template_domains_by_template() {
 	press_enter_to_continue
 }
 
+_handle_template_rollback_by_op_interactive() {
+	local op_id=""
+	if ! op_id=$(prompt_input "请输入要回滚的操作ID(op_id)" "" "^[A-Za-z0-9._:-]+$" "操作ID格式错误" "false"); then
+		return 0
+	fi
+	if ! confirm_or_cancel "确认按操作ID回滚模板变更? (op=${op_id})" "n"; then
+		return 0
+	fi
+	if _rollback_templates_by_op "$op_id"; then
+		log_message SUCCESS "按操作ID回滚完成: ${op_id}"
+	else
+		log_message ERROR "按操作ID回滚失败: ${op_id}"
+	fi
+	press_enter_to_continue
+}
+
 _handle_nginx_template_batch_apply_for_domain_glob() {
 	local domain_expr=""
 	local source_choice=""
@@ -4462,7 +4724,7 @@ _handle_nginx_template_center_for_domain() {
 
 	while true; do
 		_render_nginx_template_root_menu
-		if ! root_choice=$(prompt_menu_choice "1-11" "true"); then return 0; fi
+		if ! root_choice=$(prompt_menu_choice "1-12" "true"); then return 0; fi
 		case "$root_choice" in
 		1 | 2 | 3 | 4)
 			combo_ids=$(_template_combo_by_choice "$root_choice") || {
@@ -4504,7 +4766,10 @@ _handle_nginx_template_center_for_domain() {
 		10)
 			_view_template_domains_by_template
 			;;
-		11 | "") return 0 ;;
+		11)
+			_handle_template_rollback_by_op_interactive
+			;;
+		12 | "") return 0 ;;
 		*)
 			log_message ERROR "无效模板中心选项"
 			continue
@@ -4531,6 +4796,10 @@ _manage_nginx_template_center() {
 }
 
 _run_template_cli_mode() {
+	if [ -n "${TEMPLATE_ROLLBACK_OP:-}" ]; then
+		_rollback_templates_by_op "$TEMPLATE_ROLLBACK_OP"
+		return $?
+	fi
 	local d="${TEMPLATE_DOMAIN:-}"
 	local ids_raw="${TEMPLATE_IDS:-}"
 	local resolved=""
@@ -4568,6 +4837,15 @@ _run_template_cli_mode() {
 		TEMPLATE_BATCH_AUTO_CONFIRM="true"
 	else
 		domains+=("$d")
+	fi
+
+	if [ "${TEMPLATE_IMPACT_REPORT:-false}" = "true" ]; then
+		if ! _template_impact_report "$mode" "$apply_mode" "${TEMPLATE_CLEANUP_MODE:-all}" "${domains[@]}"; then
+			final_code=$?
+			_emit_template_cli_summary "$mode" "$d" "${#domains[@]}" 0 1 "$final_code" "false"
+			return "$final_code"
+		fi
+		return 0
 	fi
 
 	if [ "${TEMPLATE_CONTINUE_ON_ERROR:-false}" = "true" ]; then
@@ -5234,7 +5512,7 @@ main() {
 		check_and_auto_renew_certs
 		return $?
 	fi
-	if [ -n "$TEMPLATE_MODE" ]; then
+	if [ -n "$TEMPLATE_MODE" ] || [ -n "${TEMPLATE_ROLLBACK_OP:-}" ]; then
 		_run_template_cli_mode
 		return $?
 	fi

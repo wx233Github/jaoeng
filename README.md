@@ -57,6 +57,10 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
 
 - 预检查（不写入）：
   - `--template-precheck`
+- 影响分析（不写入）：
+  - `--template-impact-report`
+- 按操作ID回滚：
+  - `--template-rollback-op <op_id>`
 - 批量匹配（glob + 排除）：
   - `--template-domain "*.example.com,!admin.example.com"`
 - 批量失败策略：
@@ -69,6 +73,8 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
 示例：
 
 `bash nginx.sh --template-mode custom --template-domain "*.example.com,!admin.example.com" --template-ids security_headers --template-precheck --json --non-interactive`
+
+`bash nginx.sh --template-rollback-op <op_id> --json --non-interactive`
 
 ### 调试主脚本
 

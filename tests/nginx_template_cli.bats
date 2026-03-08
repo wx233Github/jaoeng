@@ -120,3 +120,21 @@ teardown() {
   [ "$status" -eq 78 ]
   rm -f "$bad_manifest"
 }
+
+@test "impact-report 必须与 template-mode 同时使用" {
+  run bash "$SCRIPT_PATH" --template-impact-report --non-interactive
+  [ "$status" -ne 0 ]
+}
+
+@test "impact-report + json 输出成功" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.example.com" --template-ids security_headers --template-impact-report --json --non-interactive
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"precheck":true'* ]]
+}
+
+@test "rollback-op 在无审计日志时返回 EX_DATAERR(65)" {
+  audit_file="/tmp/nginx_template_audit.missing.$$"
+  rm -f "$audit_file"
+  run env NGINX_TEMPLATE_AUDIT_LOG="$audit_file" bash "$SCRIPT_PATH" --template-rollback-op op_test --json --non-interactive
+  [ "$status" -eq 65 ]
+}
