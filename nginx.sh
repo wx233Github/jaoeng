@@ -3492,7 +3492,7 @@ _handle_reconfigure_project() {
 	port=$(jq -r .resolved_port <<<"$cur")
 	[ "$port" == "cert_only" ] && mode="cert_only"
 	local skip_cert="true"
-	if confirm_or_cancel "是否连同证书也重新申请/重载?"; then skip_cert="false"; fi
+	if confirm_or_cancel "是否连同证书也重新申请/重载?" "n"; then skip_cert="false"; fi
 	local new
 	if ! new=$(_gather_project_details "$cur" "$skip_cert" "$mode"); then
 		log_message WARN "取消。"
