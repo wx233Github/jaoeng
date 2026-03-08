@@ -1340,6 +1340,21 @@ initialize_environment() {
 			fi
 		fi
 	fi
+	if [ -f /etc/nginx/nginx.conf ] && grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+		if ! _stream_module_available; then
+			if ! _ensure_stream_module_available; then
+				log_message WARN "检测到 stream 指令但模块不可用，尝试禁用自动注入的 stream 块。"
+				if grep -q '^# TCP/UDP Stream Proxy Auto-injected$' /etc/nginx/nginx.conf; then
+					local tmp_ng
+					tmp_ng=$(mktemp /tmp/nginx.conf.fixstream.XXXXXX)
+					chmod 600 "$tmp_ng"
+					awk 'BEGIN{skip=0} /^# TCP\/UDP Stream Proxy Auto-injected$/{skip=1; next} {if(skip==1 && $0 ~ /^[[:space:]]*stream[[:space:]]*\{/) {skip=0; next} print $0}' /etc/nginx/nginx.conf >"$tmp_ng"
+					mv "$tmp_ng" /etc/nginx/nginx.conf
+					log_message WARN "已自动禁用 nginx.conf 中的 stream 注入块。"
+				fi
+			fi
+		fi
+	fi
 	if [ -f /etc/nginx/nginx.conf ] && ! grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
 		if ! _ensure_stream_module_available; then
 			log_message WARN "stream 模块不可用，已跳过 stream 块自动注入。"
@@ -5037,7 +5052,7 @@ main_menu() {
 			press_enter_to_continue
 			;;
 		11) _manage_nginx_template_center ;;
-		"") return 10 ;;
+		"") exit 10 ;;
 		*) log_message ERROR "无效选择" ;;
 		esac
 	done
