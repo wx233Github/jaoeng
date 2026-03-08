@@ -1334,10 +1334,14 @@ install_acme_sh() {
 		return 1
 	fi
 	local install_script
+	local install_log
 	install_script=$(mktemp /tmp/acme_install.XXXXXX)
+	install_log=$(mktemp /tmp/acme_install_log.XXXXXX)
 	chmod 600 "$install_script"
+	chmod 600 "$install_log"
 	if ! run_cmd 30 curl -fsSL "$ACME_SH_INSTALL_URL" -o "$install_script"; then
 		rm -f "$install_script"
+		rm -f "$install_log"
 		log_message ERROR "acme.sh 安装脚本下载失败"
 		return 1
 	fi
@@ -1346,16 +1350,22 @@ install_acme_sh() {
 		got_sha=$(sha256sum "$install_script" | awk '{print $1}')
 		if [ "$got_sha" != "$ACME_SH_INSTALL_SHA256" ]; then
 			rm -f "$install_script"
+			rm -f "$install_log"
 			log_message ERROR "acme.sh 安装脚本校验失败"
 			return 1
 		fi
 	fi
-	sh "$install_script" || {
+	sh "$install_script" >"$install_log" 2>&1 || {
 		rm -f "$install_script"
+		printf '%b' "${CYAN}--- 安装错误详情 (已脱敏) ---${NC}\n"
+		_mask_sensitive_data <"$install_log"
+		printf '%b' "${CYAN}------------------------------${NC}\n"
+		rm -f "$install_log"
 		log_message ERROR "acme.sh 安装失败"
 		return 1
 	}
 	rm -f "$install_script"
+	rm -f "$install_log"
 	if [ -d "$HOME/.acme.sh" ]; then
 		ACME_BIN=$(find "$HOME/.acme.sh" -name "acme.sh" -print -quit 2>/dev/null || true)
 	else
