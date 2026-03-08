@@ -14,13 +14,16 @@ JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 
 # --- 全局变量 ---
 readonly NC="\033[0m"
+# shellcheck disable=SC2034
 readonly BLACK="\033[30m"
 readonly RED="\033[31m"
 readonly GREEN="\033[32m"
 readonly YELLOW="\033[33m"
+# shellcheck disable=SC2034
 readonly BLUE="\033[34m"
 readonly PURPLE="\033[35m"
 readonly CYAN="\033[36m"
+# shellcheck disable=SC2034
 readonly WHITE="\033[37m"
 readonly BRIGHT_RED="\033[91m"
 readonly BRIGHT_YELLOW="\033[93m"
@@ -67,6 +70,7 @@ CF_AUTO_UPDATE_ENABLED_FILE="/etc/nginx/.cf_ip_auto_update.enabled"
 
 ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
+# shellcheck disable=SC2034
 ERR_CFG_WRITE=21
 EX_USAGE=64
 EX_DATAERR=65
@@ -116,8 +120,11 @@ OP_ID=""
 LOCK_FILE_HTTP="/var/lock/nginx_ssl_manager_http.lock"
 LOCK_FILE_TCP="/var/lock/nginx_ssl_manager_tcp.lock"
 LOCK_FILE_CERT="/var/lock/nginx_ssl_manager_cert.lock"
+# shellcheck disable=SC2034
 LOCK_FD_HTTP=9
+# shellcheck disable=SC2034
 LOCK_FD_TCP=10
+# shellcheck disable=SC2034
 LOCK_FD_CERT=11
 LAST_CERT_ELAPSED=""
 LAST_CERT_CERT=""

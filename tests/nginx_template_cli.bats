@@ -5,6 +5,40 @@ setup() {
   SCRIPT_PATH="${REPO_ROOT}/nginx.sh"
   MANIFEST_PATH="${REPO_ROOT}/templates/nginx/manifest.json"
   SCHEMA_PATH="${REPO_ROOT}/templates/nginx/manifest.schema.json"
+  PROJECTS_FILE="/etc/nginx/projects.json"
+  PROJECTS_BACKUP=""
+
+  if [ -f "$PROJECTS_FILE" ]; then
+    PROJECTS_BACKUP="$(mktemp /tmp/projects.json.bats.backup.XXXXXX)"
+    cp "$PROJECTS_FILE" "$PROJECTS_BACKUP"
+  fi
+
+  mkdir -p /etc/nginx
+  cat >"$PROJECTS_FILE" <<'EOF'
+[
+  {
+    "domain": "api.example.com",
+    "custom_config": ""
+  },
+  {
+    "domain": "admin.api.example.com",
+    "custom_config": ""
+  },
+  {
+    "domain": "shop.example.com",
+    "custom_config": ""
+  }
+]
+EOF
+}
+
+teardown() {
+  if [ -n "$PROJECTS_BACKUP" ] && [ -f "$PROJECTS_BACKUP" ]; then
+    cp "$PROJECTS_BACKUP" "$PROJECTS_FILE"
+    rm -f "$PROJECTS_BACKUP"
+  else
+    rm -f "$PROJECTS_FILE"
+  fi
 }
 
 @test "模板 manifest 与 schema 均为合法 JSON" {
@@ -35,4 +69,19 @@ setup() {
 @test "custom 模式缺少 --template-ids 时返回失败" {
   run bash "$SCRIPT_PATH" --template-mode custom --template-domain example.com --non-interactive
   [ "$status" -ne 0 ]
+}
+
+@test "glob 批量: 混合包含与排除表达式可执行 dry-run" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.example.com,!admin.api.example.com" --template-ids security_headers --template-apply-mode append --template-dry-run --non-interactive
+  [ "$status" -eq 0 ]
+}
+
+@test "glob 批量: 仅排除表达式可执行 dry-run" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "!admin.api.example.com" --template-ids security_headers --template-apply-mode append --template-dry-run --non-interactive
+  [ "$status" -eq 0 ]
+}
+
+@test "glob 批量: 未匹配域名返回 EX_DATAERR(65)" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "*.none.example.com" --template-ids security_headers --template-apply-mode append --template-dry-run --non-interactive
+  [ "$status" -eq 65 ]
 }
