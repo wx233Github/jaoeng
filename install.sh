@@ -673,6 +673,8 @@ uninstall_script() {
 	case "${choice:-Y}" in
 	Y | y | "")
 		log_info "开始卸载..."
+		LOG_FILE="/tmp/vps_install_modules_uninstall.log"
+		export LOG_FILE
 		run_destructive_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/jb" || true
 		run_destructive_with_sudo rm -f "${BIN_DIR:-/usr/local/bin}/sb" || true
 		run_destructive_with_sudo rm -f "/etc/logrotate.d/vps_install_modules" || true
