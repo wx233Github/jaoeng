@@ -1256,6 +1256,44 @@ _parse_args() {
 	tm_parse_args "$@"
 }
 
+_stream_module_available() {
+	if nginx -V 2>&1 | grep -q -- '--with-stream'; then
+		return 0
+	fi
+	if [ -f /etc/nginx/modules-enabled/50-mod-stream.conf ] || [ -f /etc/nginx/modules-enabled/mod-stream.conf ]; then
+		return 0
+	fi
+	if [ -f /usr/lib/nginx/modules/ngx_stream_module.so ]; then
+		return 0
+	fi
+	return 1
+}
+
+_ensure_stream_module_available() {
+	if _stream_module_available; then
+		return 0
+	fi
+	log_message WARN "检测到当前 Nginx 缺少 stream 模块，正在尝试自动安装..."
+	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+		log_message ERROR "非交互模式下无法自动安装 stream 模块"
+		return 1
+	fi
+	local -a apt_env=(env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a)
+	local -a apt_opts=(-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+	if ! run_cmd 300 sudo -n "${apt_env[@]}" apt-get update || ! run_cmd 300 sudo -n "${apt_env[@]}" apt-get install "${apt_opts[@]}" libnginx-mod-stream; then
+		if ! run_cmd 300 "${apt_env[@]}" apt-get update || ! run_cmd 300 "${apt_env[@]}" apt-get install "${apt_opts[@]}" libnginx-mod-stream; then
+			log_message ERROR "安装 stream 模块失败（libnginx-mod-stream）"
+			return 1
+		fi
+	fi
+	if _stream_module_available; then
+		log_message SUCCESS "stream 模块已就绪。"
+		return 0
+	fi
+	log_message ERROR "stream 模块仍不可用，请检查 Nginx 安装来源与模块路径。"
+	return 1
+}
+
 validate_args() {
 	tm_validate_args "$@"
 }
@@ -1303,6 +1341,11 @@ initialize_environment() {
 		fi
 	fi
 	if [ -f /etc/nginx/nginx.conf ] && ! grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+		if ! _ensure_stream_module_available; then
+			log_message WARN "stream 模块不可用，已跳过 stream 块自动注入。"
+			_setup_logrotate
+			return 0
+		fi
 		if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 			log_message ERROR "非交互模式禁止修改 /etc/nginx/nginx.conf"
 			return 1
