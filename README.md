@@ -68,6 +68,7 @@ curl -fsSL "https://raw.githubusercontent.com/wx233Github/vps-kit-mcp/main/insta
   - `--template-domain "*.example.com,!admin.example.com"`
 - 模板变量注入（受 manifest 白名单约束）：
   - `--template-vars HSTS_MAX_AGE=86400`
+  - 例如：`PROXY_CONNECT_TIMEOUT=120s,WP_CLIENT_MAX_BODY_SIZE=128m`
 - 批量失败策略：
   - `--fail-fast`（遇错即停）
   - `--continue-on-error`（遇错继续）

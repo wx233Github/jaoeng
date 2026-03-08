@@ -197,3 +197,18 @@ EOF
   run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids security_headers,hsts --template-vars HSTS_MAX_AGE=abc --template-dry-run --non-interactive
   [ "$status" -eq 65 ]
 }
+
+@test "reverse proxy 模板变量可覆盖并通过 precheck" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids reverse_proxy_enhanced --template-vars PROXY_CONNECT_TIMEOUT=120s,PROXY_SEND_TIMEOUT=900s,PROXY_READ_TIMEOUT=900s --template-precheck --json --non-interactive
+  [ "$status" -eq 0 ]
+}
+
+@test "reverse proxy 模板变量非法单位应失败" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids reverse_proxy_enhanced --template-vars PROXY_CONNECT_TIMEOUT=120x --template-precheck --non-interactive
+  [ "$status" -eq 65 ]
+}
+
+@test "wordpress 模板变量可覆盖并通过 precheck" {
+  run bash "$SCRIPT_PATH" --template-mode custom --template-domain "api.example.com" --template-ids wordpress_basic --template-vars WP_CLIENT_MAX_BODY_SIZE=128m,WP_PROXY_READ_TIMEOUT=400s,WP_PROXY_SEND_TIMEOUT=400s --template-precheck --json --non-interactive
+  [ "$status" -eq 0 ]
+}

@@ -25,13 +25,41 @@
       "id": "reverse_proxy_enhanced",
       "name": "反代增强（超时/转发头）",
       "snippet_file": "snippets/reverse_proxy_enhanced.conf.tpl",
-      "single": true
+      "single": true,
+      "vars": {
+        "PROXY_CONNECT_TIMEOUT": {
+          "default": "60s",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "PROXY_SEND_TIMEOUT": {
+          "default": "600s",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "PROXY_READ_TIMEOUT": {
+          "default": "600s",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        }
+      }
     },
     {
       "id": "wordpress_basic",
       "name": "WordPress 基础优化",
       "snippet_file": "snippets/wordpress_basic.conf.tpl",
-      "single": true
+      "single": true,
+      "vars": {
+        "WP_CLIENT_MAX_BODY_SIZE": {
+          "default": "64m",
+          "pattern": "^[0-9]+[kKmMgG]?$"
+        },
+        "WP_PROXY_READ_TIMEOUT": {
+          "default": "300s",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        },
+        "WP_PROXY_SEND_TIMEOUT": {
+          "default": "300s",
+          "pattern": "^[0-9]+(ms|s|m|h)$"
+        }
+      }
     }
   ],
   "default_combos": [
