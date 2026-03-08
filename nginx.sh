@@ -1421,6 +1421,9 @@ _ensure_zerossl_account_email() {
 		return 0
 	fi
 	saved_email=$(_get_zerossl_account_email)
+	if [ "$saved_email" = "my@example.com" ]; then
+		saved_email=""
+	fi
 	if [ -z "$email" ]; then
 		email="$saved_email"
 	fi
@@ -1432,9 +1435,6 @@ _ensure_zerossl_account_email() {
 	if [ -z "$email" ]; then
 		log_message ERROR "ZeroSSL 需要邮箱注册账号。"
 		return 1
-	fi
-	if [ -n "$saved_email" ] && [ "$email" = "$saved_email" ]; then
-		return 0
 	fi
 	log_temp=$(mktemp /tmp/acme_register_log.XXXXXX)
 	chmod 600 "$log_temp"
