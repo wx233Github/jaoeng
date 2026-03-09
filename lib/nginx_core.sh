@@ -165,6 +165,8 @@ release_project_lock() {
 
 _mark_nginx_conf_changed() {
 	NGINX_CONF_GEN=$((NGINX_CONF_GEN + 1))
+	NGINX_RELOAD_STRATEGY_CACHE=""
+	NGINX_RELOAD_STRATEGY_CACHE_TS=0
 }
 
 _nginx_test_cached() {
@@ -217,6 +219,117 @@ acquire_project_lock() {
 		return 0
 	fi
 	return 1
+}
+
+TX_STATE=""
+TX_DOMAIN=""
+TX_LAST_ERROR_CODE=0
+TX_LAST_ERROR_MESSAGE=""
+
+_tx_emit_marker() {
+	local marker="${1:-UNKNOWN}"
+	local msg="${2:-}"
+	local level="${3:-INFO}"
+	log_message "$level" "[TX:${marker}] ${msg}"
+}
+
+_tx_can_transition() {
+	local from="${1:-}"
+	local to="${2:-}"
+	case "$from:$to" in
+	":created" | \
+		"created:preflight_ok" | \
+		"created:applied" | \
+		"created:failed" | \
+		"preflight_ok:applied" | \
+		"preflight_ok:failed" | \
+		"applied:reload_ok" | \
+		"applied:committed" | \
+		"applied:failed" | \
+		"reload_ok:committed" | \
+		"reload_ok:failed" | \
+		"failed:rolled_back")
+		return 0
+		;;
+	esac
+	return 1
+}
+
+tx_begin() {
+	local domain="${1:-}"
+	TX_STATE=""
+	TX_DOMAIN="$domain"
+	TX_LAST_ERROR_CODE=0
+	TX_LAST_ERROR_MESSAGE=""
+	tx_transition "created" "transaction created"
+}
+
+tx_transition() {
+	local to="${1:-}"
+	local msg="${2:-}"
+	local from="${TX_STATE:-}"
+	if ! _tx_can_transition "$from" "$to"; then
+		TX_LAST_ERROR_CODE="${ERR_TX_CONTRACT:-31}"
+		TX_LAST_ERROR_MESSAGE="invalid transition ${from:-<none>} -> ${to}"
+		_tx_emit_marker "CONTRACT_INVALID" "${TX_LAST_ERROR_MESSAGE}" "ERROR"
+		return "${ERR_TX_CONTRACT:-31}"
+	fi
+	TX_STATE="$to"
+	_tx_emit_marker "STATE_${to^^}" "${msg}"
+	return 0
+}
+
+tx_fail() {
+	local marker="${1:-FAILED}"
+	local msg="${2:-transaction failed}"
+	local code="${3:-1}"
+	TX_LAST_ERROR_CODE="$code"
+	TX_LAST_ERROR_MESSAGE="$msg"
+	if [ "${TX_STATE:-}" != "failed" ]; then
+		tx_transition "failed" "$msg" || true
+	fi
+	_tx_emit_marker "$marker" "$msg" "ERROR"
+	return "$code"
+}
+
+tx_mark_commit() {
+	_tx_emit_marker "APPLY_COMMIT" "transaction committed"
+}
+
+preflight_hard_gate() {
+	local context="${1:-unknown}"
+	local now=0
+	local max_age="${PREFLIGHT_GATE_CACHE_MAX_AGE_SECS:-20}"
+	if [ "${PREFLIGHT_HARD_GATE:-true}" != "true" ]; then
+		_tx_emit_marker "PRECHECK_BYPASS_DENIED" "hard gate disabled flag detected but blocked by policy" "ERROR"
+		return "${ERR_CFG_VALIDATE:-20}"
+	fi
+	if ! [[ "$max_age" =~ ^[0-9]+$ ]]; then max_age=20; fi
+	now=$(date +%s)
+	if [ "${PREFLIGHT_GATE_CACHE_TS:-0}" -gt 0 ] && [ $((now - PREFLIGHT_GATE_CACHE_TS)) -le "$max_age" ]; then
+		if [ "${PREFLIGHT_GATE_CACHE_RESULT:-1}" -eq 0 ]; then
+			_tx_emit_marker "PRECHECK_OK" "context=${context}, source=cache"
+			return 0
+		fi
+		_tx_emit_marker "PRECHECK_BLOCK" "context=${context}, source=cache" "ERROR"
+		return "${ERR_CFG_VALIDATE:-20}"
+	fi
+	if run_preflight >/dev/null 2>&1; then
+		PREFLIGHT_GATE_CACHE_TS="$now"
+		PREFLIGHT_GATE_CACHE_RESULT=0
+		_tx_emit_marker "PRECHECK_OK" "context=${context}, source=fresh"
+		return 0
+	fi
+	PREFLIGHT_GATE_CACHE_TS="$now"
+	PREFLIGHT_GATE_CACHE_RESULT=1
+	_tx_emit_marker "PRECHECK_BLOCK" "context=${context}, source=fresh" "ERROR"
+	return "${ERR_CFG_VALIDATE:-20}"
+}
+
+_json_sha256() {
+	local payload="${1:-}"
+	if [ -z "$payload" ]; then return 1; fi
+	printf '%s' "$payload" | sha256sum | awk '{print $1}'
 }
 
 _validate_custom_directive_common() {

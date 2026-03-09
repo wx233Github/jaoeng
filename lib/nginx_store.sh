@@ -219,24 +219,32 @@ _rollback_project_transaction() {
 	local domain="${1:-}"
 	local old_json="${2:-}"
 	local mode="${3:-standard}"
+	local rc=0
 	if [ -z "$domain" ]; then return 1; fi
+	_tx_emit_marker "ROLLBACK_BEGIN" "domain=${domain}, mode=${mode}" "WARN"
 
 	if [ -n "$old_json" ]; then
-		_save_project_json "$old_json" || true
+		if ! _save_project_json "$old_json"; then rc=1; fi
 	else
-		_delete_project_json "$domain" || true
+		if ! _delete_project_json "$domain"; then rc=1; fi
 	fi
 
 	if [ "$mode" != "cert_only" ]; then
 		if [ -n "$old_json" ]; then
-			_write_and_enable_nginx_config "$domain" "$old_json" || true
+			if ! _write_and_enable_nginx_config "$domain" "$old_json"; then rc=1; fi
 		else
-			_remove_and_disable_nginx_config "$domain" || true
+			if ! _remove_and_disable_nginx_config "$domain"; then rc=1; fi
 		fi
 	fi
 
 	NGINX_RELOAD_NEEDED="true"
-	control_nginx_reload_if_needed || true
+	if ! control_nginx_reload_if_needed; then rc=1; fi
+	if [ "$rc" -ne 0 ]; then
+		tx_fail "ROLLBACK_FAILED" "domain=${domain}, mode=${mode}" "${ERR_CFG_VALIDATE:-20}" || true
+		return "${ERR_CFG_VALIDATE:-20}"
+	fi
+	tx_transition "rolled_back" "rollback completed" || true
+	_tx_emit_marker "ROLLBACK_DONE" "domain=${domain}, mode=${mode}" "WARN"
 	return 0
 }
 
@@ -246,33 +254,84 @@ _apply_project_transaction() {
 	local old_json="${3:-}"
 	local mode="${4:-standard}"
 	local rc=0
+	local fail_message=""
+	local idempotency_token=""
+	local config_hash=""
+	local old_token=""
+	local old_hash=""
 	if [ -z "$domain" ] || [ -z "$new_json" ]; then return 1; fi
 
+	config_hash=$(_json_sha256 "$new_json" 2>/dev/null || true)
+	if [ -z "$config_hash" ]; then
+		tx_fail "HASH_INVALID" "unable to compute config hash" "${EX_DATAERR:-65}" || true
+		return "${EX_DATAERR:-65}"
+	fi
+	idempotency_token=$(jq -r '.idempotency_token // empty' <<<"$new_json" 2>/dev/null || true)
+	if [ -z "$idempotency_token" ]; then
+		idempotency_token="${domain}:${config_hash:0:16}"
+	fi
+	if [ -n "$old_json" ]; then
+		old_token=$(jq -r '.idempotency_token // empty' <<<"$old_json" 2>/dev/null || true)
+		old_hash=$(jq -r '.config_hash // empty' <<<"$old_json" 2>/dev/null || true)
+	fi
+	if [ -n "$old_token" ] && [ "$idempotency_token" = "$old_token" ]; then
+		if [ -n "$old_hash" ] && [ "$config_hash" = "$old_hash" ]; then
+			_tx_emit_marker "IDEMPOTENT_REPLAY" "domain=${domain}, token=${idempotency_token}"
+			return 0
+		fi
+		tx_fail "REPLAY_CONFLICT" "same token with different hash" "${EX_DATAERR:-65}" || true
+		return "${EX_DATAERR:-65}"
+	fi
+	new_json=$(jq --arg tok "$idempotency_token" --arg h "$config_hash" '.idempotency_token = $tok | .config_hash = $h' <<<"$new_json")
+
+	tx_begin "$domain" || return "$?"
+	if ! preflight_hard_gate "project_transaction:${domain}"; then
+		tx_fail "PRECHECK_BLOCK" "preflight gate blocked transaction" "${ERR_CFG_VALIDATE:-20}" || true
+		return "${ERR_CFG_VALIDATE:-20}"
+	fi
+	tx_transition "preflight_ok" "preflight hard gate passed" || return "$?"
+
 	if ! acquire_project_lock; then
-		log_message ERROR "事务失败: 无法获取项目事务锁"
+		fail_message="无法获取项目事务锁"
+		tx_fail "LOCK_HELD" "$fail_message" 1
 		return 1
 	fi
 
 	if ! _save_project_json "$new_json"; then
-		log_message ERROR "事务失败: 项目元数据写入失败"
+		fail_message="项目元数据写入失败"
+		tx_fail "WRITE_JSON_FAILED" "$fail_message" 1 || true
 		rc=1
 	fi
 
 	if [ "$rc" -eq 0 ] && [ "$mode" != "cert_only" ]; then
+		local RENDER_ROLLBACK_OWNER="transaction"
 		if ! _write_and_enable_nginx_config "$domain" "$new_json"; then
-			log_message ERROR "事务失败: 站点配置写入失败，开始回滚。"
+			fail_message="站点配置写入失败，开始回滚"
+			tx_fail "WRITE_CONF_FAILED" "$fail_message" 1 || true
 			_rollback_project_transaction "$domain" "$old_json" "$mode"
 			rc=1
 		fi
 	fi
 
 	if [ "$rc" -eq 0 ]; then
+		tx_transition "applied" "json/config staged and applied" || rc=$?
+	fi
+
+	if [ "$rc" -eq 0 ]; then
 		NGINX_RELOAD_NEEDED="true"
 		if ! control_nginx_reload_if_needed; then
-			log_message ERROR "事务失败: Nginx 重载失败，开始回滚。"
+			fail_message="Nginx 重载失败，开始回滚"
+			tx_fail "RELOAD_FAILED" "$fail_message" 1 || true
 			_rollback_project_transaction "$domain" "$old_json" "$mode"
 			rc=1
+		else
+			tx_transition "reload_ok" "nginx reload success" || rc=$?
 		fi
+	fi
+
+	if [ "$rc" -eq 0 ]; then
+		tx_transition "committed" "transaction committed" || rc=$?
+		tx_mark_commit || true
 	fi
 
 	release_project_lock || true

@@ -62,6 +62,7 @@ _apply_nginx_conf_with_validation() {
 	local name="${3:-}"
 	local type="${4:-http}"
 	local skip_test="${5:-false}"
+	local rollback_owner="${6:-render}"
 	if [ -z "$temp_conf" ] || [ -z "$target_conf" ] || [ -z "$name" ]; then return "$ERR_CFG_INVALID_ARGS"; fi
 	if ! _require_safe_path "$target_conf" "配置写入"; then return "$ERR_CFG_INVALID_ARGS"; fi
 	if [ ! -f "$temp_conf" ] || [ ! -s "$temp_conf" ]; then
@@ -84,34 +85,46 @@ _apply_nginx_conf_with_validation() {
 		rm -f "$temp_conf"
 		return 0
 	fi
+	_tx_emit_marker "APPLY_STAGE" "target=${target_conf}, owner=${rollback_owner}"
 	snapshot_nginx_conf "$target_conf" "$name" "$type" || true
 	mv "$temp_conf" "$target_conf"
+	_tx_emit_marker "APPLY_PROMOTE" "target=${target_conf}"
 	_mark_nginx_conf_changed
 	if [ "$skip_test" != "true" ]; then
 		local test_output=""
 		local test_rc=0
 		test_output=$(nginx -t 2>&1) || test_rc=$?
 		if [ "$test_rc" -eq 0 ]; then
+			_tx_emit_marker "APPLY_VERIFY_OK" "target=${target_conf}"
 			NGINX_TEST_CACHE_RESULT=0
 			NGINX_TEST_CACHE_GEN="$NGINX_CONF_GEN"
 			NGINX_TEST_CACHE_TS=$(date +%s)
 			chmod 640 "$target_conf" || true
 			return 0
 		fi
+		_tx_emit_marker "APPLY_VERIFY_FAILED" "target=${target_conf}, owner=${rollback_owner}" "ERROR"
 
-		local rollback_conf
-		rollback_conf=$(_get_latest_conf_backup "$name" "$type" || true)
-		if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
-			cp "$rollback_conf" "$target_conf"
+		local rollback_conf=""
+		if [ "$rollback_owner" = "render" ]; then
+			rollback_conf=$(_get_latest_conf_backup "$name" "$type" || true)
+			if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
+				cp "$rollback_conf" "$target_conf"
+			else
+				rm -f "$target_conf"
+			fi
+			_mark_nginx_conf_changed
 		else
-			rm -f "$target_conf"
+			_tx_emit_marker "RENDER_VALIDATE_FAILED" "rollback_owner=transaction, conf=${target_conf}" "ERROR"
 		fi
-		_mark_nginx_conf_changed
 		NGINX_TEST_CACHE_RESULT=1
 		NGINX_TEST_CACHE_GEN="$NGINX_CONF_GEN"
 		NGINX_TEST_CACHE_TS=$(date +%s)
 		nginx -t >/dev/null 2>&1 || true
-		log_message ERROR "Nginx 配置检查失败,已回滚 (snapshot: ${rollback_conf:-none})"
+		if [ "$rollback_owner" = "render" ]; then
+			log_message ERROR "Nginx 配置检查失败,已回滚 (snapshot: ${rollback_conf:-none})"
+		else
+			log_message ERROR "Nginx 配置检查失败,交由事务层回滚 (snapshot: skipped)"
+		fi
 		if [ -n "$test_output" ]; then
 			printf '%s\n' "$test_output" >&2
 		fi
@@ -268,8 +281,9 @@ $(_render_proxy_location_block "/" "$port" "")
 }
 EOF
 	local skip_test="false"
+	local rollback_owner="${RENDER_ROLLBACK_OWNER:-render}"
 	if [ "${SKIP_NGINX_TEST_IN_APPLY:-false}" = "true" ]; then skip_test="true"; fi
-	_apply_nginx_conf_with_validation "$temp_conf" "$conf" "$domain" "http" "$skip_test"
+	_apply_nginx_conf_with_validation "$temp_conf" "$conf" "$domain" "http" "$skip_test" "$rollback_owner"
 	local apply_ret=$?
 	if [ $apply_ret -ne 0 ]; then
 		return $apply_ret
@@ -277,18 +291,25 @@ EOF
 	ln -sf "$conf" "$NGINX_SITES_ENABLED_DIR/"
 	chmod 640 "$conf" 2>/dev/null || true
 	if ! _health_check_nginx_config "$domain"; then
-		local rollback_conf
-		rollback_conf=$(_get_latest_conf_backup "$domain" "http" || true)
-		if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
-			cp "$rollback_conf" "$conf"
-			NGINX_RELOAD_NEEDED="true"
-			control_nginx_reload_if_needed || true
-			log_message ERROR "健康检查失败,已回滚配置 (snapshot: ${rollback_conf:-none})"
+		_tx_emit_marker "POST_VERIFY_FAILED" "domain=${domain}, owner=${rollback_owner}" "ERROR"
+		if [ "$rollback_owner" = "render" ]; then
+			local rollback_conf
+			rollback_conf=$(_get_latest_conf_backup "$domain" "http" || true)
+			if [ -n "$rollback_conf" ] && [ -f "$rollback_conf" ]; then
+				cp "$rollback_conf" "$conf"
+				NGINX_RELOAD_NEEDED="true"
+				control_nginx_reload_if_needed || true
+				log_message ERROR "健康检查失败,已回滚配置 (snapshot: ${rollback_conf:-none})"
+			else
+				log_message ERROR "健康检查失败且无可用快照: $domain"
+			fi
 		else
-			log_message ERROR "健康检查失败且无可用快照: $domain"
+			_tx_emit_marker "HEALTHCHECK_FAILED" "rollback_owner=transaction, domain=${domain}" "ERROR"
+			log_message ERROR "健康检查失败,交由事务层回滚: $domain"
 		fi
 		return "$ERR_CFG_VALIDATE"
 	fi
+	_tx_emit_marker "POST_VERIFY_OK" "domain=${domain}"
 }
 
 _remove_and_disable_nginx_config() {

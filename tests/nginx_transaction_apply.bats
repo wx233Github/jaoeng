@@ -25,8 +25,9 @@ teardown() {
     source "$1"
     td="$(mktemp -d /tmp/nginx.txn.XXXXXX)"
     trap "rm -rf \"$td\"" EXIT
-    mark="$td/mark"
-    : >"$mark"
+	mark="$td/mark"
+	: >"$mark"
+	preflight_hard_gate() { return 0; }
 
     acquire_project_lock() { printf "%s\n" "acquire" >>"$mark"; return 0; }
     release_project_lock() { printf "%s\n" "release" >>"$mark"; return 0; }
@@ -39,7 +40,9 @@ teardown() {
     _apply_project_transaction "a.example.com" "{\"domain\":\"a.example.com\"}" "{\"domain\":\"a.example.com\",\"resolved_port\":\"8080\"}" "standard" || rc=$?
     [ "$rc" -ne 0 ]
 
-    grep -q "save:{\"domain\":\"a.example.com\"}" "$mark"
+	grep -q "save:" "$mark"
+	grep -q "\"domain\"" "$mark"
+	grep -q "a.example.com" "$mark"
     grep -q "write:a.example.com" "$mark"
     grep -q "rollback:a.example.com" "$mark"
     grep -q "release" "$mark"
@@ -53,8 +56,9 @@ teardown() {
     source "$1"
     td="$(mktemp -d /tmp/nginx.txn.XXXXXX)"
     trap "rm -rf \"$td\"" EXIT
-    mark="$td/mark"
-    : >"$mark"
+	mark="$td/mark"
+	: >"$mark"
+	preflight_hard_gate() { return 0; }
 
     acquire_project_lock() { printf "%s\n" "acquire" >>"$mark"; return 0; }
     release_project_lock() { printf "%s\n" "release" >>"$mark"; return 0; }
@@ -81,8 +85,9 @@ teardown() {
     source "$1"
     td="$(mktemp -d /tmp/nginx.txn.XXXXXX)"
     trap "rm -rf \"$td\"" EXIT
-    mark="$td/mark"
-    : >"$mark"
+	mark="$td/mark"
+	: >"$mark"
+	preflight_hard_gate() { return 0; }
 
     acquire_project_lock() { printf "%s\n" "acquire" >>"$mark"; return 1; }
     release_project_lock() { printf "%s\n" "release" >>"$mark"; return 0; }
@@ -108,8 +113,9 @@ teardown() {
     source "$1"
     td="$(mktemp -d /tmp/nginx.txn.XXXXXX)"
     trap "rm -rf \"$td\"" EXIT
-    mark="$td/mark"
-    : >"$mark"
+	mark="$td/mark"
+	: >"$mark"
+	preflight_hard_gate() { return 0; }
 
     acquire_project_lock() { printf "%s\n" "acquire" >>"$mark"; return 0; }
     release_project_lock() { printf "%s\n" "release" >>"$mark"; return 0; }
@@ -137,8 +143,9 @@ teardown() {
     source "$1"
     td="$(mktemp -d /tmp/nginx.txn.XXXXXX)"
     trap "rm -rf \"$td\"" EXIT
-    mark="$td/mark"
-    : >"$mark"
+	mark="$td/mark"
+	: >"$mark"
+	preflight_hard_gate() { return 0; }
 
     acquire_project_lock() { printf "%s\n" "acquire" >>"$mark"; return 0; }
     release_project_lock() { printf "%s\n" "release" >>"$mark"; return 0; }
