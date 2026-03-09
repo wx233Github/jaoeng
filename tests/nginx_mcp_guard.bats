@@ -12,18 +12,18 @@ teardown() {
 }
 
 @test "MCP 接口路径校验：必须为非根路径" {
-  run bash -c 'source "$1"; _is_valid_location_path "/mcp"' _ "$LIB_PATH"
+  run bash -c 'source "$1"; _is_valid_location_path "/mcp"' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -eq 0 ]
 
-  run bash -c 'source "$1"; _is_valid_location_path "/"' _ "$LIB_PATH"
+  run bash -c 'source "$1"; _is_valid_location_path "/"' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -ne 0 ]
 }
 
 @test "MCP Token 校验：长度至少 16" {
-  run bash -c 'source "$1"; _is_valid_mcp_token "0123456789abcdef"' _ "$LIB_PATH"
+  run bash -c 'source "$1"; _is_valid_mcp_token "0123456789abcdef"' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -eq 0 ]
 
-  run bash -c 'source "$1"; _is_valid_mcp_token "short-token"' _ "$LIB_PATH"
+  run bash -c 'source "$1"; _is_valid_mcp_token "short-token"' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -ne 0 ]
 }
 
@@ -38,10 +38,15 @@ teardown() {
     export NGINX_SITES_AVAILABLE_DIR="$td/sites-available"
     export NGINX_SITES_ENABLED_DIR="$td/sites-enabled"
     export NGINX_WEBROOT_DIR="$td/webroot"
+    [ "${NGINX_SITES_AVAILABLE_DIR#"$td/"}" != "$NGINX_SITES_AVAILABLE_DIR" ]
+    [ "${NGINX_SITES_ENABLED_DIR#"$td/"}" != "$NGINX_SITES_ENABLED_DIR" ]
+    [ "${NGINX_WEBROOT_DIR#"$td/"}" != "$NGINX_WEBROOT_DIR" ]
     mkdir -p "$NGINX_SITES_AVAILABLE_DIR" "$NGINX_SITES_ENABLED_DIR" "$NGINX_WEBROOT_DIR"
 
     cert="$td/test.cer"
     key="$td/test.key"
+    [ "${cert#"$td/"}" != "$cert" ]
+    [ "${key#"$td/"}" != "$key" ]
     : >"$cert"
     : >"$key"
 
@@ -57,7 +62,7 @@ teardown() {
     [ -f "$conf" ]
     grep -q "location = /mcp" "$conf"
     grep -q "return 403" "$conf"
-  ' _ "$LIB_PATH"
+  ' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -eq 0 ]
 }
 
@@ -72,6 +77,9 @@ teardown() {
     export PROJECTS_METADATA_FILE="$td/projects.json"
     export JSON_BACKUP_DIR="$td/projects_backups"
     export MCP_TOKEN_DIR="$td/mcp_tokens"
+    [ "${PROJECTS_METADATA_FILE#"$td/"}" != "$PROJECTS_METADATA_FILE" ]
+    [ "${JSON_BACKUP_DIR#"$td/"}" != "$JSON_BACKUP_DIR" ]
+    [ "${MCP_TOKEN_DIR#"$td/"}" != "$MCP_TOKEN_DIR" ]
     mkdir -p "$JSON_BACKUP_DIR" "$MCP_TOKEN_DIR"
     printf "%s\n" "[]" >"$PROJECTS_METADATA_FILE"
 
@@ -85,9 +93,11 @@ teardown() {
     token_ref=$(jq -r ".[0].mcp_token_ref // empty" "$PROJECTS_METADATA_FILE")
     [ -n "$token_ref" ]
     [ -f "$token_ref" ]
+    [ "${token_ref#"$td/"}" != "$token_ref" ]
+    [ "$(stat -c "%a" "$token_ref")" -eq 600 ]
     token_file_value=$(head -n1 "$token_ref")
     [ "$token_file_value" = "0123456789abcdef" ]
-  ' _ "$LIB_PATH"
+  ' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -eq 0 ]
 }
 
@@ -97,6 +107,6 @@ teardown() {
     source "$1"
     out=$(_build_project_payload_json "example.com" "local_port" "demo" "8080" "http-01" "" "n" "https://acme-v02.api.letsencrypt.org/directory" "letsencrypt" "/etc/ssl/example.com.cer" "/etc/ssl/example.com.key" "20m" "" "y" "" "/mcp" "0123456789abcdef")
     jq -e ".domain == \"example.com\" and .resolved_port == \"8080\" and .mcp_protect_path == \"/mcp\" and .mcp_token == \"0123456789abcdef\" and .cf_strict_mode == \"y\"" <<<"$out" >/dev/null
-  ' _ "$LIB_PATH"
+  ' "$SCRIPT_PATH" "$LIB_PATH"
   [ "$status" -eq 0 ]
 }

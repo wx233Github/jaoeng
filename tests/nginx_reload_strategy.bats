@@ -1,4 +1,10 @@
 #!/usr/bin/env bats
+# Coverage Matrix
+# - _select_reload_strategy: 无 systemctl 优先 nginx -c / 无 -c 时回退 nginx -s reload
+# - control_nginx: 通过策略选择间接约束（nginx_conf/nginx_plain 输出）
+#
+# Fixture Conventions
+# - 测试内 stub systemctl/pgrep，禁止访问真实 systemctl
 
 setup() {
   REPO_ROOT="${BATS_TEST_DIRNAME%/tests}"

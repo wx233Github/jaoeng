@@ -1,4 +1,13 @@
 #!/usr/bin/env bats
+# Coverage Matrix
+# - run_preflight: MCP token 引用缺失返回 20 / 全部通过返回 0
+# - run_preflight 子检查：check_dependencies、_preflight_check_active_conf_include、
+#   _preflight_check_reload_strategy、_preflight_check_template_assets、_stream_module_available
+#
+# Fixture Conventions
+# - 每个测试使用 mktemp -d + trap 清理，避免污染真实目录
+# - 涉及文件访问时设置 SAFE_PATH_ROOTS 指向临时目录
+# - 外部依赖仅通过 stub 函数替换
 
 setup() {
   REPO_ROOT="${BATS_TEST_DIRNAME%/tests}"
