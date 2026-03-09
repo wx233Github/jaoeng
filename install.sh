@@ -624,6 +624,11 @@ ensure_module_sidecar_libs() {
   case "$script_name" in
   nginx.sh)
     required=(
+      "lib/nginx_core.sh"
+      "lib/nginx_env.sh"
+      "lib/nginx_store.sh"
+      "lib/nginx_render.sh"
+      "lib/nginx_flow.sh"
       "lib/template_manifest.sh"
       "lib/template_audit.sh"
       "lib/template_ops.sh"
