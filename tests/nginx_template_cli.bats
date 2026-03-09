@@ -54,6 +54,11 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "default_combos 提供独立 desc 且不与 name 重复" {
+  run jq -e 'all(.default_combos[]; ((.desc // "") | length) > 0 and .desc != .name)' "$MANIFEST_PATH"
+  [ "$status" -eq 0 ]
+}
+
 @test "requires/conflicts 引用的模板 ID 均存在" {
   run jq -e '([.templates[].id] | unique) as $ids | all(.templates[]; ((.requires // []) + (.conflicts // [])) | all(.[]; ($ids | index(.) != null)))' "$MANIFEST_PATH"
   [ "$status" -eq 0 ]

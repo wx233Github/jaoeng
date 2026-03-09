@@ -67,6 +67,9 @@ NGINX_CONF_GEN=0
 NGINX_TEST_CACHE_GEN=-1
 NGINX_TEST_CACHE_RESULT=1
 NGINX_TEST_CACHE_TS=0
+NGINX_RELOAD_STRATEGY_CACHE=""
+NGINX_RELOAD_STRATEGY_CACHE_TS=0
+NGINX_RELOAD_STRATEGY_CACHE_TTL_SECS="${NGINX_RELOAD_STRATEGY_CACHE_TTL_SECS:-30}"
 ACME_SH_INSTALL_URL="${ACME_SH_INSTALL_URL:-https://get.acme.sh}"
 ACME_SH_INSTALL_SHA256="${ACME_SH_INSTALL_SHA256:-}"
 declare -a TMP_PAYLOAD_FILES=()
@@ -1274,10 +1277,8 @@ _parse_args() {
 _get_active_nginx_main_conf() {
   local master_cmd=""
   local conf=""
-  master_cmd=$(pgrep -af 'nginx: master process' | head -n1 | cut -d' ' -f2- || true)
-  if [[ "$master_cmd" == *" -c "* ]]; then
-    conf=$(sed -n 's/.* -c \([^[:space:]]\+\).*/\1/p' <<<"$master_cmd")
-  fi
+  master_cmd=$(pgrep -af 'nginx: master process' | head -n1 || true)
+  conf=$(_extract_nginx_conf_from_master_cmd "$master_cmd" 2>/dev/null || true)
   if [ -z "$conf" ]; then
     conf="/etc/nginx/nginx.conf"
   fi
@@ -1325,12 +1326,16 @@ _ensure_active_nginx_http_include_sites_enabled() {
     rm -f "$tmp_file"
     return 1
   fi
-  mv "$tmp_file" "$active_conf"
-  if ! nginx -t -c "$active_conf" >/dev/null 2>&1; then
-    log_message ERROR "接入 sites-enabled 后配置校验失败，已回滚: ${active_conf}"
-    cp "$backup" "$active_conf" || true
+  local precheck_output=""
+  local precheck_rc=0
+  precheck_output=$(nginx -t -c "$tmp_file" 2>&1) || precheck_rc=$?
+  if [ "$precheck_rc" -ne 0 ]; then
+    log_message ERROR "接入 sites-enabled 的预检失败，已取消写入: ${active_conf}"
+    printf '%b' "${YELLOW}失败原因: ${precheck_output}${NC}\n"
+    rm -f "$tmp_file"
     return 1
   fi
+  mv "$tmp_file" "$active_conf"
   log_message SUCCESS "已将 /etc/nginx/sites-enabled/*.conf 接入 ${active_conf}"
   return 0
 }
@@ -1456,7 +1461,7 @@ initialize_environment() {
 # TCP/UDP Stream Proxy Auto-injected
 stream { include ${NGINX_STREAM_ENABLED_DIR}/*.conf; }
 EOF
-    systemctl reload nginx || true
+    control_nginx reload || true
   fi
   _setup_logrotate
 }
@@ -1597,6 +1602,43 @@ _ensure_zerossl_account_email() {
   return 0
 }
 
+_extract_nginx_conf_from_master_cmd() {
+  local master_cmd="${1:-}"
+  if [[ "$master_cmd" =~ (^|[[:space:]])-c[[:space:]]([^[:space:]]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+_select_reload_strategy() {
+  local now_ts=0
+  now_ts=$(date +%s)
+  if [ -n "${NGINX_RELOAD_STRATEGY_CACHE:-}" ] && [ "${NGINX_RELOAD_STRATEGY_CACHE_TS:-0}" -gt 0 ] && [ $((now_ts - NGINX_RELOAD_STRATEGY_CACHE_TS)) -le "${NGINX_RELOAD_STRATEGY_CACHE_TTL_SECS:-30}" ]; then
+    printf '%s\n' "$NGINX_RELOAD_STRATEGY_CACHE"
+    return 0
+  fi
+  local master_cmd=""
+  local conf_path=""
+  if systemctl status nginx >/dev/null 2>&1; then
+    NGINX_RELOAD_STRATEGY_CACHE="systemctl"
+    NGINX_RELOAD_STRATEGY_CACHE_TS="$now_ts"
+    printf '%s\n' "systemctl"
+    return 0
+  fi
+  master_cmd=$(pgrep -af 'nginx: master process' | head -n1 || true)
+  conf_path=$(_extract_nginx_conf_from_master_cmd "$master_cmd" 2>/dev/null || true)
+  if [ -n "$conf_path" ]; then
+    NGINX_RELOAD_STRATEGY_CACHE="nginx_conf:${conf_path}"
+    NGINX_RELOAD_STRATEGY_CACHE_TS="$now_ts"
+    printf '%s\n' "nginx_conf:${conf_path}"
+    return 0
+  fi
+  NGINX_RELOAD_STRATEGY_CACHE="nginx_plain"
+  NGINX_RELOAD_STRATEGY_CACHE_TS="$now_ts"
+  printf '%s\n' "nginx_plain"
+}
+
 control_nginx() {
   local action="${1:-reload}"
   if [ "${SKIP_NGINX_TEST_IN_APPLY:-false}" != "true" ] && ! _nginx_test_cached; then
@@ -1604,26 +1646,50 @@ control_nginx() {
     nginx -t || true
     return 1
   fi
-  if systemctl "$action" nginx >/dev/null 2>&1; then
-    return 0
-  fi
-  if [ "$action" = "reload" ]; then
-    local master_cmd=""
-    local conf_path=""
-    master_cmd=$(pgrep -af 'nginx: master process' | head -n1 | cut -d' ' -f2- || true)
-    if [[ "$master_cmd" == *" -c "* ]]; then
-      conf_path=$(sed -n 's/.* -c \([^[:space:]]\+\).*/\1/p' <<<"$master_cmd")
-    fi
-    if [ -n "$conf_path" ]; then
-      if run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
-        log_message WARN "systemctl reload nginx 失败，已回退为 nginx -c ${conf_path} -s reload。"
-        return 0
-      fi
-    fi
-    if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
-      log_message WARN "systemctl reload nginx 失败，已回退为 nginx -s reload。"
+
+  if [ "$action" != "reload" ]; then
+    if systemctl "$action" nginx >/dev/null 2>&1; then
       return 0
     fi
+    log_message ERROR "Nginx $action 失败"
+    return 1
+  fi
+
+  local strategy=""
+  strategy=$(_select_reload_strategy)
+  case "$strategy" in
+  systemctl)
+    if systemctl reload nginx >/dev/null 2>&1; then return 0; fi
+    ;;
+  nginx_conf:*)
+    local conf_path="${strategy#nginx_conf:}"
+    if run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
+      log_message INFO "已使用 nginx -c ${conf_path} -s reload。"
+      return 0
+    fi
+    ;;
+  nginx_plain)
+    if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
+      log_message INFO "已使用 nginx -s reload。"
+      return 0
+    fi
+    ;;
+  esac
+
+  NGINX_RELOAD_STRATEGY_CACHE=""
+  NGINX_RELOAD_STRATEGY_CACHE_TS=0
+
+  local master_cmd=""
+  local conf_path=""
+  master_cmd=$(pgrep -af 'nginx: master process' | head -n1 || true)
+  conf_path=$(_extract_nginx_conf_from_master_cmd "$master_cmd" 2>/dev/null || true)
+  if [ -n "$conf_path" ] && run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
+    log_message WARN "已回退为 nginx -c ${conf_path} -s reload。"
+    return 0
+  fi
+  if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
+    log_message WARN "已回退为 nginx -s reload。"
+    return 0
   fi
   log_message ERROR "Nginx $action 失败"
   return 1
@@ -1709,10 +1775,10 @@ _update_cloudflare_ips() {
     local test_rc=0
     test_output=$(nginx -t 2>&1) || test_rc=$?
     if [ "$test_rc" -eq 0 ]; then
-      if systemctl reload nginx >/dev/null 2>&1; then
+      if control_nginx reload; then
         printf '%b' "${GREEN}Nginx 配置检测通过并已重载。${NC}\n"
       else
-        printf '%b' "${YELLOW}Nginx 配置检测通过，但自动重载失败，请手动执行 systemctl reload nginx。${NC}\n"
+        printf '%b' "${YELLOW}Nginx 配置检测通过，但自动重载失败，请手动执行 nginx reload。${NC}\n"
       fi
     else
       printf '%b' "${YELLOW}Nginx 配置检测失败，已写入文件但未自动重载。${NC}\n"
@@ -2483,6 +2549,33 @@ _delete_project_json() {
   fi
 }
 
+_build_proxy_common_directives() {
+  cat <<'EOF'
+        proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s; proxy_send_timeout 300s;
+EOF
+}
+
+_render_proxy_location_block() {
+  local location_expr="${1:-/}"
+  local port="${2:-}"
+  local guard_token="${3:-}"
+  local guard_line=""
+  if [ -n "$guard_token" ]; then
+    # shellcheck disable=SC2016
+    printf -v guard_line '        if ($http_x_oenmcp_token != "%s") { return 403; }' "$guard_token"
+  fi
+  cat <<EOF
+    location ${location_expr} {
+${guard_line}
+        proxy_pass http://127.0.0.1:${port};
+$(_build_proxy_common_directives)
+    }
+EOF
+}
+
 _write_and_enable_nginx_config() {
   local domain="${1:-}"
   local json="${2:-}"
@@ -2542,26 +2635,8 @@ _write_and_enable_nginx_config() {
   fi
   local mcp_protect_cfg=""
   if [ -n "$mcp_path" ] && [ -n "$mcp_token" ]; then
-    mcp_protect_cfg=$(
-      cat <<EOF
-    location = ${mcp_path} {
-        if (\$http_x_oenmcp_token != "${mcp_token}") { return 403; }
-        proxy_pass http://127.0.0.1:${port};
-        proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300s; proxy_send_timeout 300s;
-    }
-    location ^~ ${mcp_path}/ {
-        if (\$http_x_oenmcp_token != "${mcp_token}") { return 403; }
-        proxy_pass http://127.0.0.1:${port};
-        proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300s; proxy_send_timeout 300s;
-    }
-EOF
-    )
+    mcp_protect_cfg="$(_render_proxy_location_block "= ${mcp_path}" "$port" "$mcp_token")
+$(_render_proxy_location_block "^~ ${mcp_path}/" "$port" "$mcp_token")"
   fi
   local extra_cfg=""
   if [ -n "$custom_cfg" ] && [ "$custom_cfg" != "null" ]; then
@@ -2617,13 +2692,7 @@ server {
     ${body_cfg}${cf_strict_cfg}
     ${extra_cfg}
 ${mcp_protect_cfg}
-    location / {
-        proxy_pass http://127.0.0.1:${port};
-        proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300s; proxy_send_timeout 300s;
-    }
+$(_render_proxy_location_block "/" "$port" "")
 }
 EOF
   local skip_test="false"
@@ -2975,7 +3044,7 @@ _prepare_http01_challenge() {
 server { listen 80; server_name ${domain}; location /.well-known/acme-challenge/ { root $NGINX_WEBROOT_DIR; } }
 EOF
         ln -sf "$temp_conf_ref" "$NGINX_SITES_ENABLED_DIR/"
-        systemctl reload nginx || true
+        control_nginx reload || true
         # shellcheck disable=SC2034
         temp_conf_created_ref="true"
       fi
@@ -3036,7 +3105,7 @@ _cleanup_http01_challenge() {
     local enabled_conf
     enabled_conf="$NGINX_SITES_ENABLED_DIR/temp_acme_$(basename "$temp_conf" | sed 's/^temp_acme_//;s/\.conf$//').conf"
     if _require_safe_path "$enabled_conf" "清理临时配置"; then rm -f "$enabled_conf"; fi
-    systemctl reload nginx || true
+    control_nginx reload || true
   fi
   if [ -n "$stopped_svc" ]; then
     systemctl start "$stopped_svc"
@@ -3225,6 +3294,282 @@ _issue_and_install_certificate() {
   fi
 }
 
+_prompt_mcp_protection_settings() {
+  local cur_path="${1:-}"
+  local cur_token="${2:-}"
+  local mcp_path="$cur_path"
+  local mcp_token="$cur_token"
+  local mcp_default="n"
+
+  if [ -n "$mcp_path" ] && [ -n "$mcp_token" ]; then
+    mcp_default="y"
+  fi
+  if confirm_or_cancel "是否启用 MCP 接口路径 Token 防护? (仅保护接口路径)" "$mcp_default"; then
+    while true; do
+      if ! mcp_path=$(prompt_input "请输入 MCP 接口路径 (示例: /mcp)" "${mcp_path:-}" "" "" "false"); then
+        return 1
+      fi
+      if _is_valid_location_path "$mcp_path"; then
+        break
+      fi
+      log_message ERROR "路径无效: 必须以 / 开头，不能为 /，仅支持字母数字和 /._~%%:+-"
+    done
+
+    if [ -n "$mcp_token" ]; then
+      local masked_mcp_token=""
+      masked_mcp_token=$(_mask_string "$mcp_token")
+      if ! confirm_or_cancel "检测到已保存 MCP Token(${masked_mcp_token})，是否复用?" "y"; then
+        mcp_token=""
+      fi
+    fi
+    while true; do
+      if [ -n "$mcp_token" ] && _is_valid_mcp_token "$mcp_token"; then
+        break
+      fi
+      if ! mcp_token=$(_prompt_secret "请输入 MCP Token (最少16位,无回显)"); then
+        return 1
+      fi
+      if _is_valid_mcp_token "$mcp_token"; then
+        break
+      fi
+      log_message ERROR "Token 无效: 仅允许安全字符，长度需在 16-128。"
+    done
+  else
+    mcp_path=""
+    mcp_token=""
+  fi
+
+  printf '%s\t%s\n' "$mcp_path" "$mcp_token"
+}
+
+_prompt_reload_hook_for_cert_only() {
+  local auto_sui_cmd=""
+  local reload_cmd=""
+  local -a hook_lines=()
+
+  if systemctl list-units --type=service | grep -q "s-ui.service"; then
+    auto_sui_cmd="systemctl restart s-ui"
+  elif systemctl list-units --type=service | grep -q "x-ui.service"; then
+    auto_sui_cmd="systemctl restart x-ui"
+  fi
+  local opt1_text="S-UI / 3x-ui / x-ui"
+  [ -n "$auto_sui_cmd" ] && opt1_text="${opt1_text} (自动: ${auto_sui_cmd##* })"
+  hook_lines+=("${CYAN}自动重启预设方案:${NC}")
+  hook_lines+=("1. ${opt1_text}")
+  hook_lines+=("2. V2Ray 原生服务 (systemctl restart v2ray)")
+  hook_lines+=("3. Xray 原生服务 (systemctl restart xray)")
+  hook_lines+=("4. Nginx 服务 (systemctl reload nginx)")
+  hook_lines+=("5. 手动输入自定义 Shell 命令")
+  hook_lines+=("6. 跳过")
+  _render_menu "配置外部重载组件 (Reload Hook)" "${hook_lines[@]}" >&2
+
+  local hk
+  while true; do
+    hk=$(prompt_menu_choice "1-6")
+    [ -n "$hk" ] && break
+  done
+  case "$hk" in
+  1) reload_cmd="$auto_sui_cmd" ;;
+  2) reload_cmd="systemctl restart v2ray" ;;
+  3) reload_cmd="systemctl restart xray" ;;
+  4) reload_cmd="systemctl reload nginx" ;;
+  5)
+    if ! reload_cmd=$(prompt_input "请输入完整 Shell 命令" "" "" "" "true"); then
+      return 1
+    fi
+    ;;
+  6) reload_cmd="" ;;
+  esac
+
+  if [ -n "$reload_cmd" ] && ! _validate_hook_command "$reload_cmd"; then
+    return 1
+  fi
+  printf '%s\n' "$reload_cmd"
+}
+
+_prompt_ca_selection() {
+  local ca_server="https://acme-v02.api.letsencrypt.org/directory"
+  local ca_name="letsencrypt"
+  local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
+  _render_menu "选择 CA 机构" "${ca_list[@]}"
+  local ca_choice
+  while true; do
+    ca_choice=$(prompt_menu_choice "1-3")
+    [ -n "$ca_choice" ] && break
+  done
+  case "$ca_choice" in
+  1)
+    ca_server="https://acme-v02.api.letsencrypt.org/directory"
+    ca_name="letsencrypt"
+    ;;
+  2)
+    ca_server="https://acme.zerossl.com/v2/DV90"
+    ca_name="zerossl"
+    ;;
+  3)
+    ca_server="google"
+    ca_name="google"
+    ;;
+  esac
+  printf '%s\t%s\n' "$ca_server" "$ca_name"
+}
+
+_prompt_validation_method_selection() {
+  local domain="${1:-}"
+  local is_cert_only="${2:-false}"
+  local type="${3:-cert_only}"
+  local port="${4:-cert_only}"
+  local method="http-01"
+  local provider=""
+  local wildcard="n"
+
+  local -a method_display=("1. http-01 (智能无中断 Webroot / Standalone)" "2. dns_cf  (Cloudflare API)" "3. dns_ali (阿里云 API)")
+  _render_menu "验证方式" "${method_display[@]}" >&2
+  local v_choice
+  while true; do
+    v_choice=$(prompt_menu_choice "1-3")
+    [ -n "$v_choice" ] && break
+  done
+  case "$v_choice" in
+  1) method="http-01" ;;
+  2 | 3)
+    method="dns-01"
+    [ "$v_choice" = "2" ] && provider="dns_cf" || provider="dns_ali"
+    if ! wildcard=$(prompt_input "是否申请泛域名? (y/[n])" "n" "^[yYnN]$" "" "false"); then
+      return 1
+    fi
+
+    if [ "$wildcard" = "y" ] && [ "$is_cert_only" = "false" ]; then
+      printf '%b' "\n${BRIGHT_YELLOW}┌──────────────────────────────────────────────┐${NC}\n"
+      local box_msg="⚠️  检测到泛域名申请模式"
+      local box_line
+      printf -v box_line "%-44s" "$box_msg"
+      printf '%b' "${BRIGHT_YELLOW}│ ${box_line} │${NC}\n"
+      printf '%b' "${BRIGHT_YELLOW}└──────────────────────────────────────────────┘${NC}\n"
+      printf '%b' "您的配置将同时覆盖 ${GREEN}${domain}${NC} 和 ${GREEN}*.${domain}${NC}。\n"
+      if ! confirm_or_cancel "是否为主域名 ${domain} 配置 Nginx HTTP 代理端口? (选 No 则仅管理证书)" "n"; then
+        is_cert_only="true"
+        type="cert_only"
+        port="cert_only"
+        printf '%b' "${CYAN}已切换为证书管理模式，后续将跳过端口与防御设置。${NC}\n"
+      fi
+    fi
+    ;;
+  esac
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$method" "$provider" "$wildcard" "$is_cert_only" "$type" "$port"
+}
+
+_build_project_payload_json() {
+  local domain="${1:-}"
+  local type="${2:-local_port}"
+  local name="${3:-}"
+  local port="${4:-}"
+  local method="${5:-http-01}"
+  local provider="${6:-}"
+  local wildcard="${7:-n}"
+  local ca_server="${8:-https://acme-v02.api.letsencrypt.org/directory}"
+  local ca_name="${9:-letsencrypt}"
+  local cert_file="${10:-}"
+  local key_file="${11:-}"
+  local max_body="${12:-}"
+  local custom_cfg="${13:-}"
+  local cf_strict="${14:-n}"
+  local reload_cmd="${15:-}"
+  local mcp_path="${16:-}"
+  local mcp_token="${17:-}"
+
+  jq -n \
+    --arg d "${domain}" --arg t "${type}" --arg n "${name}" --arg p "${port}" \
+    --arg m "${method}" --arg dp "${provider}" --arg w "${wildcard}" \
+    --arg cu "${ca_server}" --arg cn "${ca_name}" --arg cf "${cert_file}" --arg kf "${key_file}" \
+    --arg mb "${max_body}" --arg cc "${custom_cfg}" --arg cs "${cf_strict}" --arg rc "${reload_cmd}" \
+    --arg mp "${mcp_path}" --arg mt "${mcp_token}" \
+    '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb, custom_config:$cc, cf_strict_mode:$cs, reload_cmd:$rc, mcp_protect_path:$mp, mcp_token:$mt}'
+}
+
+_detect_reusable_wildcard_cert() {
+  local domain="${1:-}"
+  local skip_cert="${2:-false}"
+  local wc_match=""
+  local reuse_wc="false"
+  local wc_cert=""
+  local wc_key=""
+
+  if [ "$skip_cert" != "false" ]; then
+    printf '%s\t%s\t%s\n' "$reuse_wc" "$wc_cert" "$wc_key"
+    return 0
+  fi
+
+  local all_wcs
+  all_wcs=$(jq -c '.[] | select(.use_wildcard == "y" and .cert_file != null)' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
+  while read -r wp; do
+    [ -z "$wp" ] && continue
+    local wd
+    wd=$(jq -r .domain <<<"$wp")
+    if [[ "$domain" == *".$wd" || "$domain" == "$wd" ]]; then
+      wc_match="$wd"
+      break
+    fi
+  done <<<"$all_wcs"
+
+  if [ -n "$wc_match" ]; then
+    printf '%b' "\n${GREEN}🎯 智能提示: 检测到系统中已存在匹配的泛域名证书 (*.${wc_match})${NC}\n" >&2
+    if confirm_or_cancel "是否直接绑定复用该证书,实现免验证零延迟上线?"; then
+      reuse_wc="true"
+      local wp
+      wp=$(_get_project_json "$wc_match")
+      wc_cert=$(jq -r .cert_file <<<"$wp")
+      wc_key=$(jq -r .key_file <<<"$wp")
+    fi
+  fi
+
+  printf '%s\t%s\t%s\n' "$reuse_wc" "$wc_cert" "$wc_key"
+}
+
+_prompt_backend_target_for_project() {
+  local cur="${1:-{}}"
+  local name="${2:-}"
+  local type="local_port"
+  local port=""
+
+  local old_type old_port target_default
+  old_type=$(jq -r '.type // "local_port"' <<<"$cur")
+  old_port=$(jq -r '.resolved_port // ""' <<<"$cur")
+  target_default="$name"
+  if [ "$old_type" = "local_port" ] && [ -n "$old_port" ] && [ "$old_port" != "null" ] && [ "$old_port" != "cert_only" ]; then
+    target_default="$old_port"
+  fi
+  [ "$target_default" == "证书" ] && target_default=""
+
+  while true; do
+    local target
+    if ! target=$(prompt_input "后端目标 (容器名/端口)" "$target_default" "" "" "false"); then
+      return 1
+    fi
+    type="local_port"
+    port="$target"
+    if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
+      type="docker"
+      port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
+      if [ -z "$port" ]; then
+        if ! port=$(prompt_input "未检测到端口,手动输入" "80" "^[0-9]+$" "无效端口" "false"); then
+          return 1
+        fi
+      fi
+      if ! _is_valid_port "$port"; then
+        log_message ERROR "端口范围无效 (1-65535)。"
+        return 1
+      fi
+      break
+    fi
+    if [[ "$port" =~ ^[0-9]+$ ]] && _is_valid_port "$port"; then break; fi
+    log_message ERROR "错误: '$target' 既不是容器也不是端口。" >&2
+  done
+
+  printf '%s\t%s\n' "$type" "$port"
+}
+
 _gather_project_details() {
   exec 3>&1
   exec 1>&2
@@ -3253,33 +3598,17 @@ _gather_project_details() {
     fi
   fi
 
-  local wc_match=""
-  if [ "$skip_cert" == "false" ]; then
-    local all_wcs
-    all_wcs=$(jq -c '.[] | select(.use_wildcard == "y" and .cert_file != null)' "$PROJECTS_METADATA_FILE" 2>/dev/null || printf '%s' "")
-    while read -r wp; do
-      [ -z "$wp" ] && continue
-      local wd
-      wd=$(jq -r .domain <<<"$wp")
-      if [[ "$domain" == *".$wd" || "$domain" == "$wd" ]]; then
-        wc_match="$wd"
-        break
-      fi
-    done <<<"$all_wcs"
-  fi
+  local wc_pair=""
   local reuse_wc="false"
   local wc_cert=""
   local wc_key=""
-  if [ -n "$wc_match" ]; then
-    printf '%b' "\n${GREEN}🎯 智能提示: 检测到系统中已存在匹配的泛域名证书 (*.${wc_match})${NC}\n" >&2
-    if confirm_or_cancel "是否直接绑定复用该证书,实现免验证零延迟上线?"; then
-      reuse_wc="true"
-      local wp
-      wp=$(_get_project_json "$wc_match")
-      wc_cert=$(jq -r .cert_file <<<"$wp")
-      wc_key=$(jq -r .key_file <<<"$wp")
-    fi
+  if ! wc_pair=$(_detect_reusable_wildcard_cert "$domain" "$skip_cert"); then
+    exec 1>&3
+    return 1
   fi
+  local old_ifs="$IFS"
+  IFS=$'\t' read -r reuse_wc wc_cert wc_key <<<"$wc_pair"
+  IFS="$old_ifs"
 
   local type="cert_only"
   local name="证书"
@@ -3300,43 +3629,14 @@ _gather_project_details() {
 
   if [ "$is_cert_only" == "false" ]; then
     name=$(jq -r '.name // ""' <<<"$cur")
-    local old_type old_port target_default
-    old_type=$(jq -r '.type // "local_port"' <<<"$cur")
-    old_port=$(jq -r '.resolved_port // ""' <<<"$cur")
-    target_default="$name"
-    if [ "$old_type" = "local_port" ] && [ -n "$old_port" ] && [ "$old_port" != "null" ] && [ "$old_port" != "cert_only" ]; then
-      target_default="$old_port"
+    local target_pair=""
+    if ! target_pair=$(_prompt_backend_target_for_project "$cur" "$name"); then
+      exec 1>&3
+      return 1
     fi
-    [ "$target_default" == "证书" ] && target_default=""
-    while true; do
-      local target
-      if ! target=$(prompt_input "后端目标 (容器名/端口)" "$target_default" "" "" "false"); then
-        exec 1>&3
-        return 1
-      fi
-      type="local_port"
-      port="$target"
-      if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -wq "$target"; then
-        type="docker"
-        exec 1>&3
-        port=$(docker inspect "$target" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null | head -n1 || true)
-        exec 1>&2
-        if [ -z "$port" ]; then
-          if ! port=$(prompt_input "未检测到端口,手动输入" "80" "^[0-9]+$" "无效端口" "false"); then
-            exec 1>&3
-            return 1
-          fi
-        fi
-        if ! _is_valid_port "$port"; then
-          log_message ERROR "端口范围无效 (1-65535)。"
-          exec 1>&3
-          return 1
-        fi
-        break
-      fi
-      if [[ "$port" =~ ^[0-9]+$ ]] && _is_valid_port "$port"; then break; fi
-      log_message ERROR "错误: '$target' 既不是容器也不是端口。" >&2
-    done
+    old_ifs="$IFS"
+    IFS=$'\t' read -r type port <<<"$target_pair"
+    IFS="$old_ifs"
   fi
 
   local method="http-01"
@@ -3357,61 +3657,23 @@ _gather_project_details() {
       ca_server=$(jq -r '.ca_server_url // "https://acme-v02.api.letsencrypt.org/directory"' <<<"$cur")
     fi
   else
-    local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-    _render_menu "选择 CA 机构" "${ca_list[@]}"
-    local ca_choice
-    while true; do
-      ca_choice=$(prompt_menu_choice "1-3")
-      [ -n "$ca_choice" ] && break
-    done
-    case "$ca_choice" in 1)
-      ca_server="https://acme-v02.api.letsencrypt.org/directory"
-      ca_name="letsencrypt"
-      ;;
-    2)
-      ca_server="https://acme.zerossl.com/v2/DV90"
-      ca_name="zerossl"
-      ;;
-    3)
-      ca_server="google"
-      ca_name="google"
-      ;;
-    esac
+    local ca_pair=""
+    if ! ca_pair=$(_prompt_ca_selection); then
+      exec 1>&3
+      return 1
+    fi
+    local old_ifs="$IFS"
+    IFS=$'\t' read -r ca_server ca_name <<<"$ca_pair"
+    IFS="$old_ifs"
 
-    local -a method_display=("1. http-01 (智能无中断 Webroot / Standalone)" "2. dns_cf  (Cloudflare API)" "3. dns_ali (阿里云 API)")
-    _render_menu "验证方式" "${method_display[@]}" >&2
-    local v_choice
-    while true; do
-      v_choice=$(prompt_menu_choice "1-3")
-      [ -n "$v_choice" ] && break
-    done
-    case "$v_choice" in 1) method="http-01" ;; 2 | 3)
-      method="dns-01"
-      [ "$v_choice" = "2" ] && provider="dns_cf" || provider="dns_ali"
-      if ! wildcard=$(prompt_input "是否申请泛域名? (y/[n])" "n" "^[yYnN]$" "" "false"); then
-        exec 1>&3
-        return 1
-      fi
-
-      # *** 优化核心：泛域名主域不配置端口 ***
-      if [ "$wildcard" = "y" ] && [ "$is_cert_only" == "false" ]; then
-        printf '%b' "\n${BRIGHT_YELLOW}┌──────────────────────────────────────────────┐${NC}\n"
-        local box_msg="⚠️  检测到泛域名申请模式"
-        local box_line
-        printf -v box_line "%-44s" "$box_msg"
-        printf '%b' "${BRIGHT_YELLOW}│ ${box_line} │${NC}\n"
-        printf '%b' "${BRIGHT_YELLOW}└──────────────────────────────────────────────┘${NC}\n"
-        printf '%b' "您的配置将同时覆盖 ${GREEN}${domain}${NC} 和 ${GREEN}*.${domain}${NC}。\n"
-        if ! confirm_or_cancel "是否为主域名 ${domain} 配置 Nginx HTTP 代理端口? (选 No 则仅管理证书)" "n"; then
-          # 用户选择不配置代理，强制切换为 cert_only 模式
-          is_cert_only="true"
-          type="cert_only"
-          port="cert_only"
-          printf '%b' "${CYAN}已切换为证书管理模式，后续将跳过端口与防御设置。${NC}\n"
-        fi
-      fi
-      ;;
-    esac
+    local method_pair=""
+    if ! method_pair=$(_prompt_validation_method_selection "$domain" "$is_cert_only" "$type" "$port"); then
+      exec 1>&3
+      return 1
+    fi
+    old_ifs="$IFS"
+    IFS=$'\t' read -r method provider wildcard is_cert_only type port <<<"$method_pair"
+    IFS="$old_ifs"
   fi
 
   if [ "$is_cert_only" == "false" ]; then
@@ -3420,77 +3682,19 @@ _gather_project_details() {
     if confirm_or_cancel "是否开启 Cloudflare 严格安全防御?" "$cf_strict_default"; then cf_strict="y"; else cf_strict="n"; fi
     CF_STRICT_MODE_CURRENT="$cf_strict"
 
-    local mcp_default="n"
-    if [ -n "$mcp_protect_path" ] && [ -n "$mcp_token" ]; then
-      mcp_default="y"
+    local mcp_pair=""
+    if ! mcp_pair=$(_prompt_mcp_protection_settings "$mcp_protect_path" "$mcp_token"); then
+      exec 1>&3
+      return 1
     fi
-    if confirm_or_cancel "是否启用 MCP 接口路径 Token 防护? (仅保护接口路径)" "$mcp_default"; then
-      while true; do
-        if ! mcp_protect_path=$(prompt_input "请输入 MCP 接口路径 (示例: /mcp)" "${mcp_protect_path:-}" "" "" "false"); then
-          exec 1>&3
-          return 1
-        fi
-        if _is_valid_location_path "$mcp_protect_path"; then
-          break
-        fi
-        log_message ERROR "路径无效: 必须以 / 开头，不能为 /，仅支持字母数字和 /._~%%:+-"
-      done
-
-      if [ -n "$mcp_token" ]; then
-        local masked_mcp_token=""
-        masked_mcp_token=$(_mask_string "$mcp_token")
-        if ! confirm_or_cancel "检测到已保存 MCP Token(${masked_mcp_token})，是否复用?" "y"; then
-          mcp_token=""
-        fi
-      fi
-      while true; do
-        if [ -n "$mcp_token" ] && _is_valid_mcp_token "$mcp_token"; then
-          break
-        fi
-        if ! mcp_token=$(_prompt_secret "请输入 MCP Token (最少16位,无回显)"); then
-          exec 1>&3
-          return 1
-        fi
-        if _is_valid_mcp_token "$mcp_token"; then
-          break
-        fi
-        log_message ERROR "Token 无效: 仅允许安全字符，长度需在 16-128。"
-      done
-    else
-      mcp_protect_path=""
-      mcp_token=""
-    fi
+    local old_ifs="$IFS"
+    IFS=$'\t' read -r mcp_protect_path mcp_token <<<"$mcp_pair"
+    IFS="$old_ifs"
   else
     if [ "$skip_cert" == "false" ]; then
-      local -a hook_lines=()
-      local auto_sui_cmd=""
-      if systemctl list-units --type=service | grep -q "s-ui.service"; then
-        auto_sui_cmd="systemctl restart s-ui"
-      elif systemctl list-units --type=service | grep -q "x-ui.service"; then auto_sui_cmd="systemctl restart x-ui"; fi
-      local opt1_text="S-UI / 3x-ui / x-ui"
-      [ -n "$auto_sui_cmd" ] && opt1_text="${opt1_text} (自动: ${auto_sui_cmd##* })"
-      hook_lines+=("${CYAN}自动重启预设方案:${NC}")
-      hook_lines+=("1. ${opt1_text}")
-      hook_lines+=("2. V2Ray 原生服务 (systemctl restart v2ray)")
-      hook_lines+=("3. Xray 原生服务 (systemctl restart xray)")
-      hook_lines+=("4. Nginx 服务 (systemctl reload nginx)")
-      hook_lines+=("5. 手动输入自定义 Shell 命令")
-      hook_lines+=("6. 跳过")
-      _render_menu "配置外部重载组件 (Reload Hook)" "${hook_lines[@]}" >&2
-      local hk
-      while true; do
-        hk=$(prompt_menu_choice "1-6")
-        [ -n "$hk" ] && break
-      done
-      case "$hk" in 1) reload_cmd="$auto_sui_cmd" ;; 2) reload_cmd="systemctl restart v2ray" ;; 3) reload_cmd="systemctl restart xray" ;; 4) reload_cmd="systemctl reload nginx" ;; 5) if ! reload_cmd=$(prompt_input "请输入完整 Shell 命令" "" "" "" "true"); then
+      if ! reload_cmd=$(_prompt_reload_hook_for_cert_only); then
         exec 1>&3
         return 1
-      fi ;; 6) reload_cmd="" ;; esac
-      if [ -n "$reload_cmd" ]; then
-        if ! _validate_hook_command "$reload_cmd"; then
-          exec 1>&3
-          return 1
-        fi
       fi
     fi
   fi
@@ -3502,12 +3706,15 @@ _gather_project_details() {
     kf="$wc_key"
   fi
 
-  jq -n --arg d "${domain:-}" --arg t "${type:-local_port}" --arg n "${name:-}" --arg p "${port:-}" \
-    --arg m "${method:-http-01}" --arg dp "${provider:-}" --arg w "${wildcard:-n}" \
-    --arg cu "${ca_server:-}" --arg cn "${ca_name:-}" --arg cf "${cf:-}" --arg kf "${kf:-}" \
-    --arg mb "${max_body:-}" --arg cc "${custom_cfg:-}" --arg cs "${CF_STRICT_MODE_CURRENT:-$cf_strict}" --arg rc "${reload_cmd:-}" \
-    --arg mp "${mcp_protect_path:-}" --arg mt "${mcp_token:-}" \
-    '{domain:$d, type:$t, name:$n, resolved_port:$p, acme_validation_method:$m, dns_api_provider:$dp, use_wildcard:$w, ca_server_url:$cu, ca_server_name:$cn, cert_file:$cf, key_file:$kf, client_max_body_size:$mb, custom_config:$cc, cf_strict_mode:$cs, reload_cmd:$rc, mcp_protect_path:$mp, mcp_token:$mt}' >&3
+  if ! _build_project_payload_json \
+    "${domain:-}" "${type:-local_port}" "${name:-}" "${port:-}" \
+    "${method:-http-01}" "${provider:-}" "${wildcard:-n}" \
+    "${ca_server:-}" "${ca_name:-}" "${cf:-}" "${kf:-}" \
+    "${max_body:-}" "${custom_cfg:-}" "${CF_STRICT_MODE_CURRENT:-$cf_strict}" "${reload_cmd:-}" \
+    "${mcp_protect_path:-}" "${mcp_token:-}" >&3; then
+    exec 1>&3
+    return 1
+  fi
   exec 1>&3
 }
 
@@ -4455,24 +4662,33 @@ _manifest_query() {
 }
 
 _render_nginx_template_root_menu() {
-  local c1 c2 c3 c4
+  local c1 c2 c3 c4 d1 d2 d3 d4
+  local -a lines=()
   c1=$(_manifest_query '.default_combos[0].name // "通用反代"' 2>/dev/null || printf '%s' "通用反代")
   c2=$(_manifest_query '.default_combos[1].name // "HTTPS生产"' 2>/dev/null || printf '%s' "HTTPS生产")
   c3=$(_manifest_query '.default_combos[2].name // "WordPress常用"' 2>/dev/null || printf '%s' "WordPress常用")
   c4=$(_manifest_query '.default_combos[3].name // "长连接服务"' 2>/dev/null || printf '%s' "长连接服务")
-  _render_menu "配置模板中心" \
-    "1. ${c1}" \
-    "2. ${c2}" \
-    "3. ${c3}" \
-    "4. ${c4}" \
-    "5. 自定义模板（单项，可多选）" \
-    "6. 清理模板配置" \
-    "7. 批量应用模板（glob域名匹配）" \
-    "8. 查看模板状态" \
-    "9. 查看模板审计日志" \
-    "10. 按模板反查域名" \
-    "11. 按操作ID回滚模板变更" \
-    "12. 返回"
+  d1=$(_manifest_query '.default_combos[0].desc // empty' 2>/dev/null || printf '%s' "")
+  d2=$(_manifest_query '.default_combos[1].desc // empty' 2>/dev/null || printf '%s' "")
+  d3=$(_manifest_query '.default_combos[2].desc // empty' 2>/dev/null || printf '%s' "")
+  d4=$(_manifest_query '.default_combos[3].desc // empty' 2>/dev/null || printf '%s' "")
+  lines+=("1. ${c1}")
+  [ -n "$d1" ] && lines+=("   ${d1}")
+  lines+=("2. ${c2}")
+  [ -n "$d2" ] && lines+=("   ${d2}")
+  lines+=("3. ${c3}")
+  [ -n "$d3" ] && lines+=("   ${d3}")
+  lines+=("4. ${c4}")
+  [ -n "$d4" ] && lines+=("   ${d4}")
+  lines+=("5. 自定义模板（单项，可多选）")
+  lines+=("6. 清理模板配置")
+  lines+=("7. 批量应用模板（glob域名匹配）")
+  lines+=("8. 查看模板状态")
+  lines+=("9. 查看模板审计日志")
+  lines+=("10. 按模板反查域名")
+  lines+=("11. 按操作ID回滚模板变更")
+  lines+=("12. 返回")
+  _render_menu "配置模板中心" "${lines[@]}"
 }
 
 _render_nginx_template_custom_menu() {

@@ -90,3 +90,13 @@ teardown() {
   ' _ "$LIB_PATH"
   [ "$status" -eq 0 ]
 }
+
+@test "项目 payload 组装函数输出完整 JSON 字段" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    out=$(_build_project_payload_json "example.com" "local_port" "demo" "8080" "http-01" "" "n" "https://acme-v02.api.letsencrypt.org/directory" "letsencrypt" "/etc/ssl/example.com.cer" "/etc/ssl/example.com.key" "20m" "" "y" "" "/mcp" "0123456789abcdef")
+    jq -e ".domain == \"example.com\" and .resolved_port == \"8080\" and .mcp_protect_path == \"/mcp\" and .mcp_token == \"0123456789abcdef\" and .cf_strict_mode == \"y\"" <<<"$out" >/dev/null
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+}

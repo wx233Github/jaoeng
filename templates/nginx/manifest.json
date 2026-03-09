@@ -66,21 +66,25 @@
     {
       "id": "general_reverse_proxy",
       "name": "通用反代",
+      "desc": "适用于大多数后端服务，提供安全响应头与反代超时优化。",
       "templates": ["security_headers", "reverse_proxy_enhanced"]
     },
     {
       "id": "https_production",
       "name": "HTTPS生产",
+      "desc": "面向生产环境的 HTTPS 基线组合，包含安全头与 HSTS。",
       "templates": ["security_headers", "hsts"]
     },
     {
       "id": "wordpress_common",
       "name": "WordPress常用",
+      "desc": "WordPress 常见场景优化，增强上传与后端代理稳定性。",
       "templates": ["wordpress_basic", "security_headers"]
     },
     {
       "id": "long_connection_service",
       "name": "长连接服务",
+      "desc": "适配长连接与大响应场景，放宽连接超时参数。",
       "templates": ["reverse_proxy_enhanced", "security_headers"]
     }
   ]
