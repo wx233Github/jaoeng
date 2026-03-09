@@ -2006,14 +2006,18 @@ _issue_and_install_certificate() {
 	local install_reload_cmd=""
 	IFS=$'\t' read -r rcmd resolved_port < <(jq -r '[.reload_cmd // empty, .resolved_port // empty] | @tsv' <<<"$json")
 	if [ -n "$rcmd" ] && [ "$resolved_port" != "cert_only" ]; then
-		log_message WARN "当前为 HTTP 代理项目,将强制使用 nginx reload,忽略自定义 Hook"
+		log_message WARN "当前为 HTTP 代理项目，证书安装阶段将忽略自定义 Hook，统一由事务重载接管。"
 		rcmd=""
 	fi
 	if ! _validate_hook_command "$rcmd"; then
 		log_message ERROR "不安全的 Hook 命令,已拒绝。"
 		return 1
 	fi
-	if [ "$resolved_port" == "cert_only" ]; then install_reload_cmd="$rcmd"; else install_reload_cmd="systemctl reload nginx"; fi
+	if [ "$resolved_port" == "cert_only" ]; then
+		install_reload_cmd="$rcmd"
+	else
+		install_reload_cmd=""
+	fi
 	local inst=("$ACME_BIN" --install-cert --ecc -d "$domain" --key-file "$key" --fullchain-file "$cert" --log)
 	[ -n "$install_reload_cmd" ] && inst+=("--reloadcmd" "$install_reload_cmd")
 	[ "$wildcard" = "y" ] && inst+=("-d" "*.$domain")
@@ -2326,7 +2330,12 @@ _gather_project_details() {
 	exec 3>&1
 	exec 1>&2
 	local cur="${1:-{}}"
-	if [ "$cur" != "{}" ] && ! jq -e . >/dev/null 2>&1 <<<"$cur"; then
+	local cur_compact="$cur"
+	cur_compact="${cur_compact//$'\r'/}"
+	cur_compact="${cur_compact//$'\n'/}"
+	cur_compact="${cur_compact//$'\t'/}"
+	cur_compact="${cur_compact// /}"
+	if [ -n "$cur_compact" ] && [ "$cur_compact" != "{}" ] && ! jq -e . >/dev/null 2>&1 <<<"$cur"; then
 		log_message WARN "检测到损坏的项目配置 JSON，已回退为默认空配置。"
 		cur="{}"
 	fi

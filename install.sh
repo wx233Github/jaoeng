@@ -893,7 +893,15 @@ _get_docker_status() {
 		printf '%b' "$status_str"
 	fi
 }
-_get_nginx_status() { if systemctl is-active --quiet nginx 2>/dev/null; then printf '%b' "${GREEN}已运行${NC}"; else printf '%b' "${RED}未运行${NC}"; fi; }
+_get_nginx_status() {
+	if systemctl is-active --quiet nginx 2>/dev/null; then
+		printf '%b' "${GREEN}已运行${NC}"
+	elif pgrep -x nginx >/dev/null 2>&1; then
+		printf '%b' "${YELLOW}已运行(非systemd)${NC}"
+	else
+		printf '%b' "${RED}未运行${NC}"
+	fi
+}
 _get_watchtower_status() {
 	if systemctl is-active --quiet docker 2>/dev/null; then
 		if run_with_sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qFx 'watchtower' >/dev/null 2>&1; then printf '%b' "${GREEN}已运行${NC}"; else printf '%b' "${YELLOW}未运行${NC}"; fi
