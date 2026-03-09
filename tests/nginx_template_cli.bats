@@ -71,8 +71,20 @@ teardown() {
   [[ "$output" == *"--template-mode"* ]]
 }
 
+@test "legacy 参数 --audit-only 被拒绝并给出迁移提示" {
+  run bash "$SCRIPT_PATH" --audit-only
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--audit-only 已移除"* ]]
+  [[ "$output" == *"请使用 --check"* ]]
+}
+
 @test "模板模式非法时返回失败" {
   run bash "$SCRIPT_PATH" --template-mode invalid --template-domain example.com --non-interactive
+  [ "$status" -ne 0 ]
+}
+
+@test "参数缺值: --template-mode 缺少值时返回失败" {
+  run bash "$SCRIPT_PATH" --template-mode --template-domain example.com --non-interactive
   [ "$status" -ne 0 ]
 }
 

@@ -299,40 +299,24 @@ tm_apply_templates_to_domain() {
 	if ! _template_approval_gate "apply" "$d" "$ids_text" "$mode"; then
 		return "$EX_SOFTWARE"
 	fi
-
-	new_json=$(jq --arg v "$merged_custom" '.custom_config = $v' <<<"$cur")
-	snapshot_project_json "$d" "$cur"
-	if _save_project_json "$new_json"; then
-		NGINX_RELOAD_NEEDED="true"
-		if _write_and_enable_nginx_config "$d" "$new_json"; then
-			if [ "${TEMPLATE_DEFER_RELOAD:-false}" != "true" ] && ! control_nginx_reload_if_needed; then
-				log_message ERROR "模板应用后 Nginx 重载失败。"
-				_save_project_json "$cur" || true
-				_write_and_enable_nginx_config "$d" "$cur" || true
-				NGINX_RELOAD_NEEDED="true"
-				control_nginx_reload_if_needed || true
-				return 1
-			fi
-			log_message SUCCESS "模板应用成功: ${d} ($mode, ${ids_text})"
-			finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
-			elapsed_ms=$((finished_at - started_at))
-			_append_template_audit_log "apply" "$d" "mode=${mode};ids=${ids_text}" 0 "$elapsed_ms"
-			printf '%b' "已应用模板组合: ${ids_text}\n"
-			printf '%b' "模式: $([ "$mode" = "replace" ] && printf '%s' "Site替换（覆盖）" || printf '%s' "Block追加（推荐）")\n"
-			return 0
-		fi
-		log_message ERROR "模板应用失败，开始回滚。"
-		_save_project_json "$cur" || true
-		_write_and_enable_nginx_config "$d" "$cur" || true
-		NGINX_RELOAD_NEEDED="true"
-		control_nginx_reload_if_needed || true
-		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
-		elapsed_ms=$((finished_at - started_at))
-		_append_template_audit_log "apply-failed" "$d" "mode=${mode};ids=${ids_text}" "$EX_SOFTWARE" "$elapsed_ms"
-		return 1
+	if ! preflight_hard_gate "template_apply:${d}"; then
+		return "${ERR_CFG_VALIDATE:-20}"
 	fi
 
-	log_message ERROR "保存项目 JSON 失败，模板未应用。"
+	new_json=$(jq --arg v "$merged_custom" '.custom_config = $v' <<<"$cur")
+	if _apply_project_transaction "$d" "$new_json" "$cur" "standard"; then
+		log_message SUCCESS "模板应用成功: ${d} ($mode, ${ids_text})"
+		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+		elapsed_ms=$((finished_at - started_at))
+		_append_template_audit_log "apply" "$d" "mode=${mode};ids=${ids_text}" 0 "$elapsed_ms"
+		printf '%b' "已应用模板组合: ${ids_text}\n"
+		printf '%b' "模式: $([ "$mode" = "replace" ] && printf '%s' "Site替换（覆盖）" || printf '%s' "Block追加（推荐）")\n"
+		return 0
+	fi
+	log_message ERROR "模板应用失败，事务已回滚。"
+	finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+	elapsed_ms=$((finished_at - started_at))
+	_append_template_audit_log "apply-failed" "$d" "mode=${mode};ids=${ids_text}" "$EX_SOFTWARE" "$elapsed_ms"
 	return 1
 }
 
@@ -403,37 +387,17 @@ tm_cleanup_template_blocks_for_domain() {
 	fi
 
 	new_json=$(jq --arg v "$cleaned_custom" '.custom_config = $v' <<<"$cur")
-	snapshot_project_json "$d" "$cur"
-	if _save_project_json "$new_json"; then
-		NGINX_RELOAD_NEEDED="true"
-		if _write_and_enable_nginx_config "$d" "$new_json"; then
-			if [ "${TEMPLATE_DEFER_RELOAD:-false}" != "true" ] && ! control_nginx_reload_if_needed; then
-				log_message ERROR "模板清理后 Nginx 重载失败。"
-				_save_project_json "$cur" || true
-				_write_and_enable_nginx_config "$d" "$cur" || true
-				NGINX_RELOAD_NEEDED="true"
-				control_nginx_reload_if_needed || true
-				return 1
-			fi
-			log_message SUCCESS "模板注释块清理成功: ${d}"
-			finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
-			elapsed_ms=$((finished_at - started_at))
-			_append_template_audit_log "cleanup" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" 0 "$elapsed_ms"
-			return 0
-		fi
-		log_message ERROR "模板清理应用失败，开始回滚。"
-		_save_project_json "$cur" || true
-		_write_and_enable_nginx_config "$d" "$cur" || true
-		# shellcheck disable=SC2034
-		NGINX_RELOAD_NEEDED="true"
-		control_nginx_reload_if_needed || true
+	if _apply_project_transaction "$d" "$new_json" "$cur" "standard"; then
+		log_message SUCCESS "模板注释块清理成功: ${d}"
 		finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
 		elapsed_ms=$((finished_at - started_at))
-		_append_template_audit_log "cleanup-failed" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" "$EX_SOFTWARE" "$elapsed_ms"
-		return 1
+		_append_template_audit_log "cleanup" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" 0 "$elapsed_ms"
+		return 0
 	fi
-
-	log_message ERROR "保存项目 JSON 失败，清理未应用。"
+	log_message ERROR "模板清理应用失败，事务已回滚。"
+	finished_at=$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")
+	elapsed_ms=$((finished_at - started_at))
+	_append_template_audit_log "cleanup-failed" "$d" "mode=${clean_mode};ids=${ids[*]:-all}" "$EX_SOFTWARE" "$elapsed_ms"
 	return 1
 }
 

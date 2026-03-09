@@ -80,6 +80,7 @@ ERR_CFG_INVALID_ARGS=2
 ERR_CFG_VALIDATE=20
 # shellcheck disable=SC2034
 ERR_CFG_WRITE=21
+ERR_TX_CONTRACT=31
 EX_USAGE=64
 EX_DATAERR=65
 EX_SOFTWARE=70
@@ -132,6 +133,10 @@ TEMPLATE_AUDIT_REPORT="false"
 TEMPLATE_APPROVAL_HOOK=""
 QUIET_MODE="false"
 PRECHECK_ONLY="false"
+PREFLIGHT_HARD_GATE="true"
+PREFLIGHT_GATE_CACHE_TS=0
+PREFLIGHT_GATE_CACHE_RESULT=1
+PREFLIGHT_GATE_CACHE_MAX_AGE_SECS="${PREFLIGHT_GATE_CACHE_MAX_AGE_SECS:-20}"
 SHOW_HELP="false"
 declare -A TEMPLATE_VARS=()
 
@@ -969,9 +974,11 @@ control_nginx() {
 
 	if [ "$action" != "reload" ]; then
 		if systemctl "$action" nginx >/dev/null 2>&1; then
+			if [ "$action" = "reload" ]; then NGINX_RELOAD_NEEDED="false"; fi
 			return 0
 		fi
 		log_message ERROR "Nginx $action 失败"
+		_tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=systemctl" "ERROR"
 		return 1
 	fi
 
@@ -979,18 +986,26 @@ control_nginx() {
 	strategy=$(_select_reload_strategy)
 	case "$strategy" in
 	systemctl)
-		if systemctl reload nginx >/dev/null 2>&1; then return 0; fi
+		if systemctl reload nginx >/dev/null 2>&1; then
+			NGINX_RELOAD_NEEDED="false"
+			_tx_emit_marker "RELOAD_OK" "strategy=systemctl"
+			return 0
+		fi
 		;;
 	nginx_conf:*)
 		local conf_path="${strategy#nginx_conf:}"
 		if run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
 			log_message INFO "已使用 nginx -c ${conf_path} -s reload。"
+			NGINX_RELOAD_NEEDED="false"
+			_tx_emit_marker "RELOAD_OK" "strategy=nginx_conf:${conf_path}"
 			return 0
 		fi
 		;;
 	nginx_plain)
 		if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
 			log_message INFO "已使用 nginx -s reload。"
+			NGINX_RELOAD_NEEDED="false"
+			_tx_emit_marker "RELOAD_OK" "strategy=nginx_plain"
 			return 0
 		fi
 		;;
@@ -1005,13 +1020,18 @@ control_nginx() {
 	conf_path=$(_extract_nginx_conf_from_master_cmd "$master_cmd" 2>/dev/null || true)
 	if [ -n "$conf_path" ] && run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
 		log_message WARN "已回退为 nginx -c ${conf_path} -s reload。"
+		NGINX_RELOAD_NEEDED="false"
+		_tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_conf:${conf_path}"
 		return 0
 	fi
 	if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
 		log_message WARN "已回退为 nginx -s reload。"
+		NGINX_RELOAD_NEEDED="false"
+		_tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_plain"
 		return 0
 	fi
 	log_message ERROR "Nginx $action 失败"
+	_tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=all_failed" "ERROR"
 	return 1
 }
 
@@ -1469,6 +1489,8 @@ _rebuild_all_nginx_configs() {
 	while read -r p; do
 		[ -z "$p" ] && continue
 		local d port
+		local old_json=""
+		local tx_json=""
 		d=$(jq -r .domain <<<"$p")
 		port=$(jq -r .resolved_port <<<"$p")
 		if ! _require_valid_domain "$d"; then
@@ -1483,7 +1505,9 @@ _rebuild_all_nginx_configs() {
 			continue
 		fi
 		log_message INFO "重建配置文件: $d ..."
-		if _write_and_enable_nginx_config "$d" "$p"; then
+		old_json=$(_get_project_json "$d")
+		tx_json=$(jq --arg tok "rebuild:${OP_ID:-manual}:${d}:$(date +%s)" '.idempotency_token = $tok' <<<"$p")
+		if _apply_project_transaction "$d" "$tx_json" "$old_json" "standard"; then
 			success=$((success + 1))
 		else
 			fail=$((fail + 1))
@@ -1491,9 +1515,7 @@ _rebuild_all_nginx_configs() {
 		fi
 	done <<<"$all_projects"
 	rm -f /etc/nginx/snippets/cf_allow.conf
-	log_message INFO "正在重载 Nginx..."
-	NGINX_RELOAD_NEEDED="true"
-	if control_nginx_reload_if_needed; then log_message SUCCESS "重建完成。成功: $success, 失败: $fail"; else log_message ERROR "Nginx 重载失败!"; fi
+	log_message SUCCESS "重建完成。成功: $success, 失败: $fail"
 }
 
 # ==============================================================================
@@ -2752,14 +2774,12 @@ _handle_modify_renew_settings() {
 	esac
 	local new_json
 	new_json=$(jq --arg cu "$ca_server" --arg cn "$ca_name" --arg m "$method" --arg dp "$provider" '.ca_server_url=$cu | .ca_server_name=$cn | .acme_validation_method=$m | .dns_api_provider=$dp' <<<"$cur")
-	snapshot_project_json "$d" "$cur"
-	if _save_project_json "$new_json"; then
+	if _apply_project_transaction "$d" "$new_json" "$cur" "standard"; then
 		printf '%b' "已更新: 证书续期设置 (CA/验证方式)\n"
 		printf '%b' "下次续期将自动应用。\n"
 	else
 		printf '%b' "保存失败: 证书续期设置\n"
 		printf '%b' "已回滚到原配置。\n"
-		_save_project_json "$cur"
 	fi
 	press_enter_to_continue
 }
@@ -2842,25 +2862,20 @@ _handle_set_custom_config() {
 		fi
 		new_json=$(jq --arg v "$json_val" '.custom_config = $v' <<<"$cur")
 	fi
-	snapshot_project_json "$d" "$cur"
-	if _save_project_json "$new_json"; then
-		NGINX_RELOAD_NEEDED="true"
-		if _write_and_enable_nginx_config "$d" "$new_json" && control_nginx_reload_if_needed; then
-			if [ "$update_max_body" = "true" ]; then
-				printf '%b' "已应用: 请求体大小上限 (client_max_body_size ${new_val})\n"
-			else
-				printf '%b' "已应用: 自定义指令\n"
-			fi
-			printf '%b' "Nginx 已重载。\n"
+	if _apply_project_transaction "$d" "$new_json" "$cur" "standard"; then
+		if [ "$update_max_body" = "true" ]; then
+			printf '%b' "已应用: 请求体大小上限 (client_max_body_size ${new_val})\n"
 		else
-			if [ "$update_max_body" = "true" ]; then
-				printf '%b' "应用失败: 请求体大小上限设置\n"
-			else
-				printf '%b' "应用失败: 自定义指令\n"
-			fi
-			printf '%b' "已回滚配置。\n"
-			_save_project_json "$cur"
+			printf '%b' "已应用: 自定义指令\n"
 		fi
+		printf '%b' "Nginx 已重载。\n"
+	else
+		if [ "$update_max_body" = "true" ]; then
+			printf '%b' "应用失败: 请求体大小上限设置\n"
+		else
+			printf '%b' "应用失败: 自定义指令\n"
+		fi
+		printf '%b' "已回滚配置。\n"
 	fi
 	press_enter_to_continue
 }
@@ -3877,23 +3892,8 @@ _set_cf_strict_mode_for_domain() {
 
 	local new_json
 	new_json=$(jq --arg v "$target" '.cf_strict_mode = $v' <<<"$cur")
-	snapshot_project_json "$d" "$cur"
-	if _save_project_json "$new_json"; then
-		if _write_and_enable_nginx_config "$d" "$new_json"; then
-			NGINX_RELOAD_NEEDED="true"
-			if control_nginx_reload_if_needed; then
-				return 0
-			fi
-			log_message ERROR "Nginx 重载失败，开始回滚项目: ${d}"
-			_save_project_json "$cur" || true
-			_write_and_enable_nginx_config "$d" "$cur" || true
-			NGINX_RELOAD_NEEDED="true"
-			control_nginx_reload_if_needed || true
-			return 1
-		fi
-		log_message ERROR "写入 Nginx 配置失败，开始回滚项目: ${d}"
-		_save_project_json "$cur" || true
-		return 1
+	if _apply_project_transaction "$d" "$new_json" "$cur" "standard"; then
+		return 0
 	fi
 	log_message ERROR "保存严格防御状态失败: ${d}"
 	return 1
@@ -4196,7 +4196,7 @@ main() {
 		install_dependencies
 	fi
 
-	if [[ " $* " =~ " --check " ]] || [[ " $* " =~ " --audit-only " ]]; then
+	if [ "${CHECK_ONLY:-false}" = "true" ]; then
 		run_diagnostics
 		return $?
 	fi
@@ -4206,11 +4206,11 @@ main() {
 	fi
 	initialize_environment
 
-	if [[ " $* " =~ " --cf-ip-update " ]]; then
+	if [ "${CF_IP_UPDATE_MODE:-false}" = "true" ]; then
 		_update_cloudflare_ips
 		return $?
 	fi
-	if [[ " $* " =~ " --cron " ]]; then
+	if [ "${CRON_MODE:-false}" = "true" ]; then
 		check_and_auto_renew_certs
 		return $?
 	fi
