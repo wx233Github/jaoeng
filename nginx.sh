@@ -130,6 +130,7 @@ TEMPLATE_ROLLBACK_BEFORE=""
 TEMPLATE_AUDIT_REPORT="false"
 TEMPLATE_APPROVAL_HOOK=""
 QUIET_MODE="false"
+PRECHECK_ONLY="false"
 SHOW_HELP="false"
 declare -A TEMPLATE_VARS=()
 
@@ -2533,6 +2534,117 @@ run_diagnostics() {
   log_info "自检完成"
 }
 
+_preflight_check_active_conf_include() {
+  local active_conf=""
+  active_conf=$(_get_active_nginx_main_conf)
+  if [ -z "$active_conf" ] || [ ! -f "$active_conf" ]; then
+    log_message ERROR "preflight: 未找到 active nginx 主配置: ${active_conf:-unknown}"
+    return 1
+  fi
+  if [ "$active_conf" = "/etc/nginx/nginx.conf" ]; then
+    return 0
+  fi
+  if grep -Eq 'include[[:space:]]+/etc/nginx/sites-enabled/\*\.conf;' "$active_conf" 2>/dev/null; then
+    return 0
+  fi
+  log_message ERROR "preflight: active 主配置未接入 /etc/nginx/sites-enabled/*.conf: ${active_conf}"
+  return 1
+}
+
+_preflight_check_reload_strategy() {
+  local strategy=""
+  strategy=$(_select_reload_strategy)
+  case "$strategy" in
+  systemctl)
+    if systemctl status nginx >/dev/null 2>&1; then return 0; fi
+    ;;
+  nginx_conf:*)
+    local conf_path="${strategy#nginx_conf:}"
+    if [ -f "$conf_path" ] && nginx -t -c "$conf_path" >/dev/null 2>&1; then return 0; fi
+    ;;
+  nginx_plain)
+    if nginx -t >/dev/null 2>&1; then return 0; fi
+    ;;
+  esac
+  log_message ERROR "preflight: reload 策略不可用(${strategy:-unknown})"
+  return 1
+}
+
+_preflight_check_template_assets() {
+  if ! _ensure_template_manifest_available >/dev/null 2>&1; then
+    log_message ERROR "preflight: 模板清单不可用: ${NGINX_TEMPLATE_MANIFEST}"
+    return 1
+  fi
+  local missing_count=0
+  local snippet=""
+  while IFS= read -r snippet; do
+    [ -z "$snippet" ] && continue
+    if [ ! -f "${NGINX_TEMPLATE_DIR}/${snippet}" ]; then
+      log_message ERROR "preflight: 缺失模板片段: ${NGINX_TEMPLATE_DIR}/${snippet}"
+      missing_count=$((missing_count + 1))
+    fi
+  done < <(jq -r '.templates[]?.snippet_file // empty' "$NGINX_TEMPLATE_MANIFEST" 2>/dev/null || true)
+  [ "$missing_count" -eq 0 ]
+}
+
+_preflight_check_mcp_token_refs() {
+  local ok=0
+  local domain=""
+  local token_ref=""
+  local mcp_path=""
+  while IFS=$'\t' read -r domain mcp_path token_ref; do
+    [ -z "$domain" ] && continue
+    [ -z "$mcp_path" ] && continue
+    if [ -z "$token_ref" ]; then
+      log_message ERROR "preflight: ${domain} 已启用 MCP 路径但缺少 mcp_token_ref"
+      ok=1
+      continue
+    fi
+    if ! _require_safe_path "$token_ref" "preflight MCP token 引用"; then
+      ok=1
+      continue
+    fi
+    if [ ! -f "$token_ref" ]; then
+      log_message ERROR "preflight: ${domain} 的 mcp_token_ref 文件不存在: ${token_ref}"
+      ok=1
+      continue
+    fi
+    local perm=""
+    perm=$(stat -c '%a' "$token_ref" 2>/dev/null || true)
+    if [ -n "$perm" ] && [ "$perm" != "600" ]; then
+      log_message WARN "preflight: ${domain} 的 token 文件权限建议为 600，当前 ${perm}"
+    fi
+    local token=""
+    token=$(_read_mcp_token_from_ref "$token_ref" 2>/dev/null || true)
+    if ! _is_valid_mcp_token "$token"; then
+      log_message ERROR "preflight: ${domain} 的 token 引用无效"
+      ok=1
+    fi
+  done < <(jq -r '.[] | [(.domain // ""), (.mcp_protect_path // ""), (.mcp_token_ref // "")] | @tsv' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
+
+  [ "$ok" -eq 0 ]
+}
+
+run_preflight() {
+  _generate_op_id
+  log_message INFO "开始执行 preflight 运行前检查"
+  local fail=0
+  check_dependencies || fail=$((fail + 1))
+  _preflight_check_active_conf_include || fail=$((fail + 1))
+  _preflight_check_reload_strategy || fail=$((fail + 1))
+  _preflight_check_template_assets || fail=$((fail + 1))
+  _preflight_check_mcp_token_refs || fail=$((fail + 1))
+  if [ -f /etc/nginx/nginx.conf ] && grep -qE '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+    _stream_module_available || fail=$((fail + 1))
+  fi
+  if [ "$fail" -gt 0 ]; then
+    log_message ERROR "preflight 失败: ${fail} 项检查未通过"
+    return "$ERR_CFG_VALIDATE"
+  fi
+  log_message SUCCESS "preflight 通过"
+  return 0
+}
+
 _delete_project_json() {
   snapshot_json "$PROJECTS_METADATA_FILE"
   local domain="${1:-}"
@@ -3947,14 +4059,13 @@ _handle_reconfigure_project() {
     log_message WARN "取消。"
     return
   fi
-  snapshot_project_json "$d" "$cur"
+  local old_json="$cur"
+  snapshot_project_json "$d" "$old_json"
   if [ "$skip_cert" == "false" ]; then if ! _issue_and_install_certificate "$new"; then
     log_message ERROR "证书申请失败。"
     return 1
   fi; fi
-  if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$d" "$new"; fi
-  NGINX_RELOAD_NEEDED="true"
-  if _save_project_json "$new" && control_nginx_reload_if_needed; then
+  if _apply_project_transaction "$d" "$new" "$old_json" "$mode"; then
     printf '%b' "重配完成: ${d}\n"
     if [ -n "$LAST_CERT_ELAPSED" ]; then printf '%b' "申请耗时: ${LAST_CERT_ELAPSED}\n"; fi
     if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
@@ -3967,11 +4078,7 @@ _handle_reconfigure_project() {
     printf '%b' "已重载 Nginx。\n"
   else
     printf '%b' "重配失败: ${d}\n"
-    printf '%b' "已回滚到原配置。\n"
-    _save_project_json "$cur"
-    if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$d" "$cur"; fi
-    NGINX_RELOAD_NEEDED="true"
-    control_nginx_reload_if_needed || true
+    printf '%b' "已自动回滚到原配置。\n"
   fi
   press_enter_to_continue
 }
@@ -5502,6 +5609,60 @@ check_and_auto_renew_certs() {
   log_message INFO "批量任务结束: $success 成功, $fail 失败。"
 }
 
+_rollback_project_transaction() {
+  local domain="${1:-}"
+  local old_json="${2:-}"
+  local mode="${3:-standard}"
+  if [ -z "$domain" ]; then return 1; fi
+
+  if [ -n "$old_json" ]; then
+    _save_project_json "$old_json" || true
+  else
+    _delete_project_json "$domain" || true
+  fi
+
+  if [ "$mode" != "cert_only" ]; then
+    if [ -n "$old_json" ]; then
+      _write_and_enable_nginx_config "$domain" "$old_json" || true
+    else
+      _remove_and_disable_nginx_config "$domain" || true
+    fi
+  fi
+
+  NGINX_RELOAD_NEEDED="true"
+  control_nginx_reload_if_needed || true
+  return 0
+}
+
+_apply_project_transaction() {
+  local domain="${1:-}"
+  local new_json="${2:-}"
+  local old_json="${3:-}"
+  local mode="${4:-standard}"
+  if [ -z "$domain" ] || [ -z "$new_json" ]; then return 1; fi
+
+  if ! _save_project_json "$new_json"; then
+    log_message ERROR "事务失败: 项目元数据写入失败"
+    return 1
+  fi
+
+  if [ "$mode" != "cert_only" ]; then
+    if ! _write_and_enable_nginx_config "$domain" "$new_json"; then
+      log_message ERROR "事务失败: 站点配置写入失败，开始回滚。"
+      _rollback_project_transaction "$domain" "$old_json" "$mode"
+      return 1
+    fi
+  fi
+
+  NGINX_RELOAD_NEEDED="true"
+  if ! control_nginx_reload_if_needed; then
+    log_message ERROR "事务失败: Nginx 重载失败，开始回滚。"
+    _rollback_project_transaction "$domain" "$old_json" "$mode"
+    return 1
+  fi
+  return 0
+}
+
 configure_nginx_projects() {
   _generate_op_id
   local mode="${1:-standard}"
@@ -5513,16 +5674,14 @@ configure_nginx_projects() {
   fi
 
   _issue_and_install_certificate "$json"
-  local ret=$?
   local domain method
   IFS=$'\t' read -r domain method < <(jq -r '[.domain, (.acme_validation_method // "")] | @tsv' <<<"$json")
+  local old_json=""
+  old_json=$(_get_project_json "$domain")
   local cert="$SSL_CERTS_BASE_DIR/$domain.cer"
   if [ -f "$cert" ] || [ "$method" = "reuse" ]; then
     snapshot_project_json "$domain" "$json"
-    _save_project_json "$json"
-    if [ "$mode" != "cert_only" ]; then _write_and_enable_nginx_config "$domain" "$json"; fi
-    NGINX_RELOAD_NEEDED="true"
-    if control_nginx_reload_if_needed; then
+    if _apply_project_transaction "$domain" "$json" "$old_json" "$mode"; then
       log_message SUCCESS "配置已保存。"
       if [ -n "$LAST_CERT_ELAPSED" ]; then printf '%b' "\n申请耗时: ${LAST_CERT_ELAPSED}\n"; fi
       if [ -n "$LAST_CERT_CERT" ] && [ -n "$LAST_CERT_KEY" ]; then
@@ -5533,7 +5692,7 @@ configure_nginx_projects() {
         printf '%b' "\n网站已上线: https://${domain}\n"
       fi
     else
-      log_message WARN "配置已保存,但 Nginx 重载失败,请手动处理。"
+      log_message WARN "配置失败，已执行回滚。"
     fi
   else log_message ERROR "证书申请失败,未保存。"; fi
 }
@@ -5641,6 +5800,10 @@ main() {
 
   if [[ " $* " =~ " --check " ]] || [[ " $* " =~ " --audit-only " ]]; then
     run_diagnostics
+    return $?
+  fi
+  if [ "${PRECHECK_ONLY:-false}" = "true" ]; then
+    run_preflight
     return $?
   fi
   initialize_environment
