@@ -1776,6 +1776,9 @@ _prepare_http01_challenge() {
 	if ss -tuln 2>/dev/null | grep -qE ':(80|443)\s'; then
 		local temp_svc
 		temp_svc=$(_detect_web_service)
+		if [ -z "$temp_svc" ] && pgrep -x nginx >/dev/null 2>&1; then
+			temp_svc="nginx"
+		fi
 		if [ -z "$temp_svc" ]; then
 			log_message ERROR "检测到 80/443 端口被占用，但无法识别占用服务。请手动释放端口或停用相关服务后重试。"
 			return 1
@@ -2134,7 +2137,7 @@ _prompt_ca_selection() {
 	local ca_server="https://acme-v02.api.letsencrypt.org/directory"
 	local ca_name="letsencrypt"
 	local -a ca_list=("1. Let's Encrypt (默认推荐)" "2. ZeroSSL" "3. Google Public CA")
-	_render_menu "选择 CA 机构" "${ca_list[@]}"
+	_render_menu "选择 CA 机构" "${ca_list[@]}" >&2
 	local ca_choice
 	while true; do
 		ca_choice=$(prompt_menu_choice "1-3")
@@ -2263,8 +2266,13 @@ _detect_reusable_wildcard_cert() {
 			reuse_wc="true"
 			local wp
 			wp=$(_get_project_json "$wc_match")
-			wc_cert=$(jq -r .cert_file <<<"$wp")
-			wc_key=$(jq -r .key_file <<<"$wp")
+			if jq -e . >/dev/null 2>&1 <<<"$wp"; then
+				wc_cert=$(jq -r '.cert_file // empty' <<<"$wp" 2>/dev/null || true)
+				wc_key=$(jq -r '.key_file // empty' <<<"$wp" 2>/dev/null || true)
+			else
+				log_message WARN "复用证书配置读取异常，已回退为常规申请流程。"
+				reuse_wc="false"
+			fi
 		fi
 	fi
 
@@ -2278,8 +2286,8 @@ _prompt_backend_target_for_project() {
 	local port=""
 
 	local old_type old_port target_default
-	old_type=$(jq -r '.type // "local_port"' <<<"$cur")
-	old_port=$(jq -r '.resolved_port // ""' <<<"$cur")
+	old_type=$(jq -r '.type // "local_port"' <<<"$cur" 2>/dev/null || printf '%s' "local_port")
+	old_port=$(jq -r '.resolved_port // ""' <<<"$cur" 2>/dev/null || printf '%s' "")
 	target_default="$name"
 	if [ "$old_type" = "local_port" ] && [ -n "$old_port" ] && [ "$old_port" != "null" ] && [ "$old_port" != "cert_only" ]; then
 		target_default="$old_port"
@@ -2318,6 +2326,10 @@ _gather_project_details() {
 	exec 3>&1
 	exec 1>&2
 	local cur="${1:-{}}"
+	if [ "$cur" != "{}" ] && ! jq -e . >/dev/null 2>&1 <<<"$cur"; then
+		log_message WARN "检测到损坏的项目配置 JSON，已回退为默认空配置。"
+		cur="{}"
+	fi
 	local skip_cert="${2:-false}"
 	local is_cert_only="false"
 	if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
