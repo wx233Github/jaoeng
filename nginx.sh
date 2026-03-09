@@ -1776,6 +1776,10 @@ _prepare_http01_challenge() {
 	if ss -tuln 2>/dev/null | grep -qE ':(80|443)\s'; then
 		local temp_svc
 		temp_svc=$(_detect_web_service)
+		if [ -z "$temp_svc" ]; then
+			log_message ERROR "检测到 80/443 端口被占用，但无法识别占用服务。请手动释放端口或停用相关服务后重试。"
+			return 1
+		fi
 		if [ "$temp_svc" = "nginx" ]; then
 			if [ ! -f "$NGINX_SITES_AVAILABLE_DIR/$domain.conf" ]; then
 				if ! _require_safe_path "$temp_conf_ref" "临时配置"; then return 1; fi
@@ -2161,6 +2165,7 @@ _prompt_validation_method_selection() {
 	local method="http-01"
 	local provider=""
 	local wildcard="n"
+	local method_delim=$'\x01'
 
 	local -a method_display=("1. http-01 (智能无中断 Webroot / Standalone)" "2. dns_cf  (Cloudflare API)" "3. dns_ali (阿里云 API)")
 	_render_menu "验证方式" "${method_display[@]}" >&2
@@ -2196,7 +2201,7 @@ _prompt_validation_method_selection() {
 		;;
 	esac
 
-	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$method" "$provider" "$wildcard" "$is_cert_only" "$type" "$port"
+	printf '%s%s%s%s%s%s%s%s%s%s%s\n' "$method" "$method_delim" "$provider" "$method_delim" "$wildcard" "$method_delim" "$is_cert_only" "$method_delim" "$type" "$method_delim" "$port"
 }
 
 _build_project_payload_json() {
@@ -2312,7 +2317,7 @@ _prompt_backend_target_for_project() {
 _gather_project_details() {
 	exec 3>&1
 	exec 1>&2
-	local cur="${1:-{\}}"
+	local cur="${1:-{}}"
 	local skip_cert="${2:-false}"
 	local is_cert_only="false"
 	if [ "${3:-}" == "cert_only" ]; then is_cert_only="true"; fi
@@ -2410,8 +2415,9 @@ _gather_project_details() {
 			exec 1>&3
 			return 1
 		fi
+		local method_delim=$'\x01'
 		old_ifs="$IFS"
-		IFS=$'\t' read -r method provider wildcard is_cert_only type port <<<"$method_pair"
+		IFS="$method_delim" read -r method provider wildcard is_cert_only type port <<<"$method_pair"
 		IFS="$old_ifs"
 	fi
 
