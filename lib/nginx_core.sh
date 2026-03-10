@@ -21,6 +21,9 @@ sanitize_noninteractive_flag() {
 TTY_FALLBACK_WARNED="false"
 
 _tty_available() {
+	if [ ! -t 0 ] && [ ! -t 1 ]; then
+		return 1
+	fi
 	[ -r /dev/tty ] && [ -w /dev/tty ]
 }
 

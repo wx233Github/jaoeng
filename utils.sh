@@ -188,6 +188,9 @@ validate_args() {
 
 # --- 交互函数 ---
 _tty_available() {
+	if [ ! -t 0 ] && [ ! -t 1 ]; then
+		return 1
+	fi
 	[ -r "${JB_TTY_PATH:-/dev/tty}" ] && [ -w "${JB_TTY_PATH:-/dev/tty}" ]
 }
 
