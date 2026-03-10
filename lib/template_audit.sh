@@ -36,6 +36,10 @@ tm_append_template_audit_log() {
   local rc="${4:-0}"
   local elapsed_ms="${5:-0}"
   local actor="${SUDO_USER:-${USER:-unknown}}"
+  if [ "${DRY_RUN:-false}" = "true" ]; then
+    log_message INFO "[DRY-RUN] 跳过模板审计写入: ${action} ${domain}"
+    return 0
+  fi
   local log_path
   log_path=$(_sanitize_log_file "$NGINX_TEMPLATE_AUDIT_LOG" 2>/dev/null || true)
   [ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
