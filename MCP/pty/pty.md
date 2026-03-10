@@ -1,9 +1,9 @@
 # PTY-runner usage policy (opencode MCP)
 
-When a task requires running commands or interacting with terminal UI, always use the MCP server `pty-runner` rather than guessing outputs.
+When a task requires running commands or interacting with terminal UI, always use the MCP server `one-mcp` rather than guessing outputs.
 
-## When to use pty-runner
-使用 `pty-runner` for any of the following:
+## When to use one-mcp
+Use `one-mcp` for any of the following:
 - Interactive CLI menus / prompts (e.g. "choice", "请输入选项", "Press Enter", yes/no prompts)
 - Programs that require a TTY (full-screen UI, curses, installers, scripts that behave differently without a terminal)
 - Anything where you need to show real command output to the user
