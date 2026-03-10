@@ -23,6 +23,8 @@ DEFAULT_LOG_LEVEL="INFO"
 DEFAULT_ENABLE_AUTO_UPDATE="true"
 DEFAULT_NONINTERACTIVE="false"
 # shellcheck disable=SC2034
+DEFAULT_TTY_PATH="/dev/tty"
+# shellcheck disable=SC2034
 DEFAULT_CLEAR_MODE="off"
 
 readonly -a UTILS_PUBLIC_API=(
@@ -185,6 +187,20 @@ validate_args() {
 }
 
 # --- 交互函数 ---
+_tty_available() {
+	[ -r "${JB_TTY_PATH:-/dev/tty}" ] && [ -w "${JB_TTY_PATH:-/dev/tty}" ]
+}
+
+_stdin_has_data() {
+	if [ -t 0 ]; then
+		return 0
+	fi
+	if read -r -t 0; then
+		return 0
+	fi
+	return 1
+}
+
 _prompt_user_input() {
 	local prompt_text="$1"
 	local default_value="$2"
@@ -195,13 +211,18 @@ _prompt_user_input() {
 		echo "$default_value"
 		return 0
 	fi
-	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+	if [ -t 0 ]; then
+		read -r -p "${YELLOW}${prompt_text}${NC}" result
+	elif _stdin_has_data; then
+		read -r result
+	elif _tty_available; then
+		printf '%b' "${YELLOW}${prompt_text}${NC}" >"${JB_TTY_PATH:-/dev/tty}"
+		read -r result <"${JB_TTY_PATH:-/dev/tty}"
+	else
 		log_warn "无法访问 /dev/tty，使用默认值"
 		echo "$default_value"
 		return 0
 	fi
-	printf '%b' "${YELLOW}${prompt_text}${NC}" >/dev/tty
-	read -r result </dev/tty
 
 	if [ -z "$result" ]; then
 		echo "$default_value"
@@ -243,16 +264,26 @@ _prompt_for_menu_choice() {
 		echo ""
 		return 0
 	fi
-	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-		log_warn "无法访问 /dev/tty，返回空选项"
-		echo ""
-		return 0
-	fi
-	printf '%b' "$prompt_text" >/dev/tty
-	if read -r choice </dev/tty; then
+	if [ -t 0 ]; then
+		read -r -p "$prompt_text" choice
 		echo "$choice"
 		return 0
 	fi
+	if _stdin_has_data; then
+		read -r choice
+		echo "$choice"
+		return 0
+	fi
+	if _tty_available; then
+		printf '%b' "$prompt_text" >"${JB_TTY_PATH:-/dev/tty}"
+		if read -r choice <"${JB_TTY_PATH:-/dev/tty}"; then
+			echo "$choice"
+			return 0
+		fi
+	fi
+	log_warn "无法访问 /dev/tty，返回空选项"
+	echo ""
+	return 0
 	if [ "${JB_FORCE_REFRESH:-0}" = "1" ]; then
 		echo "__JB_REFRESH__"
 		return 0
@@ -266,12 +297,21 @@ press_enter_to_continue() {
 		log_warn "非交互模式：跳过等待"
 		return 0
 	fi
-	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-		log_warn "无法访问 /dev/tty，跳过等待"
+	if [ -t 0 ]; then
+		read -r -p "\n${YELLOW}按 Enter 键继续...${NC}"
 		return 0
 	fi
-	printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}" >/dev/tty
-	read -r </dev/tty
+	if _stdin_has_data; then
+		read -r
+		return 0
+	fi
+	if _tty_available; then
+		printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}" >"${JB_TTY_PATH:-/dev/tty}"
+		read -r <"${JB_TTY_PATH:-/dev/tty}"
+		return 0
+	fi
+	log_warn "无法访问 /dev/tty，跳过等待"
+	return 0
 }
 confirm_action() {
 	local prompt="$1"
@@ -280,12 +320,17 @@ confirm_action() {
 		log_warn "非交互模式：默认确认"
 		return 0
 	fi
-	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+	if [ -t 0 ]; then
+		read -r -p "${YELLOW}${prompt} ([y]/n): ${NC}" choice
+	elif _stdin_has_data; then
+		read -r choice
+	elif _tty_available; then
+		printf '%b' "${YELLOW}${prompt} ([y]/n): ${NC}" >"${JB_TTY_PATH:-/dev/tty}"
+		read -r choice <"${JB_TTY_PATH:-/dev/tty}"
+	else
 		log_warn "无法访问 /dev/tty，默认确认"
 		return 0
 	fi
-	printf '%b' "${YELLOW}${prompt} ([y]/n): ${NC}" >/dev/tty
-	read -r choice </dev/tty
 	case "$choice" in n | N) return 1 ;; *) return 0 ;; esac
 }
 
@@ -361,6 +406,7 @@ load_config() {
 	fi
 	JB_ENABLE_AUTO_UPDATE="${JB_ENABLE_AUTO_UPDATE:-$DEFAULT_ENABLE_AUTO_UPDATE}"
 	JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-$DEFAULT_NONINTERACTIVE}"
+	JB_TTY_PATH="${JB_TTY_PATH:-$DEFAULT_TTY_PATH}"
 	# shellcheck disable=SC2034
 	JB_CLEAR_MODE="off"
 	LOG_FILE="${LOG_FILE:-${DEFAULT_LOG_FILE}}"

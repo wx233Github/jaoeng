@@ -98,6 +98,7 @@ configure_nginx_projects() {
 
 main_menu() {
 	_generate_op_id
+	_ensure_menu_interactive
 	while true; do
 		_draw_dashboard
 		printf '%b' "${PURPLE}【HTTP(S) 业务】${NC}\n"
@@ -163,4 +164,17 @@ main_menu() {
 		*) log_message ERROR "无效选择" ;;
 		esac
 	done
+}
+
+_ensure_menu_interactive() {
+	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
+		return 0
+	fi
+	if [ "${IS_INTERACTIVE_MODE}" = "true" ]; then
+		return 0
+	fi
+	if [ -t 0 ] || _tty_available; then
+		IS_INTERACTIVE_MODE="true"
+		log_message WARN "检测到交互终端，已恢复交互模式"
+	fi
 }
