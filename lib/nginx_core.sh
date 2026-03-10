@@ -43,12 +43,14 @@ _read_input() {
 _read_input_prompt() {
 	local prompt_text="${1:-}"
 	if [ -t 0 ]; then
-		read -r -p "$(printf '%b' "$prompt_text")"
+		printf '%b' "$prompt_text"
+		read -r
 		return $?
 	fi
 	if _tty_available; then
 		_log_tty_fallback_once
-		read -r -p "$(printf '%b' "$prompt_text")" </dev/tty
+		printf '%b' "$prompt_text" >/dev/tty
+		read -r </dev/tty
 		return $?
 	fi
 	return 1
@@ -57,12 +59,14 @@ _read_input_prompt() {
 _read_secret_input_prompt() {
 	local prompt_text="${1:-}"
 	if [ -t 0 ]; then
-		read -rs -p "$(printf '%b' "$prompt_text")"
+		printf '%b' "$prompt_text"
+		read -rs
 		return $?
 	fi
 	if _tty_available; then
 		_log_tty_fallback_once
-		read -rs -p "$(printf '%b' "$prompt_text")" </dev/tty
+		printf '%b' "$prompt_text" >/dev/tty
+		read -rs </dev/tty
 		return $?
 	fi
 	return 1
@@ -784,6 +788,12 @@ prompt_menu_choice() {
 	local allow_empty="${2:-false}"
 	local prompt_text="${BRIGHT_YELLOW}选项 [${range}]${NC} (Enter 返回): "
 	local choice
+	if [ "${JB_NONINTERACTIVE:-false}" != "true" ] && [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+		if [ -t 0 ] || _tty_available; then
+			IS_INTERACTIVE_MODE="true"
+			log_message WARN "检测到交互终端，已恢复交互模式"
+		fi
+	fi
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
 		if [ "$allow_empty" = "true" ]; then
 			printf '%b' "\n"
