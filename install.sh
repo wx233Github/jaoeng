@@ -571,89 +571,7 @@ run_comprehensive_auto_update() {
   fi
 }
 
-# --- 下载逻辑选择与切换 ---
-# 下载逻辑模式: modern(增强校验+依赖同步) / legacy(旧版简化下载)
-get_download_impl() {
-  local impl="${JB_DOWNLOAD_IMPL:-}"
-  if [ -n "$impl" ]; then
-    printf '%s\n' "${impl,,}"
-    return 0
-  fi
-  if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
-    impl=$(jq -r '.download_impl // empty' "$CONFIG_PATH" 2>/dev/null || true)
-  fi
-  if [ -z "${impl:-}" ] || [ "$impl" = "null" ]; then
-    impl="modern"
-  fi
-  printf '%s\n' "${impl,,}"
-}
-
-_set_download_impl() {
-  local impl="$1"
-  case "$impl" in
-  modern | legacy) ;;
-  *)
-    log_err "下载逻辑值非法: ${impl}"
-    return 1
-    ;;
-  esac
-  if ! command -v jq >/dev/null 2>&1; then
-    log_err "缺少 jq，无法写入下载逻辑配置。"
-    return 1
-  fi
-  if [ ! -f "$CONFIG_PATH" ]; then
-    log_err "配置文件不存在，无法写入下载逻辑。"
-    return 1
-  fi
-  require_safe_path_or_die "$CONFIG_PATH" "更新下载逻辑配置" || return 1
-  local tmp_file
-  tmp_file=$(create_temp_file) || return 1
-  if ! jq --arg val "$impl" '.download_impl=$val' "$CONFIG_PATH" >"$tmp_file"; then
-    log_err "写入下载逻辑配置失败。"
-    return 1
-  fi
-  run_with_sudo mv "$tmp_file" "$CONFIG_PATH"
-  log_success "下载逻辑已切换为: ${impl}"
-}
-
-toggle_download_impl() {
-  if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
-    log_warn "非交互模式下无法切换下载逻辑。"
-    return 0
-  fi
-  local current
-  current=$(get_download_impl)
-  printf '%b' "\n当前下载逻辑: ${GREEN}${current}${NC}\n"
-  printf '%b' "1. modern（增强校验与依赖同步，推荐）\n"
-  printf '%b' "2. legacy（旧版简化下载，兼容）\n\n"
-  local choice
-  choice=$(_prompt_for_menu_choice "1-2" "")
-  if [ -z "$choice" ]; then
-    log_info "已取消切换。"
-    return 0
-  fi
-  case "$choice" in
-  1) _set_download_impl "modern" ;;
-  2) _set_download_impl "legacy" ;;
-  *) log_warn "无效选项。" ;;
-  esac
-}
-
 download_module_to_cache() {
-  local impl
-  impl=$(get_download_impl)
-  case "$impl" in
-  legacy) download_module_to_cache_legacy "$@" ;;
-  modern) download_module_to_cache_modern "$@" ;;
-  *)
-    log_warn "未知下载逻辑: ${impl}，已回退为 modern。"
-    download_module_to_cache_modern "$@"
-    ;;
-  esac
-}
-
-# 现代下载逻辑（当前默认逻辑）
-download_module_to_cache_modern() {
   local script_name="$1"
   local mode="${2:-}"
   local local_file="${INSTALL_DIR}/$script_name"
@@ -689,39 +607,6 @@ download_module_to_cache_modern() {
     fi
     return 1
   fi
-}
-
-# 旧版下载逻辑（复刻 4f8de9c3f42ca0abbdd71bc497c860491bf527e7）
-download_module_to_cache_legacy() {
-  local script_name="$1"
-  local mode="${2:-}"
-  local local_file="${INSTALL_DIR}/$script_name"
-  local tmp_file
-  tmp_file=$(create_temp_file)
-  if [ "$mode" != "auto" ]; then
-    log_info "  -> 检查/下载模块: ${script_name}"
-  fi
-  run_with_sudo mkdir -p "$(dirname "$local_file")"
-  if ! curl -fsSL "${BASE_URL}/${script_name}?_=$(date +%s)" -o "$tmp_file"; then
-    if [ "$mode" != "auto" ]; then
-      log_err "     模块 (${script_name}) 下载失败。"
-    fi
-    return 1
-  fi
-  local remote_hash
-  remote_hash=$(sed 's/\r$//' <"$tmp_file" | sha256sum | awk '{print $1}')
-  local local_hash="no_local_file"
-  [ -f "$local_file" ] && local_hash=$(sed 's/\r$//' <"$local_file" | sha256sum | awk '{print $1}')
-  if [ "$local_hash" != "$remote_hash" ]; then
-    if [ "$mode" != "auto" ]; then
-      log_success "     模块 (${script_name}) 已更新。"
-    fi
-    run_with_sudo mv "$tmp_file" "$local_file"
-    run_with_sudo chmod +x "$local_file"
-    return 0
-  fi
-  rm -f "$tmp_file"
-  return 1
 }
 
 ensure_module_sidecar_libs() {
@@ -995,6 +880,162 @@ validate_noninteractive_flag() {
     log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
     JB_NONINTERACTIVE="false"
     return 0
+    ;;
+  esac
+}
+
+get_startup_update_mode() {
+  local mode="background"
+  if command -v jq >/dev/null 2>&1 && [ -f "$CONFIG_PATH" ]; then
+    mode=$(jq -r '.startup_update_mode // empty' "$CONFIG_PATH" 2>/dev/null || true)
+  fi
+  case "${mode:-}" in
+  legacy | background)
+    printf '%s' "$mode"
+    ;;
+  *)
+    printf '%s' "background"
+    ;;
+  esac
+}
+
+set_startup_update_mode() {
+  local mode="${1:-}"
+  case "$mode" in
+  legacy | background)
+    :
+    ;;
+  *)
+    log_warn "startup_update_mode 值非法: ${mode}"
+    return 1
+    ;;
+  esac
+
+  if ! command -v jq >/dev/null 2>&1; then
+    log_warn "未安装 jq，无法写入 startup_update_mode"
+    return 1
+  fi
+  if [ ! -f "$CONFIG_PATH" ]; then
+    log_warn "配置文件不存在，无法写入 startup_update_mode"
+    return 1
+  fi
+  if ! jq -e . "$CONFIG_PATH" >/dev/null 2>&1; then
+    log_warn "配置文件格式异常，无法写入 startup_update_mode"
+    return 1
+  fi
+
+  local tmp_file
+  tmp_file=$(create_temp_file) || return 1
+  if ! jq --arg mode "$mode" '.startup_update_mode=$mode' "$CONFIG_PATH" >"$tmp_file"; then
+    log_warn "写入 startup_update_mode 失败"
+    return 1
+  fi
+  run_with_sudo mv "$tmp_file" "$CONFIG_PATH"
+  log_success "启动更新模式已设置为: ${mode}"
+  return 0
+}
+
+toggle_startup_update_mode() {
+  local current_mode next_mode
+  current_mode=$(get_startup_update_mode)
+  if [ "$current_mode" = "legacy" ]; then
+    next_mode="background"
+  else
+    next_mode="legacy"
+  fi
+  log_info "正在切换启动更新模式: ${current_mode} -> ${next_mode}"
+  set_startup_update_mode "$next_mode"
+}
+
+restart_main_script() {
+  local -a args=("${@:-}")
+  flock -u 200 2>/dev/null || true
+  trap - EXIT
+  JB_RESTARTED="true"
+  export JB_RESTARTED
+  if [ "$(id -u)" -eq 0 ]; then
+    exec bash "$FINAL_SCRIPT_PATH" "${args[@]:-}"
+  fi
+  if sudo -n true 2>/dev/null; then
+    exec sudo -n -E bash "$FINAL_SCRIPT_PATH" "${args[@]:-}"
+  fi
+  exec_script_with_sudo "$FINAL_SCRIPT_PATH" "${args[@]:-}"
+}
+
+run_startup_update_legacy() {
+  log_info "脚本启动 (${SCRIPT_VERSION})" >&2
+  if [ "${JB_RESTARTED:-false}" = "true" ]; then
+    log_info "脚本已由自身重启，跳过初始更新检查。" >&2
+    return 0
+  fi
+
+  printf "$(_log_prefix)${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+  local -a updated_files_list=()
+  mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
+  printf "\r$(_log_prefix)${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+
+  local restart_needed=false
+  local update_messages=""
+
+  if [ ${#updated_files_list[@]} -gt 0 ]; then
+    local file=""
+    for file in "${updated_files_list[@]}"; do
+      [ -z "$file" ] && continue
+      local filename
+      filename=$(basename "$file")
+      if [ "$filename" = "install.sh" ]; then
+        restart_needed=true
+        update_messages+="主程序 (install.sh) 已更新\n"
+      else
+        update_messages+="${GREEN}${filename}${NC} 已更新\n"
+      fi
+    done
+
+    for file in "${updated_files_list[@]}"; do
+      if [ "$(basename "$file")" = "config.json" ]; then
+        update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
+        break
+      fi
+    done
+
+    if [ -n "$update_messages" ]; then
+      log_info "发现以下更新:" >&2
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        log_success "$line" >&2
+      done <<<"$(printf '%b' "$update_messages")"
+    fi
+
+    if [ "$restart_needed" = true ]; then
+      log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
+      restart_main_script "${@:-}"
+    fi
+  fi
+}
+
+run_startup_update_background() {
+  start_auto_update_background "${@:-}"
+}
+
+handle_auto_update_core_restart() {
+  if [ "${JB_RESTARTED:-false}" = "true" ]; then
+    return 0
+  fi
+  if [ "${AUTO_UPDATE_STATE:-}" = "updated_core" ] || [ "${AUTO_UPDATE_UPDATED_CORE:-false}" = "true" ]; then
+    log_success "检测到主程序已更新，正在无缝重启以应用更新... 🚀"
+    restart_main_script "${@:-}"
+  fi
+}
+
+run_startup_update_flow() {
+  local mode
+  mode=$(get_startup_update_mode)
+  case "$mode" in
+  legacy)
+    run_startup_update_legacy "${@:-}"
+    ;;
+  background | *)
+    run_startup_update_background "${@:-}"
     ;;
   esac
 }
@@ -1435,6 +1476,7 @@ start_auto_update_background() {
 display_and_process_menu() {
   while true; do
     refresh_auto_update_state
+    handle_auto_update_core_restart "${@:-}"
     if should_clear_screen "install:${CURRENT_MENU_NAME}"; then clear; fi
     local menu_json
     menu_json=$(jq -r --arg menu "$CURRENT_MENU_NAME" '.menus[$menu]' "$CONFIG_PATH" 2>/dev/null || true)
@@ -1695,7 +1737,7 @@ main() {
 
   :
 
-  start_auto_update_background "${@:-}"
+  run_startup_update_flow "${@:-}"
 
   check_sudo_privileges
   display_and_process_menu "${@:-}"
