@@ -52,16 +52,16 @@ readonly -a UTILS_PUBLIC_API=(
 # --- 颜色定义 ---
 if [ -t 1 ] || [ "${FORCE_COLOR:-}" = "true" ]; then
 	# shellcheck disable=SC2034
-	RED='\033[0;31m'
-	GREEN='\033[0;32m'
-	YELLOW='\033[0;33m'
+	RED=$'\033[0;31m'
+	GREEN=$'\033[0;32m'
+	YELLOW=$'\033[0;33m'
 	# shellcheck disable=SC2034
-	BLUE='\033[0;34m'
+	BLUE=$'\033[0;34m'
 	# shellcheck disable=SC2034
-	CYAN='\033[0;36m'
-	NC='\033[0m'
-	BOLD='\033[1m'
-	ORANGE='\033[38;5;208m' # 橙色 #FA720A
+	CYAN=$'\033[0;36m'
+	NC=$'\033[0m'
+	BOLD=$'\033[1m'
+	ORANGE=$'\033[38;5;208m' # 橙色 #FA720A
 else
 	# shellcheck disable=SC2034
 	RED=""
@@ -208,20 +208,30 @@ _prompt_user_input() {
 	local prompt_text="$1"
 	local default_value="$2"
 	local result
+	local prompt_target
 
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		log_warn "非交互模式：使用默认值"
 		echo "$default_value"
 		return 0
 	fi
+	if [ -t 1 ]; then
+		prompt_target="/dev/stdout"
+	elif _tty_available; then
+		prompt_target="${JB_TTY_PATH:-/dev/tty}"
+	else
+		prompt_target="/dev/stderr"
+	fi
 	if [ -t 0 ]; then
-		read -r -p "${YELLOW}${prompt_text}${NC}" result
+		printf '%b' "${YELLOW}${prompt_text}${NC}" >"$prompt_target"
+		read -r result
 	elif _stdin_has_data; then
 		read -r result
 	elif _tty_available; then
 		printf '%b' "${YELLOW}${prompt_text}${NC}" >"${JB_TTY_PATH:-/dev/tty}"
 		read -r result <"${JB_TTY_PATH:-/dev/tty}"
 	else
+		printf '%b' "${YELLOW}${prompt_text}${NC}" >&2
 		log_warn "无法访问 /dev/tty，使用默认值"
 		echo "$default_value"
 		return 0
@@ -238,6 +248,7 @@ _prompt_for_menu_choice() {
 	local numeric_range="$1"
 	local func_options="${2:-}"
 	local prompt_text="${ORANGE}>${NC} 选项 "
+	local prompt_target
 
 	if [ -n "$numeric_range" ]; then
 		local start="${numeric_range%%-*}"
@@ -267,8 +278,16 @@ _prompt_for_menu_choice() {
 		echo ""
 		return 0
 	fi
+	if [ -t 1 ]; then
+		prompt_target="/dev/stdout"
+	elif _tty_available; then
+		prompt_target="${JB_TTY_PATH:-/dev/tty}"
+	else
+		prompt_target="/dev/stderr"
+	fi
 	if [ -t 0 ]; then
-		read -r -p "$prompt_text" choice
+		printf '%b' "$prompt_text" >"$prompt_target"
+		read -r choice
 		echo "$choice"
 		return 0
 	fi
@@ -284,9 +303,8 @@ _prompt_for_menu_choice() {
 			return 0
 		fi
 	fi
+	printf '%b' "$prompt_text" >&2
 	log_warn "无法访问 /dev/tty，返回空选项"
-	echo ""
-	return 0
 	if [ "${JB_FORCE_REFRESH:-0}" = "1" ]; then
 		echo "__JB_REFRESH__"
 		return 0
@@ -296,12 +314,21 @@ _prompt_for_menu_choice() {
 }
 
 press_enter_to_continue() {
+	local prompt_target
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		log_warn "非交互模式：跳过等待"
 		return 0
 	fi
+	if [ -t 1 ]; then
+		prompt_target="/dev/stdout"
+	elif _tty_available; then
+		prompt_target="${JB_TTY_PATH:-/dev/tty}"
+	else
+		prompt_target="/dev/stderr"
+	fi
 	if [ -t 0 ]; then
-		read -r -p "\n${YELLOW}按 Enter 键继续...${NC}"
+		printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}" >"$prompt_target"
+		read -r
 		return 0
 	fi
 	if _stdin_has_data; then
@@ -313,24 +340,35 @@ press_enter_to_continue() {
 		read -r <"${JB_TTY_PATH:-/dev/tty}"
 		return 0
 	fi
+	printf '%b' "\n${YELLOW}按 Enter 键继续...${NC}" >&2
 	log_warn "无法访问 /dev/tty，跳过等待"
 	return 0
 }
 confirm_action() {
 	local prompt="$1"
 	local choice
+	local prompt_target
 	if [ "${JB_NONINTERACTIVE:-false}" = "true" ]; then
 		log_warn "非交互模式：默认确认"
 		return 0
 	fi
+	if [ -t 1 ]; then
+		prompt_target="/dev/stdout"
+	elif _tty_available; then
+		prompt_target="${JB_TTY_PATH:-/dev/tty}"
+	else
+		prompt_target="/dev/stderr"
+	fi
 	if [ -t 0 ]; then
-		read -r -p "${YELLOW}${prompt} ([y]/n): ${NC}" choice
+		printf '%b' "${YELLOW}${prompt} ([y]/n): ${NC}" >"$prompt_target"
+		read -r choice
 	elif _stdin_has_data; then
 		read -r choice
 	elif _tty_available; then
 		printf '%b' "${YELLOW}${prompt} ([y]/n): ${NC}" >"${JB_TTY_PATH:-/dev/tty}"
 		read -r choice <"${JB_TTY_PATH:-/dev/tty}"
 	else
+		printf '%b' "${YELLOW}${prompt} ([y]/n): ${NC}" >&2
 		log_warn "无法访问 /dev/tty，默认确认"
 		return 0
 	fi
