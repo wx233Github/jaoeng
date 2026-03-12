@@ -1,12 +1,16 @@
 # PTY-runner usage policy (opencode MCP)
 
-When a task requires running commands or interacting with terminal UI, always use the MCP server `onemcp` rather than guessing outputs.
+When a task requires interactive terminal UI or TTY-only behavior, use the MCP server `onemcp` rather than guessing outputs.
 
 ## When to use one-mcp
 使用 `one-mcp` for any of the following:
 - Interactive CLI menus / prompts (e.g. "choice", "请输入选项", "Press Enter", yes/no prompts)
 - Programs that require a TTY (full-screen UI, curses, installers, scripts that behave differently without a terminal)
-- Anything where you need to show real command output to the user
+- Anything that depends on real TTY behavior or full-fidelity terminal output
+
+For non-interactive, simple inspection commands (e.g. path checks, listing files, showing configs), you may use the standard bash tool as long as you still show real command output and avoid guessing.
+
+When using a PTY session, always verify the runtime environment first (e.g. `pwd`, `ls`) because PTY sessions may start in a different working directory.
 
 ## How to use (required workflow)
 1. Start a session with `pty_spawn`.
