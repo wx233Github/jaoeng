@@ -691,13 +691,14 @@ _generate_env_file() {
 			echo "WATCHTOWER_NOTIFICATIONS=shoutrrr"
 			echo "WATCHTOWER_NOTIFICATION_URL=telegram://${TG_BOT_TOKEN}@telegram?parsemode=Markdown&preview=false&channels=${TG_CHAT_ID}"
 			echo "WATCHTOWER_NO_STARTUP_MESSAGE=true"
+			echo "WATCHTOWER_NOTIFICATION_REPORT=true"
 
 			local br='{{ "\n" }}'
 			local template_time
 			template_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 			cat <<EOF | tr -d '\n' >>"$target_file"
-WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_masked}\`${br}🌐 *IPv4:* \`${ipv4_masked}\`${br}🌐 *IPv6:* \`${ipv6_masked}\`${br}⌚ *时间:* \`${template_time}\`${br}${br}📄 *状态:* 已扫描 \`{{ len .Report.Scanned }}\`，更新 \`{{ len .Report.Updated }}\`，失败 \`{{ len .Report.Failed }}\`${br}🧹 *清理状态:* {{- if gt (len .Report.Failed) 0 }}\`需人工检查（存在更新失败）\`{{- else }}\`已执行（--cleanup）\`{{- end }}${br}{{- if .Report.Updated }}${br}🧾 *更新详情:*${br}{{- range .Report.Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Report.Failed }}${br}❌ *失败详情:*${br}{{- range .Report.Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}
+WATCHTOWER_NOTIFICATION_TEMPLATE=✅ *容器自动更新通知*${br}${br}🖥️ *主机:* \`${alias_masked}\`${br}🌐 *IPv4:* \`${ipv4_masked}\`${br}🌐 *IPv6:* \`${ipv6_masked}\`${br}⌚ *时间:* \`${template_time}\`${br}${br}{{- with .Report }}📄 *状态:* 已扫描 \`{{ len .Scanned }}\`，更新 \`{{ len .Updated }}\`，失败 \`{{ len .Failed }}\`${br}🧹 *清理状态:* {{- if gt (len .Failed) 0 }}\`需人工检查（存在更新失败）\`{{- else }}\`已执行（--cleanup）\`{{- end }}${br}{{- if .Updated }}${br}🧾 *更新详情:*${br}{{- range .Updated }}• \`{{ .Name }}\` 从 \`{{ .CurrentImageID.ShortID }}\` 更新到 \`{{ .LatestImageID.ShortID }}\`${br}{{- end }}{{- end }}{{- if .Failed }}${br}❌ *失败详情:*${br}{{- range .Failed }}• \`{{ .Name }}\` : {{ .Error }}${br}{{- end }}{{- end }}{{- end }}
 EOF
 			printf '\n' >>"$target_file"
 		fi
