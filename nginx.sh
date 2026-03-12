@@ -26,22 +26,42 @@ NGINX_PATH_FIXED="false"
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 
 # --- 全局变量 ---
-readonly NC="\033[0m"
-# shellcheck disable=SC2034
-readonly BLACK="\033[30m"
-readonly RED="\033[31m"
-readonly GREEN="\033[32m"
-readonly YELLOW="\033[33m"
-# shellcheck disable=SC2034
-readonly BLUE="\033[34m"
-readonly PURPLE="\033[35m"
-readonly CYAN="\033[36m"
-# shellcheck disable=SC2034
-readonly WHITE="\033[37m"
-readonly BRIGHT_RED="\033[91m"
-readonly BRIGHT_YELLOW="\033[93m"
-readonly GRAY="\033[2m"
-readonly BOLD="\033[1m"
+if [ -t 1 ] || [ -t 2 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+  NC="\033[0m"
+  # shellcheck disable=SC2034
+  BLACK="\033[30m"
+  RED="\033[31m"
+  GREEN="\033[32m"
+  YELLOW="\033[33m"
+  # shellcheck disable=SC2034
+  BLUE="\033[34m"
+  PURPLE="\033[35m"
+  CYAN="\033[36m"
+  # shellcheck disable=SC2034
+  WHITE="\033[37m"
+  BRIGHT_RED="\033[91m"
+  BRIGHT_YELLOW="\033[93m"
+  GRAY="\033[2m"
+  BOLD="\033[1m"
+else
+  NC=""
+  # shellcheck disable=SC2034
+  BLACK=""
+  RED=""
+  GREEN=""
+  YELLOW=""
+  # shellcheck disable=SC2034
+  BLUE=""
+  PURPLE=""
+  CYAN=""
+  # shellcheck disable=SC2034
+  WHITE=""
+  BRIGHT_RED=""
+  BRIGHT_YELLOW=""
+  GRAY=""
+  BOLD=""
+fi
+readonly NC BLACK RED GREEN YELLOW BLUE PURPLE CYAN WHITE BRIGHT_RED BRIGHT_YELLOW GRAY BOLD
 
 LOG_FILE_DEFAULT="/var/log/nginx_ssl_manager.log"
 LOG_FILE_FALLBACK="/tmp/nginx_ssl_manager.log"
