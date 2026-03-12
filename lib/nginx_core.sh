@@ -43,7 +43,13 @@ _read_input() {
 _read_input_prompt() {
 	local prompt_text="${1:-}"
 	if [ -t 0 ]; then
-		printf '%b' "$prompt_text"
+		if [ -t 1 ]; then
+			printf '%b' "$prompt_text"
+		elif _tty_available; then
+			printf '%b' "$prompt_text" >/dev/tty
+		else
+			printf '%b' "$prompt_text" >&2
+		fi
 		read -r
 		return $?
 	fi
@@ -59,7 +65,13 @@ _read_input_prompt() {
 _read_secret_input_prompt() {
 	local prompt_text="${1:-}"
 	if [ -t 0 ]; then
-		printf '%b' "$prompt_text"
+		if [ -t 1 ]; then
+			printf '%b' "$prompt_text"
+		elif _tty_available; then
+			printf '%b' "$prompt_text" >/dev/tty
+		else
+			printf '%b' "$prompt_text" >&2
+		fi
 		read -rs
 		return $?
 	fi
