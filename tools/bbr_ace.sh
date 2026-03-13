@@ -44,15 +44,15 @@ USE_UTILS_UI=0
 UTILS_RUNTIME_PATH=""
 
 readonly CONFIG_FILES=(
-	"${SYSCTL_CONF}"
-	"${NIC_OPT_SERVICE}"
-	"${MODULES_CONF}"
-	"${MODPROBE_BBR_CONF}"
-	"${MODPROBE_CONN_CONF}"
-	"${LIMITS_CONF}"
-	"${SYSTEMD_SYS_CONF}"
-	"${SYSTEMD_USR_CONF}"
-	"${MODE_STATE_FILE}"
+  "${SYSCTL_CONF}"
+  "${NIC_OPT_SERVICE}"
+  "${MODULES_CONF}"
+  "${MODPROBE_BBR_CONF}"
+  "${MODPROBE_CONN_CONF}"
+  "${LIMITS_CONF}"
+  "${SYSTEMD_SYS_CONF}"
+  "${SYSTEMD_USR_CONF}"
+  "${MODE_STATE_FILE}"
 )
 
 readonly COLOR_RESET='\033[0m'
@@ -68,229 +68,229 @@ readonly BBR_ACE_RUNTIME_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 mkdir -p "${BASE_DIR}" "${BACKUP_DIR}"
 
 ensure_runtime_path() {
-	export PATH=''
-	PATH="${BBR_ACE_RUNTIME_PATH}"
+  export PATH=''
+  PATH="${BBR_ACE_RUNTIME_PATH}"
 }
 
 init_utils_ui() {
-	local candidate=""
-	for candidate in "${UTILS_PRIMARY_PATH}" "${UTILS_FALLBACK_PATH}"; do
-		if [[ ! -r "${candidate}" ]]; then
-			continue
-		fi
+  local candidate=""
+  for candidate in "${UTILS_PRIMARY_PATH}" "${UTILS_FALLBACK_PATH}"; do
+    if [[ ! -r "${candidate}" ]]; then
+      continue
+    fi
 
-		if ! load_utils_runtime "${candidate}"; then
-			continue
-		fi
+    if ! load_utils_runtime "${candidate}"; then
+      continue
+    fi
 
-		if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
-			USE_UTILS_UI=1
-			UTILS_RUNTIME_PATH="${candidate}"
-			return 0
-		fi
-	done
+    if declare -f _render_menu >/dev/null 2>&1 && declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
+      USE_UTILS_UI=1
+      UTILS_RUNTIME_PATH="${candidate}"
+      return 0
+    fi
+  done
 
-	USE_UTILS_UI=0
-	UTILS_RUNTIME_PATH=""
-	return 1
+  USE_UTILS_UI=0
+  UTILS_RUNTIME_PATH=""
+  return 1
 }
 
 utils_render_menu_external() {
-	local title="${1:-}"
-	shift
-	local -a lines=("$@")
+  local title="${1:-}"
+  shift
+  local -a lines=("$@")
 
-	if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
-		return 1
-	fi
+  if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
+    return 1
+  fi
 
-	if declare -f _render_menu >/dev/null 2>&1; then
-		_render_menu "${title}" "${lines[@]}"
-		return 0
-	fi
+  if declare -f _render_menu >/dev/null 2>&1; then
+    _render_menu "${title}" "${lines[@]}"
+    return 0
+  fi
 
-	return 1
+  return 1
 }
 
 utils_prompt_choice_external() {
-	local numeric_range="${1:-}"
+  local numeric_range="${1:-}"
 
-	if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
-		return 1
-	fi
+  if [[ -z "${UTILS_RUNTIME_PATH}" || ! -r "${UTILS_RUNTIME_PATH}" ]]; then
+    return 1
+  fi
 
-	if ! declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
-		return 1
-	fi
-	_prompt_for_menu_choice "${numeric_range}" ""
+  if ! declare -f _prompt_for_menu_choice >/dev/null 2>&1; then
+    return 1
+  fi
+  _prompt_for_menu_choice "${numeric_range}" ""
 }
 
 load_utils_runtime() {
-	local candidate="${1:-}"
-	local had_nounset=0
-	if [[ -z "${candidate}" || ! -r "${candidate}" ]]; then
-		return 1
-	fi
-	case "$-" in
-	*u*)
-		had_nounset=1
-		set +u
-		;;
-	esac
-	# shellcheck disable=SC1090
-	if ! source "${candidate}" >/dev/null 2>&1; then
-		if [[ "${had_nounset}" -eq 1 ]]; then set -u; fi
-		return 1
-	fi
-	if [[ "${had_nounset}" -eq 1 ]]; then set -u; fi
-	return 0
+  local candidate="${1:-}"
+  local had_nounset=0
+  if [[ -z "${candidate}" || ! -r "${candidate}" ]]; then
+    return 1
+  fi
+  case "$-" in
+  *u*)
+    had_nounset=1
+    set +u
+    ;;
+  esac
+  # shellcheck disable=SC1090
+  if ! source "${candidate}" >/dev/null 2>&1; then
+    if [[ "${had_nounset}" -eq 1 ]]; then set -u; fi
+    return 1
+  fi
+  if [[ "${had_nounset}" -eq 1 ]]; then set -u; fi
+  return 0
 }
 
 ui_generate_line() {
-	local len="${1:-40}"
-	local char="${2:-─}"
-	local spaces=""
-	if [[ "${len}" -le 0 ]]; then
-		printf ""
-		return 0
-	fi
-	printf -v spaces "%${len}s" ""
-	printf "%s" "${spaces// /${char}}"
+  local len="${1:-40}"
+  local char="${2:-─}"
+  local spaces=""
+  if [[ "${len}" -le 0 ]]; then
+    printf ""
+    return 0
+  fi
+  printf -v spaces "%${len}s" ""
+  printf "%s" "${spaces// /${char}}"
 }
 
 ui_get_visual_width() {
-	local text="${1:-}"
-	local plain_text=""
-	plain_text="$(printf '%b' "${text}" | sed 's/\x1b\[[0-9;]*m//g')"
-	if [[ -z "${plain_text}" ]]; then
-		printf "0"
-		return 0
-	fi
-	if command -v python3 >/dev/null 2>&1; then
-		python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<<"${plain_text}" 2>/dev/null || printf "%s" "${#plain_text}"
-	else
-		printf "%s" "${#plain_text}"
-	fi
+  local text="${1:-}"
+  local plain_text=""
+  plain_text="$(printf '%b' "${text}" | sed 's/\x1b\[[0-9;]*m//g')"
+  if [[ -z "${plain_text}" ]]; then
+    printf "0"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import unicodedata,sys; s=sys.stdin.read(); print(sum(2 if unicodedata.east_asian_width(c) in ('W','F','A') else 1 for c in s.strip()))" <<<"${plain_text}" 2>/dev/null || printf "%s" "${#plain_text}"
+  else
+    printf "%s" "${#plain_text}"
+  fi
 }
 
 ui_render_menu() {
-	local title="${1:-}"
-	shift
-	local -a lines=("$@")
-	if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
-		if utils_render_menu_external "${title}" "${lines[@]}"; then
-			return 0
-		fi
-		USE_UTILS_UI=0
-		UTILS_RUNTIME_PATH=""
-	fi
+  local title="${1:-}"
+  shift
+  local -a lines=("$@")
+  if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
+    if utils_render_menu_external "${title}" "${lines[@]}"; then
+      return 0
+    fi
+    USE_UTILS_UI=0
+    UTILS_RUNTIME_PATH=""
+  fi
 
-	local max_content_width=0
-	local title_width=0
-	local current_width=0
-	local box_inner_width=0
-	local pad_total=0
-	local pad_left=0
-	local pad_right=0
-	local line=""
+  local max_content_width=0
+  local title_width=0
+  local current_width=0
+  local box_inner_width=0
+  local pad_total=0
+  local pad_left=0
+  local pad_right=0
+  local line=""
 
-	title_width="$(ui_get_visual_width "${title}")"
-	max_content_width="${title_width}"
-	for line in "${lines[@]}"; do
-		current_width="$(ui_get_visual_width "${line}")"
-		if [[ "${current_width}" -gt "${max_content_width}" ]]; then
-			max_content_width="${current_width}"
-		fi
-	done
-	box_inner_width="${max_content_width}"
-	if [[ "${box_inner_width}" -lt 56 ]]; then
-		box_inner_width=56
-	fi
+  title_width="$(ui_get_visual_width "${title}")"
+  max_content_width="${title_width}"
+  for line in "${lines[@]}"; do
+    current_width="$(ui_get_visual_width "${line}")"
+    if [[ "${current_width}" -gt "${max_content_width}" ]]; then
+      max_content_width="${current_width}"
+    fi
+  done
+  box_inner_width="${max_content_width}"
+  if [[ "${box_inner_width}" -lt 56 ]]; then
+    box_inner_width=56
+  fi
 
-	printf "\n"
-	printf "%b\n" "${COLOR_GREEN}╭$(ui_generate_line "${box_inner_width}" "─")╮${COLOR_RESET}"
-	if [[ -n "${title}" ]]; then
-		pad_total=$((box_inner_width - title_width))
-		pad_left=$((pad_total / 2))
-		pad_right=$((pad_total - pad_left))
-		printf "%b\n" "${COLOR_GREEN}│${COLOR_RESET}$(printf '%*s' "${pad_left}" "")${UI_BOLD}${title}${COLOR_RESET}$(printf '%*s' "${pad_right}" "")${COLOR_GREEN}│${COLOR_RESET}"
-	fi
-	printf "%b\n" "${COLOR_GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${COLOR_RESET}"
-	for line in "${lines[@]}"; do
-		printf "%b\n" "${line}"
-	done
-	printf "%b\n" "${COLOR_GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${COLOR_RESET}"
+  printf "\n"
+  printf "%b\n" "${COLOR_GREEN}╭$(ui_generate_line "${box_inner_width}" "─")╮${COLOR_RESET}"
+  if [[ -n "${title}" ]]; then
+    pad_total=$((box_inner_width - title_width))
+    pad_left=$((pad_total / 2))
+    pad_right=$((pad_total - pad_left))
+    printf "%b\n" "${COLOR_GREEN}│${COLOR_RESET}$(printf '%*s' "${pad_left}" "")${UI_BOLD}${title}${COLOR_RESET}$(printf '%*s' "${pad_right}" "")${COLOR_GREEN}│${COLOR_RESET}"
+  fi
+  printf "%b\n" "${COLOR_GREEN}╰$(ui_generate_line "${box_inner_width}" "─")╯${COLOR_RESET}"
+  for line in "${lines[@]}"; do
+    printf "%b\n" "${line}"
+  done
+  printf "%b\n" "${COLOR_GREEN}$(ui_generate_line "$((box_inner_width + 2))" "─")${COLOR_RESET}"
 }
 
 ui_should_clear_menu() {
-	local menu_key="${1:-bbr_ace:default}"
+  local menu_key="${1:-bbr_ace:default}"
 
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		return 1
-	fi
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    return 1
+  fi
 
-	if [[ "${USE_UTILS_UI}" -eq 1 ]] && [[ -n "${UTILS_RUNTIME_PATH}" ]] && [[ -r "${UTILS_RUNTIME_PATH}" ]]; then
-		if declare -f should_clear_screen >/dev/null 2>&1 && should_clear_screen "${menu_key}"; then
-			return 0
-		fi
-	fi
+  if [[ "${USE_UTILS_UI}" -eq 1 ]] && [[ -n "${UTILS_RUNTIME_PATH}" ]] && [[ -r "${UTILS_RUNTIME_PATH}" ]]; then
+    if declare -f should_clear_screen >/dev/null 2>&1 && should_clear_screen "${menu_key}"; then
+      return 0
+    fi
+  fi
 
-	return 1
+  return 1
 }
 
 ui_prompt_choice() {
-	local numeric_range="${1:-}"
-	local prompt_text="${2:-选项}"
-	local choice=""
-	if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
-		if choice="$(utils_prompt_choice_external "${numeric_range}")"; then
-			printf "%s" "${choice}"
-			return 0
-		fi
-		USE_UTILS_UI=0
-		UTILS_RUNTIME_PATH=""
-	fi
+  local numeric_range="${1:-}"
+  local prompt_text="${2:-选项}"
+  local choice=""
+  if [[ "${USE_UTILS_UI}" -eq 1 ]]; then
+    if choice="$(utils_prompt_choice_external "${numeric_range}")"; then
+      printf "%s" "${choice}"
+      return 0
+    fi
+    USE_UTILS_UI=0
+    UTILS_RUNTIME_PATH=""
+  fi
 
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		printf ""
-		return 0
-	fi
-	if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
-		printf ""
-		return 0
-	fi
-	printf "%b" "${UI_ORANGE}> ${COLOR_RESET}${prompt_text} [${numeric_range}] (↩ 返回): " >/dev/tty
-	read -r choice </dev/tty || choice=""
-	printf "%s" "${choice}"
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    printf ""
+    return 0
+  fi
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    printf ""
+    return 0
+  fi
+  printf "%b" "${UI_ORANGE}> ${COLOR_RESET}${prompt_text} [${numeric_range}] (↩ 返回): " >/dev/tty
+  read -r choice </dev/tty || choice=""
+  printf "%s" "${choice}"
 }
 
 level_to_num() {
-	local level="${1:-INFO}"
-	case "${level}" in
-	ERROR) echo 0 ;;
-	WARN) echo 1 ;;
-	INFO) echo 2 ;;
-	DEBUG) echo 3 ;;
-	*) echo 2 ;;
-	esac
+  local level="${1:-INFO}"
+  case "${level}" in
+  ERROR) echo 0 ;;
+  WARN) echo 1 ;;
+  INFO) echo 2 ;;
+  DEBUG) echo 3 ;;
+  *) echo 2 ;;
+  esac
 }
 
 log_msg() {
-	local level="${1}"
-	local color="${2}"
-	shift 2
-	local msg="$*"
-	local ts
-	ts="$(date '+%F %T')"
+  local level="${1}"
+  local color="${2}"
+  shift 2
+  local msg="$*"
+  local ts
+  ts="$(date '+%F %T')"
 
-	local target_num current_num
-	target_num="$(level_to_num "${level}")"
-	current_num="$(level_to_num "${LOG_LEVEL}")"
+  local target_num current_num
+  target_num="$(level_to_num "${level}")"
+  current_num="$(level_to_num "${LOG_LEVEL}")"
 
-	if [[ "${target_num}" -le "${current_num}" ]]; then
-		printf "%b[%s] %s%b\n" "${color}" "${level}" "${msg}" "${COLOR_RESET}" >&2
-	fi
-	printf "[%s] [%s] %s\n" "${ts}" "${level}" "${msg}" >>"${LOG_FILE}"
+  if [[ "${target_num}" -le "${current_num}" ]]; then
+    printf "%b[%s] %s%b\n" "${color}" "${level}" "${msg}" "${COLOR_RESET}" >&2
+  fi
+  printf "[%s] [%s] %s\n" "${ts}" "${level}" "${msg}" >>"${LOG_FILE}"
 }
 
 log_info() { log_msg "INFO" "${COLOR_GREEN}" "$*"; }
@@ -299,818 +299,818 @@ log_error() { log_msg "ERROR" "${COLOR_RED}" "$*"; }
 log_step() { log_msg "STEP" "${COLOR_CYAN}" "$*"; }
 
 die() {
-	local exit_code="${1:-1}"
-	shift || true
-	log_error "$*"
-	exit "${exit_code}"
+  local exit_code="${1:-1}"
+  shift || true
+  log_error "$*"
+  exit "${exit_code}"
 }
 
 cleanup() {
-	:
+  :
 }
 
 error_handler() {
-	local exit_code="${1:-1}"
-	local line_no="${2:-0}"
-	local command="${3:-unknown}"
-	if [[ "${exit_code}" -ne 0 ]]; then
-		log_error "脚本异常退出! (Line: ${line_no}, Command: '${command}', ExitCode: ${exit_code})"
-	fi
-	exit "${exit_code}"
+  local exit_code="${1:-1}"
+  local line_no="${2:-0}"
+  local command="${3:-unknown}"
+  if [[ "${exit_code}" -ne 0 ]]; then
+    log_error "脚本异常退出! (Line: ${line_no}, Command: '${command}', ExitCode: ${exit_code})"
+  fi
+  exit "${exit_code}"
 }
 
 trap cleanup EXIT
 trap 'error_handler $? ${LINENO} "${BASH_COMMAND}"' ERR
 
 ensure_safe_path() {
-	local target="${1:-}"
-	if [[ -z "${target}" || "${target}" == "/" ]]; then
-		die 1 "拒绝对危险路径执行破坏性操作: '${target}'"
-	fi
+  local target="${1:-}"
+  if [[ -z "${target}" || "${target}" == "/" ]]; then
+    die 1 "拒绝对危险路径执行破坏性操作: '${target}'"
+  fi
 }
 
 parse_dry_run_args() {
-	RUN_ARGS=()
-	local arg=""
-	for arg in "$@"; do
-		if [[ "$arg" == "--dry-run" ]]; then
-			DRY_RUN="true"
-			continue
-		fi
-		RUN_ARGS+=("$arg")
-	done
-	if [[ "$DRY_RUN" == "true" ]]; then
-		log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
-	fi
+  RUN_ARGS=()
+  local arg=""
+  for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+      DRY_RUN="true"
+      continue
+    fi
+    RUN_ARGS+=("$arg")
+  done
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log_warn "已启用 dry-run：破坏性操作仅记录，不实际执行。"
+  fi
 }
 
 run_destructive_cmd() {
-	if [[ "$DRY_RUN" == "true" ]]; then
-		log_info "[DRY-RUN] $*"
-		return 0
-	fi
-	"$@"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log_info "[DRY-RUN] $*"
+    return 0
+  fi
+  "$@"
 }
 
 sanitize_noninteractive_flag() {
-	case "${JB_NONINTERACTIVE}" in
-	true | false) return 0 ;;
-	*)
-		log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
-		JB_NONINTERACTIVE="false"
-		;;
-	esac
+  case "${JB_NONINTERACTIVE}" in
+  true | false) return 0 ;;
+  *)
+    log_warn "JB_NONINTERACTIVE 值非法: ${JB_NONINTERACTIVE}，已回退为 false"
+    JB_NONINTERACTIVE="false"
+    ;;
+  esac
 }
 
 read_confirm() {
-	local prompt="${1:-确认继续? [Y/n]: }"
-	local reply=""
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		log_warn "非交互模式：默认是"
-		return 0
-	fi
-	read -r -p "${prompt}" reply </dev/tty
-	case "${reply,,}" in
-	"" | y | yes) return 0 ;;
-	n | no) return 1 ;;
-	*) return 1 ;;
-	esac
+  local prompt="${1:-确认继续? [Y/n]: }"
+  local reply=""
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    log_warn "非交互模式：默认是"
+    return 0
+  fi
+  read -r -p "${prompt}" reply </dev/tty
+  case "${reply,,}" in
+  "" | y | yes) return 0 ;;
+  n | no) return 1 ;;
+  *) return 1 ;;
+  esac
 }
 
 detect_script_invocation_source() {
-	case "$0" in
-	/dev/fd/* | /proc/self/fd/*)
-		return 0
-		;;
-	*)
-		return 1
-		;;
-	esac
+  case "$0" in
+  /dev/fd/* | /proc/self/fd/*)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
 }
 
 reexec_with_sudo_or_die() {
-	if ! command -v sudo >/dev/null 2>&1; then
-		die 1 "需要 root 权限，且未安装 sudo。"
-	fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    die 1 "需要 root 权限，且未安装 sudo。"
+  fi
 
-	if detect_script_invocation_source; then
-		local tmp_script=""
-		tmp_script="$(mktemp /tmp/bbr_ace.XXXXXX.sh)"
-		if [[ -z "${tmp_script}" ]]; then
-			die 1 "创建临时脚本失败，无法自动提权。"
-		fi
-		cat <"$0" >"${tmp_script}" || die 1 "复制临时脚本失败，无法自动提权。"
-		chmod 700 "${tmp_script}" || true
-		if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-			if sudo -n true 2>/dev/null; then
-				exec sudo -n -E bash "${tmp_script}" "$@"
-			fi
-			die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
-		fi
-		exec sudo -E bash "${tmp_script}" "$@"
-	fi
+  if detect_script_invocation_source; then
+    local tmp_script=""
+    tmp_script="$(mktemp /tmp/bbr_ace.XXXXXX.sh)"
+    if [[ -z "${tmp_script}" ]]; then
+      die 1 "创建临时脚本失败，无法自动提权。"
+    fi
+    cat <"$0" >"${tmp_script}" || die 1 "复制临时脚本失败，无法自动提权。"
+    chmod 700 "${tmp_script}" || true
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+      if sudo -n true 2>/dev/null; then
+        exec sudo -n -E bash "${tmp_script}" "$@"
+      fi
+      die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
+    fi
+    exec sudo -E bash "${tmp_script}" "$@"
+  fi
 
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		if sudo -n true 2>/dev/null; then
-			exec sudo -n -E bash "$0" "$@"
-		fi
-		die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
-	fi
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    if sudo -n true 2>/dev/null; then
+      exec sudo -n -E bash "$0" "$@"
+    fi
+    die 1 "非交互模式下无法自动提权（需要免密 sudo）。"
+  fi
 
-	exec sudo -E bash "$0" "$@"
+  exec sudo -E bash "$0" "$@"
 }
 
 read_required_yes() {
-	local prompt="${1:-请输入 yes 继续，其他输入取消: }"
-	local reply=""
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		log_warn "非交互模式：高风险操作默认取消"
-		return 1
-	fi
-	read -r -p "${prompt}" reply </dev/tty
-	[[ "${reply,,}" == "yes" ]]
+  local prompt="${1:-请输入 yes 继续，其他输入取消: }"
+  local reply=""
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    log_warn "非交互模式：高风险操作默认取消"
+    return 1
+  fi
+  read -r -p "${prompt}" reply </dev/tty
+  [[ "${reply,,}" == "yes" ]]
 }
 
 high_risk_guard() {
-	local action_title="${1:-高风险操作}"
-	local impact_summary="${2:-该操作可能影响系统核心网络能力与可用性。}"
-	echo -e "${COLOR_RED}⚠ 高风险操作: ${action_title}${COLOR_RESET}"
-	echo -e "${COLOR_YELLOW}影响摘要:${COLOR_RESET} ${impact_summary}"
-	if ! read_confirm "是否继续查看二次确认? [y/N]: "; then
-		log_warn "已取消: ${action_title}"
-		return 1
-	fi
-	if ! read_required_yes "二次确认：请输入 yes 执行 ${action_title}: "; then
-		log_warn "已取消: ${action_title}"
-		return 1
-	fi
-	return 0
+  local action_title="${1:-高风险操作}"
+  local impact_summary="${2:-该操作可能影响系统核心网络能力与可用性。}"
+  echo -e "${COLOR_RED}⚠ 高风险操作: ${action_title}${COLOR_RESET}"
+  echo -e "${COLOR_YELLOW}影响摘要:${COLOR_RESET} ${impact_summary}"
+  if ! read_confirm "是否继续查看二次确认? [y/N]: "; then
+    log_warn "已取消: ${action_title}"
+    return 1
+  fi
+  if ! read_required_yes "二次确认：请输入 yes 执行 ${action_title}: "; then
+    log_warn "已取消: ${action_title}"
+    return 1
+  fi
+  return 0
 }
 
 validate_args() {
-	if [[ "$#" -gt 0 ]]; then
-		log_warn "忽略额外参数: $*"
-	fi
+  if [[ "$#" -gt 0 ]]; then
+    log_warn "忽略额外参数: $*"
+  fi
 }
 
 check_root() {
-	if [[ "$(id -u)" -ne 0 ]]; then
-		reexec_with_sudo_or_die "$@"
-	fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    reexec_with_sudo_or_die "$@"
+  fi
 }
 
 check_dependencies() {
-	local deps=(sysctl uname sed modprobe grep awk ip ss tar date)
-	local missing=()
-	local cmd
-	for cmd in "${deps[@]}"; do
-		if ! command -v "${cmd}" >/dev/null 2>&1; then
-			missing+=("${cmd}")
-		fi
-	done
-	if [[ "${#missing[@]}" -gt 0 ]]; then
-		die 1 "缺失依赖命令: ${missing[*]}"
-	fi
+  local deps=(sysctl uname sed modprobe grep awk ip ss tar date)
+  local missing=()
+  local cmd
+  for cmd in "${deps[@]}"; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+      missing+=("${cmd}")
+    fi
+  done
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    die 1 "缺失依赖命令: ${missing[*]}"
+  fi
 }
 
 check_systemd() {
-	if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null || printf ""); then
-		IS_SYSTEMD=1
-	else
-		IS_SYSTEMD=0
-	fi
+  if [[ -d /run/systemd/system ]] || grep -q systemd <(head -n 1 /proc/1/comm 2>/dev/null || printf ""); then
+    IS_SYSTEMD=1
+  else
+    IS_SYSTEMD=0
+  fi
 }
 
 check_environment() {
-	log_step "全景环境诊断..."
-	local raw_virt=""
-	local virt_type="physical/kvm"
+  log_step "全景环境诊断..."
+  local raw_virt=""
+  local virt_type="physical/kvm"
 
-	if command -v systemd-detect-virt >/dev/null 2>&1; then
-		raw_virt="$(systemd-detect-virt -c 2>/dev/null || true)"
-		raw_virt="$(printf '%s' "${raw_virt}" | tr -d '[:space:]')"
-	fi
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    raw_virt="$(systemd-detect-virt -c 2>/dev/null || true)"
+    raw_virt="$(printf '%s' "${raw_virt}" | tr -d '[:space:]')"
+  fi
 
-	if [[ -z "${raw_virt}" || "${raw_virt}" == "none" ]]; then
-		if grep -qE 'docker|lxc' /proc/1/cgroup 2>/dev/null; then
-			virt_type="docker/lxc"
-		elif [[ -f /.dockerenv ]]; then
-			virt_type="docker"
-		fi
-	else
-		virt_type="${raw_virt}"
-	fi
+  if [[ -z "${raw_virt}" || "${raw_virt}" == "none" ]]; then
+    if grep -qE 'docker|lxc' /proc/1/cgroup 2>/dev/null; then
+      virt_type="docker/lxc"
+    elif [[ -f /.dockerenv ]]; then
+      virt_type="docker"
+    fi
+  else
+    virt_type="${raw_virt}"
+  fi
 
-	if [[ "${virt_type}" =~ (lxc|docker|openvz|systemd-nspawn) ]]; then
-		IS_CONTAINER=1
-		log_warn "检测到容器环境: ${virt_type} (将跳过底层内核模块加载)"
-	else
-		IS_CONTAINER=0
-		log_info "运行环境: ${virt_type} (支持底层性能调优)"
-	fi
+  if [[ "${virt_type}" =~ (lxc|docker|openvz|systemd-nspawn) ]]; then
+    IS_CONTAINER=1
+    log_warn "检测到容器环境: ${virt_type} (将跳过底层内核模块加载)"
+  else
+    IS_CONTAINER=0
+    log_info "运行环境: ${virt_type} (支持底层性能调优)"
+  fi
 
-	TOTAL_MEM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
-	check_systemd
+  TOTAL_MEM_KB="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
+  check_systemd
 }
 
 get_mode_label() {
-	local mode="${1:-}"
-	case "${mode}" in
-	stock) printf "BBR+FQ 原版参数" ;;
-	aggressive) printf "BBRV1 + FQ + 激进128MB" ;;
-	*) printf "未选择" ;;
-	esac
+  local mode="${1:-}"
+  case "${mode}" in
+  stock) printf "BBR+FQ 原版参数" ;;
+  aggressive) printf "BBRV1 + FQ + 激进128MB" ;;
+  *) printf "未选择" ;;
+  esac
 }
 
 read_current_mode() {
-	local mode=""
-	if [[ -f "${MODE_STATE_FILE}" ]]; then
-		read -r mode <"${MODE_STATE_FILE}" || mode=""
-	fi
-	if [[ -z "${mode}" ]]; then
-		local cur_cc cur_qdisc
-		local cur_rmem_max cur_slow_start_idle
-		cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
-		cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
-		cur_rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || true)"
-		cur_slow_start_idle="$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || true)"
-		cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
-		cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
-		cur_rmem_max="$(printf '%s' "${cur_rmem_max}" | tr -d '[:space:]')"
-		cur_slow_start_idle="$(printf '%s' "${cur_slow_start_idle}" | tr -d '[:space:]')"
-		if [[ "${cur_cc}" == "bbr" && "${cur_qdisc}" == "fq" ]]; then
-			if [[ "${cur_rmem_max}" == "134217728" || "${cur_slow_start_idle}" == "0" ]]; then
-				mode="aggressive"
-			else
-				mode="stock"
-			fi
-		fi
-	fi
-	printf "%s" "$(get_mode_label "${mode}")"
+  local mode=""
+  if [[ -f "${MODE_STATE_FILE}" ]]; then
+    read -r mode <"${MODE_STATE_FILE}" || mode=""
+  fi
+  if [[ -z "${mode}" ]]; then
+    local cur_cc cur_qdisc
+    local cur_rmem_max cur_slow_start_idle
+    cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+    cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+    cur_rmem_max="$(sysctl -n net.core.rmem_max 2>/dev/null || true)"
+    cur_slow_start_idle="$(sysctl -n net.ipv4.tcp_slow_start_after_idle 2>/dev/null || true)"
+    cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
+    cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
+    cur_rmem_max="$(printf '%s' "${cur_rmem_max}" | tr -d '[:space:]')"
+    cur_slow_start_idle="$(printf '%s' "${cur_slow_start_idle}" | tr -d '[:space:]')"
+    if [[ "${cur_cc}" == "bbr" && "${cur_qdisc}" == "fq" ]]; then
+      if [[ "${cur_rmem_max}" == "134217728" || "${cur_slow_start_idle}" == "0" ]]; then
+        mode="aggressive"
+      else
+        mode="stock"
+      fi
+    fi
+  fi
+  printf "%s" "$(get_mode_label "${mode}")"
 }
 
 manage_backups() {
-	local backups=()
-	local i
-	mapfile -t backups < <(ls -1t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)
-	if [[ "${#backups[@]}" -le "${MAX_BACKUPS}" ]]; then
-		return 0
-	fi
-	log_info "备份数量超出限制(${MAX_BACKUPS})，正在清理最旧的备份..."
-	for ((i = MAX_BACKUPS; i < ${#backups[@]}; i++)); do
-		rm -f "${backups[i]}"
-	done
+  local backups=()
+  local i
+  mapfile -t backups < <(ls -1t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)
+  if [[ "${#backups[@]}" -le "${MAX_BACKUPS}" ]]; then
+    return 0
+  fi
+  log_info "备份数量超出限制(${MAX_BACKUPS})，正在清理最旧的备份..."
+  for ((i = MAX_BACKUPS; i < ${#backups[@]}; i++)); do
+    rm -f "${backups[i]}"
+  done
 }
 
 backup_configs() {
-	log_step "正在创建当前配置的快照..."
-	local backup_file="${BACKUP_DIR}/config_backup_${TIMESTAMP}.tar.gz"
-	local files_to_backup=()
-	local f
-	for f in "${CONFIG_FILES[@]}"; do
-		if [[ -f "${f}" ]]; then
-			files_to_backup+=("${f}")
-		fi
-	done
-	if [[ "${#files_to_backup[@]}" -eq 0 ]]; then
-		log_info "当前无可备份配置，跳过快照。"
-		return 0
-	fi
-	tar -czf "${backup_file}" "${files_to_backup[@]}" 2>/dev/null
-	log_info "配置已备份至: ${backup_file}"
-	manage_backups
+  log_step "正在创建当前配置的快照..."
+  local backup_file="${BACKUP_DIR}/config_backup_${TIMESTAMP}.tar.gz"
+  local files_to_backup=()
+  local f
+  for f in "${CONFIG_FILES[@]}"; do
+    if [[ -f "${f}" ]]; then
+      files_to_backup+=("${f}")
+    fi
+  done
+  if [[ "${#files_to_backup[@]}" -eq 0 ]]; then
+    log_info "当前无可备份配置，跳过快照。"
+    return 0
+  fi
+  tar -czf "${backup_file}" "${files_to_backup[@]}" 2>/dev/null
+  log_info "配置已备份至: ${backup_file}"
+  manage_backups
 }
 
 restore_configs() {
-	log_step "正在查找可用备份..."
-	local backups=()
-	local backup_choice=""
-	local temp_dir=""
-	mapfile -t backups < <(ls -1t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)
-	if [[ "${#backups[@]}" -eq 0 ]]; then
-		log_warn "未找到任何备份文件。"
-		return 0
-	fi
+  log_step "正在查找可用备份..."
+  local backups=()
+  local backup_choice=""
+  local temp_dir=""
+  mapfile -t backups < <(ls -1t "${BACKUP_DIR}"/config_backup_*.tar.gz 2>/dev/null || true)
+  if [[ "${#backups[@]}" -eq 0 ]]; then
+    log_warn "未找到任何备份文件。"
+    return 0
+  fi
 
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		log_warn "非交互模式不支持选择备份恢复。"
-		return 1
-	fi
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    log_warn "非交互模式不支持选择备份恢复。"
+    return 1
+  fi
 
-	echo "请选择要恢复的配置备份:"
-	select backup_choice in "${backups[@]}"; do
-		if [[ -z "${backup_choice}" ]]; then
-			log_warn "无效选择。"
-			return 1
-		fi
-		temp_dir="$(mktemp -d)"
-		if [[ -z "${temp_dir}" || ! -d "${temp_dir}" ]]; then
-			die 1 "无法创建临时目录"
-		fi
+  echo "请选择要恢复的配置备份:"
+  select backup_choice in "${backups[@]}"; do
+    if [[ -z "${backup_choice}" ]]; then
+      log_warn "无效选择。"
+      return 1
+    fi
+    temp_dir="$(mktemp -d)"
+    if [[ -z "${temp_dir}" || ! -d "${temp_dir}" ]]; then
+      die 1 "无法创建临时目录"
+    fi
 
-		if tar -xzf "${backup_choice}" -C "${temp_dir}"; then
-			log_info "备份文件验证通过，正在应用..."
-			rm -f "${CONFIG_FILES[@]}"
-			cp -rf "${temp_dir}"/* /
-			rm -rf "${temp_dir}"
-			if [[ "${IS_SYSTEMD}" -eq 1 ]]; then
-				systemctl daemon-reload || true
-				systemctl restart systemd-sysctl 2>/dev/null || true
-				systemctl enable --now nic-optimize.service 2>/dev/null || true
-			fi
-			log_info "配置恢复并已应用。"
-			return 0
-		fi
+    if tar -xzf "${backup_choice}" -C "${temp_dir}"; then
+      log_info "备份文件验证通过，正在应用..."
+      rm -f "${CONFIG_FILES[@]}"
+      cp -rf "${temp_dir}"/* /
+      rm -rf "${temp_dir}"
+      if [[ "${IS_SYSTEMD}" -eq 1 ]]; then
+        systemctl daemon-reload || true
+        systemctl restart systemd-sysctl 2>/dev/null || true
+        systemctl enable --now nic-optimize.service 2>/dev/null || true
+      fi
+      log_info "配置恢复并已应用。"
+      return 0
+    fi
 
-		rm -rf "${temp_dir}"
-		log_error "备份文件损坏或解压失败，当前配置未受影响。"
-		return 1
-	done
+    rm -rf "${temp_dir}"
+    log_error "备份文件损坏或解压失败，当前配置未受影响。"
+    return 1
+  done
 }
 
 manage_ipv4_precedence() {
-	if [[ "${IS_CONTAINER}" -eq 1 ]]; then
-		return 0
-	fi
-	local action="${1:-}"
-	if [[ ! -f "${GAI_CONF}" ]]; then
-		touch "${GAI_CONF}"
-	fi
+  if [[ "${IS_CONTAINER}" -eq 1 ]]; then
+    return 0
+  fi
+  local action="${1:-}"
+  if [[ ! -f "${GAI_CONF}" ]]; then
+    touch "${GAI_CONF}"
+  fi
 
-	if [[ "${action}" == "enable" ]]; then
-		if grep -q "precedence ::ffff:0:0/96" "${GAI_CONF}"; then
-			sed -i 's/^#*precedence ::ffff:0:0\/96.*/precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
-		else
-			printf "%s\n" "precedence ::ffff:0:0/96  100" >>"${GAI_CONF}"
-		fi
-		log_info "IPv4 优先已启用。"
-	else
-		sed -i 's/^precedence ::ffff:0:0\/96.*/#precedence ::ffff:0:0\/96  100/' "${GAI_CONF}" || true
-		log_info "已恢复系统默认选路策略。"
-	fi
+  if [[ "${action}" == "enable" ]]; then
+    if grep -q "precedence ::ffff:0:0/96" "${GAI_CONF}"; then
+      sed -i 's/^#*precedence ::ffff:0:0\/96.*/precedence ::ffff:0:0\/96  100/' "${GAI_CONF}"
+    else
+      printf "%s\n" "precedence ::ffff:0:0/96  100" >>"${GAI_CONF}"
+    fi
+    log_info "IPv4 优先已启用。"
+  else
+    sed -i 's/^precedence ::ffff:0:0\/96.*/#precedence ::ffff:0:0\/96  100/' "${GAI_CONF}" || true
+    log_info "已恢复系统默认选路策略。"
+  fi
 }
 
 generate_stock_sysctl_content() {
-	printf "%s\n" "# ============================================================="
-	printf "%s\n" "# TCP Optimizer Configuration (Stock BBR+FQ)"
-	printf "%s\n" "# ============================================================="
-	printf "%s\n" "net.core.default_qdisc = fq"
-	printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
+  printf "%s\n" "# ============================================================="
+  printf "%s\n" "# TCP Optimizer Configuration (Stock BBR+FQ)"
+  printf "%s\n" "# ============================================================="
+  printf "%s\n" "net.core.default_qdisc = fq"
+  printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
 }
 
 generate_aggressive_sysctl_content() {
-	local buffer_size="134217728"
-	printf "%s\n" "# ============================================================="
-	printf "%s\n" "# TCP Optimizer Configuration (BBRV1+FQ Aggressive 128MB)"
-	printf "%s\n" "# ============================================================="
-	printf "%s\n" "net.core.default_qdisc = fq"
-	printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
-	printf "%s\n" "net.core.rmem_max = ${buffer_size}"
-	printf "%s\n" "net.core.wmem_max = ${buffer_size}"
-	printf "%s\n" "net.core.rmem_default = ${buffer_size}"
-	printf "%s\n" "net.core.wmem_default = ${buffer_size}"
-	printf "%s\n" "net.ipv4.udp_rmem_min = 131072"
-	printf "%s\n" "net.ipv4.udp_wmem_min = 131072"
-	printf "%s\n" "net.ipv4.tcp_notsent_lowat = 16384"
-	printf "%s\n" "net.ipv4.tcp_limit_output_bytes = 131072"
-	printf "%s\n" "net.ipv4.tcp_slow_start_after_idle = 0"
-	printf "%s\n" "net.ipv4.tcp_retries2 = 8"
+  local buffer_size="134217728"
+  printf "%s\n" "# ============================================================="
+  printf "%s\n" "# TCP Optimizer Configuration (BBRV1+FQ Aggressive 128MB)"
+  printf "%s\n" "# ============================================================="
+  printf "%s\n" "net.core.default_qdisc = fq"
+  printf "%s\n" "net.ipv4.tcp_congestion_control = bbr"
+  printf "%s\n" "net.core.rmem_max = ${buffer_size}"
+  printf "%s\n" "net.core.wmem_max = ${buffer_size}"
+  printf "%s\n" "net.core.rmem_default = ${buffer_size}"
+  printf "%s\n" "net.core.wmem_default = ${buffer_size}"
+  printf "%s\n" "net.ipv4.udp_rmem_min = 131072"
+  printf "%s\n" "net.ipv4.udp_wmem_min = 131072"
+  printf "%s\n" "net.ipv4.tcp_notsent_lowat = 16384"
+  printf "%s\n" "net.ipv4.tcp_limit_output_bytes = 131072"
+  printf "%s\n" "net.ipv4.tcp_slow_start_after_idle = 0"
+  printf "%s\n" "net.ipv4.tcp_retries2 = 8"
 }
 
 apply_profile() {
-	local profile_type="${1:-stock}"
-	local mode_key="stock"
-	local target_qdisc="fq"
-	local target_cc="bbr"
-	local profile_label="BBR+FQ 原版参数 / Stock"
-	local avail_cc=""
-	local final_cc=""
-	local final_qdisc=""
+  local profile_type="${1:-stock}"
+  local mode_key="stock"
+  local target_qdisc="fq"
+  local target_cc="bbr"
+  local profile_label="BBR+FQ 原版参数 / Stock"
+  local avail_cc=""
+  local final_cc=""
+  local final_qdisc=""
 
-	case "${profile_type}" in
-	stock)
-		mode_key="stock"
-		profile_label="BBR+FQ 原版参数 / Stock"
-		;;
-	aggressive)
-		mode_key="aggressive"
-		profile_label="BBRV1 + FQ + 激进128MB"
-		;;
-	*)
-		log_warn "未知模式 ${profile_type}，已回退到 BBR+FQ 原版参数。"
-		mode_key="stock"
-		profile_label="BBR+FQ 原版参数 / Stock"
-		;;
-	esac
+  case "${profile_type}" in
+  stock)
+    mode_key="stock"
+    profile_label="BBR+FQ 原版参数 / Stock"
+    ;;
+  aggressive)
+    mode_key="aggressive"
+    profile_label="BBRV1 + FQ + 激进128MB"
+    ;;
+  *)
+    log_warn "未知模式 ${profile_type}，已回退到 BBR+FQ 原版参数。"
+    mode_key="stock"
+    profile_label="BBR+FQ 原版参数 / Stock"
+    ;;
+  esac
 
-	backup_configs
-	log_step "加载画像: [${profile_label}]"
+  backup_configs
+  log_step "加载画像: [${profile_label}]"
 
-	if [[ "${IS_CONTAINER}" -eq 0 ]]; then
-		modprobe sch_fq 2>/dev/null || true
-		modprobe tcp_bbr 2>/dev/null || true
-	fi
+  if [[ "${IS_CONTAINER}" -eq 0 ]]; then
+    modprobe sch_fq 2>/dev/null || true
+    modprobe tcp_bbr 2>/dev/null || true
+  fi
 
-	avail_cc="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || printf "")"
-	if ! echo "${avail_cc}" | grep -qw "${target_cc}"; then
-		die 1 "当前内核未提供 ${target_cc}，无法应用原版模式。"
-	fi
+  avail_cc="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || printf "")"
+  if ! echo "${avail_cc}" | grep -qw "${target_cc}"; then
+    die 1 "当前内核未提供 ${target_cc}，无法应用原版模式。"
+  fi
 
-	mkdir -p "${SYSCTL_D_DIR}"
-	case "${mode_key}" in
-	aggressive) generate_aggressive_sysctl_content >"${SYSCTL_CONF}" ;;
-	*) generate_stock_sysctl_content >"${SYSCTL_CONF}" ;;
-	esac
-	sysctl -e -p "${SYSCTL_CONF}" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
+  mkdir -p "${SYSCTL_D_DIR}"
+  case "${mode_key}" in
+  aggressive) generate_aggressive_sysctl_content >"${SYSCTL_CONF}" ;;
+  *) generate_stock_sysctl_content >"${SYSCTL_CONF}" ;;
+  esac
+  sysctl -e -p "${SYSCTL_CONF}" >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1 || true
 
-	final_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "unknown")"
-	final_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf "unknown")"
+  final_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || printf "unknown")"
+  final_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || printf "unknown")"
 
-	if [[ "${final_cc}" == "${target_cc}" && "${final_qdisc}" == "${target_qdisc}" ]]; then
-		log_info "✅ 模式应用成功: ${target_cc} + ${target_qdisc}"
-		printf "%s\n" "${mode_key}" >"${MODE_STATE_FILE}"
-	else
-		log_warn "模式应用后检测不一致，当前: ${final_cc} + ${final_qdisc}"
-	fi
+  if [[ "${final_cc}" == "${target_cc}" && "${final_qdisc}" == "${target_qdisc}" ]]; then
+    log_info "✅ 模式应用成功: ${target_cc} + ${target_qdisc}"
+    printf "%s\n" "${mode_key}" >"${MODE_STATE_FILE}"
+  else
+    log_warn "模式应用后检测不一致，当前: ${final_cc} + ${final_qdisc}"
+  fi
 }
 
 audit_configs() {
-	log_step "正在审计当前生效的内核参数..."
-	if [[ ! -f "${SYSCTL_CONF}" ]]; then
-		log_warn "未找到优化配置文件，系统可能处于默认状态。"
-		return 0
-	fi
+  log_step "正在审计当前生效的内核参数..."
+  if [[ ! -f "${SYSCTL_CONF}" ]]; then
+    log_warn "未找到优化配置文件，系统可能处于默认状态。"
+    return 0
+  fi
 
-	local mismatches=0
-	local line=""
-	local key=""
-	local val=""
-	local current_val=""
+  local mismatches=0
+  local line=""
+  local key=""
+  local val=""
+  local current_val=""
 
-	while IFS= read -r line; do
-		[[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
-		key="$(printf "%s" "${line}" | cut -d'=' -f1 | tr -d '[:space:]')"
-		val="$(printf "%s" "${line}" | cut -d'=' -f2- | tr -d '[:space:]')"
-		current_val="$(sysctl -n "${key}" 2>/dev/null || printf "N/A")"
-		current_val="$(printf "%s" "${current_val}" | tr -d '[:space:]')"
+  while IFS= read -r line; do
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    key="$(printf "%s" "${line}" | cut -d'=' -f1 | tr -d '[:space:]')"
+    val="$(printf "%s" "${line}" | cut -d'=' -f2- | tr -d '[:space:]')"
+    current_val="$(sysctl -n "${key}" 2>/dev/null || printf "N/A")"
+    current_val="$(printf "%s" "${current_val}" | tr -d '[:space:]')"
 
-		if [[ "${current_val}" == "${val}" ]]; then
-			printf "%b[MATCH]%b %-40s = %s\n" "${COLOR_GREEN}" "${COLOR_RESET}" "${key}" "${val}"
-		else
-			printf "%b[MISMATCH]%b %-40s | Expected: %s | Current: %s\n" "${COLOR_YELLOW}" "${COLOR_RESET}" "${key}" "${val}" "${current_val}"
-			mismatches=$((mismatches + 1))
-		fi
-	done <"${SYSCTL_CONF}"
+    if [[ "${current_val}" == "${val}" ]]; then
+      printf "%b[MATCH]%b %-40s = %s\n" "${COLOR_GREEN}" "${COLOR_RESET}" "${key}" "${val}"
+    else
+      printf "%b[MISMATCH]%b %-40s | Expected: %s | Current: %s\n" "${COLOR_YELLOW}" "${COLOR_RESET}" "${key}" "${val}" "${current_val}"
+      mismatches=$((mismatches + 1))
+    fi
+  done <"${SYSCTL_CONF}"
 
-	if [[ "${mismatches}" -eq 0 ]]; then
-		log_info "所有参数均已正确应用。"
-	else
-		log_warn "${mismatches} 个参数与配置文件不匹配，可能已被其他进程覆盖。"
-	fi
+  if [[ "${mismatches}" -eq 0 ]]; then
+    log_info "所有参数均已正确应用。"
+  else
+    log_warn "${mismatches} 个参数与配置文件不匹配，可能已被其他进程覆盖。"
+  fi
 }
 
 update_stock_kernel() {
-	if [[ "${IS_CONTAINER}" -eq 1 ]]; then
-		log_warn "容器环境无法更新宿主机内核。"
-		return 0
-	fi
+  if [[ "${IS_CONTAINER}" -eq 1 ]]; then
+    log_warn "容器环境无法更新宿主机内核。"
+    return 0
+  fi
 
-	if ! high_risk_guard "更新系统仓库原版内核" "将升级内核包，可能引发驱动兼容变化，通常需要重启。"; then
-		log_warn "操作已取消。"
-		return 0
-	fi
+  if ! high_risk_guard "更新系统仓库原版内核" "将升级内核包，可能引发驱动兼容变化，通常需要重启。"; then
+    log_warn "操作已取消。"
+    return 0
+  fi
 
-	log_step "开始更新原版内核（系统仓库）..."
-	export DEBIAN_FRONTEND=noninteractive
-	local -a DPKG_OPTS=("-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
+  log_step "开始更新原版内核（系统仓库）..."
+  export DEBIAN_FRONTEND=noninteractive
+  local -a DPKG_OPTS=("-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
 
-	if command -v apt-get >/dev/null 2>&1; then
-		apt-get update -y
-		if [[ -f "${XANMOD_REPO_FILE}" ]]; then
-			log_warn "检测到历史第三方内核源: ${XANMOD_REPO_FILE}（本次仅执行系统仓库元包更新）"
-		fi
-		if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64 || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic); then
-			apt-get upgrade -yq "${DPKG_OPTS[@]}"
-		fi
-		update-grub 2>/dev/null || true
-	elif command -v dnf >/dev/null 2>&1; then
-		dnf -y upgrade --refresh "kernel*" || dnf -y upgrade --refresh
-	elif command -v yum >/dev/null 2>&1; then
-		yum -y update kernel || yum -y update
-	elif command -v pacman >/dev/null 2>&1; then
-		pacman -Syu --noconfirm --needed linux linux-headers
-	elif command -v zypper >/dev/null 2>&1; then
-		zypper --non-interactive refresh
-		zypper --non-interactive update kernel-default kernel-default-devel || zypper --non-interactive update
-	else
-		die 1 "暂不支持当前系统的包管理器，请手动更新内核。"
-	fi
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y
+    if [[ -f "${XANMOD_REPO_FILE}" ]]; then
+      log_warn "检测到历史第三方内核源: ${XANMOD_REPO_FILE}（本次仅执行系统仓库元包更新）"
+    fi
+    if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64 || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic); then
+      apt-get upgrade -yq "${DPKG_OPTS[@]}"
+    fi
+    update-grub 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf -y upgrade --refresh "kernel*" || dnf -y upgrade --refresh
+  elif command -v yum >/dev/null 2>&1; then
+    yum -y update kernel || yum -y update
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Syu --noconfirm --needed linux linux-headers
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive refresh
+    zypper --non-interactive update kernel-default kernel-default-devel || zypper --non-interactive update
+  else
+    die 1 "暂不支持当前系统的包管理器，请手动更新内核。"
+  fi
 
-	log_info "原版内核更新流程已完成。"
-	if read_required_yes "高风险操作：是否立即重启系统以加载新内核? 请输入 yes 继续: "; then
-		log_warn "用户确认重启，正在执行系统重启..."
-		sync
-		systemctl reboot || reboot
-	else
-		log_info "已取消立即重启。请稍后手动重启以使新内核生效。"
-	fi
+  log_info "原版内核更新流程已完成。"
+  if read_required_yes "高风险操作：是否立即重启系统以加载新内核? 请输入 yes 继续: "; then
+    log_warn "用户确认重启，正在执行系统重启..."
+    sync
+    systemctl reboot || reboot
+  else
+    log_info "已取消立即重启。请稍后手动重启以使新内核生效。"
+  fi
 }
 
 disable_xanmod_repo() {
-	if [[ ! -f "${XANMOD_REPO_FILE}" ]]; then
-		return 0
-	fi
+  if [[ ! -f "${XANMOD_REPO_FILE}" ]]; then
+    return 0
+  fi
 
-	local disabled_repo="${XANMOD_REPO_FILE}.disabled.${TIMESTAMP}"
-	mv -f "${XANMOD_REPO_FILE}" "${disabled_repo}"
-	log_info "已禁用 XanMod 源: ${disabled_repo}"
+  local disabled_repo="${XANMOD_REPO_FILE}.disabled.${TIMESTAMP}"
+  mv -f "${XANMOD_REPO_FILE}" "${disabled_repo}"
+  log_info "已禁用 XanMod 源: ${disabled_repo}"
 }
 
 install_stock_kernel_apt() {
-	export DEBIAN_FRONTEND=noninteractive
-	local -a DPKG_OPTS=("-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
-	local distro_id=""
+  export DEBIAN_FRONTEND=noninteractive
+  local -a DPKG_OPTS=("-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
+  local distro_id=""
 
-	if [[ -r /etc/os-release ]]; then
-		# shellcheck disable=SC1091
-		distro_id="$(. /etc/os-release && printf '%s' "${ID:-}")"
-	fi
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    distro_id="$(. /etc/os-release && printf '%s' "${ID:-}")"
+  fi
 
-	apt-get update -y
+  apt-get update -y
 
-	if [[ "${distro_id}" == "ubuntu" ]]; then
-		if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64); then
-			apt-get upgrade -yq "${DPKG_OPTS[@]}"
-		fi
-	else
-		if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64 || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic); then
-			apt-get upgrade -yq "${DPKG_OPTS[@]}"
-		fi
-	fi
+  if [[ "${distro_id}" == "ubuntu" ]]; then
+    if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64); then
+      apt-get upgrade -yq "${DPKG_OPTS[@]}"
+    fi
+  else
+    if ! (apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-amd64 linux-headers-amd64 || apt-get install -yq "${DPKG_OPTS[@]}" --install-recommends linux-image-generic linux-headers-generic); then
+      apt-get upgrade -yq "${DPKG_OPTS[@]}"
+    fi
+  fi
 
-	update-grub 2>/dev/null || true
+  update-grub 2>/dev/null || true
 }
 
 cleanup_xanmod_kernel_packages() {
-	if ! command -v apt-get >/dev/null 2>&1; then
-		log_warn "当前系统不是 apt 系，跳过 XanMod 包清理。"
-		return 0
-	fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log_warn "当前系统不是 apt 系，跳过 XanMod 包清理。"
+    return 0
+  fi
 
-	local xanmod_pkgs=()
-	mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
+  local xanmod_pkgs=()
+  mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
 
-	if [[ "${#xanmod_pkgs[@]}" -eq 0 ]]; then
-		log_info "未检测到已安装的 XanMod 内核包。"
-		return 0
-	fi
+  if [[ "${#xanmod_pkgs[@]}" -eq 0 ]]; then
+    log_info "未检测到已安装的 XanMod 内核包。"
+    return 0
+  fi
 
-	log_warn "检测到 XanMod 包: ${xanmod_pkgs[*]}"
-	if ! high_risk_guard "清理 XanMod 内核包" "将卸载第三方内核与头文件，若当前正在使用相关内核可能导致下次启动差异。"; then
-		log_warn "已取消 XanMod 包清理。"
-		return 0
-	fi
+  log_warn "检测到 XanMod 包: ${xanmod_pkgs[*]}"
+  if ! high_risk_guard "清理 XanMod 内核包" "将卸载第三方内核与头文件，若当前正在使用相关内核可能导致下次启动差异。"; then
+    log_warn "已取消 XanMod 包清理。"
+    return 0
+  fi
 
-	apt-get purge -y "${xanmod_pkgs[@]}" || log_warn "部分 XanMod 包清理失败，请手动检查。"
-	apt-get autoremove -y || true
-	update-grub 2>/dev/null || true
-	log_info "XanMod 包清理流程已完成。"
+  apt-get purge -y "${xanmod_pkgs[@]}" || log_warn "部分 XanMod 包清理失败，请手动检查。"
+  apt-get autoremove -y || true
+  update-grub 2>/dev/null || true
+  log_info "XanMod 包清理流程已完成。"
 }
 
 switch_xanmod_to_stock_kernel() {
-	if [[ "${IS_CONTAINER}" -eq 1 ]]; then
-		log_warn "容器环境无法切换宿主机内核。"
-		return 0
-	fi
+  if [[ "${IS_CONTAINER}" -eq 1 ]]; then
+    log_warn "容器环境无法切换宿主机内核。"
+    return 0
+  fi
 
-	if ! command -v apt-get >/dev/null 2>&1; then
-		log_warn "从 XanMod 切回原版内核仅支持 Debian/Ubuntu (apt)。"
-		return 0
-	fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    log_warn "从 XanMod 切回原版内核仅支持 Debian/Ubuntu (apt)。"
+    return 0
+  fi
 
-	local running_kernel=""
-	local xanmod_pkgs=()
-	local has_xanmod_trace=0
-	running_kernel="$(uname -r)"
+  local running_kernel=""
+  local xanmod_pkgs=()
+  local has_xanmod_trace=0
+  running_kernel="$(uname -r)"
 
-	mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
+  mapfile -t xanmod_pkgs < <(dpkg --list 'linux-xanmod*' 'linux-image-*xanmod*' 'linux-headers-*xanmod*' 2>/dev/null | awk '/^ii/ {print $2}')
 
-	if [[ -f "${XANMOD_REPO_FILE}" || "${running_kernel}" == *xanmod* || "${#xanmod_pkgs[@]}" -gt 0 ]]; then
-		has_xanmod_trace=1
-	fi
+  if [[ -f "${XANMOD_REPO_FILE}" || "${running_kernel}" == *xanmod* || "${#xanmod_pkgs[@]}" -gt 0 ]]; then
+    has_xanmod_trace=1
+  fi
 
-	if [[ "${has_xanmod_trace}" -eq 0 ]]; then
-		log_info "未检测到 XanMod 痕迹，执行原版内核更新。"
-		update_stock_kernel
-		return 0
-	fi
+  if [[ "${has_xanmod_trace}" -eq 0 ]]; then
+    log_info "未检测到 XanMod 痕迹，执行原版内核更新。"
+    update_stock_kernel
+    return 0
+  fi
 
-	log_warn "检测到 XanMod 痕迹（源/内核/包），将执行回退至原版内核流程。"
-	if ! read_confirm "确认从 XanMod 切回原版内核? [Y/n]: "; then
-		log_warn "操作已取消。"
-		return 0
-	fi
+  log_warn "检测到 XanMod 痕迹（源/内核/包），将执行回退至原版内核流程。"
+  if ! read_confirm "确认从 XanMod 切回原版内核? [Y/n]: "; then
+    log_warn "操作已取消。"
+    return 0
+  fi
 
-	disable_xanmod_repo
-	install_stock_kernel_apt
-	log_info "原版内核已安装/更新完成。"
+  disable_xanmod_repo
+  install_stock_kernel_apt
+  log_info "原版内核已安装/更新完成。"
 
-	if [[ "${#xanmod_pkgs[@]}" -gt 0 ]]; then
-		log_warn "为确保下次启动优先进入原版内核，建议清理 XanMod 包。"
-		cleanup_xanmod_kernel_packages
-	fi
+  if [[ "${#xanmod_pkgs[@]}" -gt 0 ]]; then
+    log_warn "为确保下次启动优先进入原版内核，建议清理 XanMod 包。"
+    cleanup_xanmod_kernel_packages
+  fi
 
-	if read_required_yes "高风险操作：是否立即重启系统以切换到原版内核? 请输入 yes 继续: "; then
-		log_warn "用户确认重启，正在执行系统重启..."
-		sync
-		systemctl reboot || reboot
-	else
-		log_info "已取消立即重启。请稍后手动重启完成切换。"
-	fi
+  if read_required_yes "高风险操作：是否立即重启系统以切换到原版内核? 请输入 yes 继续: "; then
+    log_warn "用户确认重启，正在执行系统重启..."
+    sync
+    systemctl reboot || reboot
+  else
+    log_info "已取消立即重启。请稍后手动重启完成切换。"
+  fi
 }
 
 remove_old_kernels() {
-	log_step "正在查找可清理的旧内核..."
-	if ! command -v dpkg >/dev/null 2>&1; then
-		log_warn "非 Debian/Ubuntu 系统，暂不支持旧内核自动清理。"
-		return 0
-	fi
+  log_step "正在查找可清理的旧内核..."
+  if ! command -v dpkg >/dev/null 2>&1; then
+    log_warn "非 Debian/Ubuntu 系统，暂不支持旧内核自动清理。"
+    return 0
+  fi
 
-	local current_kernel=""
-	local kernels_to_remove=()
-	local pkg=""
-	current_kernel="$(uname -r)"
+  local current_kernel=""
+  local kernels_to_remove=()
+  local pkg=""
+  current_kernel="$(uname -r)"
 
-	while IFS= read -r pkg; do
-		[[ -z "${pkg}" ]] && continue
-		if [[ "${pkg}" == *"${current_kernel}"* ]]; then
-			continue
-		fi
-		kernels_to_remove+=("${pkg}")
-	done < <(dpkg --list 'linux-image-[0-9]*' 2>/dev/null | awk '/^ii/ {print $2}')
+  while IFS= read -r pkg; do
+    [[ -z "${pkg}" ]] && continue
+    if [[ "${pkg}" == *"${current_kernel}"* ]]; then
+      continue
+    fi
+    kernels_to_remove+=("${pkg}")
+  done < <(dpkg --list 'linux-image-[0-9]*' 2>/dev/null | awk '/^ii/ {print $2}')
 
-	if [[ "${#kernels_to_remove[@]}" -eq 0 ]]; then
-		log_info "没有发现可清理的旧内核。"
-		return 0
-	fi
+  if [[ "${#kernels_to_remove[@]}" -eq 0 ]]; then
+    log_info "没有发现可清理的旧内核。"
+    return 0
+  fi
 
-	echo "以下旧内核将被清理:"
-	printf " - %s\n" "${kernels_to_remove[@]}"
-	if ! high_risk_guard "清理冗余旧内核" "将删除非当前运行内核包，误删会降低回滚能力。"; then
-		log_warn "操作已取消。"
-		return 0
-	fi
+  echo "以下旧内核将被清理:"
+  printf " - %s\n" "${kernels_to_remove[@]}"
+  if ! high_risk_guard "清理冗余旧内核" "将删除非当前运行内核包，误删会降低回滚能力。"; then
+    log_warn "操作已取消。"
+    return 0
+  fi
 
-	export DEBIAN_FRONTEND=noninteractive
-	apt-get purge -y "${kernels_to_remove[@]}"
-	apt-get autoremove -y
-	update-grub 2>/dev/null || true
-	log_info "旧内核清理完成。"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get purge -y "${kernels_to_remove[@]}"
+  apt-get autoremove -y
+  update-grub 2>/dev/null || true
+  log_info "旧内核清理完成。"
 }
 
 kernel_manager() {
-	if ui_should_clear_menu "${CLEAR_MENU_KEY_KERNEL}"; then
-		clear
-	fi
+  if ui_should_clear_menu "${CLEAR_MENU_KEY_KERNEL}"; then
+    clear
+  fi
 
-	local -a km_lines=()
-	km_lines+=(" ${COLOR_CYAN}内核维护子菜单${COLOR_RESET}")
-	km_lines+=("   1) 更新原版内核 (系统仓库)")
-	km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
-	km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
-	ui_render_menu "🧰 BBR ACE - 内核维护" "${km_lines[@]}"
+  local -a km_lines=()
+  km_lines+=(" ${COLOR_CYAN}内核维护子菜单${COLOR_RESET}")
+  km_lines+=("   1) 更新原版内核 (系统仓库)")
+  km_lines+=("   2) 从 XanMod 切回原版内核 (Debian/Ubuntu)")
+  km_lines+=("   3) 清理所有冗余旧内核 (Debian/Ubuntu)")
+  ui_render_menu "🧰 BBR ACE - 内核维护" "${km_lines[@]}"
 
-	if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-		log_warn "非交互模式：内核维护工具已跳过。"
-		return 0
-	fi
-	local choice=""
-	choice="$(ui_prompt_choice "1-3" "请选择内核维护操作")"
-	case "${choice}" in
-	"") return 0 ;;
-	1) update_stock_kernel ;;
-	2) switch_xanmod_to_stock_kernel ;;
-	3) remove_old_kernels ;;
-	*) return 0 ;;
-	esac
+  if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+    log_warn "非交互模式：内核维护工具已跳过。"
+    return 0
+  fi
+  local choice=""
+  choice="$(ui_prompt_choice "1-3" "请选择内核维护操作")"
+  case "${choice}" in
+  "") return 0 ;;
+  1) update_stock_kernel ;;
+  2) switch_xanmod_to_stock_kernel ;;
+  3) remove_old_kernels ;;
+  *) return 0 ;;
+  esac
 }
 
 uninstall_and_restore_defaults() {
-	if ! high_risk_guard "彻底卸载并恢复系统默认" "将删除优化配置与备份，并回退拥塞控制到系统默认值。"; then
-		log_warn "卸载操作已取消。"
-		return 0
-	fi
+  if ! high_risk_guard "彻底卸载并恢复系统默认" "将删除优化配置与备份，并回退拥塞控制到系统默认值。"; then
+    log_warn "卸载操作已取消。"
+    return 0
+  fi
 
-	log_warn "正在彻底清理配置、驻留服务与所有备份..."
-	ensure_safe_path "${BACKUP_DIR}"
-	run_destructive_cmd rm -f "${CONFIG_FILES[@]}"
-	run_destructive_cmd rm -rf "${BACKUP_DIR}"
+  log_warn "正在彻底清理配置、驻留服务与所有备份..."
+  ensure_safe_path "${BACKUP_DIR}"
+  run_destructive_cmd rm -f "${CONFIG_FILES[@]}"
+  run_destructive_cmd rm -rf "${BACKUP_DIR}"
 
-	if [[ "${IS_SYSTEMD}" -eq 1 ]]; then
-		run_destructive_cmd systemctl disable --now nic-optimize.service 2>/dev/null || true
-		run_destructive_cmd systemctl daemon-reload || true
-	fi
+  if [[ "${IS_SYSTEMD}" -eq 1 ]]; then
+    run_destructive_cmd systemctl disable --now nic-optimize.service 2>/dev/null || true
+    run_destructive_cmd systemctl daemon-reload || true
+  fi
 
-	run_destructive_cmd sysctl -w net.ipv4.tcp_congestion_control=cubic 2>/dev/null || true
-	run_destructive_cmd sysctl -w net.core.default_qdisc=fq_codel 2>/dev/null || true
-	run_destructive_cmd sysctl --system >/dev/null 2>&1 || true
-	log_info "已卸载本脚本配置，并回退到系统默认拥塞策略。"
+  run_destructive_cmd sysctl -w net.ipv4.tcp_congestion_control=cubic 2>/dev/null || true
+  run_destructive_cmd sysctl -w net.core.default_qdisc=fq_codel 2>/dev/null || true
+  run_destructive_cmd sysctl --system >/dev/null 2>&1 || true
+  log_info "已卸载本脚本配置，并回退到系统默认拥塞策略。"
 }
 
 show_menu() {
-	if ui_should_clear_menu "${CLEAR_MENU_KEY_MAIN}"; then
-		clear
-	fi
+  if ui_should_clear_menu "${CLEAR_MENU_KEY_MAIN}"; then
+    clear
+  fi
 
-	local mem_mb=0
-	local cur_kver=""
-	local cur_cc=""
-	local cur_qdisc=""
-	local cur_cc_reason=""
-	local cur_qdisc_reason=""
-	local active_conn=0
-	local current_mode=""
+  local mem_mb=0
+  local cur_kver=""
+  local cur_cc=""
+  local cur_qdisc=""
+  local cur_cc_reason=""
+  local cur_qdisc_reason=""
+  local active_conn=0
+  local current_mode=""
 
-	mem_mb=$((TOTAL_MEM_KB / 1024))
-	cur_kver="$(uname -r)"
-	cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
-	cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
-	cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
-	cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
-	if [[ -z "${cur_cc}" ]]; then
-		cur_cc_reason="$(sysctl -n net.ipv4.tcp_congestion_control 2>&1 || true)"
-		cur_cc_reason="$(printf '%s' "${cur_cc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
-		cur_cc="未知"
-	fi
-	if [[ -z "${cur_qdisc}" ]]; then
-		cur_qdisc_reason="$(sysctl -n net.core.default_qdisc 2>&1 || true)"
-		cur_qdisc_reason="$(printf '%s' "${cur_qdisc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
-		cur_qdisc="未知"
-	fi
-	active_conn="$(ss -tn state established 2>/dev/null | wc -l || printf "1")"
-	active_conn=$((active_conn - 1))
-	[[ "${active_conn}" -lt 0 ]] && active_conn=0
-	current_mode="$(read_current_mode)"
+  mem_mb=$((TOTAL_MEM_KB / 1024))
+  cur_kver="$(uname -r)"
+  cur_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  cur_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+  cur_cc="$(printf '%s' "${cur_cc}" | tr -d '[:space:]')"
+  cur_qdisc="$(printf '%s' "${cur_qdisc}" | tr -d '[:space:]')"
+  if [[ -z "${cur_cc}" ]]; then
+    cur_cc_reason="$(sysctl -n net.ipv4.tcp_congestion_control 2>&1 || true)"
+    cur_cc_reason="$(printf '%s' "${cur_cc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
+    cur_cc="未知"
+  fi
+  if [[ -z "${cur_qdisc}" ]]; then
+    cur_qdisc_reason="$(sysctl -n net.core.default_qdisc 2>&1 || true)"
+    cur_qdisc_reason="$(printf '%s' "${cur_qdisc_reason}" | tr '\n' ' ' | tr -s ' ' | sed 's/[[:space:]]*$//')"
+    cur_qdisc="未知"
+  fi
+  active_conn="$(ss -tn state established 2>/dev/null | wc -l || printf "1")"
+  active_conn=$((active_conn - 1))
+  [[ "${active_conn}" -lt 0 ]] && active_conn=0
+  current_mode="$(read_current_mode)"
 
-	local -a lines=()
-	lines+=(" ${COLOR_CYAN}系统概览${COLOR_RESET}")
-	lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}")
-	lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    活跃连接: ${COLOR_GREEN}${active_conn}${COLOR_RESET}")
-	lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}")
-	if [[ -n "${cur_cc_reason}" || -n "${cur_qdisc_reason}" ]]; then
-		lines+=("   读取说明: ${COLOR_YELLOW}${cur_cc_reason:-cc-ok}${COLOR_RESET} | ${COLOR_YELLOW}${cur_qdisc_reason:-qdisc-ok}${COLOR_RESET}")
-	fi
-	lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}")
-	lines+=(" ")
-	lines+=(" ${COLOR_CYAN}模式选择${COLOR_RESET}")
-	lines+=("   1) BBR+FQ 原版参数 [Stock]")
-	lines+=("   2) BBRV1 + FQ + 激进128MB")
-	lines+=(" ")
-	lines+=(" ${COLOR_CYAN}网络策略${COLOR_RESET}")
-	lines+=("   3) 开启 IPv4 强制优先")
-	lines+=("   4) 恢复 IPv6 默认优先级")
-	lines+=(" ")
-	lines+=(" ${COLOR_CYAN}维护与恢复${COLOR_RESET}")
-	lines+=("   5) 内核维护工具 (更新/清理)")
-	lines+=("   6) 从备份恢复配置 (时光机)")
-	lines+=("   7) 审计当前系统配置")
-	lines+=("   8) 彻底卸载/恢复系统默认")
-	lines+=(" ")
+  local -a lines=()
+  lines+=(" ${COLOR_CYAN}系统概览${COLOR_RESET}")
+  lines+=("   内核版本: ${COLOR_CYAN}${cur_kver}${COLOR_RESET}")
+  lines+=("   物理内存: ${COLOR_CYAN}${mem_mb} MB${COLOR_RESET}    活跃连接: ${COLOR_GREEN}${active_conn}${COLOR_RESET}")
+  lines+=("   拥塞算法: ${COLOR_CYAN}${cur_cc} + ${cur_qdisc}${COLOR_RESET}")
+  if [[ -n "${cur_cc_reason}" || -n "${cur_qdisc_reason}" ]]; then
+    lines+=("   读取说明: ${COLOR_YELLOW}${cur_cc_reason:-cc-ok}${COLOR_RESET} | ${COLOR_YELLOW}${cur_qdisc_reason:-qdisc-ok}${COLOR_RESET}")
+  fi
+  lines+=("   当前模式: ${COLOR_BLUE}${current_mode}${COLOR_RESET}")
+  lines+=(" ")
+  lines+=(" ${COLOR_CYAN}模式选择${COLOR_RESET}")
+  lines+=("   1) BBR+FQ 原版参数 [Stock]")
+  lines+=("   2) BBRV1 + FQ + 激进128MB")
+  lines+=(" ")
+  lines+=(" ${COLOR_CYAN}网络策略${COLOR_RESET}")
+  lines+=("   3) 开启 IPv4 强制优先")
+  lines+=("   4) 恢复 IPv6 默认优先级")
+  lines+=(" ")
+  lines+=(" ${COLOR_CYAN}维护与恢复${COLOR_RESET}")
+  lines+=("   5) 内核维护工具 (更新/清理)")
+  lines+=("   6) 从备份恢复配置 (时光机)")
+  lines+=("   7) 审计当前系统配置")
+  lines+=("   8) 彻底卸载/恢复系统默认")
+  lines+=(" ")
 
-	ui_render_menu "🚀 BBR ACE 网络调优引擎" "${lines[@]}"
+  ui_render_menu "🚀 BBR ACE 网络调优引擎" "${lines[@]}"
 }
 
 main() {
-	init_utils_ui || true
-	ensure_runtime_path
-	sanitize_noninteractive_flag
-	check_root "$@"
-	parse_dry_run_args "$@"
-	validate_args "${RUN_ARGS[@]}"
-	check_dependencies
-	check_environment
+  init_utils_ui || true
+  ensure_runtime_path
+  sanitize_noninteractive_flag
+  check_root "$@"
+  parse_dry_run_args "$@"
+  validate_args "${RUN_ARGS[@]}"
+  check_dependencies
+  check_environment
 
-	while true; do
-		show_menu
-		if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
-			exit 0
-		fi
+  while true; do
+    show_menu
+    if [[ "${JB_NONINTERACTIVE}" == "true" ]]; then
+      exit 0
+    fi
 
-		local c=""
-		c="$(ui_prompt_choice "1-8" "请选择操作")"
-		case "${c}" in
-		"") exit 10 ;;
-		1) apply_profile "stock" ;;
-		2) apply_profile "aggressive" ;;
-		3) manage_ipv4_precedence "enable" ;;
-		4) manage_ipv4_precedence "disable" ;;
-		5) kernel_manager ;;
-		6) restore_configs ;;
-		7) audit_configs ;;
-		8) uninstall_and_restore_defaults ;;
-		*) sleep 0.5 ;;
-		esac
-	done
+    local c=""
+    c="$(ui_prompt_choice "1-8" "请选择操作")"
+    case "${c}" in
+    "") return 10 ;;
+    1) apply_profile "stock" ;;
+    2) apply_profile "aggressive" ;;
+    3) manage_ipv4_precedence "enable" ;;
+    4) manage_ipv4_precedence "disable" ;;
+    5) kernel_manager ;;
+    6) restore_configs ;;
+    7) audit_configs ;;
+    8) uninstall_and_restore_defaults ;;
+    *) sleep 0.5 ;;
+    esac
+  done
 }
 
 main "$@"
