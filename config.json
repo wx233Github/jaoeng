@@ -17,7 +17,7 @@
   "clear_mode": "off",
   "comment_enable_auto_update": "是否在启动时自动检查更新 (true/false)",
   "enable_auto_update": true,
-  "comment_startup_update_mode": "启动更新模式: legacy/background",
+  "comment_startup_update_mode": "启动更新模式: 前台/后台",
   "startup_update_mode": "background",
   "comment_noninteractive": "是否启用非交互模式 (true/false)",
   "noninteractive": false,
@@ -36,7 +36,7 @@
         { "type": "submenu", "name": "常用工具", "icon": "🛠️", "action": "TOOLS_MENU" },
         { "type": "item", "name": "证书申请", "icon": "📜", "action": "cert.sh" },
         { "type": "submenu", "name": "mcp", "icon": "🧩", "action": "MCP_MENU" },
-        { "type": "func", "name": "启动更新模式切换", "icon": "🔁", "action": "toggle_startup_update_mode" },
+        { "type": "func", "name": "更新切换", "icon": "🔁", "action": "toggle_startup_update_mode" },
         { "type": "func", "name": "强制重置", "icon": "⚙️", "action": "confirm_and_force_update" },
         { "type": "func", "name": "卸载脚本", "icon": "🗑️", "action": "uninstall_script" }
       ]
