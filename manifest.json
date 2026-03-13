@@ -1,0 +1,76 @@
+{
+  "manifest_version": 1,
+  "description": "模块清单：定义主脚本与依赖文件，用于完整同步。核心文件 install.sh/utils.sh/config.json 为启动更新入口与配置来源。",
+  "modules": [
+    {
+      "name": "install",
+      "main": "install.sh",
+      "files": ["install.sh", "utils.sh", "config.json"]
+    },
+    {
+      "name": "nginx",
+      "main": "nginx.sh",
+      "deps": ["utils.sh"],
+      "files": [
+        "nginx.sh",
+        "lib/nginx_core.sh",
+        "lib/nginx_env.sh",
+        "lib/nginx_store.sh",
+        "lib/nginx_render.sh",
+        "lib/nginx_flow.sh",
+        "lib/template_render.sh",
+        "lib/template_manifest.sh",
+        "lib/template_audit.sh",
+        "lib/template_ops.sh",
+        "lib/template_cli.sh",
+        "templates/nginx/manifest.json",
+        "templates/nginx/manifest.schema.json",
+        "templates/nginx/snippets/hsts.conf.tpl",
+        "templates/nginx/snippets/wordpress_basic.conf.tpl",
+        "templates/nginx/snippets/security_headers.conf.tpl",
+        "templates/nginx/snippets/reverse_proxy_enhanced.conf.tpl"
+      ]
+    },
+    {
+      "name": "docker",
+      "main": "docker.sh",
+      "deps": ["utils.sh"],
+      "files": ["docker.sh"]
+    },
+    {
+      "name": "cert",
+      "main": "cert.sh",
+      "deps": ["utils.sh"],
+      "files": ["cert.sh"]
+    },
+    {
+      "name": "watchtower",
+      "main": "tools/Watchtower.sh",
+      "deps": ["utils.sh"],
+      "files": ["tools/Watchtower.sh"]
+    },
+    {
+      "name": "bbr_ace",
+      "main": "tools/bbr_ace.sh",
+      "deps": ["utils.sh"],
+      "files": ["tools/bbr_ace.sh"]
+    },
+    {
+      "name": "rm_install",
+      "main": "rm/install.sh",
+      "deps": ["utils.sh"],
+      "files": ["rm/install.sh"]
+    },
+    {
+      "name": "rm_cert",
+      "main": "rm/rm_cert.sh",
+      "deps": ["utils.sh"],
+      "files": ["rm/rm_cert.sh"]
+    },
+    {
+      "name": "mcp_pty",
+      "main": "MCP/pty/mcp_pty.sh",
+      "files": ["MCP/pty/mcp_pty.sh"]
+    }
+  ]
+}
