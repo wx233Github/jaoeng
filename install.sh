@@ -1080,6 +1080,9 @@ run_startup_update_legacy() {
 }
 
 startup_update_spinner() {
+  if [ "${STARTUP_UPDATE_SPINNER:-false}" != "true" ]; then
+    return 0
+  fi
   local pid="${1:-}"
   local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   local idx=0
