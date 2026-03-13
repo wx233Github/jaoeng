@@ -591,9 +591,28 @@ run_comprehensive_auto_update() {
       fi
     done
   fi
+  if ! _sync_module_sidecars "nginx.sh"; then
+    log_warn "Nginx 模块依赖同步失败（不影响使用）"
+  fi
   if [ "${#updated_files[@]}" -gt 0 ]; then
     printf '%s\n' "${updated_files[@]}"
   fi
+}
+
+_sync_module_sidecars() {
+  local module="${1:-}"
+  [ -z "$module" ] && return 1
+  if ! command -v jq >/dev/null 2>&1; then
+    log_warn "缺少 jq，跳过模块依赖同步"
+    return 1
+  fi
+  if ! download_module_to_cache "$module" "auto"; then
+    return 1
+  fi
+  if ! ensure_module_sidecar_libs "$module" "auto" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
 }
 
 merge_config_json() {
@@ -1081,6 +1100,7 @@ run_startup_update_legacy() {
 
 startup_update_spinner() {
   if [ "${STARTUP_UPDATE_SPINNER:-false}" != "true" ]; then
+    printf '\r检查更新...' >&2
     return 0
   fi
   local pid="${1:-}"
