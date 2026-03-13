@@ -661,7 +661,7 @@ _ensure_nginx_in_path() {
   export PATH="${dir}:$PATH"
   _ensure_system_path_sbin
   if [ "${NGINX_PATH_FIXED:-false}" != "true" ]; then
-    log_message WARN "已自动补齐 PATH，检测到 nginx: ${bin}"
+    log_debug "已自动补齐 PATH，检测到 nginx: ${bin}"
     NGINX_PATH_FIXED="true"
   fi
   return 0
@@ -3716,11 +3716,11 @@ _handle_nginx_template_cleanup_for_domain() {
       }
       IFS=' ' read -r -a ids <<<"$selected_ids"
       _cleanup_template_blocks_for_domain "$d" "ids" "${ids[@]}"
-      press_enter_to_continue
+      press_enter_to_exit
       ;;
     2)
       _cleanup_template_blocks_for_domain "$d" "all"
-      press_enter_to_continue
+      press_enter_to_exit
       ;;
     3 | "") return 0 ;;
     *) log_message ERROR "无效选择" ;;
@@ -3755,8 +3755,7 @@ _view_template_status_for_all_domains() {
   all=$(jq -r '.[].domain // empty' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
   if [ -z "$all" ]; then
     log_message WARN "暂无 HTTP 项目。"
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
   while IFS= read -r domain; do
     [ -z "$domain" ] && continue
@@ -3766,7 +3765,7 @@ _view_template_status_for_all_domains() {
     lines+=("${domain} -> ${ids_text}")
   done <<<"$all"
   _render_menu "模板状态总览" "${lines[@]}"
-  press_enter_to_continue
+  press_enter_to_exit
 }
 
 _view_template_audit_history() {
@@ -3776,8 +3775,7 @@ _view_template_audit_history() {
   [ -z "$log_path" ] && log_path="/tmp/nginx_template_audit.log"
   if [ ! -f "$log_path" ]; then
     log_message WARN "模板审计日志不存在: ${log_path}"
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
   while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -3785,7 +3783,7 @@ _view_template_audit_history() {
   done < <(tail -n 20 "$log_path" 2>/dev/null || true)
   [ "${#lines[@]}" -eq 0 ] && lines+=("日志为空")
   _render_menu "模板审计日志(最近20条)" "${lines[@]}"
-  press_enter_to_continue
+  press_enter_to_exit
 }
 
 _view_template_domains_by_template() {
@@ -3799,8 +3797,7 @@ _view_template_domains_by_template() {
   all=$(jq -r '.[].domain // empty' "$PROJECTS_METADATA_FILE" 2>/dev/null || true)
   if [ -z "$all" ]; then
     log_message WARN "暂无 HTTP 项目。"
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
   while IFS=$'\t' read -r id name; do
     [ -z "$id" ] && continue
@@ -3822,7 +3819,7 @@ _view_template_domains_by_template() {
     fi
   done < <(_manifest_query '.templates[] | [.id, .name] | @tsv' 2>/dev/null)
   _render_menu "按模板反查域名" "${lines[@]}"
-  press_enter_to_continue
+  press_enter_to_exit
 }
 
 _handle_template_rollback_by_op_interactive() {
@@ -3838,7 +3835,7 @@ _handle_template_rollback_by_op_interactive() {
   else
     log_message ERROR "按操作ID回滚失败: ${op_id}"
   fi
-  press_enter_to_continue
+  press_enter_to_exit
 }
 
 _handle_nginx_template_batch_apply_for_domain_glob() {
@@ -3901,8 +3898,7 @@ _handle_nginx_template_batch_apply_for_domain_glob() {
 
   if [ "${#domains[@]}" -eq 0 ]; then
     log_message WARN "未匹配到任何域名: ${domain_expr}"
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
 
   printf '%b' "匹配到域名(${#domains[@]}): ${domains[*]}\n"
@@ -3921,7 +3917,7 @@ _handle_nginx_template_batch_apply_for_domain_glob() {
   TEMPLATE_BATCH_AUTO_CONFIRM="false"
 
   log_message INFO "批量模板应用完成: 成功=${ok}, 失败=${fail}"
-  press_enter_to_continue
+  press_enter_to_exit
 }
 
 _handle_nginx_template_center_for_domain() {
@@ -3933,8 +3929,7 @@ _handle_nginx_template_center_for_domain() {
   local -a ids=()
 
   if ! _ensure_template_manifest_available; then
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
 
   while true; do
@@ -3949,7 +3944,7 @@ _handle_nginx_template_center_for_domain() {
       IFS=' ' read -r -a ids <<<"$combo_ids"
       mode=$(_ask_template_apply_mode) || continue
       _apply_templates_to_domain "$d" "$mode" "${ids[@]}"
-      press_enter_to_continue
+      press_enter_to_exit
       ;;
     5)
       _render_nginx_template_custom_menu
@@ -3964,7 +3959,7 @@ _handle_nginx_template_center_for_domain() {
       IFS=' ' read -r -a ids <<<"$combo_ids"
       mode=$(_ask_template_apply_mode) || continue
       _apply_templates_to_domain "$d" "$mode" "${ids[@]}"
-      press_enter_to_continue
+      press_enter_to_exit
       ;;
     6)
       _handle_nginx_template_cleanup_for_domain "$d"
@@ -3997,15 +3992,13 @@ _manage_nginx_template_center() {
   _generate_op_id
   local all count
   if ! _ensure_template_manifest_available; then
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
   all=$(jq . "$PROJECTS_METADATA_FILE")
   count=$(jq 'length' <<<"$all")
   if [ "$count" -eq 0 ]; then
     log_message WARN "暂无 HTTP 项目，无法应用模板。"
-    press_enter_to_continue
-    return 0
+    press_enter_to_exit
   fi
   select_item_and_act "$all" "$count" "请输入序号选择项目进入模板中心 (回车返回)" "domain" _handle_nginx_template_center_for_domain _display_projects_list || true
 }

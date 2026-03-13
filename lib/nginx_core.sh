@@ -795,6 +795,18 @@ press_enter_to_continue() {
   return 0
 }
 
+press_enter_to_exit() {
+  if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+    log_warn "非交互模式：直接退出"
+    exit 10
+  fi
+  if _read_input_prompt "\n${YELLOW}按 Enter 键退出...${NC}"; then
+    exit 10
+  fi
+  log_warn "无可用交互输入，已直接退出"
+  exit 10
+}
+
 prompt_menu_choice() {
   local range="${1:-}"
   local allow_empty="${2:-false}"
