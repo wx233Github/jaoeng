@@ -37,3 +37,20 @@ teardown() {
   ' _ "$LIB_PATH"
   [ "$status" -eq 0 ]
 }
+
+@test "merge_config_json 保留本地启动模式" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    remote="$(mktemp /tmp/install.startup.mode.remote.XXXXXX.json)"
+    local_cfg="$(mktemp /tmp/install.startup.mode.local.XXXXXX.json)"
+    out="$(mktemp /tmp/install.startup.mode.out.XXXXXX.json)"
+    printf "%s" "{\"startup_update_mode\":\"background\",\"base_url\":\"remote\"}" >"$remote"
+    printf "%s" "{\"startup_update_mode\":\"legacy\",\"custom\":true}" >"$local_cfg"
+    merge_config_json "$remote" "$local_cfg" "$out"
+    jq -e ".startup_update_mode == \"legacy\"" "$out" >/dev/null
+    jq -e ".base_url == \"remote\"" "$out" >/dev/null
+    jq -e ".custom == true" "$out" >/dev/null
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+}

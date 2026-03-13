@@ -558,6 +558,17 @@ run_comprehensive_auto_update() {
       log_err "下载 ${file} 失败，跳过。"
       continue
     fi
+    if [ "$file" = "config.json" ] && [ -f "$local_path" ]; then
+      local merged_file
+      merged_file=$(create_temp_file) || return 1
+      if merge_config_json "$temp_file" "$local_path" "$merged_file"; then
+        temp_file="$merged_file"
+      else
+        log_warn "配置文件合并失败，已保留本地配置"
+        rm -f "$temp_file" "$merged_file" 2>/dev/null || true
+        continue
+      fi
+    fi
     local remote_hash
     remote_hash=$(sed 's/\r$//' <"$temp_file" | sha256sum | awk '{print $1}')
     local local_hash="no_local_file"
@@ -583,6 +594,22 @@ run_comprehensive_auto_update() {
   if [ "${#updated_files[@]}" -gt 0 ]; then
     printf '%s\n' "${updated_files[@]}"
   fi
+}
+
+merge_config_json() {
+  local remote_file="$1"
+  local local_file="$2"
+  local out_file="$3"
+  if ! command -v jq >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! jq -e . "$remote_file" >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! jq -e . "$local_file" >/dev/null 2>&1; then
+    return 1
+  fi
+  jq -s '.[0] * .[1]' "$remote_file" "$local_file" >"$out_file"
 }
 
 download_module_to_cache() {
@@ -966,7 +993,13 @@ toggle_startup_update_mode() {
   else
     next_mode="legacy"
   fi
-  log_info "正在切换启动更新模式: $(startup_update_mode_label "$current_mode") -> $(startup_update_mode_label "$next_mode")"
+  local next_label
+  next_label=$(startup_update_mode_label "$next_mode")
+  if ! confirm_action "确定切换启动更新模式为 ${next_label} 吗?"; then
+    log_info "已取消切换"
+    return 1
+  fi
+  log_info "正在切换启动更新模式: $(startup_update_mode_label "$current_mode") -> ${next_label}"
   set_startup_update_mode "$next_mode"
 }
 
