@@ -768,6 +768,7 @@ _log_emit() {
 }
 
 log_info() { _log_emit "INFO" "${1:-}" "stdout"; }
+log_debug() { _log_emit "DEBUG" "${1:-}" "stdout"; }
 log_warn() { _log_emit "WARN" "${1:-}" "stderr"; }
 log_error() { _log_emit "ERROR" "${1:-}" "stderr"; }
 log_success() { _log_emit "SUCCESS" "${1:-}" "stdout"; }
