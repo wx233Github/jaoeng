@@ -1020,6 +1020,8 @@ run_startup_update_legacy() {
       if [ "$filename" = "install.sh" ]; then
         restart_needed=true
         update_messages+="主程序 (install.sh) 已更新\n"
+      elif [ "$filename" = "config.json" ]; then
+        continue
       else
         update_messages+="${GREEN}${filename}${NC} 已更新\n"
       fi
@@ -1052,7 +1054,7 @@ startup_update_spinner() {
 }
 
 startup_update_done_line() {
-  printf '\r%s%s 智能更新检查完成          \n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  printf '\r%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
 }
 
 run_startup_update_background() {
@@ -1306,16 +1308,16 @@ auto_update_capture_transient_hint() {
   case "$state" in
   updated)
     if [ "$count" -gt 0 ] 2>/dev/null; then
-      AUTO_UPDATE_LAST_HINT="${GREEN}✅ 后台更新完成：${count} 个文件已更新${NC}"
+      AUTO_UPDATE_LAST_HINT="${GREEN}✅ 后台已更新 ${count} 项${NC}"
       AUTO_UPDATE_LAST_HINT_TS="$now"
     fi
     ;;
   latest)
-    AUTO_UPDATE_LAST_HINT="${GREEN}✅ 已是最新版本（后台检查）${NC}"
+    AUTO_UPDATE_LAST_HINT="${GREEN}✅ 后台已最新${NC}"
     AUTO_UPDATE_LAST_HINT_TS="$now"
     ;;
   error_stale | error)
-    AUTO_UPDATE_LAST_HINT="${YELLOW}⚠ 后台更新检查异常（不影响使用），下次会自动重试${NC}"
+    AUTO_UPDATE_LAST_HINT="${YELLOW}⚠ 后台检查异常${NC}"
     AUTO_UPDATE_LAST_HINT_TS="$now"
     ;;
   esac
@@ -1341,29 +1343,29 @@ auto_update_status_text_for_state() {
   local count="${2:-0}"
   case "$state" in
   latest)
-    printf '%b' "${GREEN}✅ 最新版本${NC}"
+    printf '%b' "${GREEN}✅ 后台：最新${NC}"
     ;;
   updated)
     if [ "$count" -gt 0 ] 2>/dev/null; then
-      printf '%b' "${GREEN}✅ 更新：${count} 个文件已更新${NC}"
+      printf '%b' "${GREEN}✅ 后台：已更新${count}${NC}"
     else
-      printf '%b' "${GREEN}✅ 更新完成${NC}"
+      printf '%b' "${GREEN}✅ 后台：已更新${NC}"
     fi
     ;;
   updated_core)
-    printf '%b' "${YELLOW}⚠ 主程序有可用更新：下次启动生效${NC}"
+    printf '%b' "${YELLOW}⚠ 主程序待更新${NC}"
     ;;
   running)
-    printf '%b' "${CYAN}🔄 后台更新检查中${NC}"
+    printf '%b' "${CYAN}⠙ 后台检查中${NC}"
     ;;
   error | error_stale)
-    printf '%b' "${YELLOW}⚠ 后台更新检查异常（不影响使用）${NC}"
+    printf '%b' "${YELLOW}⚠ 后台检查异常${NC}"
     ;;
   disabled)
-    printf '%b' "${YELLOW}ℹ 后台更新已禁用${NC}"
+    printf '%b' "${YELLOW}ℹ 后台已关闭${NC}"
     ;;
   *)
-    printf '%b' "${CYAN}🔄 后台更新检查中${NC}"
+    printf '%b' "${CYAN}⠙ 后台检查中${NC}"
     ;;
   esac
 }

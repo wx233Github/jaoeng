@@ -26,6 +26,21 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "auto_update_status_text_for_state 输出短提示" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    [ "$(auto_update_status_text_for_state latest 0)" = "✅ 后台：最新" ]
+    [ "$(auto_update_status_text_for_state updated 3)" = "✅ 后台：已更新3" ]
+    [ "$(auto_update_status_text_for_state updated 0)" = "✅ 后台：已更新" ]
+    [ "$(auto_update_status_text_for_state updated_core 0)" = "⚠ 主程序待更新" ]
+    [ "$(auto_update_status_text_for_state running 0)" = "⠙ 后台检查中" ]
+    [ "$(auto_update_status_text_for_state error 0)" = "⚠ 后台检查异常" ]
+    [ "$(auto_update_status_text_for_state disabled 0)" = "ℹ 后台已关闭" ]
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+}
+
 @test "run_startup_update_legacy 不输出 config.json 更新提示" {
   run bash -c '
     set -euo pipefail
