@@ -68,6 +68,19 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "run_startup_update_legacy 无更新时不输出完成行" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    JB_RESTARTED="false"
+    run_comprehensive_auto_update() { :; }
+    startup_update_spinner() { :; }
+    run_startup_update_legacy
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ 更新完成 ]]
+}
+
 @test "run_startup_update_legacy 不输出 config.json 更新提示" {
   run bash -c '
     set -euo pipefail

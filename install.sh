@@ -1036,7 +1036,11 @@ run_startup_update_legacy() {
   fi
   local -a updated_files_list=()
   mapfile -t updated_files_list <"$update_tmp"
-  startup_update_done_line
+  if [ ${#updated_files_list[@]} -gt 0 ]; then
+    startup_update_done_line
+  else
+    startup_update_clear_line
+  fi
   if [ "$update_rc" -ne 0 ]; then
     log_warn "智能更新检查异常（不影响使用）" >&2
   fi
@@ -1080,7 +1084,7 @@ startup_update_spinner() {
   local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   local idx=0
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r%s%s 更新中 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
+    printf '\r%s%s 检查更新 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
     idx=$(((idx + 1) % ${#frames[@]}))
     sleep 0.08
   done
@@ -1088,6 +1092,10 @@ startup_update_spinner() {
 
 startup_update_done_line() {
   printf '\r\033[2K%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+}
+
+startup_update_clear_line() {
+  printf '\r\033[2K' >&2
 }
 
 run_startup_update_background() {
