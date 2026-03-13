@@ -619,6 +619,37 @@ _find_nginx_bin() {
   return 1
 }
 
+_ensure_system_path_sbin() {
+  local profile="${NGINX_PROFILE_PATH:-/etc/profile}"
+  local marker="# Added by nginx.sh to ensure /usr/sbin in PATH"
+  if [ ! -f "$profile" ]; then
+    return 0
+  fi
+  if grep -q "${marker}" "$profile" 2>/dev/null; then
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp)
+  cp -p "$profile" "$tmp"
+  {
+    printf '\n%s\n' "$marker"
+    printf "%s\n" "case \":\$PATH:\" in"
+    printf '%s\n' '  *:/usr/sbin:*) ;;'
+    printf "%s\n" "  *) export PATH=\"\$PATH:/usr/sbin\" ;;"
+    printf '%s\n' 'esac'
+  } >>"$tmp"
+  if ! grep -q "$marker" "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    log_message INFO "[DRY-RUN] 将写入 ${profile} 以补齐 /usr/sbin"
+    rm -f "$tmp"
+    return 0
+  fi
+  mv "$tmp" "$profile"
+}
+
 _ensure_nginx_in_path() {
   local bin=""
   bin=$(_find_nginx_bin) || return 1
@@ -628,6 +659,7 @@ _ensure_nginx_in_path() {
   *":$dir:"*) return 0 ;;
   esac
   export PATH="${dir}:$PATH"
+  _ensure_system_path_sbin
   if [ "${NGINX_PATH_FIXED:-false}" != "true" ]; then
     log_message WARN "已自动补齐 PATH，检测到 nginx: ${bin}"
     NGINX_PATH_FIXED="true"
