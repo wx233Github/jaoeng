@@ -41,6 +41,33 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "handle_auto_update_core_restart 清理状态并重置标记" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    restart_main_script() { :; }
+    run_destructive_with_sudo() { shift; rm -f "$@"; }
+    DRY_RUN="false"
+    AUTO_UPDATE_STATE="updated_core"
+    AUTO_UPDATE_UPDATED_CORE="true"
+    AUTO_UPDATE_UPDATED_COUNT="1"
+    AUTO_UPDATE_STATUS_FILE="$(mktemp /tmp/jb_auto_update.status.XXXXXX)"
+    AUTO_UPDATE_PID_FILE="$(mktemp /tmp/jb_auto_update.pid.XXXXXX)"
+    printf "state=updated_core\nupdated_count=1\nupdated_core=true\n" >"$AUTO_UPDATE_STATUS_FILE"
+    printf "999999\n" >"$AUTO_UPDATE_PID_FILE"
+    handle_auto_update_core_restart
+    [ "$AUTO_UPDATE_UPDATED_CORE" = "false" ]
+    [ "$AUTO_UPDATE_STATE" = "updated" ]
+    [ -f "$AUTO_UPDATE_STATUS_FILE" ]
+    updated_core=""
+    while IFS='=' read -r key value; do
+      if [ "$key" = "updated_core" ]; then updated_core="$value"; fi
+    done <"$AUTO_UPDATE_STATUS_FILE"
+    [ "$updated_core" = "false" ]
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+}
+
 @test "run_startup_update_legacy 不输出 config.json 更新提示" {
   run bash -c '
     set -euo pipefail

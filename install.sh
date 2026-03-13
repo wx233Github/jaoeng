@@ -1021,7 +1021,7 @@ restart_main_script() {
 run_startup_update_legacy() {
   log_info "脚本启动 (${SCRIPT_VERSION})" >&2
   if [ "${JB_RESTARTED:-false}" = "true" ]; then
-    log_info "脚本已由自身重启，跳过初始更新检查。" >&2
+    log_debug "脚本已由自身重启，跳过初始更新检查。" >&2
     return 0
   fi
 
@@ -1069,7 +1069,7 @@ run_startup_update_legacy() {
     fi
 
     if [ "$restart_needed" = true ]; then
-      log_success "正在无缝重启主程序 (install.sh) 以应用更新... 🚀" >&2
+      log_success "主程序更新，重启中" >&2
       restart_main_script "${@:-}"
     fi
   fi
@@ -1080,14 +1080,14 @@ startup_update_spinner() {
   local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   local idx=0
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r%s%s 正在智能更新 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
+    printf '\r%s%s 更新中 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
     idx=$(((idx + 1) % ${#frames[@]}))
     sleep 0.08
   done
 }
 
 startup_update_done_line() {
-  printf '\r%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  printf '\r\033[2K%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
 }
 
 run_startup_update_background() {
@@ -1099,9 +1099,30 @@ handle_auto_update_core_restart() {
     return 0
   fi
   if [ "${AUTO_UPDATE_STATE:-}" = "updated_core" ] || [ "${AUTO_UPDATE_UPDATED_CORE:-false}" = "true" ]; then
-    log_success "检测到主程序已更新，正在无缝重启以应用更新... 🚀"
+    local count="${AUTO_UPDATE_UPDATED_COUNT:-0}"
+    clear_auto_update_worker_state
+    write_auto_update_status "updated" "$count" "false" "core_restarted"
+    AUTO_UPDATE_STATE="updated"
+    AUTO_UPDATE_UPDATED_CORE="false"
+    log_success "主程序更新，重启中"
     restart_main_script "${@:-}"
   fi
+}
+
+clear_auto_update_worker_state() {
+  # 清理后台更新进程与状态，避免重复触发重启
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY-RUN] 清理后台更新状态"
+    return 0
+  fi
+  local pid=""
+  if [ -f "$AUTO_UPDATE_PID_FILE" ]; then
+    pid="$(cat "$AUTO_UPDATE_PID_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  run_destructive_with_sudo rm -f "$AUTO_UPDATE_PID_FILE" "$AUTO_UPDATE_STATUS_FILE" || true
 }
 
 run_startup_update_flow() {
