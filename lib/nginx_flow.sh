@@ -67,6 +67,11 @@ configure_nginx_projects() {
   _generate_op_id
   local mode="${1:-standard}"
   local json
+  _ensure_menu_interactive
+  if [ "${JB_NONINTERACTIVE:-false}" = "true" ] || [ "$IS_INTERACTIVE_MODE" != "true" ]; then
+    log_message ERROR "非交互模式无法配置新项目"
+    return 1
+  fi
   printf '%b' "\n${CYAN}开始配置新项目...${NC}\n"
   if ! json=$(_gather_project_details "{}" "false" "$mode"); then
     log_message WARN "用户取消配置。"

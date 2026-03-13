@@ -279,6 +279,12 @@ _get_visual_width() {
 }
 
 _render_menu() {
+  local out="/dev/tty"
+  if [ -t 1 ]; then
+    out="/dev/stdout"
+  elif [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    out="/dev/stdout"
+  fi
   local title="$1"
   shift
   local -a lines=("$@")
@@ -296,20 +302,33 @@ _render_menu() {
   local box_inner_width=$max_content_width
   if [ "$box_inner_width" -lt 40 ]; then box_inner_width=40; fi
 
-  printf '%b' "\n"
-  printf '%b' "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}\n"
+  printf '%b' "\n" >"$out"
+  printf '%b' "${GREEN}╭$(generate_line "$box_inner_width" "─")╮${NC}\n" >"$out"
   if [ -n "$title" ]; then
     local padding_total=$((box_inner_width - title_width))
     local padding_left=$((padding_total / 2))
     local padding_right=$((padding_total - padding_left))
-    printf '%b' "${GREEN}│${NC}$(printf '%*s' "$padding_left" "")${BOLD}${title}${NC}$(printf '%*s' "$padding_right" "")${GREEN}│${NC}\n"
+    printf '%b' "${GREEN}│${NC}$(printf '%*s' "$padding_left" "")${BOLD}${title}${NC}$(printf '%*s' "$padding_right" "")${GREEN}│${NC}\n" >"$out"
   fi
-  printf '%b' "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}\n"
+  printf '%b' "${GREEN}╰$(generate_line "$box_inner_width" "─")╯${NC}\n" >"$out"
 
-  for line in "${lines[@]}"; do printf '%b' "${line}\n"; done
+  for line in "${lines[@]}"; do printf '%b' "${line}\n" >"$out"; done
 
   local box_total_physical_width=$((box_inner_width + 2))
-  printf '%b' "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}\n"
+  printf '%b' "${GREEN}$(generate_line "$box_total_physical_width" "─")${NC}\n" >"$out"
+}
+
+safe_rm() {
+  # DRY-RUN 安全删除封装
+  local target="${1:-}"
+  local purpose="${2:-删除文件}"
+  if [ -z "$target" ]; then return 1; fi
+  if ! _require_safe_path "$target" "$purpose"; then return 1; fi
+  if [ "$DRY_RUN" = "true" ]; then
+    log_message INFO "[DRY-RUN] rm -f ${target}"
+    return 0
+  fi
+  rm -f "$target"
 }
 
 _center_text() {
@@ -1652,7 +1671,7 @@ _rebuild_all_nginx_configs() {
       log_message ERROR "重建失败: $d"
     fi
   done <<<"$all_projects"
-  rm -f /etc/nginx/snippets/cf_allow.conf
+  safe_rm "/etc/nginx/snippets/cf_allow.conf" "删除 CF Allow"
   log_message SUCCESS "重建完成。成功: $success, 失败: $fail"
 }
 
