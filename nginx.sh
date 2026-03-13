@@ -2511,6 +2511,21 @@ _gather_project_details() {
     return 1
   fi
 
+  local type="cert_only"
+  local name="证书"
+  local port="cert_only"
+  if [ "$is_cert_only" == "false" ]; then
+    name=$(jq -r '.name // ""' <<<"$cur")
+    local target_pair=""
+    if ! target_pair=$(_prompt_backend_target_for_project "$cur" "$name"); then
+      exec 3>&-
+      return 1
+    fi
+    local old_ifs="$IFS"
+    IFS=$'\t' read -r type port <<<"$target_pair"
+    IFS="$old_ifs"
+  fi
+
   if [ "$skip_cert" == "false" ]; then
     if ! _check_dns_resolution "$domain"; then
       printf '%b' "${RED}域名配置已取消。${NC}\n" >&2
@@ -2531,9 +2546,6 @@ _gather_project_details() {
   IFS=$'\t' read -r reuse_wc wc_cert wc_key <<<"$wc_pair"
   IFS="$old_ifs"
 
-  local type="cert_only"
-  local name="证书"
-  local port="cert_only"
   local max_body
   local custom_cfg
   max_body=$(jq -r '.client_max_body_size // empty' <<<"$cur")
@@ -2547,18 +2559,6 @@ _gather_project_details() {
   mcp_protect_path=$(jq -r '.mcp_protect_path // empty' <<<"$cur")
   mcp_token=$(_resolve_mcp_token_from_json "$cur" "$domain" 2>/dev/null || true)
   CF_STRICT_MODE_CURRENT="$cf_strict"
-
-  if [ "$is_cert_only" == "false" ]; then
-    name=$(jq -r '.name // ""' <<<"$cur")
-    local target_pair=""
-    if ! target_pair=$(_prompt_backend_target_for_project "$cur" "$name"); then
-      exec 3>&-
-      return 1
-    fi
-    old_ifs="$IFS"
-    IFS=$'\t' read -r type port <<<"$target_pair"
-    IFS="$old_ifs"
-  fi
 
   local method="http-01"
   local provider=""
