@@ -67,6 +67,12 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 _log_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
+_log_prefix() {
+  local func="${FUNCNAME[1]:-main}"
+  local line="${BASH_LINENO[0]:-0}"
+  printf '[%s:%s] ' "$func" "$line"
+}
+
 # 启动器专用精简日志 (移除终端时间戳)
 echo_info() {
   printf "${CYAN}[启动器]${NC} %s\n" "$1" >&2
@@ -977,10 +983,10 @@ run_startup_update_legacy() {
     return 0
   fi
 
-  printf "$(_log_prefix)${CYAN}[信 息]${NC} 正 在 全 面 智 能 更 新 🕛 " >&2
+  printf '%s%s 正 在 全 面 智 能 更 新 🕛 ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" >&2
   local -a updated_files_list=()
   mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
-  printf "\r$(_log_prefix)${GREEN}[成 功]${NC} 全 面 智 能 更 新 检 查 完 成 🔄          \n" >&2
+  printf '\r%s%s 全 面 智 能 更 新 检 查 完 成 🔄          \n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
 
   local restart_needed=false
   local update_messages=""
