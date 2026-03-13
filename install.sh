@@ -913,6 +913,15 @@ get_startup_update_mode() {
   esac
 }
 
+startup_update_mode_label() {
+  local mode="${1:-}"
+  case "$mode" in
+  background) printf '%s' "后台" ;;
+  legacy) printf '%s' "前台" ;;
+  *) printf '%s' "未知" ;;
+  esac
+}
+
 set_startup_update_mode() {
   local mode="${1:-}"
   case "$mode" in
@@ -945,7 +954,7 @@ set_startup_update_mode() {
     return 1
   fi
   run_with_sudo mv "$tmp_file" "$CONFIG_PATH"
-  log_success "启动更新模式已设置为: ${mode}"
+  log_success "启动更新模式已设置为: $(startup_update_mode_label "$mode")"
   return 0
 }
 
@@ -957,7 +966,7 @@ toggle_startup_update_mode() {
   else
     next_mode="legacy"
   fi
-  log_info "正在切换启动更新模式: ${current_mode} -> ${next_mode}"
+  log_info "正在切换启动更新模式: $(startup_update_mode_label "$current_mode") -> $(startup_update_mode_label "$next_mode")"
   set_startup_update_mode "$next_mode"
 }
 
@@ -983,10 +992,21 @@ run_startup_update_legacy() {
     return 0
   fi
 
-  printf '%s%s 正 在 全 面 智 能 更 新 🕛 ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" >&2
+  local update_tmp
+  update_tmp=$(create_temp_file) || return 1
+  run_comprehensive_auto_update "${@:-}" >"$update_tmp" &
+  local update_pid=$!
+  startup_update_spinner "$update_pid"
+  local update_rc=0
+  if ! wait "$update_pid"; then
+    update_rc=$?
+  fi
   local -a updated_files_list=()
-  mapfile -t updated_files_list < <(run_comprehensive_auto_update "${@:-}")
-  printf '\r%s%s 全 面 智 能 更 新 检 查 完 成 🔄          \n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  mapfile -t updated_files_list <"$update_tmp"
+  startup_update_done_line
+  if [ "$update_rc" -ne 0 ]; then
+    log_warn "智能更新检查异常（不影响使用）" >&2
+  fi
 
   local restart_needed=false
   local update_messages=""
@@ -1005,13 +1025,6 @@ run_startup_update_legacy() {
       fi
     done
 
-    for file in "${updated_files_list[@]}"; do
-      if [ "$(basename "$file")" = "config.json" ]; then
-        update_messages+="  > 配置文件 config.json 已更新，部分默认设置可能已改变。\n"
-        break
-      fi
-    done
-
     if [ -n "$update_messages" ]; then
       log_info "发现以下更新:" >&2
       while IFS= read -r line; do
@@ -1025,6 +1038,21 @@ run_startup_update_legacy() {
       restart_main_script "${@:-}"
     fi
   fi
+}
+
+startup_update_spinner() {
+  local pid="${1:-}"
+  local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  local idx=0
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r%s%s 正在智能更新 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
+    idx=$(((idx + 1) % ${#frames[@]}))
+    sleep 0.08
+  done
+}
+
+startup_update_done_line() {
+  printf '\r%s%s 智能更新检查完成          \n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
 }
 
 run_startup_update_background() {

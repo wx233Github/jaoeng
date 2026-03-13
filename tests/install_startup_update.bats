@@ -25,3 +25,19 @@ teardown() {
   ' _ "$LIB_PATH"
   [ "$status" -eq 0 ]
 }
+
+@test "run_startup_update_legacy 不输出 config.json 更新提示" {
+  run bash -c '
+    set -euo pipefail
+    source "$1"
+    JB_RESTARTED="false"
+    run_comprehensive_auto_update() {
+      printf "%s\n" "config.json"
+    }
+    startup_update_spinner() { :; }
+    startup_update_done_line() { :; }
+    run_startup_update_legacy
+  ' _ "$LIB_PATH"
+  [ "$status" -eq 0 ]
+  [[ ! "$output" =~ 配置文件[[:space:]]config\.json[[:space:]]已更新 ]]
+}
