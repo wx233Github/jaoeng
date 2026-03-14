@@ -888,8 +888,7 @@ prompt_input() {
       elif [ -n "$default" ]; then
         disp=" [默认: ${default}]"
       fi
-      printf '%b' "${BRIGHT_YELLOW}${prompt}${NC}${disp}: " >&2
-      if _read_input; then
+      if _read_input_prompt "${BRIGHT_YELLOW}${prompt}${NC}${disp}: "; then
         val="$REPLY"
       else
         log_message ERROR "无可用交互输入(缺少TTY)"
