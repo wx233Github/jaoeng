@@ -20,6 +20,10 @@ sanitize_noninteractive_flag() {
 
 TTY_FALLBACK_WARNED="false"
 
+# é»è®¤æ¥å¿è·¯å¾ï¼nginx.sh æªé¢è®¾æ¶ååºï¼
+LOG_FILE_DEFAULT="${LOG_FILE_DEFAULT:-/var/log/nginx_ssl_manager.log}"
+LOG_FILE_FALLBACK="${LOG_FILE_FALLBACK:-/tmp/nginx_ssl_manager.log}"
+
 _tty_available() {
   if [ ! -t 0 ] && [ ! -t 1 ]; then
     return 1
