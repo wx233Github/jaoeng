@@ -26,7 +26,7 @@ NGINX_PATH_FIXED="false"
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 
 # --- 全局变量 ---
-if [ -t 1 ] || [ -t 2 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+if [ -t 1 ] || [ -t 2 ]; then
   NC="\033[0m"
   # shellcheck disable=SC2034
   BLACK="\033[30m"
