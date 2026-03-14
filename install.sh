@@ -1117,7 +1117,7 @@ startup_update_spinner() {
   local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
   local idx=0
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r%s%s 检查更新 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
+    printf '\r%s 检查更新 %s ' "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
     idx=$(((idx + 1) % ${#frames[@]}))
     sleep 0.08
   done
