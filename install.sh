@@ -68,9 +68,7 @@ REAL_SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 _log_timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
 _log_prefix() {
-  local func="${FUNCNAME[1]:-main}"
-  local line="${BASH_LINENO[0]:-0}"
-  printf '[%s:%s] ' "$func" "$line"
+  :
 }
 
 # 启动器专用精简日志 (移除终端时间戳)

@@ -43,9 +43,7 @@ _now() {
 _log() {
   local level="$1"
   shift
-  local func="${FUNCNAME[2]:-main}"
-  local line="${BASH_LINENO[1]:-0}"
-  printf '[%s] [%s] [%s:%s] %s\n' "$(_now)" "$level" "$func" "$line" "$*" >&2
+  printf '[%s] [%s] %s\n' "$(_now)" "$level" "$*" >&2
 }
 
 log_info() {

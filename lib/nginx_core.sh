@@ -742,19 +742,18 @@ _log_context() {
 
 _log_emit() {
   local level="${1:-INFO}" message="${2:-}"
-  local op_tag ctx
+  local op_tag
   op_tag="${OP_ID:-NA}"
-  ctx=$(_log_context)
   local plain_line=""
   if [ "${LOG_FORMAT:-plain}" = "kv" ]; then
     local safe_msg
     safe_msg=${message//$'\n'/ }
     safe_msg=${safe_msg//"/\\"/}
-    plain_line="level=${level} ctx=${ctx} op=${op_tag} msg=\"${safe_msg}\""
+    plain_line="level=${level} op=${op_tag} msg=\"${safe_msg}\""
   else
-    plain_line="[${level}] [${ctx}] ${message}"
+    plain_line="[${level}] ${message}"
     if [ "${LOG_WITH_OP_TAG:-false}" = "true" ]; then
-      plain_line="[${level}] [${ctx}] [op:${op_tag}] ${message}"
+      plain_line="[${level}] [op:${op_tag}] ${message}"
     fi
   fi
   if ! _log_should_emit "$level"; then return 0; fi
