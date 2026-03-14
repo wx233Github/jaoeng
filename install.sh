@@ -1125,9 +1125,9 @@ startup_update_spinner() {
 
 startup_update_done_line() {
   if [ -t 2 ]; then
-    printf '\r\033[2K%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+    printf '\r\033[2K%s 更新完成\n' "${GREEN}[成 功]${NC}" >&2
   else
-    printf '\r%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+    printf '\r%s 更新完成\n' "${GREEN}[成 功]${NC}" >&2
   fi
 }
 
