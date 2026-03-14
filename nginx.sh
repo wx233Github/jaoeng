@@ -2517,6 +2517,7 @@ _prompt_backend_target_for_project() {
 
 _gather_project_details() {
   exec 3>&1
+  exec 1>&2
   local cur="${1:-{}}"
   local cur_compact="$cur"
   cur_compact="${cur_compact//$'\r'/}"
@@ -2665,7 +2666,7 @@ _gather_project_details() {
     "${method:-http-01}" "${provider:-}" "${wildcard:-n}" \
     "${ca_server:-}" "${ca_name:-}" "${cf:-}" "${kf:-}" \
     "${max_body:-}" "${custom_cfg:-}" "${CF_STRICT_MODE_CURRENT:-$cf_strict}" "${reload_cmd:-}" \
-    "${mcp_protect_path:-}" "${mcp_token:-}"; then
+    "${mcp_protect_path:-}" "${mcp_token:-}" >&3; then
     exec 3>&-
     return 1
   fi
