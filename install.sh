@@ -585,8 +585,14 @@ run_comprehensive_auto_update() {
   local scripts_to_update
   scripts_to_update=$(jq -r '.menus[] | .items[]? | select(.type == "item").action' "$CONFIG_PATH" 2>/dev/null || true)
   if [ -n "${scripts_to_update:-}" ] && [ "$scripts_to_update" != "null" ]; then
+    local download_rc=0
     for script_name in $scripts_to_update; do
       if download_module_to_cache "$script_name" "auto"; then
+        download_rc=0
+      else
+        download_rc=$?
+      fi
+      if [ "$download_rc" -eq 0 ]; then
         updated_files+=("$script_name")
       fi
     done
@@ -607,13 +613,16 @@ _sync_module_sidecars() {
     log_warn "缺少 jq，跳过模块依赖同步"
     return 1
   fi
-  if ! download_module_to_cache "$module" "auto"; then
-    return 1
+  local download_rc=0
+  if download_module_to_cache "$module" "auto"; then
+    download_rc=0
+  else
+    download_rc=$?
   fi
-  if ! ensure_module_sidecar_libs "$module" "auto" >/dev/null 2>&1; then
-    return 1
+  if [ "$download_rc" -eq 0 ] || [ "$download_rc" -eq 2 ]; then
+    return 0
   fi
-  return 0
+  return 1
 }
 
 merge_config_json() {
@@ -666,7 +675,7 @@ download_module_to_cache() {
     if ! ensure_module_sidecar_libs "$script_name" "$mode"; then
       return 1
     fi
-    return 1
+    return 2
   fi
 }
 
