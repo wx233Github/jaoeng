@@ -592,6 +592,7 @@ run_comprehensive_auto_update() {
     done
   fi
   if ! _sync_module_sidecars "nginx.sh"; then
+    printf '\n' >&2
     log_warn "Nginx 模块依赖同步失败（不影响使用）"
   fi
   if [ "${#updated_files[@]}" -gt 0 ]; then
@@ -1038,7 +1039,7 @@ restart_main_script() {
 }
 
 run_startup_update_legacy() {
-  log_info "脚本启动 (${SCRIPT_VERSION})" >&2
+  log_debug "脚本启动 (${SCRIPT_VERSION})" >&2
   if [ "${JB_RESTARTED:-false}" = "true" ]; then
     log_debug "脚本已由自身重启，跳过初始更新检查。" >&2
     return 0
@@ -1100,11 +1101,11 @@ run_startup_update_legacy() {
 
 startup_update_spinner() {
   if [ "${STARTUP_UPDATE_SPINNER:-false}" != "true" ]; then
-    printf '\r检查更新...' >&2
+    printf '\r检查更新 ⠙' >&2
     return 0
   fi
   local pid="${1:-}"
-  local -a frames=("⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+  local -a frames=("⠙")
   local idx=0
   while kill -0 "$pid" 2>/dev/null; do
     printf '\r%s%s 检查更新 %s ' "$(_log_prefix)" "${CYAN}[信 息]${NC}" "${frames[$idx]}" >&2
