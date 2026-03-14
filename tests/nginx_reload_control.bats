@@ -71,6 +71,9 @@ teardown() {
     set +e
     trap - ERR
     CONF_PATH_STUB="/tmp/nginx.fallback.conf"
+    PID_FILE=$(mktemp /tmp/nginx.reload.fallback.pid.XXXXXX)
+    printf "%s\n" "12345" >"$PID_FILE"
+    printf "%s\n" "pid ${PID_FILE};" >"$CONF_PATH_STUB"
     _nginx_test_cached() { return 0; }
     log_message() { return 0; }
     _select_reload_strategy() { printf "%s\n" "systemctl"; }
@@ -115,6 +118,67 @@ teardown() {
   [ "${lines[2]}" = "run_cmd:nginx -s reload" ]
 }
 
+@test "reload failure with empty pid uses HUP fallback and skips nginx -s" {
+  run bash -c '
+    source "$1"
+    marker=$(mktemp /tmp/nginx.reload.hup.marker.XXXXXX)
+    IFS=$'"'"' \t\n'"'"'
+    set +e
+    trap - ERR
+    CONF_PATH_STUB=$(mktemp /tmp/nginx.reload.hup.conf.XXXXXX)
+    PID_FILE=$(mktemp /tmp/nginx.reload.hup.pid.XXXXXX)
+    : >"$PID_FILE"
+    printf "%s\n" "pid ${PID_FILE};" >"$CONF_PATH_STUB"
+    printf "%s\n" "conf:${CONF_PATH_STUB}" >>"$marker"
+    _nginx_test_cached() { return 0; }
+    log_message() { printf "%s\n" "log:$*" >>"$marker"; }
+    _select_reload_strategy() { printf "%s\n" "nginx_conf:${CONF_PATH_STUB}"; }
+    pgrep() { printf "%s\n" "567 nginx: master process /usr/sbin/nginx -c ${CONF_PATH_STUB}"; }
+    run_cmd() {
+      shift
+      local IFS=" "
+      printf "%s\n" "run_cmd:$*" >>"$marker"
+      if [ "$1" = "nginx" ]; then
+        shift
+        nginx "$@"
+        return $?
+      fi
+      return 1
+    }
+    nginx() {
+      if [ "$1" = "-c" ] && [ "$2" = "${CONF_PATH_STUB}" ] && [ "$3" = "-s" ] && [ "$4" = "reload" ]; then
+        return 1
+      fi
+      if [ "$1" = "-s" ] && [ "$2" = "reload" ]; then
+        printf "%s\n" "nginx-s" >>"$marker"
+        return 0
+      fi
+      return 1
+    }
+    kill() {
+      local IFS=" "
+      printf "%s\n" "kill:$*" >>"$marker"
+      return 0
+    }
+    control_nginx reload
+    rc=$?
+    cat "$marker"
+    exit $rc
+  ' "$SCRIPT_PATH" "$LIB_PATH"
+  [ "$status" -eq 0 ]
+  lines=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && lines+=("$line")
+  done <<<"$output"
+  conf_line=$(printf "%s\n" "${lines[@]}" | grep -m1 '^conf:')
+  conf_path="${conf_line#conf:}"
+  printf "%s\n" "${lines[@]}" | grep -q "run_cmd:nginx -c ${conf_path} -s reload"
+  printf "%s\n" "${lines[@]}" | grep -q "kill:-HUP 567"
+  printf "%s\n" "${lines[@]}" | grep -q "log:WARN 已回退为 HUP master(pid=567) 触发重载。"
+  printf "%s\n" "${lines[@]}" | grep -vq "run_cmd:nginx -s reload"
+  printf "%s\n" "${lines[@]}" | grep -vq "nginx-s"
+}
+
 @test "reload_failure_diagnostics: full fallback failure returns non-zero" {
   run bash -c '
     source "$1"
@@ -123,6 +187,9 @@ teardown() {
     set +e
     trap - ERR
     CONF_PATH_STUB="/tmp/nginx.failure.conf"
+    PID_FILE=$(mktemp /tmp/nginx.reload.failure.pid.XXXXXX)
+    printf "%s\n" "12345" >"$PID_FILE"
+    printf "%s\n" "pid ${PID_FILE};" >"$CONF_PATH_STUB"
     _nginx_test_cached() { return 0; }
     log_message() { printf "%s\n" "log:$*" >>"$marker"; }
     _select_reload_strategy() { printf "%s\n" "systemctl"; }

@@ -1127,6 +1127,89 @@ _extract_nginx_conf_from_master_cmd() {
   return 1
 }
 
+_extract_nginx_master_pid_from_cmd() {
+  local master_cmd="${1:-}"
+  local pid="${master_cmd%% *}"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  return 1
+}
+
+_get_nginx_pid_file_from_conf() {
+  local conf_path="${1:-}"
+  if [ -z "$conf_path" ] || [ ! -f "$conf_path" ]; then
+    return 1
+  fi
+  # 解析主配置中的 pid 指令，必要时回退常见路径
+  local pid_path=""
+  pid_path=$(awk '
+    {
+      line=$0
+      sub(/#.*/, "", line)
+      if (match(line, /^[[:space:]]*pid[[:space:]]+[^;]+;/)) {
+        sub(/^[[:space:]]*pid[[:space:]]+/, "", line)
+        sub(/;.*/, "", line)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "$conf_path")
+  if [ -n "$pid_path" ]; then
+    printf '%s\n' "$pid_path"
+    return 0
+  fi
+  local candidate=""
+  for candidate in /run/nginx.pid /var/run/nginx.pid; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_is_nginx_pid_file_empty() {
+  local pid_file="${1:-}"
+  if [ -z "$pid_file" ] || [ ! -f "$pid_file" ]; then
+    return 1
+  fi
+  local pid=""
+  pid=$(tr -d '[:space:]' <"$pid_file" 2>/dev/null || true)
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+_dry_run_kill() {
+  _dry_run_exec kill "$@"
+}
+
+_try_hup_nginx_master() {
+  local master_cmd="${1:-}"
+  local pid=""
+  pid=$(_extract_nginx_master_pid_from_cmd "$master_cmd" 2>/dev/null || true)
+  if [ -z "$pid" ]; then
+    return 1
+  fi
+  # PID 文件异常时，使用 HUP 通知 master 进程重载
+  if _dry_run_kill -HUP "$pid" 2>/dev/null; then
+    log_message WARN "已回退为 HUP master(pid=${pid}) 触发重载。"
+    NGINX_RELOAD_NEEDED="false"
+    if [ -n "${TX_STATE:-}" ]; then
+      _tx_emit_marker "RELOAD_OK" "strategy=hup_master_pid:${pid}"
+    fi
+    return 0
+  fi
+  return 1
+}
+
 _select_reload_strategy() {
   local now_ts=0
   now_ts=$(date +%s)
@@ -1176,6 +1259,7 @@ control_nginx() {
   fi
 
   local strategy=""
+  local skip_plain_reload="false"
   strategy=$(_select_reload_strategy)
   case "$strategy" in
   systemctl)
@@ -1196,6 +1280,17 @@ control_nginx() {
         _tx_emit_marker "RELOAD_OK" "strategy=nginx_conf:${conf_path}"
       fi
       return 0
+    fi
+    local pid_file=""
+    pid_file=$(_get_nginx_pid_file_from_conf "$conf_path" 2>/dev/null || true)
+    if _is_nginx_pid_file_empty "$pid_file"; then
+      log_message WARN "nginx -c ${conf_path} -s reload 失败，PID 文件为空/无效，尝试 HUP master 进程重载。"
+      local master_cmd=""
+      master_cmd=$(pgrep -af 'nginx: master process' | head -n1 || true)
+      if _try_hup_nginx_master "$master_cmd"; then
+        return 0
+      fi
+      skip_plain_reload="true"
     fi
     ;;
   nginx_plain)
@@ -1225,7 +1320,20 @@ control_nginx() {
     fi
     return 0
   fi
-  if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
+  if [ -n "$conf_path" ]; then
+    local pid_file=""
+    pid_file=$(_get_nginx_pid_file_from_conf "$conf_path" 2>/dev/null || true)
+    if _is_nginx_pid_file_empty "$pid_file"; then
+      log_message WARN "nginx -c ${conf_path} -s reload 失败，PID 文件为空/无效，尝试 HUP master 进程重载。"
+      if _try_hup_nginx_master "$master_cmd"; then
+        return 0
+      fi
+      skip_plain_reload="true"
+    fi
+  fi
+  if [ "$skip_plain_reload" = "true" ]; then
+    log_message WARN "PID 文件异常，已跳过 nginx -s reload。"
+  elif run_cmd 20 nginx -s reload >/dev/null 2>&1; then
     log_message WARN "已回退为 nginx -s reload。"
     NGINX_RELOAD_NEEDED="false"
     if [ -n "${TX_STATE:-}" ]; then
