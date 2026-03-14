@@ -33,7 +33,7 @@ export LANG="${LANG:-en_US.UTF_8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 # --- 颜色与样式定义 ---
-if [ -t 1 ] || [ -t 2 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then
+if [ -t 1 ] || [ -t 2 ]; then
   CYAN='\033[0;36m'
   GREEN='\033[0;32m'
   RED='\033[0;31m'
@@ -1114,11 +1114,19 @@ startup_update_spinner() {
 }
 
 startup_update_done_line() {
-  printf '\r\033[2K%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  if [ -t 2 ]; then
+    printf '\r\033[2K%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  else
+    printf '\r%s%s 更新完成\n' "$(_log_prefix)" "${GREEN}[成 功]${NC}" >&2
+  fi
 }
 
 startup_update_clear_line() {
-  printf '\r\033[2K' >&2
+  if [ -t 2 ]; then
+    printf '\r\033[2K' >&2
+  else
+    printf '\r' >&2
+  fi
 }
 
 run_startup_update_background() {
