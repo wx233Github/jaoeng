@@ -2665,7 +2665,7 @@ _gather_project_details() {
     "${method:-http-01}" "${provider:-}" "${wildcard:-n}" \
     "${ca_server:-}" "${ca_name:-}" "${cf:-}" "${kf:-}" \
     "${max_body:-}" "${custom_cfg:-}" "${CF_STRICT_MODE_CURRENT:-$cf_strict}" "${reload_cmd:-}" \
-    "${mcp_protect_path:-}" "${mcp_token:-}" >&3; then
+    "${mcp_protect_path:-}" "${mcp_token:-}"; then
     exec 3>&-
     return 1
   fi
