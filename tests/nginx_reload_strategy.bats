@@ -23,7 +23,7 @@ teardown() {
   [ "$output" = "/etc/sing-box/nginx.conf" ]
 }
 
-@test "reload 策略在无 systemctl 时优先使用 nginx -c" {
+@test "non_systemd_prefers_nginx: 无 systemctl 时优先使用 nginx -c" {
   run bash -c '
     source "$1"
     systemctl() { return 1; }
@@ -44,3 +44,19 @@ teardown() {
   [ "$status" -eq 0 ]
   [ "$output" = "nginx_plain" ]
 }
+
+@test "systemd active 时优先使用 systemctl" {
+  run bash -c '
+    source "$1"
+    if [ ! -d /run/systemd/system ]; then
+      mkdir -p /run/systemd/system || exit 2
+    fi
+    systemctl() { local IFS=" "; printf "%s\n" "systemctl:$*"; return 0; }
+    _select_reload_strategy
+  ' _ "$LIB_PATH"
+  if [ "$status" -eq 2 ]; then
+    skip "无法创建 /run/systemd/system"
+  fi
+  [ "$status" -eq 0 ]
+  [ "$output" = "systemctl" ]
+ }

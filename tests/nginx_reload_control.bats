@@ -60,7 +60,7 @@ teardown() {
   [ "${lines[0]}" = "systemctl" ]
   [ "${lines[1]}" = "cache:systemctl" ]
   [ "${lines[2]}" = "ts:200" ]
-  [ "${lines[3]}" = "systemctl:status nginx" ]
+  [ "${lines[3]}" = "systemctl:is-active --quiet nginx" ]
 }
 
 @test "fallback success path uses systemctl -> nginx -c -> nginx -s" {
@@ -115,7 +115,7 @@ teardown() {
   [ "${lines[2]}" = "run_cmd:nginx -s reload" ]
 }
 
-@test "full fallback failure returns non-zero" {
+@test "reload_failure_diagnostics: full fallback failure returns non-zero" {
   run bash -c '
     source "$1"
     marker=$(mktemp /tmp/nginx.reload.failure.marker.XXXXXX)
@@ -124,7 +124,7 @@ teardown() {
     trap - ERR
     CONF_PATH_STUB="/tmp/nginx.failure.conf"
     _nginx_test_cached() { return 0; }
-    log_message() { return 0; }
+    log_message() { printf "%s\n" "log:$*" >>"$marker"; }
     _select_reload_strategy() { printf "%s\n" "systemctl"; }
     _extract_nginx_conf_from_master_cmd() { printf "%s\n" "$CONF_PATH_STUB"; }
     systemctl() { local IFS=" "; printf "%s\n" "systemctl:$*" >>"$marker"; return 1; }
@@ -143,10 +143,16 @@ teardown() {
     NGINX_C_RESULT=1
     NGINX_S_RESULT=1
     nginx() {
+      if [ "$1" = "-t" ]; then
+        printf "%s\n" "nginx-test-error"
+        return 1
+      fi
       if [ "$1" = "-c" ] && [ "$2" = "${CONF_PATH_STUB}" ] && [ "$3" = "-s" ] && [ "$4" = "reload" ]; then
+        printf "%s\n" "reload-c-error"
         return "$NGINX_C_RESULT"
       fi
       if [ "$1" = "-s" ] && [ "$2" = "reload" ]; then
+        printf "%s\n" "reload-s-error"
         return "$NGINX_S_RESULT"
       fi
       return 1
@@ -161,8 +167,10 @@ teardown() {
   while IFS= read -r line; do
     [ -n "$line" ] && lines+=("$line")
   done <<<"$output"
-  [ "${#lines[@]}" -eq 3 ]
+  [ "${#lines[@]}" -ge 5 ]
   [ "${lines[0]}" = "systemctl:reload nginx" ]
   [ "${lines[1]}" = "run_cmd:nginx -c /tmp/nginx.failure.conf -s reload" ]
   [ "${lines[2]}" = "run_cmd:nginx -s reload" ]
+  printf "%s\n" "${lines[@]}" | grep -q "log:ERROR Nginx -t 输出: nginx-test-error"
+  printf "%s\n" "${lines[@]}" | grep -q "log:ERROR Nginx 重载失败输出:"
 }
