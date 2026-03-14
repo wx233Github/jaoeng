@@ -1109,7 +1109,7 @@ run_startup_update_legacy() {
 }
 
 startup_update_spinner() {
-  if [ "${STARTUP_UPDATE_SPINNER:-false}" != "true" ]; then
+  if [ "${STARTUP_UPDATE_SPINNER:-true}" != "true" ]; then
     printf '\r检查更新 ⠙' >&2
     return 0
   fi
