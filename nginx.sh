@@ -23,6 +23,9 @@ NGINX_BIN_CANDIDATES=(
 )
 NGINX_PATH_FIXED="false"
 
+# 是否跳过对自定义主配置注入 sites-enabled（默认开启，避免与 sing-box 冲突）
+NGINX_SKIP_INCLUDE_CONFS="${NGINX_SKIP_INCLUDE_CONFS:-true}"
+
 JB_NONINTERACTIVE="${JB_NONINTERACTIVE:-false}"
 
 # --- 全局变量 ---
@@ -797,6 +800,10 @@ _ensure_active_nginx_http_include_sites_enabled() {
   if [ -z "$active_conf" ] || [ ! -f "$active_conf" ]; then
     return 0
   fi
+  if [ "${NGINX_SKIP_INCLUDE_CONFS}" = "true" ] && [ "$active_conf" = "/etc/sing-box/nginx.conf" ]; then
+    log_message INFO "检测到 sing-box nginx 主配置，已跳过 /etc/nginx/sites-enabled 注入。"
+    return 0
+  fi
   if [ "$active_conf" = "/etc/nginx/nginx.conf" ]; then
     return 0
   fi
@@ -1129,7 +1136,7 @@ _select_reload_strategy() {
   fi
   local master_cmd=""
   local conf_path=""
-  if systemctl status nginx >/dev/null 2>&1; then
+  if systemctl is-active --quiet nginx >/dev/null 2>&1; then
     NGINX_RELOAD_STRATEGY_CACHE="systemctl"
     NGINX_RELOAD_STRATEGY_CACHE_TS="$now_ts"
     printf '%s\n' "systemctl"
@@ -1162,7 +1169,9 @@ control_nginx() {
       return 0
     fi
     log_message ERROR "Nginx $action 失败"
-    _tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=systemctl" "ERROR"
+    if [ -n "${TX_STATE:-}" ]; then
+      _tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=systemctl" "ERROR"
+    fi
     return 1
   fi
 
@@ -1172,7 +1181,9 @@ control_nginx() {
   systemctl)
     if systemctl reload nginx >/dev/null 2>&1; then
       NGINX_RELOAD_NEEDED="false"
-      _tx_emit_marker "RELOAD_OK" "strategy=systemctl"
+      if [ -n "${TX_STATE:-}" ]; then
+        _tx_emit_marker "RELOAD_OK" "strategy=systemctl"
+      fi
       return 0
     fi
     ;;
@@ -1181,7 +1192,9 @@ control_nginx() {
     if run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
       log_message INFO "已使用 nginx -c ${conf_path} -s reload。"
       NGINX_RELOAD_NEEDED="false"
-      _tx_emit_marker "RELOAD_OK" "strategy=nginx_conf:${conf_path}"
+      if [ -n "${TX_STATE:-}" ]; then
+        _tx_emit_marker "RELOAD_OK" "strategy=nginx_conf:${conf_path}"
+      fi
       return 0
     fi
     ;;
@@ -1189,7 +1202,9 @@ control_nginx() {
     if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
       log_message INFO "已使用 nginx -s reload。"
       NGINX_RELOAD_NEEDED="false"
-      _tx_emit_marker "RELOAD_OK" "strategy=nginx_plain"
+      if [ -n "${TX_STATE:-}" ]; then
+        _tx_emit_marker "RELOAD_OK" "strategy=nginx_plain"
+      fi
       return 0
     fi
     ;;
@@ -1205,17 +1220,36 @@ control_nginx() {
   if [ -n "$conf_path" ] && run_cmd 20 nginx -c "$conf_path" -s reload >/dev/null 2>&1; then
     log_message WARN "已回退为 nginx -c ${conf_path} -s reload。"
     NGINX_RELOAD_NEEDED="false"
-    _tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_conf:${conf_path}"
+    if [ -n "${TX_STATE:-}" ]; then
+      _tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_conf:${conf_path}"
+    fi
     return 0
   fi
   if run_cmd 20 nginx -s reload >/dev/null 2>&1; then
     log_message WARN "已回退为 nginx -s reload。"
     NGINX_RELOAD_NEEDED="false"
-    _tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_plain"
+    if [ -n "${TX_STATE:-}" ]; then
+      _tx_emit_marker "RELOAD_OK" "strategy=fallback_nginx_plain"
+    fi
     return 0
   fi
+
+  local test_output=""
+  local test_rc=0
+  test_output=$(nginx -t 2>&1) || test_rc=$?
+  if [ "$test_rc" -ne 0 ]; then
+    log_message ERROR "Nginx -t 输出: ${test_output}"
+  fi
+  local reload_output=""
+  local reload_rc=0
+  reload_output=$(nginx -s reload 2>&1) || reload_rc=$?
+  if [ "$reload_rc" -ne 0 ]; then
+    log_message ERROR "Nginx 重载失败输出: ${reload_output}"
+  fi
   log_message ERROR "Nginx $action 失败"
-  _tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=all_failed" "ERROR"
+  if [ -n "${TX_STATE:-}" ]; then
+    _tx_emit_marker "RELOAD_FAILED" "action=${action}, strategy=all_failed" "ERROR"
+  fi
   return 1
 }
 
