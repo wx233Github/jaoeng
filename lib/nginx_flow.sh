@@ -126,7 +126,7 @@ main_menu() {
     printf '%b' "\n"
     local c
     if ! c=$(prompt_menu_choice "1-11" "true"); then
-      return 10
+      exit 10
     fi
     case "$c" in
     1)
@@ -166,7 +166,7 @@ main_menu() {
       press_enter_to_continue
       ;;
     11) _manage_nginx_template_center ;;
-    "") return 10 ;;
+    "") exit 10 ;;
     *) log_message ERROR "无效选择" ;;
     esac
   done
